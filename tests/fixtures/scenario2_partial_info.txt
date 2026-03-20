@@ -1,0 +1,54 @@
+CAPITAL MARKETS ARCHITECTURE QUESTIONNAIRE — SCENARIO 2: PARTIAL INFORMATION
+=============================================================================
+
+SECTION 1: ENVIRONMENT OVERVIEW
+---------------------------------
+Application Name: Calypso T360 (Capital Markets Trading Platform)
+Environment: Production
+Workload Classification: Financial trading
+Current Platform: On-premises data centre
+Migration Target: Oracle Cloud Infrastructure (OCI)
+Regulatory: SOX, FINRA compliance required
+
+SECTION 2: APPLICATION TIER
+-----------------------------
+Framework: Java / Oracle WebLogic
+Instances: [NOT PROVIDED — please size appropriately]
+Deployment: We need high availability across multiple Availability Domains
+Sessions: Several hundred concurrent users
+Internet-facing: Yes — traders access the portal from the internet
+Internal connectivity: Yes — FastConnect to our main office
+
+SECTION 3: DATABASE LAYER
+--------------------------
+Engine: Oracle Database (exact edition TBD — we currently use Exadata on-prem)
+Topology: [NOT SPECIFIED — we need HA, details unclear]
+Backup: Object Storage preferred
+RTO: Under 5 minutes acceptable
+RPO: Minimal data loss preferred
+
+SECTION 4: STORAGE
+------------------
+Block Storage: [SIZE UNKNOWN — migrate existing data, roughly ~30-50 TB]
+Object Storage: Required for backups
+File Storage: [NOT SPECIFIED]
+
+SECTION 5: DATA & ANALYTICS
+-----------------------------
+Market data: Bloomberg feed required
+Monitoring: We need some kind of logging and monitoring, standard OCI stack is fine
+
+SECTION 6: NETWORKING
+----------------------
+Connectivity: FastConnect — single connection to main office (bandwidth TBD)
+Internet: Yes, HTTPS only, WAF required
+On-premises: Main office + one remote site
+Load Balancing: We need both public and private load balancers
+Bastion: Yes, required for admin access
+
+SECTION 7: DISASTER RECOVERY
+------------------------------
+Strategy: High availability is required — we have been told we need multi-AD
+HA Mode: [NOT FULLY SPECIFIED — "regional HA" mentioned by our architect]
+Failover: Should be automatic
+DR Target: Best effort, standard Oracle recommended practice
