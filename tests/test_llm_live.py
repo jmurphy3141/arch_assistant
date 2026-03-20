@@ -14,10 +14,10 @@ Each test:
   5. Runs the spec through spec_to_draw_dict() + generate_drawio()
   6. Asserts the resulting diagram has the expected Calypso multi-AD structure
 
-Scenarios:
-  S1 — Full info      calypso_s1_full.xlsx    + scenario1_full_info.txt
-  S2 — Partial info   calypso_s2_partial.xlsx + scenario2_partial_info.txt
-  S3 — Minimal info   calypso_s3_minimal.xlsx + scenario3_minimal_info.txt
+Scenarios (each is a subdirectory of tests/scenarios/ containing bom.xlsx + context.txt):
+  S1 — Full info      tests/scenarios/s1_full_info/
+  S2 — Partial info   tests/scenarios/s2_partial_info/
+  S3 — Minimal info   tests/scenarios/s3_minimal_info/
 
 Run:
   pytest tests/test_llm_live.py -v -s               # all live tests
@@ -51,7 +51,7 @@ from agent.drawio_generator import generate_drawio
 
 logger = logging.getLogger(__name__)
 
-FIXTURES = Path(__file__).parent / "fixtures"
+SCENARIOS = Path(__file__).parent / "scenarios"
 
 # ── Skip conditions ────────────────────────────────────────────────────────────
 
@@ -168,10 +168,10 @@ def _assert_multi_ad_diagram(draw_dict: dict, xml: str, scenario: str) -> None:
     assert "mxCell"       in xml, f"{scenario}: invalid draw.io XML (no cells)"
 
 
-def _run_live_scenario(bom_file: str, context_file: str, scenario_name: str) -> None:
+def _run_live_scenario(scenario_dir: str, scenario_name: str) -> None:
     """Full pipeline: BOM + context → LLM → layout → draw.io → assertions."""
-    bom_path     = FIXTURES / bom_file
-    context_path = FIXTURES / context_file
+    bom_path     = SCENARIOS / scenario_dir / "bom.xlsx"
+    context_path = SCENARIOS / scenario_dir / "context.txt"
 
     assert bom_path.exists(),     f"BOM file not found: {bom_path}"
     assert context_path.exists(), f"Context file not found: {context_path}"
@@ -237,17 +237,13 @@ class TestLiveScenario1FullInfo:
 
     @requires_api
     def test_s1_full_pipeline(self):
-        _run_live_scenario(
-            bom_file="calypso_s1_full.xlsx",
-            context_file="scenario1_full_info.txt",
-            scenario_name="S1-FullInfo",
-        )
+        _run_live_scenario("s1_full_info", "S1-FullInfo")
 
     @requires_api
     def test_s1_prompt_quality(self):
         """Prompt should include key Calypso identifiers from the BOM and context."""
-        items   = parse_bom(FIXTURES / "calypso_s1_full.xlsx")
-        context = (FIXTURES / "scenario1_full_info.txt").read_text()
+        items   = parse_bom(SCENARIOS / "s1_full_info" / "bom.xlsx")
+        context = (SCENARIOS / "s1_full_info" / "context.txt").read_text()
         prompt  = build_llm_prompt(items, context=context)
 
         # BOM service IDs appear
@@ -269,11 +265,7 @@ class TestLiveScenario2PartialInfo:
 
     @requires_api
     def test_s2_full_pipeline(self):
-        _run_live_scenario(
-            bom_file="calypso_s2_partial.xlsx",
-            context_file="scenario2_partial_info.txt",
-            scenario_name="S2-PartialInfo",
-        )
+        _run_live_scenario("s2_partial_info", "S2-PartialInfo")
 
     @requires_api
     def test_s2_applies_assumptions(self):
@@ -281,8 +273,8 @@ class TestLiveScenario2PartialInfo:
         With sizing gaps, LLM should still produce a valid multi_ad spec
         and not ask for clarification (assumption-first rule).
         """
-        items   = parse_bom(FIXTURES / "calypso_s2_partial.xlsx")
-        context = (FIXTURES / "scenario2_partial_info.txt").read_text()
+        items   = parse_bom(SCENARIOS / "s2_partial_info" / "bom.xlsx")
+        context = (SCENARIOS / "s2_partial_info" / "context.txt").read_text()
         prompt  = build_llm_prompt(items, context=context)
         spec    = _call_llm(prompt)
 
@@ -304,11 +296,7 @@ class TestLiveScenario3MinimalInfo:
 
     @requires_api
     def test_s3_full_pipeline(self):
-        _run_live_scenario(
-            bom_file="calypso_s3_minimal.xlsx",
-            context_file="scenario3_minimal_info.txt",
-            scenario_name="S3-MinimalInfo",
-        )
+        _run_live_scenario("s3_minimal_info", "S3-MinimalInfo")
 
     @requires_api
     def test_s3_no_clarification_asked(self):
@@ -316,8 +304,8 @@ class TestLiveScenario3MinimalInfo:
         Even with minimal info, the LLM must produce a spec (not ask questions).
         The assumption table covers 'HA' → multi_ad.
         """
-        items   = parse_bom(FIXTURES / "calypso_s3_minimal.xlsx")
-        context = (FIXTURES / "scenario3_minimal_info.txt").read_text()
+        items   = parse_bom(SCENARIOS / "s3_minimal_info" / "bom.xlsx")
+        context = (SCENARIOS / "s3_minimal_info" / "context.txt").read_text()
         prompt  = build_llm_prompt(items, context=context)
         spec    = _call_llm(prompt)
 
@@ -331,8 +319,8 @@ class TestLiveScenario3MinimalInfo:
     @requires_api
     def test_s3_reference_arch_is_multi_ad(self):
         """Capital markets + 'needs HA' should trigger multi_ad via assumption table."""
-        items   = parse_bom(FIXTURES / "calypso_s3_minimal.xlsx")
-        context = (FIXTURES / "scenario3_minimal_info.txt").read_text()
+        items   = parse_bom(SCENARIOS / "s3_minimal_info" / "bom.xlsx")
+        context = (SCENARIOS / "s3_minimal_info" / "context.txt").read_text()
         prompt  = build_llm_prompt(items, context=context)
         spec    = _call_llm(prompt)
 
@@ -360,16 +348,16 @@ if __name__ == "__main__":
         sys.exit(1)
 
     scenarios = [
-        ("calypso_s1_full.xlsx",    "scenario1_full_info.txt",   "S1-FullInfo"),
-        ("calypso_s2_partial.xlsx", "scenario2_partial_info.txt", "S2-PartialInfo"),
-        ("calypso_s3_minimal.xlsx", "scenario3_minimal_info.txt", "S3-MinimalInfo"),
+        ("s1_full_info",   "S1-FullInfo"),
+        ("s2_partial_info", "S2-PartialInfo"),
+        ("s3_minimal_info", "S3-MinimalInfo"),
     ]
 
     results = []
-    for bom, ctx, name in scenarios:
+    for scenario_dir, name in scenarios:
         print(f"\n{'─'*60}\nRunning {name}...\n{'─'*60}")
         try:
-            _run_live_scenario(bom, ctx, name)
+            _run_live_scenario(scenario_dir, name)
             results.append((name, "PASS", ""))
         except Exception as exc:
             results.append((name, "FAIL", str(exc)))

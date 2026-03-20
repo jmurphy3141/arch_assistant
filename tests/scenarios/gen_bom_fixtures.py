@@ -1,16 +1,16 @@
 """
-tests/fixtures/gen_bom_fixtures.py
-------------------------------------
-Generates BOM Excel fixtures for the three Calypso/Capital Markets live LLM test
-scenarios. Run once to create the .xlsx files.
+tests/scenarios/gen_bom_fixtures.py
+-------------------------------------
+Regenerates the BOM Excel files for all three Calypso/Capital Markets test scenarios.
+Run this if you need to recreate the .xlsx files from scratch.
 
 Usage:
-    python tests/fixtures/gen_bom_fixtures.py
+    python tests/scenarios/gen_bom_fixtures.py
 
 Output:
-    tests/fixtures/calypso_s1_full.xlsx
-    tests/fixtures/calypso_s2_partial.xlsx
-    tests/fixtures/calypso_s3_minimal.xlsx
+    tests/scenarios/s1_full_info/bom.xlsx
+    tests/scenarios/s2_partial_info/bom.xlsx
+    tests/scenarios/s3_minimal_info/bom.xlsx
 
 BOM format expected by agent/bom_parser.parse_bom():
   Sheet "BOM"   — columns: SKU, Description, Quantity, Notes
@@ -21,7 +21,7 @@ from pathlib import Path
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 
-FIXTURES_DIR = Path(__file__).parent
+SCENARIOS_DIR = Path(__file__).parent
 
 
 def _header_style():
@@ -107,7 +107,7 @@ def gen_scenario1():
         ("EC2",              256,        None,        "8 nodes × 16 OCPU × 2 (hyperthreading factor) × 2 ADs"),
         ("Postgres RDS",     128,        51200,       "32 OCPU × 2 ADs; 50 TB NVMe block per AD = 51200 GB"),
     ]
-    _write_bom(FIXTURES_DIR / "calypso_s1_full.xlsx", bom_rows, input_rows)
+    _write_bom(SCENARIOS_DIR / "s1_full_info" / "bom.xlsx", bom_rows, input_rows)
 
 
 def gen_scenario2():
@@ -126,7 +126,7 @@ def gen_scenario2():
         ("EC2",           None,        None,        "Sizing not provided — use OCI recommended defaults"),
         ("Postgres RDS",  None,        None,        "Sizing not provided — Oracle edition and OCPU TBD"),
     ]
-    _write_bom(FIXTURES_DIR / "calypso_s2_partial.xlsx", bom_rows, input_rows)
+    _write_bom(SCENARIOS_DIR / "s2_partial_info" / "bom.xlsx", bom_rows, input_rows)
 
 
 def gen_scenario3():
@@ -142,7 +142,7 @@ def gen_scenario3():
         ("EC2",           None,        None,        "No sizing info provided"),
         ("Postgres RDS",  None,        None,        "No sizing info provided"),
     ]
-    _write_bom(FIXTURES_DIR / "calypso_s3_minimal.xlsx", bom_rows, input_rows)
+    _write_bom(SCENARIOS_DIR / "s3_minimal_info" / "bom.xlsx", bom_rows, input_rows)
 
 
 if __name__ == "__main__":
