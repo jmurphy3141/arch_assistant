@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 
 from oci.addons.adk import Agent, AgentClient
+from oci.addons.adk.auth.oci.instance_principal import InstancePrincipal
 
 from agent.bom_parser import bom_to_llm_input, parse_bom
 from agent.layout_engine import spec_to_draw_dict
@@ -156,7 +157,7 @@ def run_pipeline(items: list, prompt: str, diagram_name: str, client_id: str) ->
 @app.on_event("startup")
 def startup():
     global agent
-    client = AgentClient(region=REGION)
+    client = AgentClient(region=REGION, auth=InstancePrincipal())
     print(f"AgentClient ready — runtime: {client.runtime_endpoint}")
 
     agent = Agent(
