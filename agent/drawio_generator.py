@@ -89,6 +89,9 @@ def safe(s: str) -> str:
 
 def _subnet_style(tier: str) -> str:
     """Return the style string for a subnet box, keyed by tier."""
+    # Specific ingress sub-tiers all use the ingress visual style
+    if tier in ("public_ingress", "private_ingress", "bastion"):
+        return GROUP_STYLES["_subnet_ingress"]
     key = f"_subnet_{tier}" if tier else "_subnet_app"
     return GROUP_STYLES.get(key, GROUP_STYLES["_subnet_app"])
 

@@ -715,16 +715,23 @@ def spec_to_draw_dict(
     nat_id    = _find_by_oci_type("nat gateway")
     sgw_id    = _find_by_oci_type("service gateway")
 
-    priv_sub  = _find_subnet_by_tier("ingress")   # Private LB subnet
-    pub_sub   = _find_subnet_by_tier("ingress")   # Public LB subnet (may overlap)
     web_sub   = _find_subnet_by_tier("web")
     app_sub   = _find_subnet_by_tier("app")
     db_sub    = _find_subnet_by_tier("db")
 
-    # Find first ingress subnets — public vs private
-    ingress_subs = [b for b in boxes_out if b.box_type == "_subnet_box" and b.tier == "ingress"]
-    pub_ingress  = ingress_subs[0].id  if len(ingress_subs) >= 1 else None
-    priv_ingress = ingress_subs[-1].id if len(ingress_subs) >= 2 else pub_ingress
+    # Find ingress subnets — prefer explicit tier names, fall back to positional
+    pub_ingress  = (_find_subnet_by_tier("public_ingress")
+                    or _find_subnet_by_tier("ingress"))
+    priv_ingress = (_find_subnet_by_tier("private_ingress")
+                    or _find_subnet_by_tier("ingress"))
+    # If only generic "ingress" subnets exist, use positional logic:
+    # first subnet = private (DRG side), last = public (internet side)
+    if pub_ingress == priv_ingress:
+        generic_ingress = [b for b in boxes_out
+                           if b.box_type == "_subnet_box" and b.tier == "ingress"]
+        if len(generic_ingress) >= 2:
+            priv_ingress = generic_ingress[0].id
+            pub_ingress  = generic_ingress[-1].id
 
     oci_svc_node = None
     for region_spec in layout_spec.get("regions", []):

@@ -80,15 +80,15 @@ new_spec = {
         "label": "Oracle Cloud Infrastructure (Region)",
         "regional_subnets": [
             {
-                "id": "priv_sub_lb", "label": "Private Subnet", "tier": "ingress",
+                "id": "priv_sub_lb", "label": "Private Subnet", "tier": "private_ingress",
                 "nodes": [{"id": "priv_lb", "type": "load balancer", "label": "Load Balancer"}]
             },
             {
-                "id": "pub_sub_bastion", "label": "Public Subnet", "tier": "ingress",
+                "id": "pub_sub_bastion", "label": "Public Subnet", "tier": "bastion",
                 "nodes": [{"id": "bastion", "type": "compute", "label": "Bastion Host"}]
             },
             {
-                "id": "pub_sub_lb", "label": "Public Subnet", "tier": "ingress",
+                "id": "pub_sub_lb", "label": "Public Subnet", "tier": "public_ingress",
                 "nodes": [
                     {"id": "waf",    "type": "waf",          "label": "WAF"},
                     {"id": "pub_lb", "type": "load balancer","label": "Load Balancer"},
@@ -172,15 +172,15 @@ multi_ad_spec = {
         "label": "Oracle Cloud Infrastructure (Region)",
         "regional_subnets": [
             {
-                "id": "priv_sub_lb", "label": "Private Subnet", "tier": "ingress",
+                "id": "priv_sub_lb", "label": "Private Subnet", "tier": "private_ingress",
                 "nodes": [{"id": "priv_lb", "type": "load balancer", "label": "Load Balancer"}]
             },
             {
-                "id": "pub_sub_bastion", "label": "Public Subnet", "tier": "ingress",
+                "id": "pub_sub_bastion", "label": "Public Subnet", "tier": "bastion",
                 "nodes": [{"id": "bastion", "type": "compute", "label": "Bastion Host"}]
             },
             {
-                "id": "pub_sub_lb", "label": "Public Subnet", "tier": "ingress",
+                "id": "pub_sub_lb", "label": "Public Subnet", "tier": "public_ingress",
                 "nodes": [
                     {"id": "waf",    "type": "waf",          "label": "WAF"},
                     {"id": "pub_lb", "type": "load balancer","label": "Load Balancer"},
