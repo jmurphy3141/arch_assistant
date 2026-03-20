@@ -40,6 +40,7 @@ ICON_SLOT = ICON_H + LABEL_H + 8   # 76px vertical per icon including label
 NODE_GAP_X = 14
 
 SUB_PAD_X = 14; SUB_PAD_TOP = 32; SUB_PAD_BOT = 10; SUB_GAP_Y = 12
+MIN_SUBNET_W = 200   # minimum subnet box width — prevents single-icon subnets from being too narrow
 FD_PAD_X  = 12; FD_PAD_TOP  = 32; FD_PAD_BOT  = 12; FD_GAP_X  = 12
 AD_PAD_X  = 14; AD_PAD_TOP  = 36; AD_PAD_BOT  = 14; AD_GAP_X  = 20
 REG_PAD_X = 20; REG_PAD_TOP = 40; REG_PAD_BOT = 20; REG_SUB_GAP_Y = 14
@@ -84,9 +85,9 @@ def _subnet_content_size(subnet_spec: dict) -> tuple[float, float]:
 
 
 def _subnet_box_size(subnet_spec: dict) -> tuple[float, float]:
-    """Return (w, h) of the subnet box including padding."""
+    """Return (w, h) of the subnet box including padding, respecting MIN_SUBNET_W."""
     cw, ch = _subnet_content_size(subnet_spec)
-    return cw + 2 * SUB_PAD_X, ch + SUB_PAD_TOP + SUB_PAD_BOT
+    return max(cw + 2 * SUB_PAD_X, MIN_SUBNET_W), ch + SUB_PAD_TOP + SUB_PAD_BOT
 
 
 def _place_subnet_nodes(subnet_spec: dict, box_x: float, box_y: float) -> list[PositionedNode]:
@@ -122,7 +123,9 @@ def _layout_subnets_vertical(
     available_w: float,
 ) -> tuple[list[PositionedBox], list[PositionedNode], float]:
     """
-    Stack subnet boxes vertically. Each box stretches to available_w.
+    Stack subnet boxes vertically. Each box uses its natural (content-based) width,
+    centred within available_w. Prevents single-icon subnets from stretching to fill
+    the full column.
     Returns (boxes, nodes, total_height_used).
     """
     boxes: list[PositionedBox] = []
@@ -130,9 +133,10 @@ def _layout_subnets_vertical(
     cur_y = origin_y
 
     for sub in subnets:
-        _, natural_h = _subnet_box_size(sub)
-        sub_w = available_w
-        sub_h = natural_h
+        sub_w, sub_h = _subnet_box_size(sub)
+        # Centre within the available column; clamp so it never exceeds available_w
+        sub_w = min(sub_w, available_w)
+        sub_x = origin_x + (available_w - sub_w) / 2
 
         tier = sub.get("tier", "app")
         boxes.append(PositionedBox(
@@ -140,12 +144,12 @@ def _layout_subnets_vertical(
             label=sub.get("label", sub["id"]),
             box_type="_subnet_box",
             tier=tier,
-            x=origin_x,
+            x=sub_x,
             y=cur_y,
             w=sub_w,
             h=sub_h,
         ))
-        nodes.extend(_place_subnet_nodes(sub, origin_x, cur_y))
+        nodes.extend(_place_subnet_nodes(sub, sub_x, cur_y))
         cur_y += sub_h + SUB_GAP_Y
 
     total_h = cur_y - origin_y - SUB_GAP_Y if subnets else 0
@@ -160,7 +164,7 @@ def _layout_subnets_horizontal(
 ) -> tuple[list[PositionedBox], list[PositionedNode], float]:
     """
     Place subnet boxes side by side horizontally (for regional subnets).
-    Each box gets equal share of available_w.
+    Each box uses its natural (content-based) width; the row is centred in available_w.
     Returns (boxes, nodes, max_height_used).
     """
     boxes: list[PositionedBox] = []
@@ -169,12 +173,21 @@ def _layout_subnets_horizontal(
         return boxes, nodes, 0
 
     n = len(subnets)
-    sub_w = (available_w - (n - 1) * SUB_GAP_Y) / n
-    max_h = 0
+    widths = [_subnet_box_size(sub)[0] for sub in subnets]
+    total_natural_w = sum(widths) + (n - 1) * SUB_GAP_Y
 
-    for i, sub in enumerate(subnets):
-        _, natural_h = _subnet_box_size(sub)
-        sub_x = origin_x + i * (sub_w + SUB_GAP_Y)
+    # Centre row; if natural widths exceed available_w scale down proportionally
+    if total_natural_w > available_w:
+        scale = available_w / total_natural_w
+        widths = [w * scale for w in widths]
+        total_natural_w = available_w
+
+    start_x = origin_x + (available_w - total_natural_w) / 2
+    max_h = 0
+    cur_x = start_x
+
+    for sub, sub_w in zip(subnets, widths):
+        _, sub_h = _subnet_box_size(sub)
         tier = sub.get("tier", "ingress")
 
         boxes.append(PositionedBox(
@@ -182,13 +195,14 @@ def _layout_subnets_horizontal(
             label=sub.get("label", sub["id"]),
             box_type="_subnet_box",
             tier=tier,
-            x=sub_x,
+            x=cur_x,
             y=origin_y,
             w=sub_w,
-            h=natural_h,
+            h=sub_h,
         ))
-        nodes.extend(_place_subnet_nodes(sub, sub_x, origin_y))
-        max_h = max(max_h, natural_h)
+        nodes.extend(_place_subnet_nodes(sub, cur_x, origin_y))
+        max_h = max(max_h, sub_h)
+        cur_x += sub_w + SUB_GAP_Y
 
     return boxes, nodes, max_h
 
