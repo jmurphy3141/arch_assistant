@@ -30,7 +30,7 @@ def get_agent():
     from oci.addons.adk import Agent, AgentClient
 
     cfg = _load_config()
-    client = AgentClient()
+    client = AgentClient(region=cfg["region"])
 
     agent = Agent(
         client=client,

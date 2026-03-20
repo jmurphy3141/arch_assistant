@@ -156,7 +156,7 @@ def run_pipeline(items: list, prompt: str, diagram_name: str, client_id: str) ->
 @app.on_event("startup")
 def startup():
     global agent
-    client = AgentClient()
+    client = AgentClient(region=REGION)
     print(f"AgentClient ready — runtime: {client.runtime_endpoint}")
 
     agent = Agent(
