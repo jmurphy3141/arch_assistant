@@ -36,6 +36,12 @@ GROUP_PAD_X = 24         # horizontal padding inside group box
 GROUP_PAD_Y = 36         # vertical padding inside group box (top = label space)
 GROUP_GAP_Y = 20         # vertical gap between group boxes in same layer
 
+AD_PAD_X    = 16         # extra padding around subnets for AD box
+AD_PAD_Y    = 32         # top padding large enough for "Availability Domain 1" label
+
+COMPARTMENT_PAD_X = 36  # padding around VCN+region for Compartment box
+COMPARTMENT_PAD_Y = 48  # top padding for "Compartment" label
+
 # Compute layer column centres based on available width
 # Layers: external | ingress | compute | async | data | region
 # "region" is a virtual 6th column used for OCI Region Services box,
@@ -208,12 +214,43 @@ def compute_positions(layout_spec: dict | str) -> tuple[list[PositionedNode], li
             elif p.oci_type in RIGHT_GATEWAYS:
                 p.x = vcn_r - ICON_W / 2     # straddle right edge
 
-        # Insert VCN box at front (drawn first = behind subnets)
-        group_boxes.insert(0, PositionedGroup(
+        # ── AD box — wraps subnet boxes inside the VCN ────────────────────────
+        ad_x = min(g.x for g in vcn_subnet_boxes) - AD_PAD_X
+        ad_y = min(g.y for g in vcn_subnet_boxes) - AD_PAD_Y
+        ad_r = max(g.x + g.w for g in vcn_subnet_boxes) + AD_PAD_X
+        ad_b = max(g.y + g.h for g in vcn_subnet_boxes) + AD_PAD_X / 2
+        ad_box = PositionedGroup(
+            id="ad_box", label="Availability Domain 1",
+            x=ad_x, y=ad_y,
+            w=ad_r - ad_x, h=ad_b - ad_y,
+        )
+
+        vcn_box = PositionedGroup(
             id="vcn_box", label="VCN",
             x=vcn_x, y=vcn_y,
             w=vcn_w, h=vcn_h,
-        ))
+        )
+
+        # ── Compartment box — wraps VCN + Region Services ─────────────────────
+        region_pg = next((g for g in group_boxes if g.id == "region_box"), None)
+        comp_candidates = [vcn_box]
+        if region_pg:
+            comp_candidates.append(region_pg)
+        comp_x = min(g.x for g in comp_candidates) - COMPARTMENT_PAD_X
+        comp_y = min(g.y for g in comp_candidates) - COMPARTMENT_PAD_Y
+        comp_r = max(g.x + g.w for g in comp_candidates) + COMPARTMENT_PAD_X
+        comp_b = max(g.y + g.h for g in comp_candidates) + COMPARTMENT_PAD_X / 2
+        compartment_box = PositionedGroup(
+            id="compartment_box", label="Compartment",
+            x=comp_x, y=comp_y,
+            w=comp_r - comp_x, h=comp_b - comp_y,
+        )
+
+        # Draw order (front of list = drawn first = furthest back):
+        # Compartment → VCN → AD → subnets/region (already in group_boxes)
+        group_boxes.insert(0, compartment_box)
+        group_boxes.insert(1, vcn_box)
+        group_boxes.insert(2, ad_box)
 
     return positioned, group_boxes
 

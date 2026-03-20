@@ -37,7 +37,9 @@ GROUP_STYLES = {
     "Public Subnet":       "whiteSpace=wrap;html=1;strokeWidth=1;dashed=1;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=#EEF3F8;fontColor=#AE562C;strokeColor=#AE562C;fontSize=11;fontStyle=1;spacingLeft=8;spacingTop=5;",
     "App Subnet":          "whiteSpace=wrap;html=1;strokeWidth=1;dashed=1;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=#F5F4F2;fontColor=#AE562C;strokeColor=#AE562C;fontSize=11;fontStyle=1;spacingLeft=8;spacingTop=5;",
     "DB Subnet":           "whiteSpace=wrap;html=1;strokeWidth=1;dashed=1;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=#DFDCD8;fontColor=#AE562C;strokeColor=#AE562C;fontSize=11;fontStyle=1;spacingLeft=8;spacingTop=5;",
-    "OCI Region Services": "whiteSpace=wrap;html=1;strokeWidth=1;dashed=1;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=#F5F4F2;fontColor=#9E9892;strokeColor=#9E9892;fontSize=11;fontStyle=1;spacingLeft=8;spacingTop=5;",
+    "OCI Region Services":    "whiteSpace=wrap;html=1;strokeWidth=1;dashed=1;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=#F5F4F2;fontColor=#9E9892;strokeColor=#9E9892;fontSize=11;fontStyle=1;spacingLeft=8;spacingTop=5;",
+    "Availability Domain 1":  "whiteSpace=wrap;html=1;strokeWidth=1;dashed=0;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=none;fontColor=#312D2A;strokeColor=#312D2A;fontSize=11;fontStyle=1;spacingLeft=8;spacingTop=5;",
+    "Compartment":            "whiteSpace=wrap;html=1;strokeWidth=2;dashed=0;rounded=1;arcSize=3;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=none;fontColor=#312D2A;strokeColor=#312D2A;fontSize=13;fontStyle=1;spacingLeft=8;spacingTop=5;",
 }
 DEFAULT_GROUP_STYLE = "whiteSpace=wrap;html=1;strokeWidth=1;dashed=1;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=#F5F4F2;fontColor=#AE562C;strokeColor=#AE562C;fontSize=11;fontStyle=1;spacingLeft=8;spacingTop=5;"
 
