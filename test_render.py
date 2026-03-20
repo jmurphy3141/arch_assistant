@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """Quick local render test — no OCI/LLM needed."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+
 from agent.bom_parser import ServiceItem
 from agent.layout_engine import spec_to_draw_dict
 from agent.drawio_generator import generate_drawio
