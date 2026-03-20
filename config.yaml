@@ -1,0 +1,15 @@
+# OCI Drawing Agent — configuration
+# Auth uses OCI Instance Principal; no credentials stored here.
+
+# OCI region and GenAI agent endpoint
+region: "us-phoenix-1"
+agent_endpoint_id: "ocid1.genaiagentendpoint.oc1.phx.amaaaaaaqx2yg4yati6ktkce2ipnfsjxi4p7aab2rbloxho4pey3hnlw6l2a"
+compartment_id: "ocid1.compartment.oc1..aaaaaaaaea7vtpk24oq7tw6sfskc2hodr2ymbchddlblb6qqpad6rgt2fkwa"
+
+# LLM call config
+max_steps: 5
+
+# Server
+host: "0.0.0.0"
+port: 8080
+output_dir: "/tmp/diagrams"
