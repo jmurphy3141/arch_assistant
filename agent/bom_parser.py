@@ -2,8 +2,11 @@
 agent/bom_parser.py
 --------------------
 Reads BOM Excel → produces a clean service list for the LLM layout compiler.
-The LLM receives a structured summary and returns a layout spec JSON.
+The LLM receives a structured summary and returns a hierarchical layout spec JSON.
 This file does NOT decide layout — only service identification.
+
+The LLM prompt uses an assumption-first approach: apply defaults from the
+default assumption table, never ask about things that can be inferred.
 """
 from __future__ import annotations
 import logging
@@ -172,8 +175,14 @@ def _make_label(oci_type: str, qty, app_ocpu: int, db_ocpu: int, obj_gb: float, 
 def build_llm_prompt(items: list[ServiceItem], context: str = "") -> str:
     """Build the layout compiler prompt for the OCI GenAI agent.
 
+    Uses an assumption-first approach: the LLM must apply the default assumption
+    table and NEVER ask about things it can infer. Clarification is only for
+    truly blocking topology decisions.
+
     context: optional text from a requirements/notes file uploaded alongside the BOM.
-    If key info is missing the LLM should ask clarification questions rather than guess.
+
+    Returns a prompt that instructs the LLM to output the new hierarchical spec:
+    regions → availability_domains → fault_domains → subnets → nodes.
     """
     service_list = "\n".join(
         f'  {{"id": "{i.id}", "type": "{i.oci_type}", "label": "{i.label.replace(chr(10), " ")}", "suggested_layer": "{i.layer}"}}'
@@ -185,80 +194,182 @@ def build_llm_prompt(items: list[ServiceItem], context: str = "") -> str:
         if context and context.strip() else ""
     )
 
-    return f"""You are a layout compiler. Your job is to produce a deterministic layout specification JSON.
+    return f"""You are an OCI architecture layout compiler. Your job is to produce a deterministic
+hierarchical layout specification JSON for an OCI draw.io diagram.
 {context_block}
-CLARIFICATION RULE:
-If you are missing information that would materially change the diagram topology
-(e.g. number of regions, HA pattern, dedicated subnets), return ONLY this JSON:
-{{
-  "status": "need_clarification",
-  "questions": ["Question 1?", "Question 2?"]
-}}
-Only ask questions you cannot answer from the BOM or context above.
-If you can produce a representative diagram, skip questions and output the spec.
+═══════════════════════════════════════════════════════
+ASSUMPTION-FIRST RULE (CRITICAL)
+═══════════════════════════════════════════════════════
+Apply the default assumption table below for any missing information.
+NEVER ask about things you can infer. Only ask clarification questions for
+information that would materially change the topology AND cannot be safely
+assumed from context.
 
+DEFAULT ASSUMPTION TABLE:
+┌─────────────────────────────────────────────┬──────────────────────────────────────────────┐
+│ Signal in BOM / context                     │ Assumed topology                             │
+├─────────────────────────────────────────────┼──────────────────────────────────────────────┤
+│ No HA signal at all                         │ single_ad, single FD                         │
+│ "HA" or redundancy mentioned                │ single_ad, two Fault Domains                 │
+│ Two ADs mentioned, or "regional HA"         │ multi_ad, two ADs side by side               │
+│ "DR", "multi-region", or two regions        │ multi_region, active-passive                 │
+│ "active-active" explicit                    │ single_ad, two Fault Domains (active-active) │
+│ Database in BOM                             │ Add Data Guard (sync multi_ad, async multi_region) │
+│ Any compute in BOM                          │ Add NAT Gateway                              │
+│ Any OCI managed service                     │ Add Service Gateway                          │
+│ External users / HTTPS in BOM or context    │ Add IGW + WAF + Public Load Balancer         │
+│ On-prem / FastConnect in BOM                │ Add DRG + Private Load Balancer              │
+│ No load balancer listed                     │ Add one (public or private per other signals)│
+│ No bastion listed                           │ Add one in a Public Subnet                   │
+└─────────────────────────────────────────────┴──────────────────────────────────────────────┘
+
+NEVER ASK ABOUT:
+- Whether to include gateways (always add the appropriate ones based on signals above)
+- Whether to include WAF (always add when internet-facing)
+- Subnet count or naming (derive from tier model below)
+- Icon styles or colours (always use OCI standards)
+- Page size or layout direction (always A3 landscape 1654×1169, always TB)
+
+═══════════════════════════════════════════════════════
 INPUT SERVICES (from BOM):
+═══════════════════════════════════════════════════════
 [
 {service_list}
 ]
 
-LAYER ORDER (strict left-to-right):
-  1. external   — outside OCI (on-premises, internet)
-  2. ingress    — entry points (gateways, LBs, WAF, Firewall, Bastion, DRG)
-  3. compute    — processing (VMs, containers, functions)
-  4. async      — messaging (queues, streaming)
-  5. data       — storage and databases
+═══════════════════════════════════════════════════════
+LAYOUT RULES
+═══════════════════════════════════════════════════════
+Layout direction: TOP → BOTTOM (TB)
+Canvas: 1654 × 1169 px (A3 landscape)
 
-RULES:
-1. Every node MUST be assigned to exactly one layer using the order above.
-2. Groups MUST use OCI subnet names: "Public Subnet", "App Subnet", "DB Subnet", "OCI Region Services"
-3. Gateways (internet_gateway, nat_gateway, service_gateway, drg) go in "Public Subnet" group at ingress layer.
-4. Security (waf, network_firewall, bastion) go in "Public Subnet" group at ingress layer.
-5. Load balancers go in "Public Subnet" group at ingress layer.
-6. Compute, functions, containers, api_gateway go in "App Subnet" group at compute layer.
-7. Queue goes in "App Subnet" group at async layer.
-8. Database, vault go in "DB Subnet" group at data layer.
-9. Object storage, IAM, logging, monitoring, certificates, directory, db_mgmt go in "OCI Region Services" group at data layer.
-10. on_prem is NOT in any group — it is external.
-11. Edges connect layers left-to-right. No backward edges.
-12. Use these edges ONLY — no extras:
-    - on_prem → drg_1 (FastConnect ×6)
-    - internet_gateway → pub_sub_box (Internet)
-    - drg_1 → app_sub_box (internal routing)
-    - pub_sub_box → app_sub_box (LB Traffic)
-    - bastion → app_sub_box (SSH / Admin)
-    - app_sub_box → db_sub_box (Data Access)
-    - service_gateway → object_storage_1 (OCI Backbone)
+SUBNET TIER MODEL (top to bottom inside each AD):
+  ingress — Public Subnet: WAF, Public Load Balancer, Bastion
+  ingress — Private Subnet: Private Load Balancer, DRG connectivity
+  web     — Private Subnet: Web Tier compute
+  app     — Private Subnet: App Tier compute, Functions, API Gateway, Queues
+  db      — Private Subnet: Databases, Vault
 
-OUTPUT this exact JSON structure (fill in the nodes arrays):
+PLACEMENT RULES:
+1. Regional subnets (LB, Bastion, WAF) are placed ABOVE the AD boxes, inside the region.
+2. Gateways straddle the region box edges:
+   - internet_gateway → top edge (position: "top")
+   - drg              → left edge (position: "left")
+   - nat_gateway      → right edge (position: "right")
+   - service_gateway  → right edge, below NAT (position: "right")
+3. OCI managed services (Object Storage, IAM, Logging, Monitoring) → oci_services list.
+4. External elements (on-premises, internet users, CPE) → external list.
+5. For single_ad: include fault_domains[] inside the AD; subnets at AD level = shared tiers (DB).
+6. For multi_ad / multi_region: no fault_domains — subnets directly inside each AD.
+
+═══════════════════════════════════════════════════════
+CLARIFICATION (ONLY IF TRULY BLOCKING)
+═══════════════════════════════════════════════════════
+If — and ONLY if — there is a specific topology decision that cannot be determined
+from the BOM, context, or default assumption table, return ONLY:
 {{
-  "direction": "LR",
+  "status": "need_clarification",
+  "questions": ["<single concise question>"]
+}}
+Keep it to at most one or two truly blocking questions. Do NOT ask about gateways,
+WAF, subnet naming, icon styles, page size, or anything in the assumption table.
+
+═══════════════════════════════════════════════════════
+OUTPUT JSON SCHEMA (use this exact structure)
+═══════════════════════════════════════════════════════
+{{
+  "deployment_type": "single_ad",
   "page": {{"width": 1654, "height": 1169}},
-  "layers": {{
-    "external": [],
-    "ingress":  [],
-    "compute":  [],
-    "async":    [],
-    "data":     []
-  }},
-  "groups": [
-    {{"id": "pub_sub_box",  "label": "Public Subnet",         "nodes": []}},
-    {{"id": "app_sub_box",  "label": "App Subnet",            "nodes": []}},
-    {{"id": "db_sub_box",   "label": "DB Subnet",             "nodes": []}},
-    {{"id": "region_box",   "label": "OCI Region Services",   "nodes": []}}
+  "regions": [
+    {{
+      "id": "region_primary",
+      "label": "Oracle Cloud Infrastructure (Region)",
+      "regional_subnets": [
+        {{
+          "id": "pub_sub_lb",
+          "label": "Public Subnet",
+          "tier": "ingress",
+          "nodes": [
+            {{"id": "waf_1",    "type": "waf",           "label": "WAF"}},
+            {{"id": "pub_lb_1", "type": "load balancer", "label": "Load Balancer"}}
+          ]
+        }},
+        {{
+          "id": "pub_sub_bastion",
+          "label": "Public Subnet",
+          "tier": "ingress",
+          "nodes": [{{"id": "bastion_1", "type": "bastion", "label": "Bastion Host"}}]
+        }}
+      ],
+      "availability_domains": [
+        {{
+          "id": "ad1",
+          "label": "Availability Domain 1",
+          "fault_domains": [
+            {{
+              "id": "fd1",
+              "label": "Fault Domain 1",
+              "subnets": [
+                {{
+                  "id": "web_sub_fd1",
+                  "label": "Private Subnet",
+                  "tier": "web",
+                  "nodes": [{{"id": "web_1", "type": "compute", "label": "Web Tier"}}]
+                }},
+                {{
+                  "id": "app_sub_fd1",
+                  "label": "Private Subnet",
+                  "tier": "app",
+                  "nodes": [{{"id": "app_1", "type": "compute", "label": "App Tier"}}]
+                }}
+              ]
+            }}
+          ],
+          "subnets": [
+            {{
+              "id": "db_sub",
+              "label": "Private Subnet",
+              "tier": "db",
+              "nodes": [{{"id": "db_1", "type": "database", "label": "PostgreSQL DB"}}]
+            }}
+          ]
+        }}
+      ],
+      "gateways": [
+        {{"id": "igw_1",  "type": "internet gateway", "label": "Internet Gateway", "position": "top"}},
+        {{"id": "drg_1",  "type": "drg",              "label": "DRG",              "position": "left"}},
+        {{"id": "nat_1",  "type": "nat gateway",      "label": "NAT Gateway",      "position": "right"}},
+        {{"id": "sgw_1",  "type": "service gateway",  "label": "Service Gateway",  "position": "right"}}
+      ],
+      "oci_services": [
+        {{"id": "obj_storage_1", "type": "object storage", "label": "Object Storage"}},
+        {{"id": "logging_1",     "type": "logging",         "label": "Logging Analytics"}}
+      ]
+    }}
+  ],
+  "external": [
+    {{"id": "on_prem",  "type": "on premises",  "label": "On-Premises"}},
+    {{"id": "internet", "type": "internet",      "label": "Public Internet"}},
+    {{"id": "admins",   "type": "users",         "label": "Admins"}}
   ],
   "edges": [
-    {{"id": "e1", "source": "on_prem",          "target": "drg_1",        "label": "FastConnect ×6"}},
-    {{"id": "e2", "source": "internet_gateway", "target": "pub_sub_box",  "label": "Internet"}},
-    {{"id": "e3", "source": "drg_1",            "target": "app_sub_box",  "label": ""}},
-    {{"id": "e4", "source": "pub_sub_box",      "target": "app_sub_box",  "label": "LB Traffic"}},
-    {{"id": "e5", "source": "bastion",          "target": "app_sub_box",  "label": "SSH / Admin"}},
-    {{"id": "e6", "source": "app_sub_box",      "target": "db_sub_box",   "label": "Data Access"}},
-    {{"id": "e7", "source": "service_gateway",  "target": "object_storage_1", "label": ""}}
+    {{"id": "e1", "source": "on_prem",   "target": "drg_1",    "label": "FastConnect"}},
+    {{"id": "e2", "source": "internet",  "target": "igw_1",    "label": "HTTPS/443"}},
+    {{"id": "e3", "source": "igw_1",     "target": "waf_1",    "label": "HTTPS/443"}},
+    {{"id": "e4", "source": "waf_1",     "target": "pub_lb_1", "label": "HTTPS/443"}},
+    {{"id": "e5", "source": "nat_1",     "target": "internet", "label": "Outbound"}}
   ]
 }}
 
-Fill ONLY the nodes arrays in layers and groups. Do not change edges. Output ONLY valid JSON."""
+IMPORTANT RULES FOR OUTPUT:
+1. Use ONLY services from the INPUT SERVICES list above. Do not invent new services.
+2. Every service from the INPUT list must appear exactly once in the output.
+3. Assign IDs exactly as given in the INPUT (e.g. "compute_1", "database_1").
+4. deployment_type must be one of: "single_ad", "multi_ad", "multi_region".
+5. For multi_ad: two availability_domains side by side, no fault_domains.
+6. For multi_region: two entries in regions[], each a full single-AD layout.
+7. Apply the default assumption table — do NOT ask if you can infer.
+8. Output ONLY valid JSON. No markdown, no prose, no code fences."""
 
 
 def bom_to_llm_input(xlsx_path: str | Path, context: str = "") -> tuple[list[ServiceItem], str]:
