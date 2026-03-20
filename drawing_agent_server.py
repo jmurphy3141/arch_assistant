@@ -27,6 +27,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 
+import yaml
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
@@ -41,11 +42,15 @@ from agent.oci_standards import get_catalogue_summary
 app = FastAPI(title="OCI Drawing Agent")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-REGION            = "us-phoenix-1"
-AGENT_ENDPOINT_ID = "ocid1.genaiagentendpoint.oc1.phx.amaaaaaaqx2yg4yati6ktkce2ipnfsjxi4p7aab2rbloxho4pey3hnlw6l2a"
-COMPARTMENT_ID    = "ocid1.compartment.oc1..aaaaaaaaea7vtpk24oq7tw6sfskc2hodr2ymbchddlblb6qqpad6rgt2fkwa"
-MAX_STEPS         = 5
-OUTPUT_DIR        = Path("/tmp/diagrams")
+_cfg_path = Path(__file__).parent / "config.yaml"
+with open(_cfg_path) as _f:
+    _cfg = yaml.safe_load(_f)
+
+REGION            = _cfg.get("region", "us-phoenix-1")
+AGENT_ENDPOINT_ID = _cfg["agent_endpoint_id"]
+COMPARTMENT_ID    = _cfg["compartment_id"]
+MAX_STEPS         = _cfg.get("max_steps", 5)
+OUTPUT_DIR        = Path(_cfg.get("output_dir", "/tmp/diagrams"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Global state ───────────────────────────────────────────────────────────────
