@@ -28,10 +28,11 @@ def _load_config() -> dict:
 def get_agent():
     """Return a configured OCI GenAI ADK Agent using Instance Principal auth."""
     from oci.addons.adk import Agent, AgentClient
-    from oci.addons.adk.auth.oci.instance_principal import InstancePrincipal
+    from oci.auth.signers import InstancePrincipalsSecurityTokenSigner
 
     cfg = _load_config()
-    client = AgentClient(region=cfg["region"], auth=InstancePrincipal())
+    signer = InstancePrincipalsSecurityTokenSigner()
+    client = AgentClient(signer=signer)
 
     agent = Agent(
         client=client,
