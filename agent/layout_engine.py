@@ -37,15 +37,18 @@ GROUP_PAD_Y = 36         # vertical padding inside group box (top = label space)
 GROUP_GAP_Y = 20         # vertical gap between group boxes in same layer
 
 # Compute layer column centres based on available width
-# Layers: external | ingress | compute | async | data
-N_LAYERS   = 5
+# Layers: external | ingress | compute | async | data | region
+# "region" is a virtual 6th column used for OCI Region Services box,
+# keeping it separate from DB Subnet so vcn_box → region_box arrow stays forward.
+N_LAYERS   = 6
 LAYER_W    = (PAGE_W - 2 * MARGIN - (N_LAYERS - 1) * LAYER_GAP) / N_LAYERS
 LAYER_CENTRES = {
-    "external": MARGIN + LAYER_W * 0 + LAYER_W / 2,
-    "ingress":  MARGIN + LAYER_W * 1 + LAYER_GAP + LAYER_W / 2,
+    "external": MARGIN + LAYER_W * 0 + LAYER_GAP * 0 + LAYER_W / 2,
+    "ingress":  MARGIN + LAYER_W * 1 + LAYER_GAP * 1 + LAYER_W / 2,
     "compute":  MARGIN + LAYER_W * 2 + LAYER_GAP * 2 + LAYER_W / 2,
     "async":    MARGIN + LAYER_W * 3 + LAYER_GAP * 3 + LAYER_W / 2,
     "data":     MARGIN + LAYER_W * 4 + LAYER_GAP * 4 + LAYER_W / 2,
+    "region":   MARGIN + LAYER_W * 5 + LAYER_GAP * 5 + LAYER_W / 2,
 }
 
 # X left edge of each layer column
@@ -134,12 +137,20 @@ def compute_positions(layout_spec: dict | str) -> tuple[list[PositionedNode], li
             # Add gap when switching groups
             if gid != current_group:
                 if current_group is not None:
-                    cur_y += GROUP_GAP_Y
+                    # region_box lives in its own column — reset Y to page top
+                    # so it aligns vertically with the rest of the diagram.
+                    if gid == "region_box":
+                        cur_y = MARGIN + GROUP_PAD_Y
+                    else:
+                        cur_y += GROUP_GAP_Y
                 group_start_y.setdefault(gid, cur_y) if gid else None
                 current_group = gid
 
-            # Centre icon in layer column
-            ix = cx - ICON_W / 2
+            # region_box nodes use the dedicated 6th "region" column
+            if gid == "region_box":
+                ix = LAYER_CENTRES["region"] - ICON_W / 2
+            else:
+                ix = cx - ICON_W / 2
 
             positioned.append(PositionedNode(
                 id=nid, label=label, oci_type=ntype,
@@ -268,12 +279,13 @@ def spec_to_draw_dict(
         return round(max(0.05, min(0.95, frac)), 3)
 
     FIXED_EDGES = [
-        # (source,            target,        label,           exitY_icon,       entryY_icon)
-        ("on_prem",           "vcn_box",     "FastConnect x6", None,            "drg_1"),
-        ("internet_gateway",  "vcn_box",     "Internet",       None,            "internet_gateway"),
-        ("pub_sub_box",       "app_sub_box", "LB Traffic",     None,            None),
-        ("app_sub_box",       "db_sub_box",  "Data Access",    None,            None),
-        ("vcn_box",           "region_box",  "",               "service_gateway", None),
+        # (source,        target,        label,            exitY_icon,        entryY_icon)
+        # internet_gateway is positioned straddling the VCN left border — its visual
+        # placement already conveys the connection, so no separate arrow is needed.
+        ("on_prem",       "vcn_box",     "FastConnect ×6", None,              "drg_1"),
+        ("pub_sub_box",   "app_sub_box", "LB Traffic",     None,              None),
+        ("app_sub_box",   "db_sub_box",  "Data Access",    None,              None),
+        ("vcn_box",       "region_box",  "",               "service_gateway", None),
     ]
 
     group_by_id = {g.id: g for g in groups_out}

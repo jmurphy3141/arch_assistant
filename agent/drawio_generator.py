@@ -154,10 +154,10 @@ def _build(draw_dict: dict) -> str:
         group_id = f"{nid}_g"
         cells.append(
             f'<mxCell id="{group_id}" value="{label}" '
-            f'style="fillColor=none;strokeColor=none;fontFamily=Oracle Sans;fontSize=9;'
+            f'style="fillColor=none;strokeColor=none;fontFamily=Oracle Sans;fontSize=10;'
             f'verticalLabelPosition=bottom;verticalAlign=top;labelBackgroundColor=none;" '
             f'vertex="1" parent="1">'
-            f'<mxGeometry x="{gx:.1f}" y="{gy:.1f}" width="{ICON_TARGET}" height="{ICON_TARGET+28}" as="geometry"/></mxCell>'
+            f'<mxGeometry x="{gx:.1f}" y="{gy:.1f}" width="{ICON_TARGET}" height="{ICON_TARGET}" as="geometry"/></mxCell>'
         )
 
         try:
