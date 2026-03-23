@@ -22,6 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Optional, Union
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -64,8 +65,8 @@ GENERATE_PAYLOAD = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _request(method: str, url: str, body: bytes | None = None,
-             headers: dict | None = None) -> tuple[int, bytes]:
+def _request(method: str, url: str, body: Optional[bytes] = None,
+             headers: Optional[dict] = None) -> tuple[int, bytes]:
     """Execute an HTTP request; return (status_code, body_bytes)."""
     req = urllib.request.Request(url, data=body, method=method,
                                   headers=headers or {})
@@ -76,7 +77,7 @@ def _request(method: str, url: str, body: bytes | None = None,
         return exc.code, exc.read()
 
 
-def _save(evidence_dir: Path, filename: str, data: bytes | str) -> Path:
+def _save(evidence_dir: Path, filename: str, data: Union[bytes, str]) -> Path:
     path = evidence_dir / filename
     if isinstance(data, str):
         data = data.encode()
