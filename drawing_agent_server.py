@@ -27,6 +27,7 @@ v1.3.2 additions:
   - OCI Object Storage persistence with atomic LATEST.json pointer
 """
 
+import functools
 import hashlib
 import json
 import logging
@@ -37,6 +38,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import anyio
 import yaml
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse, Response
@@ -492,8 +494,10 @@ async def upload_bom(
         os.unlink(bom_path)
         logger.info("BOM parsed: %d services | context: %d chars", len(items), len(context_text))
 
-        result = run_pipeline(items, prompt, diagram_name, client_id,
+        result = await anyio.to_thread.run_sync(
+            functools.partial(run_pipeline, items, prompt, diagram_name, client_id,
                               request_id, input_hash)
+        )
 
         if result["status"] == "ok":
             IDEMPOTENCY_CACHE[cache_key] = result
@@ -534,13 +538,16 @@ async def clarify(req: ClarifyRequest):
             + "Output ONLY valid JSON."
         )
 
-        result = run_pipeline(
-            items        = pending["items"],
-            prompt       = enriched_prompt,
-            diagram_name = req.diagram_name,
-            client_id    = req.client_id,
-            request_id   = request_id,
-            input_hash   = input_hash,
+        result = await anyio.to_thread.run_sync(
+            functools.partial(
+                run_pipeline,
+                items        = pending["items"],
+                prompt       = enriched_prompt,
+                diagram_name = req.diagram_name,
+                client_id    = req.client_id,
+                request_id   = request_id,
+                input_hash   = input_hash,
+            )
         )
 
         if result["status"] == "ok":
@@ -603,14 +610,17 @@ async def generate_from_resources(req: GenerateRequest):
 
     try:
 
-        result = run_pipeline(
-            items,
-            prompt,
-            req.diagram_name,
-            req.client_id,
-            request_id,
-            input_hash,
-            deployment_hints=deployment_hints,
+        result = await anyio.to_thread.run_sync(
+            functools.partial(
+                run_pipeline,
+                items,
+                prompt,
+                req.diagram_name,
+                req.client_id,
+                request_id,
+                input_hash,
+                deployment_hints=deployment_hints,
+            )
         )
 
         if result["status"] == "ok":
