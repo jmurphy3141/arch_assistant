@@ -621,7 +621,6 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
     for g in groups_spec:
         gid   = g["id"]
         label = g["label"]
-        members = [p for p in positioned if p.oci_type != "_group_box"]
         # filter members that belong to this group — use node_to_group
         members = [p for p in positioned if node_to_group.get(p.id) == gid]
         if not members:
@@ -638,6 +637,20 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
             x=min_x, y=min_y,
             w=max_x - min_x, h=max_y - min_y,
         ))
+
+    # Synthesise a vcn_box that wraps all subnet group boxes and prepend it
+    VCN_PAD = 40
+    if group_boxes:
+        bx = min(b.x for b in group_boxes) - VCN_PAD
+        by = min(b.y for b in group_boxes) - VCN_PAD
+        bx2 = max(b.x + b.w for b in group_boxes) + VCN_PAD
+        by2 = max(b.y + b.h for b in group_boxes) + VCN_PAD
+        vcn_box = PositionedBox(
+            id="vcn_box", label="VCN",
+            box_type="_region_box",
+            x=bx, y=by, w=bx2 - bx, h=by2 - by,
+        )
+        group_boxes = [vcn_box] + group_boxes
 
     return positioned, group_boxes
 
@@ -657,6 +670,8 @@ def spec_to_draw_dict(
     """
     if isinstance(layout_spec, str):
         layout_spec = json.loads(layout_spec)
+
+    is_legacy = "layers" in layout_spec and "regions" not in layout_spec
 
     nodes_out, boxes_out = compute_positions(layout_spec)
     edges_spec = layout_spec.get("edges", [])
@@ -775,6 +790,19 @@ def spec_to_draw_dict(
     # Service GW → first OCI service
     _add_edge(sgw_id, oci_svc_node, "Internal", ex=1.0, ey=0.5, nx=0.0, ny=0.5)
 
+    # Legacy-only: on_prem → vcn_box with deterministic edge id
+    if is_legacy and "on_prem" in all_ids and "vcn_box" in all_ids:
+        if ("on_prem", "vcn_box") not in existing_pairs:
+            draw_edges.append({
+                "id":     "e_on_prem_to_vcn",
+                "source": "on_prem",
+                "target": "vcn_box",
+                "label":  "",
+                "exitX":  1.0, "exitY":  0.5,
+                "entryX": 0.0, "entryY": 0.5,
+            })
+            existing_pairs.add(("on_prem", "vcn_box"))
+
     # Convert PositionedBox/Node to serialisable dicts
     draw_nodes = [
         {
@@ -802,5 +830,22 @@ def spec_to_draw_dict(
         }
         for b in boxes_out
     ]
+
+    # Legacy-only: also emit group boxes as _group_box typed nodes, before icon nodes,
+    # so drawio_generator can render them in correct z-order.
+    if is_legacy:
+        group_box_nodes = [
+            {
+                "id":    b.id,
+                "type":  "_group_box",
+                "label": b.label,
+                "x":     b.x,
+                "y":     b.y,
+                "w":     b.w,
+                "h":     b.h,
+            }
+            for b in boxes_out
+        ]
+        draw_nodes = group_box_nodes + draw_nodes
 
     return {"nodes": draw_nodes, "boxes": draw_boxes, "edges": draw_edges}
