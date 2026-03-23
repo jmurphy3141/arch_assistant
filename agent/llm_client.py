@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,13 @@ def run_layout_prompt(prompt: str, session_id: Optional[str] = None) -> dict:
 
     raw = _extract_text(response)
     logger.debug("LLM raw (%d chars): %s", len(raw), raw[:400])
-    return json.loads(_clean_json(raw))
+    cleaned = _clean_json(raw)
+    if not cleaned.startswith("{"):
+        raise ValueError(
+            f"LLM response did not produce valid JSON. "
+            f"Cleaned output starts with: {cleaned[:200]!r}"
+        )
+    return json.loads(cleaned)
 
 
 def _extract_text(response) -> str:
@@ -82,4 +89,16 @@ def _extract_text(response) -> str:
 
 
 def _clean_json(raw: str) -> str:
-    return raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    """
+    Strip markdown code fences from LLM output.
+    Handles: ```json ... ```, ``` ... ```, or plain JSON.
+    """
+    s = (raw or "").strip()
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, flags=re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s*```$", "", s)
+        s = s.strip()
+    return s

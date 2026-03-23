@@ -31,6 +31,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 import uuid
 from pathlib import Path
@@ -139,8 +140,19 @@ def extract_agent_text(response) -> str:
 
 
 def clean_json(raw: str) -> str:
-    """Strip markdown fences from LLM output."""
-    return raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    """
+    Strip markdown code fences from LLM output.
+    Handles: ```json ... ```, ``` ... ```, or plain JSON.
+    """
+    s = (raw or "").strip()
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, flags=re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s*```$", "", s)
+        s = s.strip()
+    return s
 
 
 def _make_oci_runner(oci_agent) -> callable:
@@ -151,7 +163,16 @@ def _make_oci_runner(oci_agent) -> callable:
         SESSION_STORE[client_id] = response.session_id
         raw = extract_agent_text(response)
         logger.info("LLM raw (%d chars): %s", len(raw), raw[:400])
-        return json.loads(clean_json(raw))
+        cleaned = clean_json(raw)
+        if not cleaned.startswith("{"):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"LLM response did not produce valid JSON. "
+                    f"Cleaned output starts with: {cleaned[:200]!r}"
+                ),
+            )
+        return json.loads(cleaned)
     return _run
 
 
