@@ -76,6 +76,26 @@ runtime via openpyxl — no binary Excel file needs to be committed. The
 v1.3.2 layout contract is enforced by `tests/test_layout_engine.py` and
 `tests/test_llm_scenarios.py`.
 
+### OCI Smoke Test
+
+Validates a running service end-to-end (health, generate, download, idempotency).
+Requires only stdlib — no extra dependencies.
+
+```bash
+# Against localhost (default)
+python scripts/agent3_smoke_v132.py
+
+# Against a remote OCI instance
+python scripts/agent3_smoke_v132.py --host http://10.0.3.47:8080
+
+# Custom evidence output directory
+python scripts/agent3_smoke_v132.py --host http://10.0.3.47:8080 --out /tmp/smoke_run
+```
+
+The script exits `0` on success and `1` on failure. All HTTP request/response
+bodies are written to an evidence directory (`./evidence_agent3_v132_<epoch>/`
+by default) for post-mortem inspection.
+
 ### Live LLM tests (opt-in only)
 
 > **Warning:** Live tests call the Anthropic Claude API and consume API
