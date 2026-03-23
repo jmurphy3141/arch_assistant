@@ -63,6 +63,33 @@ Compute with an instance principal attached to the appropriate dynamic group.
 | GET | `/mcp/tools` | MCP tool manifest |
 | GET | `/.well-known/agent-card.json` | A2A agent card |
 
+## Testing
+
+### Default (offline, deterministic)
+
+```bash
+pytest -q
+```
+
+All unit and integration tests run offline. The BOM fixture is generated at
+runtime via openpyxl — no binary Excel file needs to be committed. The
+v1.3.2 layout contract is enforced by `tests/test_layout_engine.py` and
+`tests/test_llm_scenarios.py`.
+
+### Live LLM tests (opt-in only)
+
+> **Warning:** Live tests call the Anthropic Claude API and consume API
+> credits. Never run them in CI without explicit intent.
+
+```bash
+RUN_LIVE_LLM_TESTS=1 ANTHROPIC_API_KEY=sk-ant-... pytest -m live -v -s
+```
+
+Live tests are tagged `@pytest.mark.live` and gated behind both
+`RUN_LIVE_LLM_TESTS=1` **and** a valid `ANTHROPIC_API_KEY`. Default
+`pytest -q` skips them automatically — the `anthropic` package is not
+imported at all during offline runs.
+
 ## Requirements
 
 - Python 3.11+

@@ -13,6 +13,27 @@ FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE_BOM = FIXTURES / "sample_bom.xlsx"
 
 
+def _build_sample_bom(path: Path) -> None:
+    """Generate a minimal BOM workbook covering key SKU_MAP entries."""
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "BOM"
+    # Headers: SKU | Description | Quantity
+    ws.append(["SKU", "Description", "Quantity"])
+    ws.append(["B94176", "Compute VM Standard E4 Flex",    4])   # → compute / compute
+    ws.append(["B99060", "Oracle Autonomous Database OCPU", 2])  # → database / data
+    ws.append(["B93030", "Flexible Load Balancer",          1])  # → load balancer / ingress
+    ws.append(["B88325", "Dynamic Routing Gateway",         2])  # → drg / ingress
+    wb.save(path)
+
+
+# Generate the fixture at collection time if it is absent
+if not SAMPLE_BOM.exists():
+    FIXTURES.mkdir(parents=True, exist_ok=True)
+    _build_sample_bom(SAMPLE_BOM)
+
+
 class TestBuildLlmPrompt:
     def test_returns_string(self):
         items = [
@@ -44,7 +65,6 @@ class TestBuildLlmPrompt:
         assert "need_clarification" in prompt
 
 
-@pytest.mark.skipif(not SAMPLE_BOM.exists(), reason="sample_bom.xlsx fixture not present")
 class TestParseBom:
     def test_returns_list(self):
         items = parse_bom(SAMPLE_BOM)

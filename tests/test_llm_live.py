@@ -38,13 +38,6 @@ from pathlib import Path
 
 import pytest
 
-# ── Optional import guard ─────────────────────────────────────────────────────
-try:
-    import anthropic
-    _ANTHROPIC_AVAILABLE = True
-except ImportError:
-    _ANTHROPIC_AVAILABLE = False
-
 from agent.bom_parser import parse_bom, build_llm_prompt
 from agent.layout_engine import spec_to_draw_dict, PAGE_W, PAGE_H
 from agent.drawio_generator import generate_drawio
@@ -53,19 +46,19 @@ logger = logging.getLogger(__name__)
 
 SCENARIOS = Path(__file__).parent / "scenarios"
 
-# ── Skip conditions ────────────────────────────────────────────────────────────
+# ── Live-test opt-in gate ─────────────────────────────────────────────────────
+# Tests in this module only run when the caller explicitly opts in via env vars.
+# Default `pytest -q` runs are fully offline — no anthropic import, no API calls.
 
-def _api_key() -> str | None:
-    return os.environ.get("ANTHROPIC_API_KEY")
+pytestmark = pytest.mark.live
 
-_SKIP_REASON = (
-    "Set ANTHROPIC_API_KEY to run live LLM tests"
-    if _ANTHROPIC_AVAILABLE else
-    "anthropic package not installed — pip install anthropic"
+_RUN_LIVE = (
+    os.environ.get("RUN_LIVE_LLM_TESTS") == "1"
+    and bool(os.environ.get("ANTHROPIC_API_KEY"))
 )
 requires_api = pytest.mark.skipif(
-    not _ANTHROPIC_AVAILABLE or not _api_key(),
-    reason=_SKIP_REASON,
+    not _RUN_LIVE,
+    reason="Set RUN_LIVE_LLM_TESTS=1 and ANTHROPIC_API_KEY to run live LLM tests",
 )
 
 
@@ -79,11 +72,16 @@ SYSTEM_PROMPT = (
     "Output raw JSON only."
 )
 
+def _api_key() -> str | None:
+    return os.environ.get("ANTHROPIC_API_KEY")
+
+
 def _call_llm(prompt: str) -> dict:
     """
     Send the layout compiler prompt to Claude Opus 4.6 and return parsed JSON.
     Uses streaming + adaptive thinking for reliability on long prompts.
     """
+    import anthropic  # imported here so offline runs never load the package
     client = anthropic.Anthropic(api_key=_api_key())
 
     with client.messages.stream(
