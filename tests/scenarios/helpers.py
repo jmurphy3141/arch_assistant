@@ -21,15 +21,22 @@ def canonical_json(obj: Any) -> str:
 def compute_input_hash_for_generate(
     resources: list,
     context: str = "",
+    questionnaire: str = "",
+    notes: str = "",
     deployment_hints: dict | None = None,
 ) -> str:
     """Mirror of the input_hash computation in /generate."""
     if deployment_hints is None:
         deployment_hints = {}
+    context_total = context or ""
+    if questionnaire and questionnaire.strip():
+        context_total += f"\n\nQUESTIONNAIRE:\n{questionnaire}"
+    if notes and notes.strip():
+        context_total += f"\n\nNOTES:\n{notes}"
     parts = (
         canonical_json(resources)
         + "\n"
-        + (context or "")
+        + context_total
         + "\n"
         + canonical_json(deployment_hints)
     )

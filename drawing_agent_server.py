@@ -561,36 +561,47 @@ async def generate_from_resources(req: GenerateRequest):
     request_id = str(uuid.uuid4())
 
     deployment_hints = req.deployment_hints or {}
+
+    # Compose context_total deterministically: base context + questionnaire + notes
+    context_total = req.context or ""
+    if req.questionnaire and req.questionnaire.strip():
+        context_total += f"\n\nQUESTIONNAIRE:\n{req.questionnaire}"
+    if req.notes and req.notes.strip():
+        context_total += f"\n\nNOTES:\n{req.notes}"
+
     input_hash = compute_input_hash(
         canonical_json(req.resources),
         "\n",
-        req.context or "",
+        context_total,
         "\n",
         canonical_json(deployment_hints),
     )
+
+    # Validate and build ServiceItems before idempotency check so type errors surface fast
+    from agent.bom_parser import build_layout_intent_prompt, ServiceItem
+    items = []
+    for r in req.resources:
+        otype = r.get("oci_type") or r.get("type")
+        if not otype:
+            raise HTTPException(
+                status_code=422,
+                detail="resource missing oci_type/type",
+            )
+        items.append(ServiceItem(
+            id=r.get("id", otype.replace(" ", "_")),
+            oci_type=otype,
+            label=r.get("label", otype),
+            layer=r.get("layer", "compute"),
+        ))
 
     # Idempotency check
     cache_key = (req.client_id, req.diagram_name, input_hash)
     if cache_key in IDEMPOTENCY_CACHE:
         return JSONResponse(status_code=200, content=IDEMPOTENCY_CACHE[cache_key])
 
+    prompt = build_layout_intent_prompt(items, context=context_total)
+
     try:
-        from agent.bom_parser import build_layout_intent_prompt, ServiceItem
-        items = [
-            ServiceItem(
-                id=r.get("id", r.get("oci_type", r.get("type", "svc")).replace(" ", "_")),
-                oci_type=r.get("oci_type", r.get("type", "")),
-                label=r.get("label", r.get("oci_type", r.get("type", ""))),
-                layer=r.get("layer", "compute"),
-            )
-            for r in req.resources
-        ]
-        prompt = build_layout_intent_prompt(
-            items,
-            questionnaire_text=req.questionnaire or "",
-            notes_text=req.notes or "",
-            context=req.context or "",
-        )
 
         result = run_pipeline(
             items,
@@ -733,6 +744,8 @@ def mcp_tools():
                 "properties": {
                     "resources":        {"type": "array"},
                     "context":          {"type": "string"},
+                    "questionnaire":    {"type": "string", "description": "Answers to pre-flight questionnaire"},
+                    "notes":            {"type": "string", "description": "Meeting notes or free-form context"},
                     "diagram_name":     {"type": "string"},
                     "client_id":        {"type": "string"},
                     "deployment_hints": {"type": "object"},
