@@ -67,7 +67,7 @@ class ServiceItem:
     notes:    str = ""
 
 
-def parse_bom(xlsx_path: str | Path) -> list[ServiceItem]:
+def parse_bom(xlsx_path: str | Path, context: str = "") -> list[ServiceItem]:
     """Parse BOM Excel → list of ServiceItems ready for LLM layout prompt."""
     import openpyxl
     wb   = openpyxl.load_workbook(xlsx_path, data_only=True)
@@ -150,6 +150,33 @@ def parse_bom(xlsx_path: str | Path) -> list[ServiceItem]:
                                      notes="best practice"))
             seen_types.add(bp["type"])
 
+    # ── Baseline injection: Internet ─────────────────────────────────────────
+    # Inject when IGW is present (always true after BEST_PRACTICE), unless suppressed.
+    if (
+        "internet gateway" in seen_types
+        and "NO_INTERNET_ENDPOINT=true" not in context
+        and "internet" not in seen_types
+        and not any(i.id == "internet" for i in items)
+    ):
+        items.append(ServiceItem(id="internet", oci_type="internet",
+                                 label="Public Internet", layer="external",
+                                 notes="injected_baseline"))
+        seen_types.add("internet")
+
+    # ── Baseline injection: Bastion ──────────────────────────────────────────
+    # Inject when any compute or database workload exists, unless suppressed.
+    has_workload = any(i.oci_type in {"compute", "database"} for i in items)
+    if (
+        has_workload
+        and "NO_BASTION=true" not in context
+        and "bastion" not in seen_types
+        and not any(i.id == "bastion_1" for i in items)
+    ):
+        items.append(ServiceItem(id="bastion_1", oci_type="bastion",
+                                 label="Bastion", layer="ingress",
+                                 notes="injected_baseline"))
+        seen_types.add("bastion")
+
     return items
 
 
@@ -220,7 +247,6 @@ DEFAULT ASSUMPTION TABLE:
 │ External users / HTTPS in BOM or context    │ Add IGW + WAF + Public Load Balancer         │
 │ On-prem / FastConnect in BOM                │ Add DRG + Private Load Balancer              │
 │ No load balancer listed                     │ Add one (public or private per other signals)│
-│ No bastion listed                           │ Add one in a Public Subnet                   │
 └─────────────────────────────────────────────┴──────────────────────────────────────────────┘
 
 NEVER ASK ABOUT:
@@ -259,8 +285,10 @@ PLACEMENT RULES:
    - service_gateway  → right edge, below NAT (position: "right")
 3. OCI managed services (Object Storage, IAM, Logging, Monitoring) → oci_services list.
 4. External elements (on-premises, internet users, CPE) → external list.
+   - id="internet" (type "internet") MUST appear in external[].
 5. For single_ad: include fault_domains[] inside the AD; subnets at AD level = shared tiers (DB).
 6. For multi_ad / multi_region: no fault_domains — subnets directly inside each AD.
+7. id="bastion_1" (type "bastion") MUST be placed inside a regional_subnets[] ingress subnet.
 
 ═══════════════════════════════════════════════════════
 CLARIFICATION (ONLY IF TRULY BLOCKING)
@@ -377,6 +405,6 @@ def bom_to_llm_input(xlsx_path: str | Path, context: str = "") -> tuple[list[Ser
 
     context: optional free-text from an uploaded requirements/notes file.
     """
-    items = parse_bom(xlsx_path)
+    items = parse_bom(xlsx_path, context=context)
     prompt = build_llm_prompt(items, context=context)
     return items, prompt

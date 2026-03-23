@@ -82,6 +82,49 @@ class TestParseBom:
         assert "internet gateway" in types
         assert "nat gateway" in types
         assert "service gateway" in types
+        # Baseline injections
+        assert "internet" in types
+        assert "bastion" in types
+
+    def test_internet_injected_deterministically(self):
+        items = parse_bom(SAMPLE_BOM)
+        ids = {i.id for i in items}
+        types = {i.oci_type for i in items}
+        assert "internet" in ids
+        assert "internet" in types
+        internet = next(i for i in items if i.id == "internet")
+        assert internet.layer == "external"
+        assert internet.notes == "injected_baseline"
+
+    def test_bastion_injected_deterministically(self):
+        items = parse_bom(SAMPLE_BOM)
+        ids = {i.id for i in items}
+        types = {i.oci_type for i in items}
+        assert "bastion_1" in ids
+        assert "bastion" in types
+        bastion = next(i for i in items if i.id == "bastion_1")
+        assert bastion.layer == "ingress"
+        assert bastion.notes == "injected_baseline"
+
+    def test_suppress_internet_via_context(self):
+        items = parse_bom(SAMPLE_BOM, context="NO_INTERNET_ENDPOINT=true")
+        types = {i.oci_type for i in items}
+        assert "internet" not in types
+
+    def test_suppress_bastion_via_context(self):
+        items = parse_bom(SAMPLE_BOM, context="NO_BASTION=true")
+        types = {i.oci_type for i in items}
+        assert "bastion" not in types
+
+    def test_no_duplicate_internet_injection(self):
+        items = parse_bom(SAMPLE_BOM)
+        internet_items = [i for i in items if i.oci_type == "internet"]
+        assert len(internet_items) == 1
+
+    def test_no_duplicate_bastion_injection(self):
+        items = parse_bom(SAMPLE_BOM)
+        bastion_items = [i for i in items if i.oci_type == "bastion"]
+        assert len(bastion_items) == 1
 
     def test_all_items_have_required_fields(self):
         items = parse_bom(SAMPLE_BOM)
