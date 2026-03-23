@@ -98,11 +98,13 @@ class ClarifyRequest(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    resources:        List[Dict[str, Any]]
-    context:          Optional[str]  = ""
-    diagram_name:     Optional[str]  = "oci_architecture"
-    client_id:        Optional[str]  = "default"
-    deployment_hints: Optional[dict] = {}
+    resources:          List[Dict[str, Any]]
+    context:            Optional[str]  = ""
+    questionnaire:      Optional[str]  = ""   # answers to pre-flight questionnaire
+    notes:              Optional[str]  = ""   # meeting or free-form notes
+    diagram_name:       Optional[str]  = "oci_architecture"
+    client_id:          Optional[str]  = "default"
+    deployment_hints:   Optional[dict] = {}
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -242,6 +244,22 @@ def run_pipeline(
             client_id, diagram_name, request_id, input_hash,
             spec.get("questions", []),
         )
+
+    # ── Option 1: LayoutIntent path ───────────────────────────────────────────
+    # Detect LayoutIntent (has "placements" key) vs legacy/hierarchical full spec.
+    # Legacy FakeLLMRunner tests return a full hierarchical spec (no "placements"),
+    # so the old path is preserved for backward compatibility.
+    if "placements" in spec:
+        try:
+            from agent.layout_intent import validate_layout_intent, LayoutIntentError
+            from agent.intent_compiler import compile_intent_to_flat_spec
+            intent = validate_layout_intent(spec, items)
+            spec = compile_intent_to_flat_spec(intent, items)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"LayoutIntent validation/compile error: {exc}",
+            )
 
     # ── Multi-region hints check ──────────────────────────────────────────────
     mr_mode = deployment_hints.get("multi_region_mode")
@@ -557,7 +575,7 @@ async def generate_from_resources(req: GenerateRequest):
         return JSONResponse(status_code=200, content=IDEMPOTENCY_CACHE[cache_key])
 
     try:
-        from agent.bom_parser import build_llm_prompt, ServiceItem
+        from agent.bom_parser import build_layout_intent_prompt, ServiceItem
         items = [
             ServiceItem(
                 id=r.get("id", r.get("oci_type", r.get("type", "svc")).replace(" ", "_")),
@@ -567,7 +585,12 @@ async def generate_from_resources(req: GenerateRequest):
             )
             for r in req.resources
         ]
-        prompt = build_llm_prompt(items, context=req.context or "")
+        prompt = build_layout_intent_prompt(
+            items,
+            questionnaire_text=req.questionnaire or "",
+            notes_text=req.notes or "",
+            context=req.context or "",
+        )
 
         result = run_pipeline(
             items,

@@ -400,11 +400,136 @@ IMPORTANT RULES FOR OUTPUT:
 8. Output ONLY valid JSON. No markdown, no prose, no code fences."""
 
 
-def bom_to_llm_input(xlsx_path: str | Path, context: str = "") -> tuple[list[ServiceItem], str]:
+def build_layout_intent_prompt(
+    items: list[ServiceItem],
+    questionnaire_text: str = "",
+    notes_text: str = "",
+    context: str = "",
+) -> str:
+    """
+    Build a compact LayoutIntent prompt.
+
+    The LLM is asked to output ONLY a LayoutIntent JSON (placements +
+    deployment_hints + assumptions), NOT a full topology spec.  Deterministic
+    code in intent_compiler.py expands it to the full draw.io spec.
+
+    questionnaire_text: answers to a pre-flight questionnaire, if any.
+    notes_text:         meeting notes or other free-text input, if any.
+    context:            generic context string (e.g. from uploaded context file).
+    """
+    service_list = "\n".join(
+        f'  {{"id": "{i.id}", "oci_type": "{i.oci_type}", "suggested_layer": "{i.layer}"}}'
+        for i in items
+    )
+
+    extra_blocks = ""
+    if questionnaire_text and questionnaire_text.strip():
+        extra_blocks += f"\nQUESTIONNAIRE ANSWERS:\n{questionnaire_text.strip()}\n"
+    if notes_text and notes_text.strip():
+        extra_blocks += f"\nMEETING / NOTES:\n{notes_text.strip()}\n"
+    if context and context.strip():
+        extra_blocks += f"\nADDITIONAL CONTEXT:\n{context.strip()}\n"
+
+    return f"""You are an OCI architecture intent compiler.
+Classify each service from the BOM into its correct OCI architectural layer and subnet group.
+Output ONLY valid JSON — either a LayoutIntent or a NeedClarification object.
+{extra_blocks}
+═══════════════════════════════════════════════════════
+INPUT SERVICES (from BOM + baseline injection):
+═══════════════════════════════════════════════════════
+[
+{service_list}
+]
+
+═══════════════════════════════════════════════════════
+CLASSIFICATION RULES
+═══════════════════════════════════════════════════════
+layer must be one of: external | ingress | compute | async | data
+group must be one of: pub_sub_box | app_sub_box | db_sub_box | null
+
+Deterministic mappings (apply without asking):
+  on premises, internet, users, admins, workstation
+    → layer=external, group=null
+  internet gateway, nat gateway, service gateway, drg
+    → layer=ingress, group=null  (gateways straddle VCN; not in a subnet)
+  waf, load balancer, bastion
+    → layer=ingress, group=pub_sub_box
+  compute, container engine, functions, api gateway
+    → layer=compute, group=app_sub_box
+  queue, streaming
+    → layer=async, group=app_sub_box
+  database, vault
+    → layer=data, group=db_sub_box
+  object storage, logging, monitoring, iam, certificates
+    → layer=data, group=null  (OCI managed services; outside VCN)
+
+═══════════════════════════════════════════════════════
+DEPLOYMENT HINTS RULES (apply defaults, do not ask)
+═══════════════════════════════════════════════════════
+region_count: 1 unless "multi-region", "DR", or 2+ regions are mentioned.
+availability_domains_per_region: 1 unless "multi-AD", "HA", or 2+ ADs mentioned.
+dr_enabled: false unless "DR" or disaster recovery is explicitly mentioned.
+on_prem_connectivity: "fastconnect" if DRG/FastConnect in BOM; "vpn" if VPN;
+                      "none" if no on-premises service; else "unknown".
+
+═══════════════════════════════════════════════════════
+ASSUMPTION RULES
+═══════════════════════════════════════════════════════
+For every gap not covered by the above rules, add one assumption entry.
+Only ask for clarification if topology is FUNDAMENTALLY unknown and cannot
+be inferred from the BOM or context.
+
+═══════════════════════════════════════════════════════
+OUTPUT FORMAT — LayoutIntent
+═══════════════════════════════════════════════════════
+{{
+  "schema_version": "1.0",
+  "deployment_hints": {{
+    "region_count": 1,
+    "availability_domains_per_region": 1,
+    "dr_enabled": false,
+    "on_prem_connectivity": "fastconnect"
+  }},
+  "placements": [
+    {{"id": "<exact-id-from-input>", "oci_type": "<type>", "layer": "<layer>", "group": "<group-or-null>"}},
+    ...
+  ],
+  "assumptions": [
+    {{"id": "ha_mode", "statement": "Single AD assumed", "reason": "No HA signal in BOM", "risk": "low"}}
+  ],
+  "fixed_edges_policy": true
+}}
+
+OR — NeedClarification (ONLY if truly blocking):
+{{"status": "need_clarification", "questions": [{{"id": "<id>", "question": "...", "blocking": true}}]}}
+
+Allowed question IDs (use ONLY these): regions.count, regions.mode, ha.ads, connectivity.onprem, dr.rpo_rto
+
+IMPORTANT RULES:
+1. Every id from INPUT SERVICES must appear exactly once in placements.
+2. Do NOT invent services not in the INPUT SERVICES list.
+3. Use the exact id values from INPUT SERVICES (e.g. "compute_1", "bastion_1").
+4. Output ONLY valid JSON. No markdown, no prose, no code fences."""
+
+
+def bom_to_llm_input(
+    xlsx_path: str | Path,
+    context: str = "",
+    questionnaire_text: str = "",
+    notes_text: str = "",
+) -> tuple[list[ServiceItem], str]:
     """Main entry point: parse BOM and return (items, llm_prompt).
 
+    Uses build_layout_intent_prompt() by default (Option 1 architecture).
     context: optional free-text from an uploaded requirements/notes file.
+    questionnaire_text: answers to a pre-flight questionnaire, if any.
+    notes_text: meeting notes or other free-text, if any.
     """
     items = parse_bom(xlsx_path, context=context)
-    prompt = build_llm_prompt(items, context=context)
+    prompt = build_layout_intent_prompt(
+        items,
+        questionnaire_text=questionnaire_text,
+        notes_text=notes_text,
+        context=context,
+    )
     return items, prompt
