@@ -181,11 +181,15 @@ def _make_oci_runner(oci_agent) -> callable:
     return _run
 
 
-def call_llm(prompt: str, client_id: str) -> dict:
+async def call_llm(prompt: str, client_id: str) -> dict:
     """
     Call the LLM via app.state.llm_runner.
     Returns parsed JSON dict.
     Tests inject a fake runner via app.state.llm_runner before startup.
+
+    The sync OCI ADK runner calls asyncio.get_running_loop() internally, so it
+    must execute in the async context where a loop is running — NOT inside an
+    anyio worker thread.  Async runners (if ever used) are awaited directly.
     """
     runner = getattr(app.state, "llm_runner", None)
     if runner is None:
@@ -194,6 +198,10 @@ def call_llm(prompt: str, client_id: str) -> dict:
             "Ensure the server started successfully with OCI auth, "
             "or inject app.state.llm_runner in tests."
         )
+    if asyncio.iscoroutinefunction(runner):
+        return await runner(prompt, client_id)
+    # Sync runner: call directly so asyncio.get_running_loop() in the OCI ADK
+    # resolves to the current running loop rather than raising RuntimeError.
     return runner(prompt, client_id)
 
 
@@ -217,7 +225,7 @@ def _clarify_response(
     }
 
 
-def run_pipeline(
+async def run_pipeline(
     items: list,
     prompt: str,
     diagram_name: str,
@@ -230,11 +238,15 @@ def run_pipeline(
     Call LLM → layout engine → drawio generator.
     Returns a full v1.3.2 result dict (status ok or need_clarification).
     Persists artifacts if app.state.object_store is set.
+
+    Async design:
+    - call_llm is awaited directly so the OCI ADK sees a running event loop.
+    - CPU-bound and file-I/O steps are offloaded to anyio worker threads.
     """
     if deployment_hints is None:
         deployment_hints = {}
 
-    spec = call_llm(prompt, client_id)
+    spec = await call_llm(prompt, client_id)
 
     # ── Clarification requested by LLM ───────────────────────────────────────
     if spec.get("status") == "need_clarification":
@@ -256,8 +268,14 @@ def run_pipeline(
         try:
             from agent.layout_intent import validate_layout_intent, LayoutIntentError
             from agent.intent_compiler import compile_intent_to_flat_spec
-            intent = validate_layout_intent(spec, items)
-            spec = compile_intent_to_flat_spec(intent, items)
+
+            _spec_ref = spec  # capture for closure
+
+            def _compile_intent():
+                intent = validate_layout_intent(_spec_ref, items)
+                return compile_intent_to_flat_spec(intent, items)
+
+            spec = await anyio.to_thread.run_sync(_compile_intent)
         except Exception as exc:
             raise HTTPException(
                 status_code=422,
@@ -290,11 +308,13 @@ def run_pipeline(
             ],
         )
 
-    # ── Layout engine ─────────────────────────────────────────────────────────
+    # ── Layout engine (CPU-bound) — run in thread ─────────────────────────────
     items_by_id = {i.id: i for i in items}
-    draw_dict   = spec_to_draw_dict(spec, items_by_id)
+    draw_dict = await anyio.to_thread.run_sync(
+        functools.partial(spec_to_draw_dict, spec, items_by_id)
+    )
 
-    # ── Multi-region post-processing ──────────────────────────────────────────
+    # ── Multi-region post-processing (in-memory dict ops) ─────────────────────
     page_w = spec.get("page", {}).get("width", 1654)
     page_h = spec.get("page", {}).get("height", 1169)
 
@@ -352,12 +372,14 @@ def run_pipeline(
                 "layer":    item.layer,
             }
 
-    # ── Write draw.io file ────────────────────────────────────────────────────
+    # ── Write draw.io file (file I/O) — run in thread ─────────────────────────
     drawio_path = OUTPUT_DIR / f"{diagram_name}.drawio"
-    generate_drawio(draw_dict, drawio_path)
-    drawio_xml = drawio_path.read_text()
+    await anyio.to_thread.run_sync(
+        functools.partial(generate_drawio, draw_dict, drawio_path)
+    )
+    drawio_xml = await anyio.to_thread.run_sync(drawio_path.read_text)
 
-    # ── Persist artifacts ─────────────────────────────────────────────────────
+    # ── Persist artifacts (network I/O) — run in thread ───────────────────────
     object_store     = getattr(app.state, "object_store", None)
     persistence_cfg  = getattr(app.state, "persistence_config", None) or {}
     prefix           = persistence_cfg.get("prefix", "diagrams")
@@ -370,7 +392,12 @@ def run_pipeline(
             "render_manifest.json":    json.dumps(render_manifest).encode("utf-8"),
             "node_to_resource_map.json": json.dumps(node_to_resource_map).encode("utf-8"),
         }
-        persist_artifacts(object_store, prefix, client_id, diagram_name, request_id, artifacts)
+        await anyio.to_thread.run_sync(
+            functools.partial(
+                persist_artifacts,
+                object_store, prefix, client_id, diagram_name, request_id, artifacts,
+            )
+        )
 
     return {
         "status":                "ok",
@@ -396,25 +423,6 @@ def run_pipeline(
         },
         "errors": [],
     }
-
-
-def run_pipeline_in_thread(*args, **kwargs) -> dict:
-    """
-    Wrapper for run_pipeline that creates a fresh asyncio event loop in the
-    current thread before calling run_pipeline, then tears it down.
-
-    Required because AnyIO worker threads have no event loop by default, but
-    the OCI ADK client calls asyncio.get_event_loop() internally and raises
-    "There is no current event loop in thread 'AnyIO worker thread'" without
-    this wrapper.
-    """
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return run_pipeline(*args, **kwargs)
-    finally:
-        loop.close()
-        asyncio.set_event_loop(None)
 
 
 # ── Startup ─────────────────────────────────────────────────────────────────────
@@ -510,14 +518,14 @@ async def upload_bom(
                 context_text = raw_ctx.decode("latin-1", errors="replace")
             logger.info("Context file: %s (%d chars)", context_file.filename, len(context_text))
 
-        items, prompt = bom_to_llm_input(bom_path, context=context_text)
-        os.unlink(bom_path)
+        items, prompt = await anyio.to_thread.run_sync(
+            functools.partial(bom_to_llm_input, bom_path, context=context_text)
+        )
+        await anyio.to_thread.run_sync(functools.partial(os.unlink, bom_path))
         logger.info("BOM parsed: %d services | context: %d chars", len(items), len(context_text))
 
-        result = await anyio.to_thread.run_sync(
-            functools.partial(run_pipeline_in_thread, items, prompt, diagram_name, client_id,
-                              request_id, input_hash)
-        )
+        result = await run_pipeline(items, prompt, diagram_name, client_id,
+                                    request_id, input_hash)
 
         if result["status"] == "ok":
             IDEMPOTENCY_CACHE[cache_key] = result
@@ -558,16 +566,13 @@ async def clarify(req: ClarifyRequest):
             + "Output ONLY valid JSON."
         )
 
-        result = await anyio.to_thread.run_sync(
-            functools.partial(
-                run_pipeline,
-                items        = pending["items"],
-                prompt       = enriched_prompt,
-                diagram_name = req.diagram_name,
-                client_id    = req.client_id,
-                request_id   = request_id,
-                input_hash   = input_hash,
-            )
+        result = await run_pipeline(
+            items        = pending["items"],
+            prompt       = enriched_prompt,
+            diagram_name = req.diagram_name,
+            client_id    = req.client_id,
+            request_id   = request_id,
+            input_hash   = input_hash,
         )
 
         if result["status"] == "ok":
@@ -630,17 +635,14 @@ async def generate_from_resources(req: GenerateRequest):
 
     try:
 
-        result = await anyio.to_thread.run_sync(
-            functools.partial(
-                run_pipeline,
-                items,
-                prompt,
-                req.diagram_name,
-                req.client_id,
-                request_id,
-                input_hash,
-                deployment_hints=deployment_hints,
-            )
+        result = await run_pipeline(
+            items,
+            prompt,
+            req.diagram_name,
+            req.client_id,
+            request_id,
+            input_hash,
+            deployment_hints=deployment_hints,
         )
 
         if result["status"] == "ok":
