@@ -27,6 +27,7 @@ v1.3.2 additions:
   - OCI Object Storage persistence with atomic LATEST.json pointer
 """
 
+import asyncio
 import functools
 import hashlib
 import json
@@ -397,6 +398,25 @@ def run_pipeline(
     }
 
 
+def run_pipeline_in_thread(*args, **kwargs) -> dict:
+    """
+    Wrapper for run_pipeline that creates a fresh asyncio event loop in the
+    current thread before calling run_pipeline, then tears it down.
+
+    Required because AnyIO worker threads have no event loop by default, but
+    the OCI ADK client calls asyncio.get_event_loop() internally and raises
+    "There is no current event loop in thread 'AnyIO worker thread'" without
+    this wrapper.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return run_pipeline(*args, **kwargs)
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+
 # ── Startup ─────────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 def startup():
@@ -495,7 +515,7 @@ async def upload_bom(
         logger.info("BOM parsed: %d services | context: %d chars", len(items), len(context_text))
 
         result = await anyio.to_thread.run_sync(
-            functools.partial(run_pipeline, items, prompt, diagram_name, client_id,
+            functools.partial(run_pipeline_in_thread, items, prompt, diagram_name, client_id,
                               request_id, input_hash)
         )
 
