@@ -275,6 +275,18 @@ class TestLayoutIntentValidation:
         intent = validate_layout_intent(data)
         assert intent.placements[0].group is None
 
+    def test_null_string_group_treated_as_null(self):
+        """LLMs sometimes return the string "null" instead of JSON null."""
+        data = {
+            "schema_version": "1.0",
+            "deployment_hints": {},
+            "placements": [
+                {"id": "on_prem", "oci_type": "on premises", "layer": "external", "group": "null"},
+            ],
+        }
+        intent = validate_layout_intent(data)
+        assert intent.placements[0].group is None
+
     def test_unknown_connectivity_coerced_to_unknown(self):
         data = {
             "schema_version": "1.0",

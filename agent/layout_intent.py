@@ -117,7 +117,7 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
         oci_type = str(p.get("oci_type", "")).strip()
         layer    = str(p.get("layer", "")).strip()
         group    = p.get("group") or None
-        if group == "none":
+        if group in ("none", "null"):   # LLMs sometimes emit the string "null"
             group = None
 
         if not pid:
