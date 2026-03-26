@@ -163,21 +163,35 @@ def clean_json(raw: str) -> str:
 def _make_oci_runner(oci_agent) -> callable:
     """Wrap a real OCI Agent as the llm_runner callable."""
     def _run(prompt: str, client_id: str) -> dict:
-        session_id = SESSION_STORE.get(client_id)
-        response = oci_agent.run(prompt, session_id=session_id, max_steps=MAX_STEPS)
-        SESSION_STORE[client_id] = response.session_id
-        raw = extract_agent_text(response)
-        logger.info("LLM raw (%d chars): %s", len(raw), raw[:400])
-        cleaned = clean_json(raw)
-        if not cleaned.startswith("{"):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"LLM response did not produce valid JSON. "
-                    f"Cleaned output starts with: {cleaned[:200]!r}"
-                ),
-            )
-        return json.loads(cleaned)
+        # The OCI ADK has two conflicting asyncio requirements:
+        #   1. asyncio.get_event_loop() — needs a loop registered in the thread
+        #   2. asyncio.run()            — needs NO running loop in the thread
+        # Running directly in an async context satisfies (1) but breaks (2).
+        # Running in a bare anyio thread satisfies (2) but breaks (1) on Python 3.12.
+        # Fix: register a fresh, never-started loop as the thread-local loop so
+        # that get_event_loop() returns it, while asyncio.run() is still free to
+        # create and drive its own loop (it checks for a *running* loop, not a set one).
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            session_id = SESSION_STORE.get(client_id)
+            response = oci_agent.run(prompt, session_id=session_id, max_steps=MAX_STEPS)
+            SESSION_STORE[client_id] = response.session_id
+            raw = extract_agent_text(response)
+            logger.info("LLM raw (%d chars): %s", len(raw), raw[:400])
+            cleaned = clean_json(raw)
+            if not cleaned.startswith("{"):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"LLM response did not produce valid JSON. "
+                        f"Cleaned output starts with: {cleaned[:200]!r}"
+                    ),
+                )
+            return json.loads(cleaned)
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
     return _run
 
 
@@ -200,9 +214,12 @@ async def call_llm(prompt: str, client_id: str) -> dict:
         )
     if asyncio.iscoroutinefunction(runner):
         return await runner(prompt, client_id)
-    # Sync runner: call directly so asyncio.get_running_loop() in the OCI ADK
-    # resolves to the current running loop rather than raising RuntimeError.
-    return runner(prompt, client_id)
+    # Sync runner: offload to an anyio worker thread.
+    # The thread has no *running* event loop, so asyncio.run() inside the OCI ADK
+    # can create its own loop without hitting "this event loop is already running".
+    # _make_oci_runner sets a fresh idle loop via asyncio.set_event_loop() before
+    # calling oci_agent.run(), satisfying asyncio.get_event_loop() on Python 3.12.
+    return await anyio.to_thread.run_sync(functools.partial(runner, prompt, client_id))
 
 
 def _clarify_response(
