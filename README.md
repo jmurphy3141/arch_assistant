@@ -277,4 +277,65 @@ arch_assistant/
 │   └── scenarios/
 │
 └── README.md
+
+---
+
+## OCI Object Storage — Artifact Persistence
+
+Diagrams and JSON artefacts are persisted to OCI Object Storage when
+`persistence.enabled: true` in `config.yaml`.
+
+### Key layout in the bucket
+
+```
+{prefix}/{client_id}/{diagram_name}/{request_id}/diagram.drawio
+{prefix}/{client_id}/{diagram_name}/{request_id}/spec.json
+{prefix}/{client_id}/{diagram_name}/{request_id}/draw_dict.json
+{prefix}/{client_id}/{diagram_name}/{request_id}/render_manifest.json
+{prefix}/{client_id}/{diagram_name}/{request_id}/node_to_resource_map.json
+{prefix}/{client_id}/{diagram_name}/LATEST.json          ← written last (atomic)
+```
+
+`store_inputs: false` (default) — raw BOM content is **never** stored.
+
+### Required IAM policies
+
+The OCI Compute instance must be in a dynamic group whose matching rule
+covers Agent 3's instance OCID or compartment, e.g.:
+
+```
+Any {instance.compartment.id = 'ocid1.compartment.oc1..aaaa...'}
+```
+
+Grant the dynamic group the following policies **in the bucket's compartment**:
+
+```hcl
+# Allow Agent 3 to write artefacts
+Allow dynamic-group <dg-name> to manage objects
+  in compartment id ocid1.compartment.oc1..aaaaaaaam3ygxdq2vqr7djdhxo76uy6k6n523azgwdcei73wekc7u5v52lea
+  where target.bucket.name = 'agent_assistante'
+
+# Allow Agent 3 to read (download endpoint)
+Allow dynamic-group <dg-name> to read objects
+  in compartment id ocid1.compartment.oc1..aaaaaaaam3ygxdq2vqr7djdhxo76uy6k6n523azgwdcei73wekc7u5v52lea
+  where target.bucket.name = 'agent_assistante'
+```
+
+Minimum required verbs: `manage objects` (for put/delete) and `read objects`
+(for get/head). No bucket-level permissions are needed for this use case.
+
+### Security note
+
+Raw BOM files and context text are **not** persisted by default
+(`store_inputs: false`). Only sanitised, agent-generated artefacts
+(diagram XML + JSON) are written to Object Storage. Enable `store_inputs`
+only after internal data-handling approval.
+
+### Smoke test (on OCI Compute only)
+
+```bash
+python scripts/object_store_smoke.py
+```
+
+Writes and reads back a small test object; prints `OK` on success.
 ```

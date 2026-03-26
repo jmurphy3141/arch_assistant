@@ -23,6 +23,16 @@ inference:
   top_p: 0.9
   top_k: 0
 
+# Artifact persistence
+persistence:
+  enabled: true
+  backend: "oci_object_storage"
+  region: "us-chicago-1"
+  namespace: "oraclejamescalise"
+  bucket_name: "agent_assistante"
+  prefix: "agent3"
+  store_inputs: false   # set true only after internal approval
+
 # Server
 host: "0.0.0.0"
 port: 8080

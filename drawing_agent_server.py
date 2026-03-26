@@ -95,6 +95,15 @@ INFERENCE_TEMPERATURE  = float(_inf_cfg.get("temperature", 0.0))
 INFERENCE_TOP_P        = float(_inf_cfg.get("top_p", 0.9))
 INFERENCE_TOP_K        = int(_inf_cfg.get("top_k", 0))
 
+# ── Persistence config ───────────────────────────────────────────────────────
+_per_cfg              = _cfg.get("persistence", {})
+PERSISTENCE_ENABLED   = _per_cfg.get("enabled", False)
+PERSISTENCE_BACKEND   = _per_cfg.get("backend", "")
+PERSISTENCE_REGION    = _per_cfg.get("region", REGION)
+PERSISTENCE_NAMESPACE = _per_cfg.get("namespace", "")
+PERSISTENCE_BUCKET    = _per_cfg.get("bucket_name", "")
+PERSISTENCE_PREFIX    = _per_cfg.get("prefix", "diagrams")
+
 AGENT_VERSION  = "1.3.2"
 SCHEMA_VERSION = {"spec": "1.1", "draw_dict": "1.0"}
 
@@ -549,11 +558,53 @@ def startup():
     _ensure_state_defaults()
 
 
-def _ensure_state_defaults():
-    if getattr(app.state, "object_store", None) is None:
+def _init_object_store() -> None:
+    """
+    Initialise app.state.object_store from config.
+    Only called during startup when tests have NOT pre-injected a store.
+    Tests always pre-set app.state.object_store (even to None) so this is skipped.
+    """
+    if not PERSISTENCE_ENABLED:
         app.state.object_store = None
-    if getattr(app.state, "persistence_config", None) is None:
         app.state.persistence_config = {}
+        return
+
+    if PERSISTENCE_BACKEND == "oci_object_storage":
+        try:
+            from agent.object_store_oci import OciObjectStore
+            app.state.object_store = OciObjectStore(
+                region=PERSISTENCE_REGION,
+                namespace=PERSISTENCE_NAMESPACE,
+                bucket_name=PERSISTENCE_BUCKET,
+            )
+            app.state.persistence_config = {"prefix": PERSISTENCE_PREFIX}
+            logger.info(
+                "OCI object store ready: bucket=%s namespace=%s prefix=%s",
+                PERSISTENCE_BUCKET,
+                PERSISTENCE_NAMESPACE,
+                PERSISTENCE_PREFIX,
+            )
+        except Exception as exc:
+            logger.warning(
+                "OCI object store init failed (%s) — persistence disabled", exc
+            )
+            app.state.object_store = None
+            app.state.persistence_config = {}
+    else:
+        logger.warning(
+            "Unknown persistence backend %r — persistence disabled", PERSISTENCE_BACKEND
+        )
+        app.state.object_store = None
+        app.state.persistence_config = {}
+
+
+def _ensure_state_defaults() -> None:
+    # If tests (or earlier startup paths) have already set the object_store,
+    # respect that choice; only fill in defaults for attributes not yet set.
+    if not hasattr(app.state, "object_store"):
+        _init_object_store()
+    if getattr(app.state, "persistence_config", None) is None:
+        app.state.persistence_config = {"prefix": PERSISTENCE_PREFIX}
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────────
