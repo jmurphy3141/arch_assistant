@@ -61,6 +61,33 @@ class TestComputePositions:
             assert g.w > 0, f"Group {g.id} has zero width"
             assert g.h > 0, f"Group {g.id} has zero height"
 
+    def test_no_duplicate_vcn_box_when_already_in_spec(self):
+        """If the spec's groups list already contains a vcn_box, compute_positions
+        must not insert a second one."""
+        spec_with_vcn = {
+            "direction": "LR",
+            "page": {"width": PAGE_W, "height": PAGE_H},
+            "layers": {
+                "external": [{"id": "on_prem", "type": "on premises", "label": "On-Premises"}],
+                "ingress":  [{"id": "drg_1",   "type": "drg",         "label": "DRG"}],
+                "compute":  [{"id": "comp_1",  "type": "compute",     "label": "Compute"}],
+                "async":    [],
+                "data":     [],
+            },
+            "groups": [
+                {"id": "pub_sub_box", "label": "Public Subnet", "nodes": ["drg_1"]},
+                {"id": "app_sub_box", "label": "App Subnet",    "nodes": ["comp_1"]},
+                # vcn_box explicitly present in the spec (should not be duplicated)
+                {"id": "vcn_box",     "label": "VCN",           "nodes": ["on_prem"]},
+            ],
+            "edges": [],
+        }
+        _, groups = compute_positions(spec_with_vcn)
+        vcn_boxes = [g for g in groups if g.id == "vcn_box"]
+        assert len(vcn_boxes) == 1, (
+            f"Expected exactly 1 vcn_box, got {len(vcn_boxes)}: {[g.id for g in groups]}"
+        )
+
     def test_accepts_json_string(self):
         import json
         nodes, groups = compute_positions(json.dumps(MINIMAL_SPEC))

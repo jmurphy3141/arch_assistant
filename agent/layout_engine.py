@@ -638,9 +638,10 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
             w=max_x - min_x, h=max_y - min_y,
         ))
 
-    # Synthesise a vcn_box that wraps all subnet group boxes and prepend it
+    # Synthesise a vcn_box that wraps all subnet group boxes and prepend it.
+    # Guard: skip if a vcn_box was already produced from the spec's groups list.
     VCN_PAD = 40
-    if group_boxes:
+    if group_boxes and not any(b.id == "vcn_box" for b in group_boxes):
         bx = min(b.x for b in group_boxes) - VCN_PAD
         by = min(b.y for b in group_boxes) - VCN_PAD
         bx2 = max(b.x + b.w for b in group_boxes) + VCN_PAD
