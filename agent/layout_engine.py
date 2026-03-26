@@ -832,21 +832,4 @@ def spec_to_draw_dict(
         for b in boxes_out
     ]
 
-    # Legacy-only: also emit group boxes as _group_box typed nodes, before icon nodes,
-    # so drawio_generator can render them in correct z-order.
-    if is_legacy:
-        group_box_nodes = [
-            {
-                "id":    b.id,
-                "type":  "_group_box",
-                "label": b.label,
-                "x":     b.x,
-                "y":     b.y,
-                "w":     b.w,
-                "h":     b.h,
-            }
-            for b in boxes_out
-        ]
-        draw_nodes = group_box_nodes + draw_nodes
-
     return {"nodes": draw_nodes, "boxes": draw_boxes, "edges": draw_edges}

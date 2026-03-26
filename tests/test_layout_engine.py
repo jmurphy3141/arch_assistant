@@ -109,12 +109,13 @@ class TestSpecToDrawDict:
         assert "nodes" in draw_dict
         assert "edges" in draw_dict
 
-    def test_group_boxes_before_icons(self):
+    def test_group_boxes_in_boxes_not_nodes(self):
+        """Group boxes must appear in draw_dict['boxes'], not duplicated in 'nodes'."""
         draw_dict = spec_to_draw_dict(MINIMAL_SPEC, self._make_items_by_id())
-        nodes = draw_dict["nodes"]
-        first_group = next(i for i, n in enumerate(nodes) if n["type"] == "_group_box")
-        first_icon  = next(i for i, n in enumerate(nodes) if n["type"] not in ("_group_box",))
-        assert first_group < first_icon
+        # No _group_box entries should bleed into the nodes list
+        assert not any(n.get("type") == "_group_box" for n in draw_dict["nodes"])
+        # Boxes must be present in the dedicated 'boxes' list
+        assert len(draw_dict.get("boxes", [])) > 0
 
     def test_fixed_edges_present(self):
         draw_dict = spec_to_draw_dict(MINIMAL_SPEC, self._make_items_by_id())

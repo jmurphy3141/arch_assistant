@@ -424,6 +424,7 @@ async def run_pipeline(
         "diagram_name":          diagram_name,
         "request_id":            request_id,
         "input_hash":            input_hash,
+        "output_path":           str(drawio_path),
         "drawio_xml":            drawio_xml,
         "spec":                  spec,
         "draw_dict":             draw_dict,
