@@ -71,7 +71,7 @@ def parse_bom(xlsx_path: str | Path, context: str = "") -> list[ServiceItem]:
     """Parse BOM Excel → list of ServiceItems ready for LLM layout prompt."""
     import openpyxl
     wb   = openpyxl.load_workbook(xlsx_path, data_only=True)
-    bom  = wb["BOM"]
+    bom  = wb["BOM"] if "BOM" in wb.sheetnames else wb.worksheets[0]
     inp  = wb["Input"] if "Input" in wb.sheetnames else None
 
     # Read input sheet for quantities

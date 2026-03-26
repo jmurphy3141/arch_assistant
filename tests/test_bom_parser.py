@@ -133,3 +133,20 @@ class TestParseBom:
             assert item.oci_type
             assert item.label
             assert item.layer in ("external", "ingress", "compute", "async", "data")
+
+    def test_non_bom_sheet_name_accepted(self, tmp_path):
+        """parse_bom must work when the sheet is not named 'BOM'."""
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Services"          # not "BOM"
+        ws.append(["SKU", "Description", "Quantity"])
+        ws.append(["B94176", "Compute VM Standard E4 Flex", 2])
+        ws.append(["B99060", "Oracle Autonomous Database",  1])
+        path = tmp_path / "custom_name.xlsx"
+        wb.save(path)
+
+        items = parse_bom(path)
+        types = {i.oci_type for i in items}
+        assert "compute" in types
+        assert "database" in types
