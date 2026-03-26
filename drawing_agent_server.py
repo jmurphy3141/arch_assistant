@@ -47,10 +47,17 @@ from pydantic import BaseModel
 
 try:
     from oci.addons.adk import Agent, AgentClient
-    _OCI_AVAILABLE = True
+    _OCI_ADK_AVAILABLE = True
 except ImportError:
-    _OCI_AVAILABLE = False
+    _OCI_ADK_AVAILABLE = False
     Agent = AgentClient = None
+
+try:
+    from agent.llm_inference_client import run_inference as _run_inference
+    _INFERENCE_AVAILABLE = True
+except Exception:
+    _INFERENCE_AVAILABLE = False
+    _run_inference = None  # type: ignore
 
 from agent.bom_parser import bom_to_llm_input, parse_bom
 from agent.layout_engine import spec_to_draw_dict
@@ -72,11 +79,21 @@ with open(_cfg_path) as _f:
     _cfg = yaml.safe_load(_f)
 
 REGION            = _cfg.get("region", "us-phoenix-1")
-AGENT_ENDPOINT_ID = _cfg["agent_endpoint_id"]
-COMPARTMENT_ID    = _cfg["compartment_id"]
+AGENT_ENDPOINT_ID = _cfg.get("agent_endpoint_id", "")
+COMPARTMENT_ID    = _cfg.get("compartment_id", "")
 MAX_STEPS         = _cfg.get("max_steps", 5)
 OUTPUT_DIR        = Path(_cfg.get("output_dir", "/tmp/diagrams"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Inference config ────────────────────────────────────────────────────────
+_inf_cfg               = _cfg.get("inference", {})
+INFERENCE_ENABLED      = _inf_cfg.get("enabled", False)
+INFERENCE_ENDPOINT     = _inf_cfg.get("service_endpoint", "")
+INFERENCE_MODEL_ID     = _inf_cfg.get("model_id", "")
+INFERENCE_MAX_TOKENS   = int(_inf_cfg.get("max_tokens", 2000))
+INFERENCE_TEMPERATURE  = float(_inf_cfg.get("temperature", 0.0))
+INFERENCE_TOP_P        = float(_inf_cfg.get("top_p", 0.9))
+INFERENCE_TOP_K        = int(_inf_cfg.get("top_k", 0))
 
 AGENT_VERSION  = "1.3.2"
 SCHEMA_VERSION = {"spec": "1.1", "draw_dict": "1.0"}
@@ -197,13 +214,18 @@ def _make_oci_runner(oci_agent) -> callable:
 
 async def call_llm(prompt: str, client_id: str) -> dict:
     """
-    Call the LLM via app.state.llm_runner.
-    Returns parsed JSON dict.
-    Tests inject a fake runner via app.state.llm_runner before startup.
+    Call the LLM via app.state.llm_runner and return a parsed JSON dict.
 
-    The sync OCI ADK runner calls asyncio.get_running_loop() internally, so it
-    must execute in the async context where a loop is running — NOT inside an
-    anyio worker thread.  Async runners (if ever used) are awaited directly.
+    Injection seam: tests set app.state.llm_runner before startup so no real
+    OCI call is made.
+
+    Runtime path (inference.enabled=true):
+      The runner is a sync callable that calls run_inference(), strips fences
+      with clean_json(), and returns json.loads(text).  It is offloaded to an
+      anyio worker thread so the async event loop stays unblocked.
+
+    Runtime path (inference.enabled=false, legacy ADK):
+      Same offload pattern; _make_oci_runner wraps the ADK Agent.
     """
     runner = getattr(app.state, "llm_runner", None)
     if runner is None:
@@ -214,11 +236,6 @@ async def call_llm(prompt: str, client_id: str) -> dict:
         )
     if asyncio.iscoroutinefunction(runner):
         return await runner(prompt, client_id)
-    # Sync runner: offload to an anyio worker thread.
-    # The thread has no *running* event loop, so asyncio.run() inside the OCI ADK
-    # can create its own loop without hitting "this event loop is already running".
-    # _make_oci_runner sets a fresh idle loop via asyncio.set_event_loop() before
-    # calling oci_agent.run(), satisfying asyncio.get_event_loop() on Python 3.12.
     return await anyio.to_thread.run_sync(functools.partial(runner, prompt, client_id))
 
 
@@ -444,6 +461,37 @@ async def run_pipeline(
 
 
 # ── Startup ─────────────────────────────────────────────────────────────────────
+def _make_inference_runner() -> callable:
+    """
+    Build a sync llm_runner that calls run_inference() directly.
+    clean_json() strips fences; json.loads() converts to dict.
+    Raises HTTP 422 if the model output is not parseable JSON.
+    """
+    def _run(prompt: str, client_id: str) -> dict:
+        raw = _run_inference(
+            prompt,
+            endpoint=INFERENCE_ENDPOINT,
+            model_id=INFERENCE_MODEL_ID,
+            compartment_id=COMPARTMENT_ID,
+            max_tokens=INFERENCE_MAX_TOKENS,
+            temperature=INFERENCE_TEMPERATURE,
+            top_p=INFERENCE_TOP_P,
+            top_k=INFERENCE_TOP_K,
+        )
+        cleaned = clean_json(raw)
+        if not cleaned.startswith("{"):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "LLM response did not produce valid JSON. "
+                    f"Cleaned output starts with: {cleaned[:200]!r}"
+                ),
+            )
+        return json.loads(cleaned)
+
+    return _run
+
+
 @app.on_event("startup")
 def startup():
     global _oci_agent
@@ -455,7 +503,22 @@ def startup():
         _ensure_state_defaults()
         return
 
-    if not _OCI_AVAILABLE:
+    # ── Path 1: Direct OCI Inference (preferred) ──────────────────────────────
+    if INFERENCE_ENABLED and _INFERENCE_AVAILABLE:
+        try:
+            app.state.llm_runner = _make_inference_runner()
+            logger.info(
+                "Drawing Agent ready (OCI inference) model=%s", INFERENCE_MODEL_ID
+            )
+            _ensure_state_defaults()
+            return
+        except Exception as exc:
+            logger.warning(
+                "OCI inference runner init failed (%s) — trying ADK fallback", exc
+            )
+
+    # ── Path 2: Legacy ADK Agent Endpoint ────────────────────────────────────
+    if not _OCI_ADK_AVAILABLE:
         logger.warning("oci[adk] not importable — llm_runner will be None")
         app.state.llm_runner = None
         _ensure_state_defaults()
@@ -478,9 +541,9 @@ def startup():
         )
         _oci_agent.setup()
         app.state.llm_runner = _make_oci_runner(_oci_agent)
-        logger.info("Drawing Agent ready!")
+        logger.info("Drawing Agent ready (ADK)!")
     except Exception as exc:
-        logger.warning("OCI init failed (%s) — llm_runner will be None", exc)
+        logger.warning("OCI ADK init failed (%s) — llm_runner will be None", exc)
         app.state.llm_runner = None
 
     _ensure_state_defaults()
@@ -550,6 +613,8 @@ async def upload_bom(
 
         return JSONResponse(status_code=200, content=result)
 
+    except HTTPException:
+        raise
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail=f"LLM returned invalid JSON: {exc}")
     except Exception as exc:
@@ -598,6 +663,8 @@ async def clarify(req: ClarifyRequest):
 
         return JSONResponse(status_code=200, content=result)
 
+    except HTTPException:
+        raise
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail=f"LLM returned invalid JSON: {exc}")
     except Exception as exc:
@@ -668,6 +735,8 @@ async def generate_from_resources(req: GenerateRequest):
 
         return JSONResponse(status_code=200, content=result)
 
+    except HTTPException:
+        raise
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail=f"LLM returned invalid JSON: {exc}")
     except Exception as exc:

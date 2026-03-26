@@ -1,13 +1,27 @@
 # OCI Drawing Agent — configuration
 # Auth uses OCI Instance Principal; no credentials stored here.
 
-# OCI region and GenAI agent endpoint
-region: "us-phoenix-1"
+# OCI region (must match inference model OCID region)
+region: "us-chicago-1"
+
+# Legacy ADK agent endpoint (kept for reference; not used when inference.enabled=true)
 agent_endpoint_id: "ocid1.genaiagentendpoint.oc1.phx.amaaaaaaqx2yg4ya76r5ojh7olsu5uxpe4bmmslfrpylfcrwezgms5azbppa"
+
+# Compartment
 compartment_id: "ocid1.compartment.oc1..aaaaaaaaea7vtpk24oq7tw6sfskc2hodr2ymbchddlblb6qqpad6rgt2fkwa"
 
-# LLM call config
+# LLM call config (ADK path)
 max_steps: 5
+
+# OCI GenAI Inference (direct SDK, replaces ADK Agent Endpoint)
+inference:
+  enabled: true
+  service_endpoint: "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+  model_id: "ocid1.generativeaimodel.oc1.us-chicago-1.amaaaaaask7dceyadd6ow2hxfppx7dmwmok4pon2jtsw2m2wiwoplexjrqaq"
+  max_tokens: 2000
+  temperature: 0.0
+  top_p: 0.9
+  top_k: 0
 
 # Server
 host: "0.0.0.0"
