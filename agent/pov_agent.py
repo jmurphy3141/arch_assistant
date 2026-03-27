@@ -3,42 +3,41 @@ agent/pov_agent.py
 -------------------
 Point of View (POV) document generator (Agent 4 in fleet).
 
-A POV is an internal Oracle document casting a vision for customer success on OCI.
-It is updated incrementally as meeting notes are added — each call reads all existing
-notes plus the previous version and produces an updated draft.
-
-Document structure
-------------------
-1. Internal Visionary Press Release
-   - Summary (future-state success story, 12–18 months out)
-   - Problem (key challenges)
-   - Solution (OCI capabilities used)
-   - Oracle Quote
-   - Customer Quote (two executives)
-
-2. External (Customer) Q&A — 5 standard questions
-
-3. Internal (Oracle) Q&A — 4–5 strategy/discovery questions
+Each run:
+  1. Reads context/{customer_id}/context.json
+  2. Identifies notes not yet incorporated by this agent
+  3. Reads previous POV version (if any)
+  4. Calls LLM with: context summary + new notes + previous POV
+  5. Saves new versioned POV
+  6. Updates context file with this run's results
 
 Storage
 -------
-  Input:  notes/{customer_id}/*          (all meeting notes, read by document_store)
-          pov/{customer_id}/LATEST.md    (previous version, if any)
-  Output: pov/{customer_id}/v{n}.md
+  Reads:  context/{customer_id}/context.json
+          notes/{customer_id}/* (new notes only, diffed against context)
           pov/{customer_id}/LATEST.md
-          pov/{customer_id}/MANIFEST.json
+  Writes: pov/{customer_id}/v{n}.md + LATEST.md + MANIFEST.json
+          context/{customer_id}/context.json (updated)
 """
 from __future__ import annotations
 
 import logging
 from typing import Callable, Optional
 
-from agent.document_store import get_all_notes_text, get_latest_doc, save_doc
+from agent.context_store import (
+    build_context_summary,
+    get_new_notes,
+    read_context,
+    record_agent_run,
+    write_context,
+)
+from agent.document_store import get_latest_doc, save_doc
 from agent.persistence_objectstore import ObjectStoreBase
 
 logger = logging.getLogger(__name__)
 
-# System message injected before every POV generation call
+AGENT_NAME = "pov"
+
 POV_SYSTEM_MESSAGE = (
     "You are an Oracle Cloud solutions architect writing a Point of View (POV) document. "
     "A POV is an internal Oracle document that casts a vision for customer success on OCI. "
@@ -54,10 +53,13 @@ Write a Point of View (POV) document for Oracle Cloud Infrastructure (OCI).
 
 Customer: {customer_name}
 
-Meeting Notes:
-{notes_text}
+{context_summary}
+
+{new_notes_section}
 
 {previous_pov_section}
+
+{instructions}
 
 Generate a complete, professionally written POV in Markdown. Use this exact structure:
 
@@ -68,30 +70,25 @@ Generate a complete, professionally written POV in Markdown. Use this exact stru
 ### Summary
 [Write 2–3 paragraphs as a future-state press release (12–18 months from now).
 Announce the customer's partnership with Oracle and describe what success looks like.
-Reference: customer's industry, the key challenges they face, OCI capabilities used,
-and measurable business outcomes achieved.]
+Reference: customer's industry, key challenges, OCI capabilities used, measurable outcomes.]
 
 ### Problem
 - [Key business or technical challenge #1]
 - [Key business or technical challenge #2]
 - [Key business or technical challenge #3]
-[2–4 bullet points total, drawn directly from the meeting notes.]
 
 ### Solution
-[2–3 paragraphs describing how OCI addresses the customer's challenges.
-Name specific OCI services (e.g., OKE, Autonomous DB, OCI GenAI, Bare Metal GPU,
-Object Storage, etc.). Be concrete and technical.]
+[2–3 paragraphs describing how OCI addresses the challenges with specific services.]
 
 ### Oracle Quote
-> "[Write a quote from a fictional Oracle GVP or VP congratulating the partnership
-> and highlighting the business impact achieved.]"
+> "[Quote from a fictional Oracle GVP/VP.]"
 > — [Name], [Title], Oracle
 
 ### Customer Quote
-> "[Write a CTO or CIO quote about the technical outcomes and why OCI was the right choice.]"
+> "[CTO/CIO quote about technical outcomes.]"
 > — [Name], [Title], {customer_name}
 
-> "[Write a CEO or COO quote about the business impact and strategic value of the partnership.]"
+> "[CEO/COO quote about business impact.]"
 > — [Name], [Title], {customer_name}
 
 ---
@@ -99,38 +96,38 @@ Object Storage, etc.). Be concrete and technical.]
 ## External (Customer) Questions
 
 **Q: What challenges are {customer_name} and Oracle addressing together?**
-A: [2–3 sentences describing the business and technical challenges and why OCI is the answer.]
+A: [2–3 sentences.]
 
 **Q: What specific OCI solutions are being implemented?**
-A: [List 3–4 OCI capabilities with a brief description of each. Use bullet points.]
+A: [3–4 OCI capabilities with brief descriptions.]
 
 **Q: How does this benefit {customer_name}'s customers or operations?**
-A: [2–3 sentences on the customer/end-user benefit: reliability, speed, compliance, etc.]
+A: [2–3 sentences.]
 
 **Q: Is {customer_name} moving its entire infrastructure to OCI?**
-A: [Honest answer about migration scope — full migration, hybrid, or workload-specific.]
+A: [Migration scope answer.]
 
 **Q: What's next in the partnership?**
-A: [1–2 sentences about upcoming milestones, events, or expansion plans.]
+A: [Next milestones.]
 
 ---
 
 ## Internal (Oracle) Questions
 
 **Q: What are {customer_name}'s primary technical requirements and regulatory constraints?**
-A: [Specific tech requirements, compliance frameworks, audit cadence, data residency needs.]
+A: [Specific requirements.]
 
-**Q: What dedicated resources will {customer_name} allocate, and will Oracle engineers be embedded?**
-A: [Team composition, Oracle embedding expectations, resourcing plan.]
+**Q: What resources will {customer_name} allocate and will Oracle engineers be embedded?**
+A: [Resourcing plan.]
 
-**Q: What is {customer_name}'s migration timeline and scaling expectations over 2–3 years?**
-A: [Phased vs. big-bang, growth projections, capacity planning.]
+**Q: What is {customer_name}'s migration timeline and scaling expectations?**
+A: [Timeline and growth projections.]
 
-**Q: What strategic role does {customer_name} envision for Oracle — infrastructure provider, strategic partner, or co-innovator?**
-A: [Partnership model: transactional, co-development, innovation lab, etc.]
+**Q: What strategic role does {customer_name} envision for Oracle?**
+A: [Partnership model.]
 
-**Q: What are the key commercial and technical dependencies for this engagement to succeed?**
-A: [Integration requirements, data dependencies, executive sponsorship, procurement timelines.]
+**Q: What are the key dependencies for this engagement to succeed?**
+A: [Dependencies and risks.]
 """
 
 
@@ -141,53 +138,90 @@ def generate_pov(
     text_runner: Callable[[str, str], str],
 ) -> dict:
     """
-    Generate or update a POV document for a customer.
-
-    Reads all notes from the bucket, reads the previous version (if any),
-    calls the LLM, and saves the new version atomically.
+    Generate or update a POV document.
 
     Args:
-        customer_id:   Customer identifier — used as the bucket key prefix.
-        customer_name: Human-readable customer name — used in the document.
-        store:         ObjectStoreBase instance (real OCI or InMemory for tests).
+        customer_id:   Customer identifier — bucket key prefix.
+        customer_name: Human-readable customer name.
+        store:         ObjectStoreBase instance.
         text_runner:   callable(prompt: str, system_message: str) -> str.
-                       Returns raw LLM text output (not parsed JSON).
 
-    Returns:
-        dict with keys:
-            version (int), key (str), latest_key (str), content (str)
+    Returns dict with keys:
+        version (int), key (str), latest_key (str), content (str), context (dict)
     """
-    # ── Gather context ────────────────────────────────────────────────────────
-    notes_text = get_all_notes_text(store, customer_id)
-    if not notes_text:
-        logger.warning("No notes found for customer=%s; generating skeleton POV", customer_id)
-        notes_text = "(No meeting notes available — generate a skeleton POV based on customer name only.)"
+    # ── Read context + diff new notes ─────────────────────────────────────────
+    context = read_context(store, customer_id, customer_name)
+    if customer_name and not context.get("customer_name"):
+        context["customer_name"] = customer_name
 
+    new_note_keys, new_notes_text = get_new_notes(store, context, AGENT_NAME)
+    context_summary = build_context_summary(context)
+
+    # ── Previous POV ──────────────────────────────────────────────────────────
     previous_pov = get_latest_doc(store, "pov", customer_id)
+
+    # ── Build prompt sections ─────────────────────────────────────────────────
+    if context_summary:
+        context_block = f"{context_summary}\n"
+    else:
+        context_block = ""
+
+    if new_notes_text:
+        new_notes_section = (
+            "New meeting notes to incorporate (not yet in previous version):\n"
+            f"{new_notes_text[:4000]}"
+        )
+    elif not previous_pov:
+        new_notes_section = "(No meeting notes uploaded yet — generate a skeleton POV.)"
+    else:
+        new_notes_section = "(No new notes since last run — refine the existing POV if needed.)"
+
     if previous_pov:
         previous_pov_section = (
-            "Previous POV version (use for context and continuity; "
-            "update and improve based on new notes — do not simply repeat it):\n"
+            "Previous POV version (use for continuity; update and improve — do not repeat verbatim):\n"
             "```\n"
             + previous_pov[:3000]
-            + "\n```\n"
+            + "\n```"
         )
+        instructions = "Update the POV to incorporate the new notes above. Keep strong sections, improve weak ones."
     else:
         previous_pov_section = ""
+        instructions = "This is the first POV for this customer. Write a complete draft."
 
-    # ── Build prompt ──────────────────────────────────────────────────────────
     prompt = _PROMPT_TEMPLATE.format(
         customer_name=customer_name,
-        notes_text=notes_text[:5000],
+        context_summary=context_block,
+        new_notes_section=new_notes_section,
         previous_pov_section=previous_pov_section,
+        instructions=instructions,
     )
 
     # ── Generate ──────────────────────────────────────────────────────────────
-    logger.info("Generating POV: customer_id=%s customer_name=%r", customer_id, customer_name)
+    logger.info("Generating POV: customer_id=%s new_notes=%d", customer_id, len(new_note_keys))
     content = text_runner(prompt, POV_SYSTEM_MESSAGE)
 
-    # ── Persist ───────────────────────────────────────────────────────────────
+    # ── Persist doc ───────────────────────────────────────────────────────────
     result = save_doc(store, "pov", customer_id, content, {"customer_name": customer_name})
+
+    # ── Update + write context ────────────────────────────────────────────────
+    # Extract a one-line summary for the context file
+    first_line = next(
+        (ln.strip() for ln in content.splitlines() if ln.strip() and not ln.startswith("#")),
+        "",
+    )
+    context = record_agent_run(
+        context,
+        AGENT_NAME,
+        new_note_keys,
+        {
+            "version": result["version"],
+            "key":     result["key"],
+            "summary": first_line[:120],
+        },
+    )
+    write_context(store, customer_id, context)
+
     result["content"] = content
+    result["context"] = context
     logger.info("POV saved: version=%d key=%s", result["version"], result["key"])
     return result

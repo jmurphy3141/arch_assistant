@@ -69,6 +69,24 @@ writing:
   jep:
     system_message: ""   # leave empty to use the default in jep_agent.py
 
+  # WAF review agent settings
+  waf:
+    system_message: ""   # leave empty to use the default in waf_agent.py
+
+# Terraform agent (Agent 6) — code generation uses a code-optimised model
+# Set model_id to the Grok code model OCID when available.
+# Leave empty to fall back to inference.model_id.
+terraform:
+  model_id: ""           # e.g. ocid1.generativeaimodel.oc1... (Grok code model)
+  max_tokens: 6000       # Terraform files can be long
+  temperature: 0.2       # Low temperature for deterministic code generation
+  top_p: 0.9
+  top_k: 0
+  # Oracle QuickStart GitHub repos used for few-shot Terraform examples
+  example_repos:
+    - "oracle-quickstart/oci-landing-zones"
+    - "oracle-quickstart/terraform-oci-oke"
+
 # Server
 host: "0.0.0.0"
 port: 8080

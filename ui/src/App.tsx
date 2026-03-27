@@ -7,10 +7,12 @@ import { ClarifyForm } from './components/ClarifyForm';
 import { NoteUpload } from './components/NoteUpload';
 import { PovForm } from './components/PovForm';
 import { JepForm } from './components/JepForm';
+import { TerraformForm } from './components/TerraformForm';
+import { WafForm } from './components/WafForm';
 import { useClientId, getLastDiagramName, saveLastDiagramName } from './hooks/useClientId';
 import { apiClarify, type GenerateResponse } from './api/client';
 
-type Mode = 'upload' | 'generate' | 'notes' | 'pov' | 'jep';
+type Mode = 'upload' | 'generate' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
 function getLastCustomerId(): string {
   try { return localStorage.getItem('last_customer_id') ?? ''; } catch { return ''; }
@@ -90,7 +92,7 @@ export function App() {
         <h1 style={{ margin: 0, fontSize: '1.4rem' }}>
           OCI Agent Fleet{' '}
           <small style={{ fontWeight: 'normal', fontSize: '0.82rem', color: '#666' }}>
-            Drawing · POV · JEP
+            Drawing · POV · JEP · Terraform · WAF
           </small>
         </h1>
         <HealthIndicator />
@@ -102,9 +104,11 @@ export function App() {
         <button style={btnStyle(mode === 'upload')}   onClick={() => switchMode('upload')}>Upload BOM</button>
         <button style={btnStyle(mode === 'generate')} onClick={() => switchMode('generate')}>Generate</button>
         <span style={{ fontSize: '0.78rem', color: '#888', margin: '0 0.1rem 0 0.75rem' }}>Documents:</span>
-        <button style={btnStyle(mode === 'notes')} onClick={() => switchMode('notes')}>Notes</button>
-        <button style={btnStyle(mode === 'pov')}   onClick={() => switchMode('pov')}>POV</button>
-        <button style={btnStyle(mode === 'jep')}   onClick={() => switchMode('jep')}>JEP</button>
+        <button style={btnStyle(mode === 'notes')}     onClick={() => switchMode('notes')}>Notes</button>
+        <button style={btnStyle(mode === 'pov')}       onClick={() => switchMode('pov')}>POV</button>
+        <button style={btnStyle(mode === 'jep')}       onClick={() => switchMode('jep')}>JEP</button>
+        <button style={btnStyle(mode === 'terraform')} onClick={() => switchMode('terraform')}>Terraform</button>
+        <button style={btnStyle(mode === 'waf')}       onClick={() => switchMode('waf')}>WAF Review</button>
       </div>
 
       {/* Diagram modes */}
@@ -160,6 +164,14 @@ export function App() {
 
       {mode === 'jep' && (
         <JepForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
+      )}
+
+      {mode === 'terraform' && (
+        <TerraformForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
+      )}
+
+      {mode === 'waf' && (
+        <WafForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
       )}
 
       <footer style={{ marginTop: '2rem', fontSize: '0.75rem', color: '#999', borderTop: '1px solid #eee', paddingTop: '0.5rem' }}>

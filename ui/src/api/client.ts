@@ -176,14 +176,52 @@ export interface DocResponse {
   status: string;
   agent_version: string;
   customer_id: string;
-  doc_type: 'pov' | 'jep';
+  doc_type: 'pov' | 'jep' | 'terraform' | 'waf';
   version: number;
   key: string;
   latest_key: string;
   content: string;
   bom?: Record<string, unknown>;
   diagram_key?: string;
+  overall_rating?: string;
   errors: string[];
+}
+
+export interface TerraformResponse {
+  status: string;
+  agent_version: string;
+  customer_id: string;
+  doc_type: 'terraform';
+  version: number;
+  prefix_key: string;
+  file_count: number;
+  files: Record<string, string>;
+  latest_key: string;
+  errors: string[];
+}
+
+export interface TerraformLatestResponse {
+  status: string;
+  customer_id: string;
+  doc_type: 'terraform';
+  version: number;
+  prefix_key: string;
+  files: Record<string, string>;
+}
+
+export interface TerraformVersionEntry {
+  version: number;
+  prefix: string;
+  files: Record<string, string>;
+  timestamp: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface TerraformVersionsResponse {
+  status: string;
+  customer_id: string;
+  doc_type: 'terraform';
+  versions: TerraformVersionEntry[];
 }
 
 export interface NoteUploadResponse {
@@ -270,4 +308,58 @@ export async function apiGetLatestJep(customerId: string): Promise<DocLatestResp
 
 export async function apiListJepVersions(customerId: string): Promise<DocVersionsResponse> {
   return apiFetch<DocVersionsResponse>(`/jep/${encodeURIComponent(customerId)}/versions`);
+}
+
+// ---------------------------------------------------------------------------
+// Terraform agent
+// ---------------------------------------------------------------------------
+
+export async function apiGenerateTerraform(
+  customerId: string,
+  customerName: string,
+): Promise<TerraformResponse> {
+  return apiFetch<TerraformResponse>('/terraform/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer_id: customerId, customer_name: customerName }),
+  });
+}
+
+export async function apiGetLatestTerraform(
+  customerId: string,
+): Promise<TerraformLatestResponse> {
+  return apiFetch<TerraformLatestResponse>(
+    `/terraform/${encodeURIComponent(customerId)}/latest`,
+  );
+}
+
+export async function apiListTerraformVersions(
+  customerId: string,
+): Promise<TerraformVersionsResponse> {
+  return apiFetch<TerraformVersionsResponse>(
+    `/terraform/${encodeURIComponent(customerId)}/versions`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// WAF review agent
+// ---------------------------------------------------------------------------
+
+export async function apiGenerateWaf(
+  customerId: string,
+  customerName: string,
+): Promise<DocResponse> {
+  return apiFetch<DocResponse>('/waf/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer_id: customerId, customer_name: customerName }),
+  });
+}
+
+export async function apiGetLatestWaf(customerId: string): Promise<DocLatestResponse> {
+  return apiFetch<DocLatestResponse>(`/waf/${encodeURIComponent(customerId)}/latest`);
+}
+
+export async function apiListWafVersions(customerId: string): Promise<DocVersionsResponse> {
+  return apiFetch<DocVersionsResponse>(`/waf/${encodeURIComponent(customerId)}/versions`);
 }

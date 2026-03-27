@@ -3,9 +3,14 @@ agent/jep_agent.py
 -------------------
 Joint Execution Plan (JEP) document generator (Agent 5 in fleet).
 
-A JEP defines POC goals, success criteria, BOM, participants, deliverables,
-and logistics.  It is created on demand (manual trigger) and updated when
-new notes are added.
+Each run:
+  1. Reads context/{customer_id}/context.json
+  2. Identifies notes not yet incorporated by this agent
+  3. Reads previous JEP version (if any)
+  4. Generates stub BOM from new notes
+  5. Calls LLM with: context summary + new notes + BOM + previous JEP
+  6. Saves new versioned JEP
+  7. Updates context file with this run's results
 
 Orchestration
 -------------
@@ -22,25 +27,35 @@ The JEP agent calls two sub-agents:
 
 Storage
 -------
-  Input:  notes/{customer_id}/*                  (all meeting notes)
+  Reads:  context/{customer_id}/context.json
+          notes/{customer_id}/* (new notes only, diffed against context)
           jep/{customer_id}/LATEST.md             (previous version, if any)
           agent3/{customer_id}/*/LATEST.json      (latest diagram, if generated)
-  Output: jep/{customer_id}/v{n}.md
+  Writes: jep/{customer_id}/v{n}.md
           jep/{customer_id}/LATEST.md
           jep/{customer_id}/MANIFEST.json
+          context/{customer_id}/context.json (updated)
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Callable, Optional
 
-from agent.bom_stub import generate_stub_bom, bom_to_markdown
-from agent.document_store import get_all_notes_text, get_latest_doc, save_doc
+from agent.bom_stub import bom_to_markdown, generate_stub_bom
+from agent.context_store import (
+    build_context_summary,
+    get_new_notes,
+    read_context,
+    record_agent_run,
+    write_context,
+)
+from agent.document_store import get_latest_doc, save_doc
 from agent.persistence_objectstore import ObjectStoreBase
 
 logger = logging.getLogger(__name__)
+
+AGENT_NAME = "jep"
 
 JEP_SYSTEM_MESSAGE = (
     "You are an Oracle Cloud solutions architect writing a Joint Execution Plan (JEP) for a POC. "
@@ -57,8 +72,9 @@ Write a Joint Execution Plan (JEP) for an Oracle Cloud Infrastructure (OCI) POC.
 
 Customer: {customer_name}
 
-Meeting Notes:
-{notes_text}
+{context_summary}
+
+{new_notes_section}
 
 {previous_jep_section}
 
@@ -208,10 +224,6 @@ def generate_jep(
     """
     Generate or update a JEP document for a customer.
 
-    Reads all notes + previous JEP version (if any), calls the stub BOM
-    generator, references the latest diagram from the bucket, then calls
-    the LLM to draft the full JEP.
-
     Args:
         customer_id:         Customer identifier — bucket key prefix.
         customer_name:       Human-readable customer name.
@@ -223,18 +235,36 @@ def generate_jep(
         diagram_url:         Download URL for the diagram (optional).
         persistence_prefix:  Bucket prefix used by Agent 3 (default "agent3").
 
-    Returns:
-        dict with keys:
-            version (int), key (str), latest_key (str), content (str), bom (dict)
+    Returns dict with keys:
+        version (int), key (str), latest_key (str), content (str), bom (dict), context (dict)
     """
-    # ── Gather notes ──────────────────────────────────────────────────────────
-    notes_text = get_all_notes_text(store, customer_id)
-    if not notes_text:
-        logger.warning("No notes found for customer=%s; generating skeleton JEP", customer_id)
-        notes_text = "(No meeting notes available — generate a skeleton JEP based on customer name only.)"
+    # ── Read context + diff new notes ─────────────────────────────────────────
+    context = read_context(store, customer_id, customer_name)
+    if customer_name and not context.get("customer_name"):
+        context["customer_name"] = customer_name
+
+    new_note_keys, new_notes_text = get_new_notes(store, context, AGENT_NAME)
+    context_summary = build_context_summary(context)
 
     # ── Previous JEP version ──────────────────────────────────────────────────
     previous_jep = get_latest_doc(store, "jep", customer_id)
+
+    # ── Build prompt sections ─────────────────────────────────────────────────
+    if context_summary:
+        context_block = f"{context_summary}\n"
+    else:
+        context_block = ""
+
+    if new_notes_text:
+        new_notes_section = (
+            "New meeting notes to incorporate (not yet in previous version):\n"
+            f"{new_notes_text[:4000]}"
+        )
+    elif not previous_jep:
+        new_notes_section = "(No meeting notes uploaded yet — generate a skeleton JEP.)"
+    else:
+        new_notes_section = "(No new notes since last run — refine the existing JEP if needed.)"
+
     if previous_jep:
         previous_jep_section = (
             "Previous JEP version (use for continuity; update based on new notes):\n"
@@ -242,15 +272,23 @@ def generate_jep(
             + previous_jep[:2000]
             + "\n```\n"
         )
+        instructions_notes = new_notes_text or "(no new notes)"
     else:
         previous_jep_section = ""
+        instructions_notes = ""
 
-    # ── Stub BOM ──────────────────────────────────────────────────────────────
+    # ── Stub BOM from new notes (or all notes if first run) ───────────────────
+    bom_text_for_stub = new_notes_text if new_notes_text else new_notes_section
     logger.info("Generating stub BOM for customer=%s", customer_id)
-    bom = generate_stub_bom(notes_text, text_runner, customer_name=customer_name)
+    bom = generate_stub_bom(bom_text_for_stub, text_runner, customer_name=customer_name)
     bom_md = bom_to_markdown(bom)
 
     # ── Diagram reference ─────────────────────────────────────────────────────
+    # Check context for diagram key from Agent 3
+    diagram_agents = context.get("agents", {})
+    if not diagram_key and "diagram" in diagram_agents:
+        diagram_key = diagram_agents["diagram"].get("diagram_key")
+
     if diagram_key:
         diagram_ref = (
             f"*Architecture diagram generated by Agent 3.*  \n"
@@ -273,12 +311,13 @@ def generate_jep(
             )
 
     # ── Duration ──────────────────────────────────────────────────────────────
-    duration = _infer_duration(notes_text)
+    duration = _infer_duration(new_notes_text or bom_text_for_stub)
 
     # ── Build prompt ──────────────────────────────────────────────────────────
     prompt = _PROMPT_TEMPLATE.format(
         customer_name=customer_name,
-        notes_text=notes_text[:5000],
+        context_summary=context_block,
+        new_notes_section=new_notes_section,
         previous_jep_section=previous_jep_section,
         bom_md=bom_md,
         diagram_ref=diagram_ref,
@@ -286,7 +325,7 @@ def generate_jep(
     )
 
     # ── Generate ──────────────────────────────────────────────────────────────
-    logger.info("Generating JEP: customer_id=%s customer_name=%r", customer_id, customer_name)
+    logger.info("Generating JEP: customer_id=%s new_notes=%d", customer_id, len(new_note_keys))
     content = text_runner(prompt, JEP_SYSTEM_MESSAGE)
 
     # ── Persist ───────────────────────────────────────────────────────────────
@@ -299,5 +338,20 @@ def generate_jep(
     if diagram_key:
         result["diagram_key"] = diagram_key
 
+    # ── Update + write context ────────────────────────────────────────────────
+    context = record_agent_run(
+        context,
+        AGENT_NAME,
+        new_note_keys,
+        {
+            "version":      result["version"],
+            "key":          result["key"],
+            "duration_days": bom.get("duration_days", 14),
+            "bom_source":   bom.get("source", "stub"),
+        },
+    )
+    write_context(store, customer_id, context)
+
+    result["context"] = context
     logger.info("JEP saved: version=%d key=%s", result["version"], result["key"])
     return result

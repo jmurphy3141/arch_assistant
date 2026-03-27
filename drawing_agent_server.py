@@ -77,6 +77,13 @@ from agent.document_store import (
 )
 from agent.pov_agent import generate_pov
 from agent.jep_agent import generate_jep
+from agent.terraform_agent import (
+    generate_terraform,
+    get_latest_terraform_files,
+    list_terraform_versions,
+)
+from agent.waf_agent import generate_waf_review
+from agent.context_store import read_context
 
 try:
     import server.services.oci_object_storage as _oci_storage
@@ -126,6 +133,14 @@ WRITING_MAX_TOKENS     = int(_writing_cfg.get("max_tokens", 4000))
 WRITING_TEMPERATURE    = float(_writing_cfg.get("temperature", 0.7))
 WRITING_TOP_P          = float(_writing_cfg.get("top_p", 0.9))
 WRITING_TOP_K          = int(_writing_cfg.get("top_k", 0))
+
+# ── Terraform agent config ────────────────────────────────────────────────────
+_terraform_cfg          = _cfg.get("terraform", {})
+TERRAFORM_MODEL_ID      = _terraform_cfg.get("model_id", "") or INFERENCE_MODEL_ID
+TERRAFORM_MAX_TOKENS    = int(_terraform_cfg.get("max_tokens", 6000))
+TERRAFORM_TEMPERATURE   = float(_terraform_cfg.get("temperature", 0.2))
+TERRAFORM_TOP_P         = float(_terraform_cfg.get("top_p", 0.9))
+TERRAFORM_TOP_K         = int(_terraform_cfg.get("top_k", 0))
 
 # ── Fleet identity ───────────────────────────────────────────────────────────
 AGENT_ID    = _cfg.get("agent_id", "agent3-oci-drawing")
@@ -204,6 +219,16 @@ class JepRequest(BaseModel):
     customer_name: str
     diagram_key:   Optional[str] = None
     diagram_url:   Optional[str] = None
+
+
+class TerraformRequest(BaseModel):
+    customer_id:   str
+    customer_name: str
+
+
+class WafRequest(BaseModel):
+    customer_id:   str
+    customer_name: str
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -1701,6 +1726,193 @@ async def jep_versions(customer_id: str):
         functools.partial(list_versions, store, "jep", customer_id)
     )
     return {"status": "ok", "customer_id": customer_id, "doc_type": "jep", "versions": versions}
+
+
+# ── Terraform endpoints ───────────────────────────────────────────────────────
+
+@app.post("/terraform/generate")
+async def terraform_generate(req: TerraformRequest):
+    """
+    Generate or update Terraform HCL files for a customer's OCI deployment.
+
+    Reads context, new notes, and the latest architecture diagram spec from the
+    bucket, fetches oracle-quickstart examples from GitHub, then uses the LLM
+    to generate main.tf, variables.tf, outputs.tf, and terraform.tfvars.example.
+
+    Saves to: terraform/{customer_id}/v{n}/
+    """
+    store = _require_object_store()
+    persistence_cfg = getattr(app.state, "persistence_config", None) or {}
+    prefix = persistence_cfg.get("prefix", "agent3")
+
+    def _run_terraform():
+        text_runner = getattr(app.state, "text_runner", None)
+        if text_runner is None:
+            from agent.llm_inference_client import run_inference as _ri
+            def text_runner(prompt, system_message=""):
+                return _ri(
+                    prompt,
+                    endpoint=INFERENCE_ENDPOINT,
+                    model_id=TERRAFORM_MODEL_ID,
+                    compartment_id=COMPARTMENT_ID,
+                    max_tokens=TERRAFORM_MAX_TOKENS,
+                    temperature=TERRAFORM_TEMPERATURE,
+                    top_p=TERRAFORM_TOP_P,
+                    top_k=TERRAFORM_TOP_K,
+                    system_message=system_message,
+                )
+        return generate_terraform(
+            req.customer_id, req.customer_name, store, text_runner,
+            persistence_prefix=prefix,
+        )
+
+    try:
+        result = await anyio.to_thread.run_sync(_run_terraform)
+        return {
+            "status":        "ok",
+            "agent_version": AGENT_VERSION,
+            "customer_id":   req.customer_id,
+            "doc_type":      "terraform",
+            "version":       result["version"],
+            "prefix_key":    result["prefix_key"],
+            "file_count":    result["file_count"],
+            "files":         result["files"],
+            "latest_key":    result["latest_key"],
+            "errors":        [],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error in /terraform/generate: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/terraform/{customer_id}/latest")
+async def terraform_latest(customer_id: str):
+    """Return the latest Terraform files for a customer."""
+    store = _require_object_store()
+    try:
+        result = await anyio.to_thread.run_sync(
+            functools.partial(get_latest_terraform_files, store, customer_id)
+        )
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No Terraform found for customer_id={customer_id!r}",
+        )
+    return {
+        "status":      "ok",
+        "customer_id": customer_id,
+        "doc_type":    "terraform",
+        "version":     result["version"],
+        "prefix_key":  result["prefix_key"],
+        "files":       result["files"],
+    }
+
+
+@app.get("/terraform/{customer_id}/versions")
+async def terraform_versions(customer_id: str):
+    """List all Terraform versions for a customer."""
+    store = _require_object_store()
+    versions = await anyio.to_thread.run_sync(
+        functools.partial(list_terraform_versions, store, customer_id)
+    )
+    return {
+        "status":      "ok",
+        "customer_id": customer_id,
+        "doc_type":    "terraform",
+        "versions":    versions,
+    }
+
+
+# ── WAF endpoints ─────────────────────────────────────────────────────────────
+
+@app.post("/waf/generate")
+async def waf_generate(req: WafRequest):
+    """
+    Generate or update an OCI Well-Architected Framework review for a customer.
+
+    Reads the full context (all prior agent outputs + new notes) and produces
+    a structured Markdown review across all 6 OCI WAF pillars.
+
+    Saves to: waf/{customer_id}/v{n}.md + LATEST.md
+    """
+    store = _require_object_store()
+
+    def _run_waf():
+        text_runner = getattr(app.state, "text_runner", None)
+        if text_runner is None:
+            from agent.llm_inference_client import run_inference as _ri
+            def text_runner(prompt, system_message=""):
+                return _ri(
+                    prompt,
+                    endpoint=INFERENCE_ENDPOINT,
+                    model_id=INFERENCE_MODEL_ID,
+                    compartment_id=COMPARTMENT_ID,
+                    max_tokens=WRITING_MAX_TOKENS,
+                    temperature=WRITING_TEMPERATURE,
+                    top_p=WRITING_TOP_P,
+                    top_k=WRITING_TOP_K,
+                    system_message=system_message,
+                )
+        return generate_waf_review(req.customer_id, req.customer_name, store, text_runner)
+
+    try:
+        result = await anyio.to_thread.run_sync(_run_waf)
+        return {
+            "status":         "ok",
+            "agent_version":  AGENT_VERSION,
+            "customer_id":    req.customer_id,
+            "doc_type":       "waf",
+            "version":        result["version"],
+            "key":            result["key"],
+            "latest_key":     result["latest_key"],
+            "content":        result["content"],
+            "overall_rating": result.get("overall_rating", ""),
+            "errors":         [],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error in /waf/generate: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/waf/{customer_id}/latest")
+async def waf_latest(customer_id: str):
+    """Return the latest WAF review for a customer."""
+    store = _require_object_store()
+    content = await anyio.to_thread.run_sync(
+        functools.partial(get_latest_doc, store, "waf", customer_id)
+    )
+    if content is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No WAF review found for customer_id={customer_id!r}",
+        )
+    return {"status": "ok", "customer_id": customer_id, "doc_type": "waf", "content": content}
+
+
+@app.get("/waf/{customer_id}/versions")
+async def waf_versions(customer_id: str):
+    """List all WAF review versions for a customer."""
+    store = _require_object_store()
+    versions = await anyio.to_thread.run_sync(
+        functools.partial(list_versions, store, "waf", customer_id)
+    )
+    return {"status": "ok", "customer_id": customer_id, "doc_type": "waf", "versions": versions}
+
+
+# ── Context endpoint ──────────────────────────────────────────────────────────
+
+@app.get("/context/{customer_id}")
+async def get_context(customer_id: str):
+    """Return the shared context file for a customer (fleet engagement state)."""
+    store = _require_object_store()
+    ctx = await anyio.to_thread.run_sync(
+        functools.partial(read_context, store, customer_id)
+    )
+    return {"status": "ok", "customer_id": customer_id, "context": ctx}
 
 
 if __name__ == "__main__":

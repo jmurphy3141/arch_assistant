@@ -398,3 +398,263 @@ class TestEndToEndWorkflow:
         r = client.post("/jep/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
         # JEP is version 1 even though POV is at version 2
         assert r.json()["version"] == 1
+
+
+# ── /terraform/generate ───────────────────────────────────────────────────────
+
+_FAKE_TERRAFORM = (
+    "// FILE: main.tf\n```hcl\n"
+    "resource \"oci_core_vcn\" \"main\" { display_name = \"TestCo-VCN\" }\n"
+    "```\n\n"
+    "// FILE: variables.tf\n```hcl\nvariable \"tenancy_ocid\" {}\n```\n\n"
+    "// FILE: outputs.tf\n```hcl\noutput \"vcn_id\" { value = oci_core_vcn.main.id }\n```\n\n"
+    "// FILE: terraform.tfvars.example\n```hcl\n# tenancy_ocid = \"[TBD]\"\n```\n"
+)
+
+_FAKE_WAF = (
+    "# TestCo — OCI Well-Architected Framework Review\n\n"
+    "## Executive Summary\nGood baseline.\n\n"
+    "### Overall Rating\n"
+    "| Pillar | Rating | Summary |\n"
+    "|--------|--------|---------|\n"
+    "| Operational Excellence | ✅ | Good |\n"
+    "| Security | ⚠️ | Needs Vault |\n"
+)
+
+
+def _fake_all_runner(prompt: str, system_message: str = "") -> str:
+    """Route fake responses for all agent types."""
+    if '"hardware"' in prompt and '"software"' in prompt:
+        return _FAKE_BOM_JSON
+    if "Well-Architected" in system_message or "WAF" in system_message or "pillar" in system_message.lower():
+        return _FAKE_WAF
+    if "FILE: main.tf" in prompt or "Terraform HCL" in prompt:
+        return _FAKE_TERRAFORM
+    return _FAKE_POV if "POV" in system_message or "Point of View" in system_message else _FAKE_JEP
+
+
+@pytest.fixture
+def full_client(store):
+    """TestClient wired for all 6 agents including terraform and waf."""
+    from unittest.mock import patch
+    app.state.llm_runner = lambda prompt, client_id: {"status": "ok", "nodes": []}
+    app.state.text_runner = _fake_all_runner
+    app.state.object_store = store
+    app.state.persistence_config = {"prefix": "agent3"}
+    with patch("agent.terraform_agent._search_github_examples", return_value=""):
+        with TestClient(app) as c:
+            yield c
+    if hasattr(app.state, "llm_runner"):   del app.state.llm_runner
+    if hasattr(app.state, "text_runner"):  del app.state.text_runner
+    if hasattr(app.state, "object_store"): del app.state.object_store
+    if hasattr(app.state, "persistence_config"): del app.state.persistence_config
+
+
+class TestTerraformGenerate:
+    def test_generate_terraform_ok(self, full_client):
+        resp = full_client.post(
+            "/terraform/generate",
+            json={"customer_id": "cust1", "customer_name": "TestCo"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["doc_type"] == "terraform"
+        assert body["version"] == 1
+        assert body["file_count"] > 0
+
+    def test_generate_terraform_increments_version(self, full_client):
+        full_client.post("/terraform/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        resp = full_client.post("/terraform/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        assert resp.json()["version"] == 2
+
+    def test_generate_terraform_no_store_503(self):
+        app.state.text_runner = _fake_all_runner
+        app.state.object_store = None
+        app.state.persistence_config = {}
+        with TestClient(app) as c:
+            resp = c.post("/terraform/generate", json={"customer_id": "c1", "customer_name": "X"})
+        assert resp.status_code == 503
+
+    def test_generate_terraform_has_files_key(self, full_client):
+        resp = full_client.post(
+            "/terraform/generate",
+            json={"customer_id": "cust1", "customer_name": "TestCo"},
+        )
+        assert "files" in resp.json()
+
+    def test_generate_terraform_agent_version_present(self, full_client):
+        resp = full_client.post(
+            "/terraform/generate",
+            json={"customer_id": "cust1", "customer_name": "TestCo"},
+        )
+        assert "agent_version" in resp.json()
+
+
+class TestTerraformLatest:
+    def test_latest_terraform_ok(self, full_client):
+        full_client.post("/terraform/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        resp = full_client.get("/terraform/cust1/latest")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "files" in body
+        assert "main.tf" in body["files"]
+
+    def test_latest_terraform_not_found(self, full_client):
+        resp = full_client.get("/terraform/no-such/latest")
+        assert resp.status_code == 404
+
+    def test_latest_shows_newest_version(self, full_client):
+        full_client.post("/terraform/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        full_client.post("/terraform/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        resp = full_client.get("/terraform/cust1/latest")
+        assert resp.json()["version"] == 2
+
+
+class TestTerraformVersions:
+    def test_versions_empty(self, full_client):
+        resp = full_client.get("/terraform/nobody/versions")
+        assert resp.status_code == 200
+        assert resp.json()["versions"] == []
+
+    def test_versions_count(self, full_client):
+        full_client.post("/terraform/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        full_client.post("/terraform/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        resp = full_client.get("/terraform/cust1/versions")
+        assert len(resp.json()["versions"]) == 2
+
+
+# ── /waf/generate ─────────────────────────────────────────────────────────────
+
+class TestWafGenerate:
+    def test_generate_waf_ok(self, full_client):
+        resp = full_client.post(
+            "/waf/generate",
+            json={"customer_id": "cust1", "customer_name": "TestCo"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["doc_type"] == "waf"
+        assert body["version"] == 1
+        assert body["content"]
+
+    def test_generate_waf_has_overall_rating(self, full_client):
+        resp = full_client.post(
+            "/waf/generate",
+            json={"customer_id": "cust1", "customer_name": "TestCo"},
+        )
+        assert "overall_rating" in resp.json()
+
+    def test_generate_waf_increments_version(self, full_client):
+        full_client.post("/waf/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        resp = full_client.post("/waf/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        assert resp.json()["version"] == 2
+
+    def test_generate_waf_no_store_503(self):
+        app.state.text_runner = _fake_all_runner
+        app.state.object_store = None
+        app.state.persistence_config = {}
+        with TestClient(app) as c:
+            resp = c.post("/waf/generate", json={"customer_id": "c1", "customer_name": "X"})
+        assert resp.status_code == 503
+
+    def test_generate_waf_agent_version_present(self, full_client):
+        resp = full_client.post(
+            "/waf/generate",
+            json={"customer_id": "cust1", "customer_name": "TestCo"},
+        )
+        assert "agent_version" in resp.json()
+
+
+class TestWafLatest:
+    def test_latest_waf_ok(self, full_client):
+        full_client.post("/waf/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        resp = full_client.get("/waf/cust1/latest")
+        assert resp.status_code == 200
+        assert resp.json()["content"]
+
+    def test_latest_waf_not_found(self, full_client):
+        resp = full_client.get("/waf/no-such/latest")
+        assert resp.status_code == 404
+
+
+class TestWafVersions:
+    def test_versions_empty(self, full_client):
+        resp = full_client.get("/waf/nobody/versions")
+        assert resp.status_code == 200
+        assert resp.json()["versions"] == []
+
+    def test_versions_count(self, full_client):
+        full_client.post("/waf/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        full_client.post("/waf/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        resp = full_client.get("/waf/cust1/versions")
+        assert len(resp.json()["versions"]) == 2
+
+
+# ── /context/{customer_id} ────────────────────────────────────────────────────
+
+class TestContextEndpoint:
+    def test_context_empty_customer(self, full_client):
+        resp = full_client.get("/context/newcustomer")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["context"]["customer_id"] == "newcustomer"
+        assert body["context"]["agents"] == {}
+
+    def test_context_after_pov_generation(self, full_client):
+        full_client.post("/pov/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        resp = full_client.get("/context/cust1")
+        assert resp.status_code == 200
+        ctx = resp.json()["context"]
+        assert "pov" in ctx["agents"]
+        assert ctx["agents"]["pov"]["version"] == 1
+
+    def test_context_accumulates_multiple_agents(self, full_client):
+        full_client.post("/pov/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        full_client.post("/waf/generate", json={"customer_id": "cust1", "customer_name": "TestCo"})
+        resp = full_client.get("/context/cust1")
+        ctx = resp.json()["context"]
+        assert "pov" in ctx["agents"]
+        assert "waf" in ctx["agents"]
+
+
+# ── Full 6-agent workflow ──────────────────────────────────────────────────────
+
+class TestFullFleetWorkflow:
+    def test_six_agent_workflow(self, full_client):
+        """Upload notes → POV → JEP → Terraform → WAF → check context."""
+        cid = "acme_corp"
+
+        # Upload notes
+        full_client.post(
+            "/notes/upload",
+            data={"customer_id": cid, "note_name": "kickoff.md"},
+            files={"file": ("kickoff.md", io.BytesIO(_SAMPLE_NOTES), "text/plain")},
+        )
+
+        # POV
+        r = full_client.post("/pov/generate", json={"customer_id": cid, "customer_name": "Acme Corp"})
+        assert r.status_code == 200
+
+        # JEP
+        r = full_client.post("/jep/generate", json={"customer_id": cid, "customer_name": "Acme Corp"})
+        assert r.status_code == 200
+
+        # Terraform
+        r = full_client.post("/terraform/generate", json={"customer_id": cid, "customer_name": "Acme Corp"})
+        assert r.status_code == 200
+
+        # WAF
+        r = full_client.post("/waf/generate", json={"customer_id": cid, "customer_name": "Acme Corp"})
+        assert r.status_code == 200
+
+        # Verify context has all agents
+        ctx_resp = full_client.get(f"/context/{cid}")
+        assert ctx_resp.status_code == 200
+        agents = ctx_resp.json()["context"]["agents"]
+        assert "pov" in agents
+        assert "jep" in agents
+        assert "terraform" in agents
+        assert "waf" in agents
