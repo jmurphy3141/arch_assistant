@@ -1,6 +1,15 @@
 # OCI Drawing Agent — configuration
 # Auth uses OCI Instance Principal; no credentials stored here.
 
+# Fleet identity
+agent_id: "agent3-oci-drawing"
+fleet:
+  fleet_id: "oci-agent-fleet"
+  position: 3
+  total_agents: 7
+  upstream:   ["agent2-bom-sizing"]
+  downstream: ["agent4-sizing-validation", "agent6-terraform"]
+
 # OCI region (must match inference model OCID region)
 region: "us-chicago-1"
 

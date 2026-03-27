@@ -1,20 +1,28 @@
 """
 a2a_server.py
 --------------
-Agent-to-Agent (A2A) protocol server for the OCI Drawing Agent.
+DEPRECATED — A2A is now served directly by drawing_agent_server.py.
 
-Exposes the drawing agent capabilities over the A2A protocol so other agents
-in the fleet can request diagrams programmatically.
+  New endpoint:  POST /api/a2a/task          (on port 8000/8080)
+  Agent card:    GET  /.well-known/agent.json (primary)
+                 GET  /.well-known/agent-card.json (alias)
 
-Fleet context:
-  Agent 1: Requirements gathering
-  Agent 2: BOM sizing + pricing
-  Agent 3: Architecture diagram  ← this agent
-  Agent 4: Sizing validation
-  Agent 5: Cost optimisation
-  Agent 6: Terraform generation
-  Agent 7: Well-Architected Framework review
+This standalone server (port 8081) is kept only for backward compatibility
+with any existing integrations.  New orchestrators should call the main server
+directly — it shares state (PENDING_CLARIFY, IDEMPOTENCY_CACHE) and goes
+through the OCI Load Balancer correctly.
+
+Skills now available in the main server:
+  generate_diagram  — inline resources or OCI bucket ref
+  upload_bom        — parse Excel BOM from OCI bucket ref
+  clarify_diagram   — continue a pending clarification round
 """
+import warnings
+warnings.warn(
+    "a2a_server.py is deprecated. Use POST /api/a2a/task on the main server.",
+    DeprecationWarning,
+    stacklevel=1,
+)
 from __future__ import annotations
 
 import os

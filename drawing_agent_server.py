@@ -70,6 +70,13 @@ from agent.persistence_objectstore import (
     ARTIFACT_ALLOWLIST,
 )
 
+try:
+    import server.services.oci_object_storage as _oci_storage
+    _OCI_STORAGE_AVAILABLE = True
+except Exception:
+    _oci_storage = None  # type: ignore
+    _OCI_STORAGE_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 app = FastAPI(title="OCI Drawing Agent", version="1.3.2")
 
@@ -105,6 +112,10 @@ PERSISTENCE_NAMESPACE = _per_cfg.get("namespace", "")
 PERSISTENCE_BUCKET    = _per_cfg.get("bucket_name", "")
 PERSISTENCE_PREFIX    = _per_cfg.get("prefix", "diagrams")
 
+# ── Fleet identity ───────────────────────────────────────────────────────────
+AGENT_ID    = _cfg.get("agent_id", "agent3-oci-drawing")
+FLEET_CFG   = _cfg.get("fleet", {})
+
 AGENT_VERSION  = "1.3.2"
 SCHEMA_VERSION = {"spec": "1.1", "draw_dict": "1.0"}
 
@@ -135,6 +146,37 @@ class GenerateRequest(BaseModel):
     diagram_name:       Optional[str]  = "oci_architecture"
     client_id:          Optional[str]  = "default"
     deployment_hints:   Optional[dict] = {}
+
+
+class A2AObjectRef(BaseModel):
+    """OCI Object Storage reference — used in A2A task inputs."""
+    namespace:  Optional[str] = None
+    bucket:     str
+    object:     str
+    version_id: Optional[str] = None
+
+
+class A2ATask(BaseModel):
+    """
+    Incoming task from an orchestrator or peer agent.
+
+    skill values:
+      "generate_diagram"  — generate from a resource list (inline or bucket ref)
+      "upload_bom"        — parse a BOM Excel from a bucket ref and generate
+      "clarify_diagram"   — submit clarification answers for a pending request
+    """
+    task_id:      str
+    skill:        str
+    inputs:       Dict[str, Any] = {}
+    client_id:    str = "default"
+
+
+class A2AResponse(BaseModel):
+    task_id:       str
+    agent_id:      str
+    status:        str                    # "ok" | "need_clarification" | "error"
+    outputs:       Dict[str, Any] = {}
+    error_message: Optional[str]  = None
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -962,25 +1004,394 @@ def get_catalogue():
     return {"catalogue": get_catalogue_summary()}
 
 
-@app.get("/.well-known/agent-card.json")
-def agent_card():
-    host = os.environ.get("AGENT_PUBLIC_HOST", "http://localhost:8080")
-    return JSONResponse({
-        "schema_version": "1.0",
-        "agent_version":  AGENT_VERSION,
-        "name":           "OCI Drawing Agent",
-        "description":    "Generates OCI architecture draw.io diagrams from a BOM Excel file.",
-        "vendor":         "Oracle",
-        "capabilities":   ["diagram-generation", "bom-parsing", "clarification-flow",
-                           "multi-region", "object-storage-persistence"],
-        "endpoints": {
-            "upload_bom": {"path": "/upload-bom", "method": "POST"},
-            "clarify":    {"path": "/clarify",    "method": "POST"},
-            "generate":   {"path": "/generate",   "method": "POST"},
-            "chat":       {"path": "/chat",        "method": "POST"},
-            "tools":      {"path": "/mcp/tools",   "method": "GET"},
+# ── Agent card (A2A discovery) ───────────────────────────────────────────────
+
+def _build_agent_card(host: str) -> dict:
+    """
+    Build the agent card dict.  Served at both the Google A2A well-known URL
+    (/.well-known/agent.json) and the legacy alias (/.well-known/agent-card.json).
+
+    Schema follows the Google A2A Agent Card specification (v0.1).
+    Orchestrators should use /.well-known/agent.json.
+    """
+    _obj_ref_schema = {
+        "type": "object",
+        "required": ["bucket", "object"],
+        "properties": {
+            "namespace":  {"type": "string"},
+            "bucket":     {"type": "string"},
+            "object":     {"type": "string"},
+            "version_id": {"type": "string"},
         },
-    })
+    }
+    return {
+        "schema_version": "0.1",
+        "agent_id":       AGENT_ID,
+        "name":           "OCI Drawing Agent",
+        "description": (
+            "Generates OCI architecture draw.io diagrams from a Bill of Materials "
+            "or resource list. Part of the OCI Agent Fleet (Agent 3 of 7)."
+        ),
+        "version": AGENT_VERSION,
+        "url":     f"{host}/api/a2a/task",
+        "fleet": {
+            "fleet_id":     FLEET_CFG.get("fleet_id", "oci-agent-fleet"),
+            "position":     FLEET_CFG.get("position", 3),
+            "total_agents": FLEET_CFG.get("total_agents", 7),
+            "upstream":     FLEET_CFG.get("upstream",   ["agent2-bom-sizing"]),
+            "downstream":   FLEET_CFG.get("downstream", ["agent4-sizing-validation"]),
+        },
+        "capabilities": {
+            "clarification_flow":     True,   # may return need_clarification; call clarify_diagram
+            "streaming":              False,
+            "push_notifications":     False,
+            "object_storage_inputs":  True,   # accepts *_from_bucket ObjectRef inputs
+        },
+        "skills": [
+            {
+                "id":          "generate_diagram",
+                "name":        "Generate Architecture Diagram",
+                "description": (
+                    "Generate a draw.io OCI architecture diagram from a resource list. "
+                    "Accepts inline resources[] or an OCI bucket reference. "
+                    "May return need_clarification — call clarify_diagram to continue."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "oneOf": [
+                        {"required": ["resources"]},
+                        {"required": ["resources_from_bucket"]},
+                    ],
+                    "properties": {
+                        "resources":             {"type": "array",  "items": {"type": "object"}},
+                        "resources_from_bucket": _obj_ref_schema,
+                        "context":               {"type": "string"},
+                        "context_from_bucket":   _obj_ref_schema,
+                        "questionnaire":         {"type": "string"},
+                        "notes":                 {"type": "string"},
+                        "deployment_hints":      {"type": "object"},
+                        "diagram_name":          {"type": "string", "default": "oci_architecture"},
+                    },
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {
+                        "status":          {"type": "string", "enum": ["ok", "need_clarification"]},
+                        "request_id":      {"type": "string"},
+                        "input_hash":      {"type": "string"},
+                        "drawio_xml":      {"type": "string"},
+                        "render_manifest": {"type": "object"},
+                        "questions":       {"type": "array",  "description": "Present when status=need_clarification"},
+                        "download":        {"type": "object"},
+                    },
+                },
+            },
+            {
+                "id":          "upload_bom",
+                "name":        "Upload BOM from Bucket",
+                "description": (
+                    "Parse an Excel BOM stored in OCI Object Storage and generate a diagram. "
+                    "Agent 2 should PUT the BOM to the shared bucket and pass the reference here. "
+                    "May return need_clarification."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "required": ["bom_from_bucket"],
+                    "properties": {
+                        "bom_from_bucket": _obj_ref_schema,
+                        "context":         {"type": "string"},
+                        "diagram_name":    {"type": "string", "default": "oci_architecture"},
+                    },
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {
+                        "status":     {"type": "string", "enum": ["ok", "need_clarification"]},
+                        "request_id": {"type": "string"},
+                        "drawio_xml": {"type": "string"},
+                        "questions":  {"type": "array"},
+                        "download":   {"type": "object"},
+                    },
+                },
+            },
+            {
+                "id":          "clarify_diagram",
+                "name":        "Submit Clarification Answers",
+                "description": (
+                    "Resume a pending diagram generation by providing answers to "
+                    "clarification questions. Use the same client_id and diagram_name "
+                    "as the original generate_diagram or upload_bom call."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "required": ["answers", "diagram_name"],
+                    "properties": {
+                        "answers":      {"type": "string", "description": "Free-text answers to the questions"},
+                        "diagram_name": {"type": "string"},
+                    },
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {
+                        "status":     {"type": "string", "enum": ["ok", "need_clarification"]},
+                        "request_id": {"type": "string"},
+                        "drawio_xml": {"type": "string"},
+                        "questions":  {"type": "array"},
+                        "download":   {"type": "object"},
+                    },
+                },
+            },
+        ],
+        "authentication": {
+            "schemes": ["none"],
+            "note": (
+                "Internal OCI network only. "
+                "Backend uses Instance Principal auth; no bearer token required from orchestrator."
+            ),
+        },
+        "health_check_url": f"{host}/api/health",
+    }
+
+
+@app.get("/.well-known/agent.json")          # Google A2A spec primary URL
+@app.get("/.well-known/agent-card.json")      # legacy alias — keep for backward compat
+def agent_card():
+    host = os.environ.get("AGENT_PUBLIC_HOST", "http://localhost:8000")
+    return JSONResponse(_build_agent_card(host))
+
+
+# ── A2A task endpoint ────────────────────────────────────────────────────────
+
+@app.post("/api/a2a/task", response_model=A2AResponse)
+async def a2a_task(task: A2ATask) -> A2AResponse:
+    """
+    Receive a task from an orchestrator or peer agent and dispatch to the
+    appropriate skill handler.
+
+    Skill routing:
+      generate_diagram  → _a2a_generate_diagram()
+      upload_bom        → _a2a_upload_bom()
+      clarify_diagram   → _a2a_clarify()
+
+    All errors are returned as A2AResponse(status="error") — the orchestrator
+    should inspect error_message; it never receives an HTTP 4xx/5xx for
+    expected failure modes.
+    """
+    _SKILLS = {
+        "generate_diagram": _a2a_generate_diagram,
+        "upload_bom":       _a2a_upload_bom,
+        "clarify_diagram":  _a2a_clarify,
+    }
+    handler = _SKILLS.get(task.skill)
+    if handler is None:
+        return A2AResponse(
+            task_id=task.task_id,
+            agent_id=AGENT_ID,
+            status="error",
+            error_message=(
+                f"Unknown skill {task.skill!r}. "
+                f"Available: {list(_SKILLS)}"
+            ),
+        )
+    try:
+        result = await handler(task)
+        return A2AResponse(
+            task_id=task.task_id,
+            agent_id=AGENT_ID,
+            status=result.get("status", "error"),
+            outputs=result,
+        )
+    except HTTPException as exc:
+        return A2AResponse(
+            task_id=task.task_id,
+            agent_id=AGENT_ID,
+            status="error",
+            error_message=str(exc.detail),
+        )
+    except Exception as exc:
+        logger.error("A2A task %s skill=%s error: %s", task.task_id, task.skill, exc)
+        return A2AResponse(
+            task_id=task.task_id,
+            agent_id=AGENT_ID,
+            status="error",
+            error_message=str(exc),
+        )
+
+
+# ── A2A skill handlers ───────────────────────────────────────────────────────
+
+async def _a2a_generate_diagram(task: A2ATask) -> dict:
+    """
+    generate_diagram skill.
+    Accepts inline resources[] or resources_from_bucket ObjectRef.
+    Delegates to the existing /generate pipeline.
+    """
+    inp          = task.inputs
+    diagram_name = inp.get("diagram_name", "oci_architecture")
+    request_id   = str(uuid.uuid4())
+    deployment_hints = inp.get("deployment_hints") or {}
+
+    # ── Resolve resources ────────────────────────────────────────────────────
+    if "resources_from_bucket" in inp and inp["resources_from_bucket"]:
+        ref = A2AObjectRef(**inp["resources_from_bucket"])
+        raw_resources = await _a2a_fetch_resources(ref)
+    elif "resources" in inp:
+        raw_resources = inp["resources"]
+    else:
+        raise HTTPException(422, "generate_diagram requires 'resources' or 'resources_from_bucket'")
+
+    # ── Resolve optional text fields ─────────────────────────────────────────
+    context = inp.get("context") or ""
+    if "context_from_bucket" in inp and inp["context_from_bucket"]:
+        ref = A2AObjectRef(**inp["context_from_bucket"])
+        context = await _a2a_fetch_text(ref)
+
+    questionnaire = inp.get("questionnaire") or ""
+    notes         = inp.get("notes") or ""
+    context_total = context
+    if questionnaire.strip():
+        context_total += f"\n\nQUESTIONNAIRE:\n{questionnaire}"
+    if notes.strip():
+        context_total += f"\n\nNOTES:\n{notes}"
+
+    # ── Build ServiceItems ───────────────────────────────────────────────────
+    from agent.bom_parser import build_layout_intent_prompt, ServiceItem
+    items = []
+    for r in raw_resources:
+        otype = r.get("oci_type") or r.get("type")
+        if not otype:
+            raise HTTPException(422, f"resource missing oci_type/type: {r}")
+        items.append(ServiceItem(
+            id=r.get("id", otype.replace(" ", "_")),
+            oci_type=otype,
+            label=r.get("label", otype),
+            layer=r.get("layer", "compute"),
+        ))
+
+    input_hash = compute_input_hash(
+        canonical_json(raw_resources), "\n", context_total, "\n", canonical_json(deployment_hints)
+    )
+    cache_key = (task.client_id, diagram_name, input_hash)
+    if cache_key in IDEMPOTENCY_CACHE:
+        return IDEMPOTENCY_CACHE[cache_key]
+
+    prompt = build_layout_intent_prompt(items, context=context_total)
+    result = await run_pipeline(items, prompt, diagram_name, task.client_id,
+                                request_id, input_hash, deployment_hints=deployment_hints)
+    if result["status"] == "ok":
+        IDEMPOTENCY_CACHE[cache_key] = result
+    return result
+
+
+async def _a2a_upload_bom(task: A2ATask) -> dict:
+    """
+    upload_bom skill.
+    Agent 2 stores the BOM Excel in OCI Object Storage and passes the reference.
+    Fetches the file server-side, parses it, runs the pipeline.
+    """
+    inp = task.inputs
+    if "bom_from_bucket" not in inp or not inp["bom_from_bucket"]:
+        raise HTTPException(422, "upload_bom requires 'bom_from_bucket' ObjectRef")
+    if not _OCI_STORAGE_AVAILABLE:
+        raise HTTPException(503, "OCI Object Storage client not available on this server")
+
+    ref      = A2AObjectRef(**inp["bom_from_bucket"])
+    context  = inp.get("context") or ""
+    diagram_name = inp.get("diagram_name", "oci_architecture")
+    request_id   = str(uuid.uuid4())
+
+    # Fetch BOM bytes from OCI bucket
+    bom_bytes: bytes = await anyio.to_thread.run_sync(
+        functools.partial(
+            _oci_storage.fetch_object,
+            ref.bucket, ref.object, ref.namespace, ref.version_id,
+        )
+    )
+    input_hash = compute_input_hash(hashlib.sha256(bom_bytes).hexdigest())
+
+    cache_key = (task.client_id, diagram_name, input_hash)
+    if cache_key in IDEMPOTENCY_CACHE:
+        return IDEMPOTENCY_CACHE[cache_key]
+
+    # Write to temp file and parse
+    suffix = Path(ref.object).suffix or ".xlsx"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(bom_bytes)
+        bom_path = tmp.name
+
+    items, prompt = await anyio.to_thread.run_sync(
+        functools.partial(bom_to_llm_input, bom_path, context=context)
+    )
+    await anyio.to_thread.run_sync(functools.partial(os.unlink, bom_path))
+
+    result = await run_pipeline(items, prompt, diagram_name, task.client_id,
+                                request_id, input_hash)
+    if result["status"] == "ok":
+        IDEMPOTENCY_CACHE[cache_key] = result
+    return result
+
+
+async def _a2a_clarify(task: A2ATask) -> dict:
+    """
+    clarify_diagram skill.
+    Continues a pending clarification started by generate_diagram or upload_bom.
+    The orchestrator must use the same client_id (from the A2ATask) that it used
+    in the original request.
+    """
+    inp          = task.inputs
+    answers      = inp.get("answers") or ""
+    diagram_name = inp.get("diagram_name", "oci_architecture")
+    request_id   = str(uuid.uuid4())
+    input_hash   = compute_input_hash(answers)
+
+    pending = PENDING_CLARIFY.get(task.client_id)
+    if not pending:
+        raise HTTPException(
+            404,
+            f"No pending clarification for client_id={task.client_id!r}. "
+            "Call generate_diagram or upload_bom first.",
+        )
+
+    enriched = (
+        pending["prompt"]
+        + f"\n\nCLARIFICATION ANSWERS:\n{answers.strip()}\n\n"
+        + "Now produce the layout spec JSON. Output ONLY valid JSON."
+    )
+    result = await run_pipeline(
+        pending["items"], enriched, diagram_name,
+        task.client_id, request_id, input_hash,
+    )
+    if result["status"] == "ok":
+        PENDING_CLARIFY.pop(task.client_id, None)
+    return result
+
+
+async def _a2a_fetch_resources(ref: A2AObjectRef) -> List[Dict[str, Any]]:
+    """Fetch a JSON resources array from OCI Object Storage."""
+    if not _OCI_STORAGE_AVAILABLE:
+        raise HTTPException(503, "OCI Object Storage client not available")
+    data: bytes = await anyio.to_thread.run_sync(
+        functools.partial(_oci_storage.fetch_object, ref.bucket, ref.object,
+                          ref.namespace, ref.version_id)
+    )
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(422, f"resources_from_bucket: invalid JSON: {exc}")
+    if not isinstance(parsed, list):
+        raise HTTPException(422, "resources_from_bucket: JSON root must be an array")
+    return parsed
+
+
+async def _a2a_fetch_text(ref: A2AObjectRef) -> str:
+    """Fetch a UTF-8 text object from OCI Object Storage."""
+    if not _OCI_STORAGE_AVAILABLE:
+        raise HTTPException(503, "OCI Object Storage client not available")
+    data: bytes = await anyio.to_thread.run_sync(
+        functools.partial(_oci_storage.fetch_object, ref.bucket, ref.object,
+                          ref.namespace, ref.version_id)
+    )
+    return data.decode("utf-8")
 
 
 if __name__ == "__main__":
