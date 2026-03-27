@@ -65,6 +65,8 @@ TERRAFORM_SYSTEM_MESSAGE = (
 _EXAMPLE_REPOS = [
     "oracle-quickstart/oci-landing-zones",
     "oracle-quickstart/terraform-oci-oke",
+    "oracle-quickstart/oci-hpc-oke",   # HPC on OKE with RDMA + FSS
+    "oracle-quickstart/oci-hpc",       # HPC cluster patterns on OCI bare metal
     "ncusato/kove-terraform-oci",
 ]
 
@@ -168,6 +170,12 @@ def _extract_service_keywords(context: dict, new_notes_text: str) -> list[str]:
         "load balancer": "load-balancer",
         "compute": "compute",
         "gpu": "gpu",
+        "hpc": "hpc",
+        "rdma": "rdma",
+        "high performance": "hpc",
+        "file storage": "fss",
+        "fss": "fss",
+        "bare metal": "hpc",
         "bastion": "bastion",
         "vault": "vault",
     }

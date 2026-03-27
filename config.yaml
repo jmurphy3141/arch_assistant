@@ -86,6 +86,8 @@ terraform:
   example_repos:
     - "oracle-quickstart/oci-landing-zones"
     - "oracle-quickstart/terraform-oci-oke"
+    - "oracle-quickstart/oci-hpc-oke"      # HPC on OKE with RDMA + FSS (https://blogs.oracle.com/cloud-infrastructure/deploying-hpc-cluster-rdma-network-oke-fss-mount)
+    - "oracle-quickstart/oci-hpc"          # HPC cluster patterns on OCI bare metal
     - "ncusato/kove-terraform-oci"
 
 # Server
