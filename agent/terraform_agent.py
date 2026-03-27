@@ -67,7 +67,7 @@ _EXAMPLE_REPOS = [
 ]
 
 _GITHUB_API = "https://api.github.com"
-_FETCH_TIMEOUT = 10  # seconds
+_FETCH_TIMEOUT = 5  # seconds — keep short; OCI instances may block outbound to github.com
 
 
 def _github_headers() -> dict:

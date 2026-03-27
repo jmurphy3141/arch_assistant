@@ -390,6 +390,7 @@ class TestTerraformGenerate:
         body = _post_json(
             "/terraform/generate",
             {"customer_id": TEST_CUSTOMER_ID, "customer_name": TEST_CUSTOMER_NAME},
+            timeout=600,  # Terraform generates 4 files; allow up to 10 min
         )
         assert body.get("status") == "ok", f"Terraform generate failed: {body}"
         assert body.get("doc_type") == "terraform"
@@ -595,7 +596,7 @@ class TestFullFleetWorkflow:
         print(f"  [fleet] JEP v{jep['version']}: {len(jep['content'])} chars")
 
         # 4. Terraform
-        tf = _post_json("/terraform/generate", {"customer_id": cid, "customer_name": cname})
+        tf = _post_json("/terraform/generate", {"customer_id": cid, "customer_name": cname}, timeout=600)
         assert tf.get("status") == "ok", f"Terraform failed: {tf}"
         assert tf.get("version") == 1
         assert tf.get("file_count", 0) > 0
@@ -671,7 +672,7 @@ if __name__ == "__main__":
             ("GET /jep/latest",     lambda: _get(f"/jep/{TEST_CUSTOMER_ID}/latest")),
             ("POST /terraform/generate", lambda: _post_json("/terraform/generate", {
                 "customer_id": TEST_CUSTOMER_ID, "customer_name": TEST_CUSTOMER_NAME
-            })),
+            }, timeout=600)),
             ("GET /terraform/latest",    lambda: _get(f"/terraform/{TEST_CUSTOMER_ID}/latest")),
             ("POST /waf/generate",  lambda: _post_json("/waf/generate", {
                 "customer_id": TEST_CUSTOMER_ID, "customer_name": TEST_CUSTOMER_NAME

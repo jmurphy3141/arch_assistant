@@ -78,7 +78,7 @@ writing:
 # Leave empty to fall back to inference.model_id.
 terraform:
   model_id: ""           # e.g. ocid1.generativeaimodel.oc1... (Grok code model)
-  max_tokens: 6000       # Terraform files can be long
+  max_tokens: 4000       # Terraform files (4 files, ~1000 tokens each)
   temperature: 0.2       # Low temperature for deterministic code generation
   top_p: 0.9
   top_k: 0
