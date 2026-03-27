@@ -80,7 +80,8 @@ in `config.yaml` — these are non-secret OCI resource identifiers.
 
 ### Run the server locally (requires OCI auth)
 ```bash
-uvicorn drawing_agent_server:app --host 0.0.0.0 --port 8080 --reload
+# Python 3.11+ required — OCI ADK is incompatible with Python 3.9
+python3.11 -m uvicorn drawing_agent_server:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 ### Run tests
@@ -129,7 +130,7 @@ scp agent/bom_parser.py agent/layout_engine.py agent/drawio_generator.py \
 ssh opc@10.0.3.47 '
   pkill -f uvicorn
   cd ~/drawing-agent
-  nohup uvicorn drawing_agent_server:app --host 0.0.0.0 --port 8080 > agent.log 2>&1 &
+  nohup python3.11 -m uvicorn drawing_agent_server:app --host 0.0.0.0 --port 8080 > agent.log 2>&1 &
   sleep 3
   curl -s http://localhost:8080/health
 '
@@ -210,7 +211,7 @@ appends them to the original prompt and re-runs the pipeline.
 |---------|-------|
 | Host | `opc@10.0.3.47` |
 | Port | 8080 |
-| Python | 3.11 |
+| Python | 3.11+ (`python3.11` — OCI ADK incompatible with 3.9) |
 | OCI SDK | `oci[adk]==2.165.1` |
 | Auth | Instance Principal |
 | Region | `us-phoenix-1` |
