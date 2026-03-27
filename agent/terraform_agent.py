@@ -503,13 +503,20 @@ def _parse_terraform_files(raw: str) -> dict[str, str]:
     expected = ["main.tf", "variables.tf", "outputs.tf", "terraform.tfvars.example"]
     files: dict[str, str] = {}
 
-    # Try structured extraction first
+    # Try structured extraction: // FILE: fname\n```...\n<content>\n```
     for fname in expected:
-        # Match: // FILE: fname\n```...\n<content>\n```
         pattern = rf"//\s*FILE:\s*{re.escape(fname)}\s*\n```[^\n]*\n(.*?)```"
         m = re.search(pattern, raw, re.DOTALL | re.IGNORECASE)
         if m:
             files[fname] = m.group(1).strip()
+
+    # Also try: ```hcl\n// FILE: fname\n<content>\n``` (label inside the fence)
+    for fname in expected:
+        if not files.get(fname):
+            pattern = rf"```[^\n]*\n//\s*FILE:\s*{re.escape(fname)}\s*\n(.*?)```"
+            m = re.search(pattern, raw, re.DOTALL | re.IGNORECASE)
+            if m:
+                files[fname] = m.group(1).strip()
 
     # If we got main.tf with actual content, fill missing stubs and return
     if files.get("main.tf"):
@@ -518,12 +525,20 @@ def _parse_terraform_files(raw: str) -> dict[str, str]:
                 files[fname] = f"# {fname} — not generated\n"
         return files
 
-    # Fallback: look for fenced blocks in order; only fill files still missing/empty
+    # Fallback: look for fenced blocks in order; only fill files still missing/empty.
+    # Skip blocks that are just // FILE: label lines with no real code.
+    def _is_label_only(block: str) -> bool:
+        lines = [l for l in block.strip().splitlines() if l.strip()]
+        return len(lines) <= 1 and bool(re.match(r"//\s*FILE:", block.strip()))
+
     blocks = re.findall(r"```(?:hcl|terraform)?\n(.*?)```", raw, re.DOTALL)
     block_iter = iter(blocks)
     for fname in expected:
         if not files.get(fname):
             block = next(block_iter, None)
+            # Skip label-only blocks (e.g. just "// FILE: main.tf") looking for real code
+            while block is not None and _is_label_only(block):
+                block = next(block_iter, None)
             if block and block.strip():
                 files[fname] = block.strip()
 

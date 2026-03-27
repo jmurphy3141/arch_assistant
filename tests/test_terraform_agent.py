@@ -155,6 +155,30 @@ class TestParseTerraformFiles:
         # variables/outputs/tfvars should preserve structured content
         assert "tenancy_ocid" in files["variables.tf"]
 
+    def test_file_label_inside_fence_extracted(self):
+        """LLM puts // FILE: label inside the code fence; second pattern must catch it."""
+        raw = (
+            "```hcl\n// FILE: main.tf\n" + _FAKE_MAIN_TF + "```\n\n"
+            "// FILE: variables.tf\n```hcl\n" + _FAKE_VARIABLES_TF + "```\n\n"
+            "// FILE: outputs.tf\n```hcl\n" + _FAKE_OUTPUTS_TF + "```\n\n"
+            "// FILE: terraform.tfvars.example\n```hcl\n" + _FAKE_TFVARS + "```\n"
+        )
+        files = _parse_terraform_files(raw)
+        assert "oci_core_vcn" in files["main.tf"], "main.tf content should be extracted"
+        assert "tenancy_ocid" in files["variables.tf"]
+
+    def test_label_only_block_skipped_in_fallback(self):
+        """Fallback skips blocks containing only a // FILE: comment; uses next real block."""
+        raw = (
+            "```hcl\n// FILE: main.tf\n```\n\n"  # label-only block
+            "```hcl\n" + _FAKE_MAIN_TF + "```\n\n"  # real content
+            "// FILE: variables.tf\n```hcl\n" + _FAKE_VARIABLES_TF + "```\n\n"
+            "// FILE: outputs.tf\n```hcl\n" + _FAKE_OUTPUTS_TF + "```\n\n"
+            "// FILE: terraform.tfvars.example\n```hcl\n" + _FAKE_TFVARS + "```\n"
+        )
+        files = _parse_terraform_files(raw)
+        assert "oci_core_vcn" in files["main.tf"], "should skip label-only block and use real HCL"
+
 
 # ── generate_terraform ────────────────────────────────────────────────────────
 
