@@ -3,16 +3,23 @@ import type { DocVersionEntry } from '../api/client';
 
 interface Props {
   content: string;
-  docType: 'pov' | 'jep';
+  docType: 'pov' | 'jep' | 'waf' | 'terraform';
   version: number;
   versionHistory?: DocVersionEntry[];
   onClose?: () => void;
 }
 
+const DOC_LABELS: Record<string, string> = {
+  pov: 'Point of View',
+  jep: 'Joint Execution Plan',
+  waf: 'WAF Review',
+  terraform: 'Terraform',
+};
+
 export function DocViewer({ content, docType, version, versionHistory = [], onClose }: Props) {
   const [showRaw, setShowRaw] = useState(false);
 
-  const label = docType === 'pov' ? 'Point of View' : 'Joint Execution Plan';
+  const label = DOC_LABELS[docType] ?? docType.toUpperCase();
 
   return (
     <div style={{ marginTop: '1rem' }}>

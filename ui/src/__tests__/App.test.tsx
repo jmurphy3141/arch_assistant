@@ -36,7 +36,7 @@ describe('C1: Generate success', () => {
     renderApp();
 
     // Switch to Generate mode
-    fireEvent.click(screen.getByText('Generate from Resources'));
+    fireEvent.click(screen.getByText('Generate'));
 
     // Submit the form (default resources is [])
     fireEvent.click(screen.getByText('Generate Diagram'));
@@ -55,7 +55,7 @@ describe('C1: Generate success', () => {
 
   it('renders correct download links for all artifact files', async () => {
     renderApp();
-    fireEvent.click(screen.getByText('Generate from Resources'));
+    fireEvent.click(screen.getByText('Generate'));
     fireEvent.click(screen.getByText('Generate Diagram'));
 
     await waitFor(() => {
@@ -99,7 +99,7 @@ describe('C2: Clarification flow', () => {
     );
 
     renderApp();
-    fireEvent.click(screen.getByText('Generate from Resources'));
+    fireEvent.click(screen.getByText('Generate'));
     fireEvent.click(screen.getByText('Generate Diagram'));
 
     await waitFor(() => {
@@ -116,7 +116,7 @@ describe('C2: Clarification flow', () => {
     );
 
     renderApp();
-    fireEvent.click(screen.getByText('Generate from Resources'));
+    fireEvent.click(screen.getByText('Generate'));
     fireEvent.click(screen.getByText('Generate Diagram'));
 
     await waitFor(() => {
@@ -151,7 +151,7 @@ describe('C3: Error handling', () => {
     );
 
     renderApp();
-    fireEvent.click(screen.getByText('Generate from Resources'));
+    fireEvent.click(screen.getByText('Generate'));
     fireEvent.click(screen.getByText('Generate Diagram'));
 
     await waitFor(() => {
@@ -171,7 +171,7 @@ describe('C3: Error handling', () => {
     );
 
     renderApp();
-    fireEvent.click(screen.getByText('Generate from Resources'));
+    fireEvent.click(screen.getByText('Generate'));
     fireEvent.click(screen.getByText('Generate Diagram'));
 
     await waitFor(() => {
@@ -189,7 +189,7 @@ describe('C3: Error handling', () => {
     );
 
     renderApp();
-    fireEvent.click(screen.getByText('Generate from Resources'));
+    fireEvent.click(screen.getByText('Generate'));
 
     // Should not throw
     expect(() => fireEvent.click(screen.getByText('Generate Diagram'))).not.toThrow();
@@ -246,7 +246,7 @@ describe('C5: Persistence', () => {
     renderApp();
 
     // Generate a diagram
-    fireEvent.click(screen.getByText('Generate from Resources'));
+    fireEvent.click(screen.getByText('Generate'));
     fireEvent.click(screen.getByText('Generate Diagram'));
 
     await waitFor(() => {
