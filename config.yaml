@@ -8,7 +8,7 @@ fleet:
   position: 3
   total_agents: 7
   upstream:   ["agent2-bom-sizing"]
-  downstream: ["agent4-sizing-validation", "agent6-terraform"]
+  downstream: ["agent4-pov-document", "agent5-jep-document", "agent6-sizing-validation", "agent7-terraform"]
 
 # OCI region (must match inference model OCID region)
 region: "us-chicago-1"
@@ -49,6 +49,25 @@ persistence:
   bucket_name: "agent_assistante"
   prefix: "agent3"
   store_inputs: false   # set true only after internal approval
+
+# Writing agents (POV + JEP document generation)
+# These share the same OCI GenAI inference endpoint but use different
+# temperature/token settings for long-form document writing.
+writing:
+  # max_tokens for document generation (longer than diagram JSON)
+  max_tokens: 4000
+  # temperature > 0 for creative/narrative writing
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 0
+
+  # POV agent system message (can override agent/pov_agent.py default)
+  pov:
+    system_message: ""   # leave empty to use the default in pov_agent.py
+
+  # JEP agent system message (can override agent/jep_agent.py default)
+  jep:
+    system_message: ""   # leave empty to use the default in jep_agent.py
 
 # Server
 host: "0.0.0.0"

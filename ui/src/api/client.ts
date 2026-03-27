@@ -154,3 +154,120 @@ export function downloadUrl(
     clientId,
   )}&diagram_name=${encodeURIComponent(diagramName)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Writing agents — Notes, POV, JEP
+// ---------------------------------------------------------------------------
+
+export interface NoteEntry {
+  key: string;
+  name: string;
+  timestamp: string;
+}
+
+export interface DocVersionEntry {
+  version: number;
+  key: string;
+  timestamp: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface DocResponse {
+  status: string;
+  agent_version: string;
+  customer_id: string;
+  doc_type: 'pov' | 'jep';
+  version: number;
+  key: string;
+  latest_key: string;
+  content: string;
+  bom?: Record<string, unknown>;
+  diagram_key?: string;
+  errors: string[];
+}
+
+export interface NoteUploadResponse {
+  status: string;
+  key: string;
+  customer_id: string;
+  note_name: string;
+}
+
+export interface NoteListResponse {
+  status: string;
+  customer_id: string;
+  notes: NoteEntry[];
+}
+
+export interface DocLatestResponse {
+  status: string;
+  customer_id: string;
+  doc_type: string;
+  content: string;
+}
+
+export interface DocVersionsResponse {
+  status: string;
+  customer_id: string;
+  doc_type: string;
+  versions: DocVersionEntry[];
+}
+
+export async function apiUploadNote(
+  customerId: string,
+  noteName: string,
+  file: File,
+): Promise<NoteUploadResponse> {
+  const fd = new FormData();
+  fd.append('customer_id', customerId);
+  fd.append('note_name', noteName || file.name);
+  fd.append('file', file);
+  return apiFetch<NoteUploadResponse>('/notes/upload', { method: 'POST', body: fd });
+}
+
+export async function apiListNotes(customerId: string): Promise<NoteListResponse> {
+  return apiFetch<NoteListResponse>(`/notes/${encodeURIComponent(customerId)}`);
+}
+
+export async function apiGeneratePov(
+  customerId: string,
+  customerName: string,
+): Promise<DocResponse> {
+  return apiFetch<DocResponse>('/pov/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer_id: customerId, customer_name: customerName }),
+  });
+}
+
+export async function apiGetLatestPov(customerId: string): Promise<DocLatestResponse> {
+  return apiFetch<DocLatestResponse>(`/pov/${encodeURIComponent(customerId)}/latest`);
+}
+
+export async function apiListPovVersions(customerId: string): Promise<DocVersionsResponse> {
+  return apiFetch<DocVersionsResponse>(`/pov/${encodeURIComponent(customerId)}/versions`);
+}
+
+export async function apiGenerateJep(
+  customerId: string,
+  customerName: string,
+  diagramKey?: string,
+): Promise<DocResponse> {
+  return apiFetch<DocResponse>('/jep/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_id: customerId,
+      customer_name: customerName,
+      diagram_key: diagramKey || null,
+    }),
+  });
+}
+
+export async function apiGetLatestJep(customerId: string): Promise<DocLatestResponse> {
+  return apiFetch<DocLatestResponse>(`/jep/${encodeURIComponent(customerId)}/latest`);
+}
+
+export async function apiListJepVersions(customerId: string): Promise<DocVersionsResponse> {
+  return apiFetch<DocVersionsResponse>(`/jep/${encodeURIComponent(customerId)}/versions`);
+}
