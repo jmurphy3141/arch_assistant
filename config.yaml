@@ -86,6 +86,7 @@ terraform:
   example_repos:
     - "oracle-quickstart/oci-landing-zones"
     - "oracle-quickstart/terraform-oci-oke"
+    - "ncusato/kove-terraform-oci"
 
 # Server
 host: "0.0.0.0"

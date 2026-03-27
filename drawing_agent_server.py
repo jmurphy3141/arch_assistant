@@ -137,10 +137,11 @@ WRITING_TOP_K          = int(_writing_cfg.get("top_k", 0))
 # ── Terraform agent config ────────────────────────────────────────────────────
 _terraform_cfg          = _cfg.get("terraform", {})
 TERRAFORM_MODEL_ID      = _terraform_cfg.get("model_id", "") or INFERENCE_MODEL_ID
-TERRAFORM_MAX_TOKENS    = int(_terraform_cfg.get("max_tokens", 6000))
+TERRAFORM_MAX_TOKENS    = int(_terraform_cfg.get("max_tokens", 4000))
 TERRAFORM_TEMPERATURE   = float(_terraform_cfg.get("temperature", 0.2))
 TERRAFORM_TOP_P         = float(_terraform_cfg.get("top_p", 0.9))
 TERRAFORM_TOP_K         = int(_terraform_cfg.get("top_k", 0))
+TERRAFORM_EXAMPLE_REPOS = _terraform_cfg.get("example_repos", [])
 
 # ── Fleet identity ───────────────────────────────────────────────────────────
 AGENT_ID    = _cfg.get("agent_id", "agent3-oci-drawing")
@@ -1764,6 +1765,7 @@ async def terraform_generate(req: TerraformRequest):
         return generate_terraform(
             req.customer_id, req.customer_name, store, text_runner,
             persistence_prefix=prefix,
+            example_repos=TERRAFORM_EXAMPLE_REPOS or None,
         )
 
     try:

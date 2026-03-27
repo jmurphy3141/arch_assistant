@@ -60,10 +60,12 @@ TERRAFORM_SYSTEM_MESSAGE = (
     "Output ONLY the file contents in the exact format requested. No meta-commentary."
 )
 
-# OCI oracle-quickstart repos to search for examples
+# GitHub repos searched for few-shot Terraform examples at generate-time.
+# Synced from config.yaml terraform.example_repos; hardcoded here as fallback.
 _EXAMPLE_REPOS = [
     "oracle-quickstart/oci-landing-zones",
     "oracle-quickstart/terraform-oci-oke",
+    "ncusato/kove-terraform-oci",
 ]
 
 _GITHUB_API = "https://api.github.com"
@@ -89,16 +91,23 @@ def _fetch_url(url: str) -> Optional[str]:
         return None
 
 
-def _search_github_examples(service_keywords: list[str]) -> str:
+def _search_github_examples(
+    service_keywords: list[str],
+    repos: Optional[list[str]] = None,
+) -> str:
     """
-    Search oracle-quickstart repos for .tf files matching service keywords.
+    Search GitHub repos for .tf files matching service keywords.
     Returns concatenated example snippets (max ~3000 chars) or empty string.
     """
     if not service_keywords:
         return ""
 
+    search_repos = repos if repos else _EXAMPLE_REPOS
+    if not search_repos:
+        return ""
+
     query_terms = "+".join(service_keywords[:4])  # limit query length
-    repo_filter = "+".join(f"repo:{r}" for r in _EXAMPLE_REPOS)
+    repo_filter = "+".join(f"repo:{r}" for r in search_repos)
     url = (
         f"{_GITHUB_API}/search/code"
         f"?q={query_terms}+extension:tf+{repo_filter}"
@@ -300,6 +309,7 @@ def generate_terraform(
     text_runner: Callable[[str, str], str],
     *,
     persistence_prefix: str = "agent3",
+    example_repos: Optional[list[str]] = None,
 ) -> dict:
     """
     Generate or update Terraform files for a customer's OCI deployment.
@@ -310,6 +320,8 @@ def generate_terraform(
         store:              ObjectStoreBase instance.
         text_runner:        callable(prompt: str, system_message: str) -> str.
         persistence_prefix: Bucket prefix used by Agent 3 diagrams.
+        example_repos:      GitHub repos to search for Terraform examples.
+                            Overrides _EXAMPLE_REPOS when provided.
 
     Returns dict with keys:
         version (int), prefix_key (str), file_count (int), files (dict),
@@ -328,8 +340,9 @@ def generate_terraform(
 
     # ── Fetch GitHub examples ─────────────────────────────────────────────────
     keywords = _extract_service_keywords(context, new_notes_text)
-    logger.info("Fetching Terraform examples for keywords: %s", keywords)
-    github_examples = _search_github_examples(keywords)
+    repos = example_repos if example_repos is not None else _EXAMPLE_REPOS
+    logger.info("Fetching Terraform examples for keywords=%s repos=%s", keywords, repos)
+    github_examples = _search_github_examples(keywords, repos=repos)
     if github_examples:
         logger.info("Fetched %d chars of GitHub examples", len(github_examples))
 
