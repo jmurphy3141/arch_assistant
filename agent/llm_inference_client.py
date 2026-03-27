@@ -30,11 +30,25 @@ def run_inference(
     temperature: float = 0.0,
     top_p: float = 0.9,
     top_k: int = 0,
+    system_message: str = "",
 ) -> str:
     """
     Send *prompt* to OCI GenAI Inference and return the raw generated text.
 
     Parameters match config.yaml ``inference:`` block exactly.
+
+    Memory model
+    ------------
+    This is intentionally stateless — each call is an independent single-turn
+    request.  There is no session continuation across calls.  The drawing agent
+    achieves multi-turn clarification by rebuilding the full prompt from scratch
+    (pending["prompt"] + answers) before each call; no in-model history is needed.
+
+    system_message
+    --------------
+    Passed as ``GenericChatRequest.system``.  Sets the model's behavioural
+    contract (JSON-only output, role, format rules) before the user prompt.
+    Configure in config.yaml under ``inference.system_message``.
 
     Raises:
         RuntimeError: if oci SDK is not importable
@@ -74,6 +88,10 @@ def run_inference(
     chat_request.temperature = temperature
     chat_request.top_p = top_p
     chat_request.top_k = top_k
+    # System prompt: sets behavioural contract before the user message.
+    # Empty string → field omitted (OCI API treats absent == no system message).
+    if system_message:
+        chat_request.system = system_message
 
     chat_detail = oci.generative_ai_inference.models.ChatDetails()
     chat_detail.serving_mode = (

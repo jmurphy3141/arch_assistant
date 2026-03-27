@@ -22,6 +22,14 @@ inference:
   temperature: 0.0
   top_p: 0.9
   top_k: 0
+  # System prompt — injected as GenericChatRequest.system on every call.
+  # Keep concise: the model sees this before the user prompt.
+  system_message: >-
+    You are an OCI solutions architect and layout compiler.
+    When given a list of OCI services, output ONLY valid JSON —
+    either a LayoutIntent specification or a clarification request object.
+    No markdown fences, no explanation, no preamble.
+    Every response must start with '{' and end with '}'.
 
 # Artifact persistence
 persistence:

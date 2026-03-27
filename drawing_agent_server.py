@@ -90,10 +90,11 @@ _inf_cfg               = _cfg.get("inference", {})
 INFERENCE_ENABLED      = _inf_cfg.get("enabled", False)
 INFERENCE_ENDPOINT     = _inf_cfg.get("service_endpoint", "")
 INFERENCE_MODEL_ID     = _inf_cfg.get("model_id", "")
-INFERENCE_MAX_TOKENS   = int(_inf_cfg.get("max_tokens", 2000))
-INFERENCE_TEMPERATURE  = float(_inf_cfg.get("temperature", 0.0))
-INFERENCE_TOP_P        = float(_inf_cfg.get("top_p", 0.9))
-INFERENCE_TOP_K        = int(_inf_cfg.get("top_k", 0))
+INFERENCE_MAX_TOKENS    = int(_inf_cfg.get("max_tokens", 2000))
+INFERENCE_TEMPERATURE   = float(_inf_cfg.get("temperature", 0.0))
+INFERENCE_TOP_P         = float(_inf_cfg.get("top_p", 0.9))
+INFERENCE_TOP_K         = int(_inf_cfg.get("top_k", 0))
+INFERENCE_SYSTEM_MSG    = _inf_cfg.get("system_message", "")
 
 # ── Persistence config ───────────────────────────────────────────────────────
 _per_cfg              = _cfg.get("persistence", {})
@@ -109,7 +110,7 @@ SCHEMA_VERSION = {"spec": "1.1", "draw_dict": "1.0"}
 
 # ── Global mutable state ───────────────────────────────────────────────────────
 _oci_agent: Optional[Any] = None          # real OCI Agent, set in startup
-SESSION_STORE:     Dict[str, str]  = {}   # client_id  → session_id
+SESSION_STORE:     Dict[str, str]  = {}   # client_id → session_id (ADK path only; unused on inference path)
 PENDING_CLARIFY:   Dict[str, dict] = {}   # client_id  → {items, prompt, diagram_name}
 IDEMPOTENCY_CACHE: Dict[tuple, dict] = {} # (client_id, diagram_name, input_hash) → result
 
@@ -473,10 +474,21 @@ async def run_pipeline(
 def _make_inference_runner() -> callable:
     """
     Build a sync llm_runner that calls run_inference() directly.
+
+    Memory model: stateless — no session ID, no conversation history.
+    Each call sends exactly one USER message; the system_message establishes
+    behavioural rules (JSON-only output) before the user prompt.
+
+    Clarification rounds work without session memory because run_pipeline()
+    rebuilds the full enriched prompt from scratch before each call:
+        enriched_prompt = original_prompt + "\\n\\nCLARIFICATION ANSWERS:..." + instruction
+
     clean_json() strips fences; json.loads() converts to dict.
     Raises HTTP 422 if the model output is not parseable JSON.
     """
     def _run(prompt: str, client_id: str) -> dict:
+        # client_id is accepted for interface compatibility with the ADK runner
+        # but is unused — inference is stateless.
         raw = _run_inference(
             prompt,
             endpoint=INFERENCE_ENDPOINT,
@@ -486,6 +498,7 @@ def _make_inference_runner() -> callable:
             temperature=INFERENCE_TEMPERATURE,
             top_p=INFERENCE_TOP_P,
             top_k=INFERENCE_TOP_K,
+            system_message=INFERENCE_SYSTEM_MSG,
         )
         cleaned = clean_json(raw)
         if not cleaned.startswith("{"):

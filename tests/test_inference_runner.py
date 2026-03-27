@@ -63,22 +63,65 @@ class TestInferenceRunnerTextParsing:
         import drawing_agent_server as srv
 
         raw_text = json.dumps(MINIMAL_SPEC)
-
         captured = {}
 
         def fake_run_inference(prompt, *, endpoint, model_id, compartment_id,
-                               max_tokens, temperature, top_p, top_k):
+                               max_tokens, temperature, top_p, top_k,
+                               system_message=""):
             captured["called"] = True
+            captured["system_message"] = system_message
             return raw_text
 
         monkeypatch.setattr(srv, "_run_inference", fake_run_inference)
         monkeypatch.setattr(srv, "INFERENCE_ENABLED", True)
         monkeypatch.setattr(srv, "_INFERENCE_AVAILABLE", True)
+        monkeypatch.setattr(srv, "INFERENCE_SYSTEM_MSG", "You are a test assistant.")
 
         runner = srv._make_inference_runner()
         result = runner("test prompt", "client1")
         assert isinstance(result, dict)
         assert result.get("deployment_type") == "single_ad"
+        # system_message must be forwarded
+        assert captured["system_message"] == "You are a test assistant."
+
+    def test_system_message_forwarded_to_run_inference(self, monkeypatch):
+        """INFERENCE_SYSTEM_MSG from config is passed as system_message kwarg."""
+        import drawing_agent_server as srv
+
+        received = {}
+
+        def capturing_run_inference(prompt, *, system_message="", **kw):
+            received["system_message"] = system_message
+            return json.dumps(MINIMAL_SPEC)
+
+        monkeypatch.setattr(srv, "_run_inference", capturing_run_inference)
+        monkeypatch.setattr(srv, "INFERENCE_ENABLED", True)
+        monkeypatch.setattr(srv, "_INFERENCE_AVAILABLE", True)
+        monkeypatch.setattr(srv, "INFERENCE_SYSTEM_MSG",
+                            "Output ONLY valid JSON. No markdown.")
+
+        runner = srv._make_inference_runner()
+        runner("any prompt", "any_client")
+        assert received["system_message"] == "Output ONLY valid JSON. No markdown."
+
+    def test_empty_system_message_when_not_configured(self, monkeypatch):
+        """If INFERENCE_SYSTEM_MSG is empty, system_message kwarg is empty string."""
+        import drawing_agent_server as srv
+
+        received = {}
+
+        def capturing_run_inference(prompt, *, system_message="", **kw):
+            received["system_message"] = system_message
+            return json.dumps(MINIMAL_SPEC)
+
+        monkeypatch.setattr(srv, "_run_inference", capturing_run_inference)
+        monkeypatch.setattr(srv, "INFERENCE_ENABLED", True)
+        monkeypatch.setattr(srv, "_INFERENCE_AVAILABLE", True)
+        monkeypatch.setattr(srv, "INFERENCE_SYSTEM_MSG", "")
+
+        runner = srv._make_inference_runner()
+        runner("any prompt", "any_client")
+        assert received["system_message"] == ""
 
     def test_fenced_json_parses(self, monkeypatch):
         """Fenced ```json ... ``` response → clean_json strips fences → parsed dict."""
@@ -89,7 +132,7 @@ class TestInferenceRunnerTextParsing:
         monkeypatch.setattr(
             srv,
             "_run_inference",
-            lambda *a, **kw: fenced,
+            lambda prompt, *, system_message="", **kw: fenced,
         )
         monkeypatch.setattr(srv, "INFERENCE_ENABLED", True)
         monkeypatch.setattr(srv, "_INFERENCE_AVAILABLE", True)
@@ -107,7 +150,7 @@ class TestInferenceRunnerTextParsing:
         monkeypatch.setattr(
             srv,
             "_run_inference",
-            lambda *a, **kw: "Sorry, I cannot generate a diagram for that.",
+            lambda prompt, *, system_message="", **kw: "Sorry, I cannot generate a diagram for that.",
         )
         monkeypatch.setattr(srv, "INFERENCE_ENABLED", True)
         monkeypatch.setattr(srv, "_INFERENCE_AVAILABLE", True)
