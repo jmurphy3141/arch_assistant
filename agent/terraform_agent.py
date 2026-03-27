@@ -428,12 +428,14 @@ Output EXACTLY four fenced code blocks, each preceded by a comment line with the
 <content of terraform.tfvars.example>
 ```
 
-Requirements for main.tf:
+Requirements for main.tf (MUST be non-empty — always include at minimum the provider block and a VCN resource):
 - Provider block: oracle/oci, version ~> 5.0
+- terraform {{ required_providers {{ oci = {{ source = "oracle/oci", version = "~> 5.0" }} }} }}
 - All resources must have freeform_tags with "managed-by" = "terraform" and "customer" = "{customer_name}"
 - Use compartment_id = var.compartment_id throughout
 - Include VCN, subnets, security lists based on the diagram and notes
 - Include compute / GPU instances, load balancers, databases as indicated
+- If no specific resources are given, at minimum generate provider + VCN + two subnets as a skeleton
 
 Requirements for variables.tf:
 - tenancy_ocid, compartment_id, region as required variables
@@ -509,23 +511,28 @@ def _parse_terraform_files(raw: str) -> dict[str, str]:
         if m:
             files[fname] = m.group(1).strip()
 
-    # If we got at least main.tf, return what we found (fill missing with empty stub)
-    if "main.tf" in files:
+    # If we got main.tf with actual content, fill missing stubs and return
+    if files.get("main.tf"):
         for fname in expected:
             if fname not in files:
                 files[fname] = f"# {fname} — not generated\n"
         return files
 
-    # Fallback: look for fenced blocks in order
+    # Fallback: look for fenced blocks in order; only fill files still missing/empty
     blocks = re.findall(r"```(?:hcl|terraform)?\n(.*?)```", raw, re.DOTALL)
-    for i, (fname, block) in enumerate(zip(expected, blocks)):
-        files[fname] = block.strip()
+    block_iter = iter(blocks)
+    for fname in expected:
+        if not files.get(fname):
+            block = next(block_iter, None)
+            if block and block.strip():
+                files[fname] = block.strip()
 
     # Final fallback: dump everything into main.tf
-    if not files:
+    if not files.get("main.tf"):
         files["main.tf"] = raw
         for fname in expected[1:]:
-            files[fname] = f"# {fname} — see main.tf\n"
+            if not files.get(fname):
+                files[fname] = f"# {fname} — see main.tf\n"
 
     return files
 

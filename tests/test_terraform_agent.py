@@ -125,6 +125,36 @@ class TestParseTerraformFiles:
         files = _parse_terraform_files(raw)
         assert len(files) == 4
 
+    def test_empty_main_tf_block_falls_through_to_fallback(self):
+        """LLM emits empty main.tf block but content elsewhere — must not return empty main.tf."""
+        raw = (
+            "// FILE: main.tf\n```hcl\n```\n\n"  # empty block
+            "// FILE: variables.tf\n```hcl\n" + _FAKE_VARIABLES_TF + "```\n\n"
+            "// FILE: outputs.tf\n```hcl\n" + _FAKE_OUTPUTS_TF + "```\n\n"
+            "// FILE: terraform.tfvars.example\n```hcl\n" + _FAKE_TFVARS + "```\n"
+            # Fallback block: an hcl block that contains the actual main.tf content
+            "\n```hcl\n" + _FAKE_MAIN_TF + "```\n"
+        )
+        files = _parse_terraform_files(raw)
+        assert files.get("main.tf"), "main.tf must not be empty when fallback content exists"
+        assert "oci_core_vcn" in files["main.tf"]
+        # Other files should still have their structured content
+        assert "tenancy_ocid" in files["variables.tf"]
+
+    def test_partial_structured_no_main_tf_uses_fallback_block(self):
+        """Only variables/outputs/tfvars extracted; main.tf falls back to first fenced block."""
+        raw = (
+            # main.tf intentionally missing the // FILE: comment — parser can't find it
+            "```hcl\n" + _FAKE_MAIN_TF + "```\n\n"
+            "// FILE: variables.tf\n```hcl\n" + _FAKE_VARIABLES_TF + "```\n\n"
+            "// FILE: outputs.tf\n```hcl\n" + _FAKE_OUTPUTS_TF + "```\n\n"
+            "// FILE: terraform.tfvars.example\n```hcl\n" + _FAKE_TFVARS + "```\n"
+        )
+        files = _parse_terraform_files(raw)
+        assert "main.tf" in files
+        # variables/outputs/tfvars should preserve structured content
+        assert "tenancy_ocid" in files["variables.tf"]
+
 
 # ── generate_terraform ────────────────────────────────────────────────────────
 
