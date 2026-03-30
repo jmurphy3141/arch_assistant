@@ -83,7 +83,7 @@ from agent.terraform_agent import (
     list_terraform_versions,
 )
 from agent.waf_agent import generate_waf_review
-from agent.context_store import read_context
+from agent.context_store import read_context, write_context, record_agent_run
 
 try:
     import server.services.oci_object_storage as _oci_storage
@@ -176,6 +176,8 @@ class GenerateRequest(BaseModel):
     notes:              Optional[str]  = ""   # meeting or free-form notes
     diagram_name:       Optional[str]  = "oci_architecture"
     client_id:          Optional[str]  = "default"
+    customer_id:        Optional[str]  = None  # fleet context linkage
+    customer_name:      Optional[str]  = ""
     deployment_hints:   Optional[dict] = {}
 
 
@@ -925,6 +927,29 @@ async def generate_from_resources(req: GenerateRequest):
 
         if result["status"] == "ok":
             IDEMPOTENCY_CACHE[cache_key] = result
+
+            # Write diagram reference into the fleet context so writing agents
+            # (POV, JEP, Terraform, WAF) can find the diagram without extra wiring.
+            if req.customer_id:
+                object_store = getattr(app.state, "object_store", None)
+                if object_store is not None:
+                    persistence_cfg = getattr(app.state, "persistence_config", None) or {}
+                    prefix = persistence_cfg.get("prefix", "diagrams")
+                    diagram_key = f"{prefix}/{req.client_id}/{req.diagram_name}/LATEST.json"
+                    ctx = read_context(object_store, req.customer_id, req.customer_name or "")
+                    ctx = record_agent_run(
+                        ctx,
+                        "diagram",
+                        [],  # no notes consumed by the diagram agent
+                        {
+                            "diagram_key":  diagram_key,
+                            "diagram_name": req.diagram_name,
+                            "client_id":    req.client_id,
+                            "node_count":   result.get("render_manifest", {}).get("node_count", 0),
+                            "version":      result.get("agent_version", ""),
+                        },
+                    )
+                    write_context(object_store, req.customer_id, ctx)
 
         return JSONResponse(status_code=200, content=result)
 
