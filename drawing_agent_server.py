@@ -41,6 +41,7 @@ from typing import Any, Dict, List, Optional
 
 import anyio
 import yaml
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel
@@ -93,7 +94,15 @@ except Exception:
     _OCI_STORAGE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-app = FastAPI(title="OCI Drawing Agent", version="1.3.2")
+
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
+    _startup(application)
+    yield
+
+
+app = FastAPI(title="OCI Drawing Agent", version="1.3.2", lifespan=_lifespan)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 _cfg_path = Path(__file__).parent / "config.yaml"
@@ -634,8 +643,7 @@ def _make_inference_runner() -> callable:
     return _run
 
 
-@app.on_event("startup")
-def startup():
+def _startup(app: FastAPI) -> None:
     global _oci_agent
 
     # Allow tests (or other callers) to pre-inject llm_runner before startup.
