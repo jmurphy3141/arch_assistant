@@ -302,11 +302,14 @@ class TestGatewayPlacement:
         assert _right(gw) <= _right(reg) + TOLERANCE
 
     @pytest.mark.parametrize("gid", GWS)
-    def test_gateway_right_of_vcn(self, cells, gid):
+    def test_gateway_straddles_vcn_edge(self, cells, gid):
+        """Gateway centre must be within TOLERANCE of the VCN right edge."""
         vcn = cells["vcn_box"]
         gw  = cells[gid]
-        assert gw["x"] >= _right(vcn) - TOLERANCE, (
-            f"{gid} x={gw['x']:.0f} should be right of VCN edge {_right(vcn):.0f}")
+        gw_centre = gw["x"] + 24   # icon half-width
+        vcn_right = _right(vcn)
+        assert abs(gw_centre - vcn_right) <= TOLERANCE, (
+            f"{gid} centre={gw_centre:.0f} should be near VCN right edge {vcn_right:.0f}")
 
     def test_nat_above_sgw(self, cells):
         assert cells["nat_gw_g"]["y"] < cells["sgw_1_g"]["y"]
@@ -326,12 +329,14 @@ class TestExternalServices:
     SVCS = ["objstr_1_g", "monitor_1_g", "iam_1_g"]
 
     @pytest.mark.parametrize("sid", SVCS)
-    def test_service_outside_region(self, cells, sid):
+    def test_service_inside_region(self, cells, sid):
+        """All OCI services must be inside the Region box."""
         reg = cells["region_box"]
         svc = cells[sid]
-        assert svc["x"] >= _right(reg) - TOLERANCE, (
-            f"{sid} x={svc['x']:.0f} should be outside region right edge "
-            f"{_right(reg):.0f}")
+        assert svc["x"] >= reg["x"] - TOLERANCE, (
+            f"{sid} x={svc['x']:.0f} should be inside region left {reg['x']:.0f}")
+        assert _right(svc) <= _right(reg) + TOLERANCE, (
+            f"{sid} right={_right(svc):.0f} should be inside region right {_right(reg):.0f}")
 
     def test_services_vertically_ordered(self, cells):
         obj = cells["objstr_1_g"]
@@ -342,6 +347,14 @@ class TestExternalServices:
     def test_services_horizontally_aligned(self, cells):
         xs = [cells[s]["x"] for s in self.SVCS]
         assert max(xs) - min(xs) <= TOLERANCE, f"Service x values not aligned: {xs}"
+
+    def test_services_right_of_vcn(self, cells):
+        """Services column must be to the right of the VCN."""
+        vcn = cells["vcn_box"]
+        for sid in self.SVCS:
+            svc = cells[sid]
+            assert svc["x"] >= _right(vcn) - TOLERANCE, (
+                f"{sid} x={svc['x']:.0f} should be right of VCN edge {_right(vcn):.0f}")
 
 
 # ── 10. Gateway vertical alignment with subnets (matches PNG) ─────────────────
