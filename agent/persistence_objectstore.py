@@ -14,8 +14,11 @@ Atomicity contract:
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ── Abstract interface ─────────────────────────────────────────────────────────
@@ -131,8 +134,8 @@ def persist_artifacts(
             )
             store.put(key, data, content_type)
             artifact_keys[filename] = key
-    except Exception:
-        # At least one artifact failed — do NOT update LATEST.json
+    except Exception as exc:
+        logger.error("persist_artifacts failed uploading to %r: %s", base, exc, exc_info=True)
         return None
 
     # All artifacts succeeded — atomically update LATEST.json
