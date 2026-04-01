@@ -36,6 +36,11 @@ SKU_MAP: dict[str, tuple] = {
 
 DESC_MAP: dict[str, tuple] = {
     "container instances": ("container engine", "compute"),
+    "oke enhanced":        ("container engine", "compute"),  # OKE Enhanced Cluster
+    "bm.optimized":        ("bare metal",       "compute"),  # HPC bare metal (BM.Optimized3.36)
+    "bare metal":          ("bare metal",       "compute"),
+    "rdma":                ("bare metal",       "compute"),  # RDMA cluster node
+    "file storage":        ("file storage",     "data"),     # FSS NFS PVC
     "bastion":             ("bastion",           "ingress"),
     "identity and access": ("iam",               "data"),
     "network load balancer":("load balancer",    "ingress"),
@@ -181,20 +186,23 @@ def parse_bom(xlsx_path: str | Path, context: str = "") -> list[ServiceItem]:
 
 
 def _make_label(oci_type: str, qty, app_ocpu: int, db_ocpu: int, obj_gb: float, note: str) -> str:
+    q = int(qty) if qty else "?"
     labels = {
-        "compute":      f"Compute\n×{app_ocpu:,} OCPU",
-        "database":     f"PostgreSQL DB\n×{db_ocpu:,} OCPU",
+        "compute":        f"Compute VM\n×{q}" if app_ocpu == 0 else f"Compute\n×{app_ocpu:,} OCPU",
+        "bare metal":     f"HPC BM.Optimized3.36\n×{q} nodes",
+        "database":       f"PostgreSQL DB\n×{db_ocpu:,} OCPU",
         "object storage": f"Object Storage\n{int(obj_gb*2/1024)} TB",
-        "load balancer": f"Load Balancer\n×{int(qty) if qty else '?'} (per region)",
-        "drg":          f"DRG / FastConnect\n×{int(qty) if qty else '?'} ports",
-        "functions":    "OCI Functions\n~10k calls/day",
-        "api gateway":  "API Gateway",
-        "queue":        f"Queue\n{int(qty) if qty else '?'}M req/month",
-        "container engine": "Container Instances",
-        "bastion":      "Bastion",
-        "iam":          "IAM",
-        "load balancer_2": f"NLB ×3",
-        "vault":        "Vault (Secrets)",
+        "load balancer":  f"Load Balancer\n×{q} (per region)",
+        "drg":            f"DRG / FastConnect\n×{q} ports",
+        "functions":      "OCI Functions\n~10k calls/day",
+        "api gateway":    "API Gateway",
+        "queue":          f"Queue\n{q}M req/month",
+        "container engine": "OKE Enhanced Cluster",
+        "file storage":   "File Storage\nNFS PVC",
+        "bastion":        "Bastion",
+        "iam":            "IAM",
+        "load balancer_2": "NLB ×3",
+        "vault":          "Vault (Secrets)",
     }
     return labels.get(oci_type, oci_type.title())
 
@@ -454,11 +462,11 @@ Deterministic mappings (apply without asking):
     → layer=ingress, group=null  (gateways straddle VCN; not in a subnet)
   waf, load balancer, bastion
     → layer=ingress, group=pub_sub_box
-  compute, container engine, functions, api gateway
+  compute, bare metal, container engine, functions, api gateway
     → layer=compute, group=app_sub_box
   queue, streaming
     → layer=async, group=app_sub_box
-  database, vault
+  database, vault, file storage
     → layer=data, group=db_sub_box
   object storage, logging, monitoring, iam, certificates
     → layer=data, group=null  (OCI managed services; outside VCN)
