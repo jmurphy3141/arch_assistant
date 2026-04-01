@@ -139,13 +139,28 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
         placements.append(Placement(id=pid, oci_type=oci_type, layer=layer, group=group))
 
     # ── ServiceItem id coverage check ─────────────────────────────────────────
+    # Auto-fill any items the LLM dropped rather than hard-failing the pipeline.
     if items:
         item_ids = {i.id for i in items}
         missing = item_ids - seen_ids
         if missing:
-            raise LayoutIntentError(
-                f"ServiceItem ids missing from placements: {sorted(missing)}"
-            )
+            import logging
+            _log = logging.getLogger(__name__)
+            _log.warning("LLM dropped placements — auto-filling: %s", sorted(missing))
+            items_by_id = {i.id: i for i in items}
+            # Default group by layer
+            _layer_to_group = {
+                "ingress": "pub_sub_box",
+                "compute": "app_sub_box",
+                "data":    "db_sub_box",
+            }
+            for mid in sorted(missing):
+                si = items_by_id[mid]
+                layer = si.layer if si.layer in VALID_LAYERS else "data"
+                group = _layer_to_group.get(layer)  # None for external/async
+                seen_ids.add(mid)
+                placements.append(Placement(id=mid, oci_type=si.oci_type,
+                                            layer=layer, group=group))
 
     # ── assumptions ───────────────────────────────────────────────────────────
     assumptions: list[Assumption] = []

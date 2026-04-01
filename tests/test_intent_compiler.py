@@ -245,19 +245,20 @@ class TestLayoutIntentValidation:
         with pytest.raises(LayoutIntentError, match="Duplicate"):
             validate_layout_intent(data)
 
-    def test_rejects_missing_item_ids(self):
-        """If items list is supplied, all item ids must appear in placements."""
+    def test_autofills_missing_item_ids(self):
+        """If items list is supplied and LLM drops some, they are auto-filled with defaults."""
         items = _items()
         data = {
             "schema_version": "1.0",
             "deployment_hints": {},
             "placements": [
-                # only on_prem — other three are missing
+                # only on_prem — other three are missing, should be auto-filled
                 {"id": "on_prem", "oci_type": "on premises", "layer": "external", "group": None},
             ],
         }
-        with pytest.raises(LayoutIntentError, match="missing from placements"):
-            validate_layout_intent(data, items)
+        intent = validate_layout_intent(data, items)
+        placement_ids = {p.id for p in intent.placements}
+        assert {i.id for i in items} == placement_ids
 
     def test_accepts_valid_intent(self):
         items = _items()
