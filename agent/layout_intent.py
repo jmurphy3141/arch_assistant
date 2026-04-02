@@ -15,24 +15,41 @@ Allowed question IDs: regions.count, regions.mode, ha.ads, connectivity.onprem, 
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 VALID_LAYERS = frozenset(["external", "ingress", "compute", "async", "data"])
-VALID_GROUPS = frozenset(["pub_sub_box", "app_sub_box", "db_sub_box", "none"])
+
+# Well-known group IDs for the standard 3-tier topology.
+# Any non-empty slug (lowercase letters, digits, underscores) is also accepted —
+# the LLM may declare custom groups for non-standard topologies (HPC, data lake, etc.).
+VALID_GROUPS = frozenset(["pub_sub_box", "app_sub_box", "db_sub_box"])
+
 VALID_CONNECTIVITY = frozenset(["fastconnect", "vpn", "none", "unknown"])
 VALID_QUESTION_IDS = frozenset(
     ["regions.count", "regions.mode", "ha.ads", "connectivity.onprem", "dr.rpo_rto"]
 )
 
+# Fallback labels for well-known group IDs.
 GROUP_LABELS = {
     "pub_sub_box": "Public Subnet",
     "app_sub_box": "App Subnet",
     "db_sub_box":  "DB Subnet",
 }
 
+_GROUP_SLUG_RE = re.compile(r'^[a-z][a-z0-9_]*$')
+
 
 # ── Dataclasses ────────────────────────────────────────────────────────────────
+
+@dataclass
+class GroupDecl:
+    """LLM-declared subnet group with display label and sort order."""
+    id: str
+    label: str
+    order: int = 0
+
 
 @dataclass
 class DeploymentHints:
@@ -63,6 +80,7 @@ class LayoutIntent:
     schema_version: str
     deployment_hints: DeploymentHints
     placements: list[Placement]
+    groups: list[GroupDecl] = field(default_factory=list)
     assumptions: list[Assumption] = field(default_factory=list)
     fixed_edges_policy: bool = True
 
@@ -129,10 +147,10 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
                 f"Unknown layer {layer!r} for placement {pid!r}. "
                 f"Valid layers: {sorted(VALID_LAYERS)}"
             )
-        if group is not None and group not in VALID_GROUPS - {"none"}:
+        if group is not None and not _GROUP_SLUG_RE.match(group):
             raise LayoutIntentError(
-                f"Unknown group {group!r} for placement {pid!r}. "
-                f"Valid groups: {sorted(VALID_GROUPS - {'none'})}"
+                f"Invalid group slug {group!r} for placement {pid!r}. "
+                f"Must be lowercase letters/digits/underscores starting with a letter."
             )
 
         seen_ids.add(pid)
@@ -162,6 +180,18 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
                 placements.append(Placement(id=mid, oci_type=si.oci_type,
                                             layer=layer, group=group))
 
+    # ── groups (optional — LLM-declared subnet topology) ─────────────────────
+    groups: list[GroupDecl] = []
+    for g in (data.get("groups") or []):
+        gid = str(g.get("id", "")).strip()
+        if not gid or not _GROUP_SLUG_RE.match(gid):
+            continue  # silently skip malformed entries
+        groups.append(GroupDecl(
+            id=gid,
+            label=str(g.get("label", gid.replace("_", " ").title())),
+            order=int(g.get("order", 0) or 0),
+        ))
+
     # ── assumptions ───────────────────────────────────────────────────────────
     assumptions: list[Assumption] = []
     for a in (data.get("assumptions") or []):
@@ -178,6 +208,7 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
         schema_version=schema_version,
         deployment_hints=hints,
         placements=placements,
+        groups=groups,
         assumptions=assumptions,
         fixed_edges_policy=fixed_edges_policy,
     )

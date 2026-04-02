@@ -439,7 +439,8 @@ def build_layout_intent_prompt(
         extra_blocks += f"\nADDITIONAL CONTEXT:\n{context.strip()}\n"
 
     return f"""You are an OCI architecture intent compiler.
-Classify each service from the BOM into its correct OCI architectural layer and subnet group.
+Classify each service from the BOM into its correct OCI architectural layer and subnet group,
+then declare the subnet topology that matches the architecture pattern you detect.
 Output ONLY valid JSON — either a LayoutIntent or a NeedClarification object.
 {extra_blocks}
 ═══════════════════════════════════════════════════════
@@ -450,24 +451,54 @@ INPUT SERVICES (from BOM + baseline injection):
 ]
 
 ═══════════════════════════════════════════════════════
-CLASSIFICATION RULES
+STEP 1 — DETECT TOPOLOGY PATTERN
+═══════════════════════════════════════════════════════
+Identify the architecture pattern from the services above, then declare
+the appropriate subnet groups.  Common patterns:
+
+STANDARD 3-TIER (web app with load balancer + compute + database):
+  groups:
+    {{"id": "pub_sub_box",    "label": "Public Subnet",          "order": 0}}
+    {{"id": "app_sub_box",    "label": "App Subnet",             "order": 1}}
+    {{"id": "db_sub_box",     "label": "DB Subnet",              "order": 2}}
+
+HPC ON OKE (bare metal RDMA nodes + file storage + container engine):
+  groups:
+    {{"id": "bas_sub_box",    "label": "Bastion Subnet (Public)", "order": 0}}
+    {{"id": "cp_sub_box",     "label": "Control Plane Subnet",   "order": 1}}
+    {{"id": "worker_sub_box", "label": "Worker Subnet (Private)","order": 2}}
+    {{"id": "storage_sub_box","label": "Storage Subnet",         "order": 3}}
+
+DATA PLATFORM (streaming + functions + data lake + analytics):
+  groups:
+    {{"id": "ingest_sub_box", "label": "Ingest Subnet",          "order": 0}}
+    {{"id": "proc_sub_box",   "label": "Processing Subnet",      "order": 1}}
+    {{"id": "store_sub_box",  "label": "Storage Subnet",         "order": 2}}
+
+You may define any group IDs and labels that accurately reflect the
+architecture — do not invent groups not justified by the services present.
+
+═══════════════════════════════════════════════════════
+STEP 2 — CLASSIFY EACH SERVICE
 ═══════════════════════════════════════════════════════
 layer must be one of: external | ingress | compute | async | data
-group must be one of: pub_sub_box | app_sub_box | db_sub_box | null
+group must be a slug from your declared groups above, or null.
 
-Deterministic mappings (apply without asking):
+Deterministic layer mappings (apply without asking):
   on premises, internet, users, admins, workstation
     → layer=external, group=null
   internet gateway, nat gateway, service gateway, drg
     → layer=ingress, group=null  (gateways straddle VCN; not in a subnet)
-  waf, load balancer, bastion
-    → layer=ingress, group=pub_sub_box
+  waf, load balancer
+    → layer=ingress, group=<public/bastion subnet>
+  bastion
+    → layer=ingress, group=<public/bastion subnet>
   compute, bare metal, container engine, functions, api gateway
-    → layer=compute, group=app_sub_box
+    → layer=compute, group=<appropriate compute subnet>
   queue, streaming
-    → layer=async, group=app_sub_box
+    → layer=async, group=<appropriate subnet>
   database, vault, file storage
-    → layer=data, group=db_sub_box
+    → layer=data, group=<appropriate data/storage subnet>
   object storage, logging, monitoring, iam, certificates
     → layer=data, group=null  (OCI managed services; outside VCN)
 
@@ -498,8 +529,13 @@ OUTPUT FORMAT — LayoutIntent
     "dr_enabled": false,
     "on_prem_connectivity": "fastconnect"
   }},
+  "groups": [
+    {{"id": "pub_sub_box", "label": "Public Subnet", "order": 0}},
+    {{"id": "app_sub_box", "label": "App Subnet",    "order": 1}},
+    {{"id": "db_sub_box",  "label": "DB Subnet",     "order": 2}}
+  ],
   "placements": [
-    {{"id": "<exact-id-from-input>", "oci_type": "<type>", "layer": "<layer>", "group": "<group-or-null>"}},
+    {{"id": "<exact-id-from-input>", "oci_type": "<type>", "layer": "<layer>", "group": "<group-slug-or-null>"}},
     ...
   ],
   "assumptions": [
@@ -517,7 +553,8 @@ IMPORTANT RULES:
 1. Every id from INPUT SERVICES must appear exactly once in placements.
 2. Do NOT invent services not in the INPUT SERVICES list.
 3. Use the exact id values from INPUT SERVICES (e.g. "compute_1", "bastion_1").
-4. Output ONLY valid JSON. No markdown, no prose, no code fences."""
+4. Every group slug used in placements must also appear in the groups array.
+5. Output ONLY valid JSON. No markdown, no prose, no code fences."""
 
 
 def bom_to_llm_input(

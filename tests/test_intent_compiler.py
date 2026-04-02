@@ -15,7 +15,7 @@ import pytest
 
 from agent.bom_parser import ServiceItem, build_layout_intent_prompt
 from agent.layout_intent import (
-    LayoutIntent, DeploymentHints, Placement, Assumption,
+    LayoutIntent, DeploymentHints, Placement, GroupDecl, Assumption,
     validate_layout_intent, LayoutIntentError,
     VALID_LAYERS, VALID_GROUPS,
 )
@@ -221,16 +221,30 @@ class TestLayoutIntentValidation:
         with pytest.raises(LayoutIntentError, match="Unknown layer"):
             validate_layout_intent(data)
 
-    def test_rejects_unknown_group(self):
+    def test_accepts_custom_group_slug(self):
+        """Any valid slug is now accepted — the LLM may declare topology-specific groups."""
         data = {
             "schema_version": "1.0",
             "deployment_hints": {},
             "placements": [
                 {"id": "compute_1", "oci_type": "compute", "layer": "compute",
-                 "group": "mystery_box"},
+                 "group": "worker_sub_box"},
             ],
         }
-        with pytest.raises(LayoutIntentError, match="Unknown group"):
+        intent = validate_layout_intent(data)
+        assert intent.placements[0].group == "worker_sub_box"
+
+    def test_rejects_group_slug_with_spaces(self):
+        """A group name with spaces is not a valid slug and must be rejected."""
+        data = {
+            "schema_version": "1.0",
+            "deployment_hints": {},
+            "placements": [
+                {"id": "compute_1", "oci_type": "compute", "layer": "compute",
+                 "group": "my invalid group"},
+            ],
+        }
+        with pytest.raises(LayoutIntentError, match="Invalid group slug"):
             validate_layout_intent(data)
 
     def test_rejects_duplicate_placement_id(self):
@@ -501,3 +515,125 @@ class TestEdgeCases:
         items = [ServiceItem(id="c1", oci_type="compute", label="C", layer="compute")]
         prompt = build_layout_intent_prompt(items, notes_text="Discussed DR requirements.")
         assert "Discussed DR requirements." in prompt
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Dynamic topology — LLM-declared groups (HPC and custom patterns)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDynamicTopology:
+    """Verify that the compiler accepts and uses LLM-declared custom groups."""
+
+    def _hpc_items(self):
+        return [
+            ServiceItem(id="bastion_1",   oci_type="bastion",          label="Bastion",         layer="ingress"),
+            ServiceItem(id="oke_1",        oci_type="container engine", label="OKE Cluster",     layer="compute"),
+            ServiceItem(id="hpc_1",        oci_type="bare metal",       label="BM.Optimized3.36",layer="compute"),
+            ServiceItem(id="hpc_2",        oci_type="bare metal",       label="BM.Optimized3.36",layer="compute"),
+            ServiceItem(id="hpc_3",        oci_type="bare metal",       label="BM.Optimized3.36",layer="compute"),
+            ServiceItem(id="fss_1",        oci_type="file storage",     label="FSS",             layer="data"),
+            ServiceItem(id="nat_gateway",  oci_type="nat gateway",      label="NAT GW",          layer="ingress"),
+        ]
+
+    def _hpc_intent_data(self, items):
+        return {
+            "schema_version": "1.0",
+            "deployment_hints": {
+                "region_count": 1,
+                "availability_domains_per_region": 1,
+                "dr_enabled": False,
+                "on_prem_connectivity": "none",
+            },
+            "groups": [
+                {"id": "bas_sub_box",    "label": "Bastion Subnet (Public)", "order": 0},
+                {"id": "cp_sub_box",     "label": "Control Plane Subnet",    "order": 1},
+                {"id": "worker_sub_box", "label": "Worker Subnet (Private)", "order": 2},
+                {"id": "storage_sub_box","label": "Storage Subnet",          "order": 3},
+            ],
+            "placements": [
+                {"id": "bastion_1",  "oci_type": "bastion",          "layer": "ingress", "group": "bas_sub_box"},
+                {"id": "oke_1",      "oci_type": "container engine", "layer": "compute", "group": "cp_sub_box"},
+                {"id": "hpc_1",      "oci_type": "bare metal",       "layer": "compute", "group": "worker_sub_box"},
+                {"id": "hpc_2",      "oci_type": "bare metal",       "layer": "compute", "group": "worker_sub_box"},
+                {"id": "hpc_3",      "oci_type": "bare metal",       "layer": "compute", "group": "worker_sub_box"},
+                {"id": "fss_1",      "oci_type": "file storage",     "layer": "data",    "group": "storage_sub_box"},
+                {"id": "nat_gateway","oci_type": "nat gateway",      "layer": "ingress", "group": None},
+            ],
+            "assumptions": [],
+            "fixed_edges_policy": True,
+        }
+
+    def test_validator_accepts_hpc_groups(self):
+        items = self._hpc_items()
+        intent = validate_layout_intent(self._hpc_intent_data(items), items)
+        assert len(intent.groups) == 4
+        group_ids = [g.id for g in intent.groups]
+        assert "worker_sub_box"  in group_ids
+        assert "storage_sub_box" in group_ids
+
+    def test_groups_sorted_by_order(self):
+        items = self._hpc_items()
+        intent = validate_layout_intent(self._hpc_intent_data(items), items)
+        import copy
+        from agent.intent_compiler import compile_intent_to_flat_spec
+        spec = compile_intent_to_flat_spec(intent, items)
+        group_ids = [g["id"] for g in spec["groups"]]
+        assert group_ids.index("bas_sub_box")    < group_ids.index("cp_sub_box")
+        assert group_ids.index("cp_sub_box")     < group_ids.index("worker_sub_box")
+        assert group_ids.index("worker_sub_box") < group_ids.index("storage_sub_box")
+
+    def test_hpc_group_labels_used(self):
+        items = self._hpc_items()
+        intent = validate_layout_intent(self._hpc_intent_data(items), items)
+        from agent.intent_compiler import compile_intent_to_flat_spec
+        spec = compile_intent_to_flat_spec(intent, items)
+        labels = {g["id"]: g["label"] for g in spec["groups"]}
+        assert labels["worker_sub_box"]  == "Worker Subnet (Private)"
+        assert labels["storage_sub_box"] == "Storage Subnet"
+
+    def test_hpc_nodes_in_correct_groups(self):
+        items = self._hpc_items()
+        intent = validate_layout_intent(self._hpc_intent_data(items), items)
+        from agent.intent_compiler import compile_intent_to_flat_spec
+        spec = compile_intent_to_flat_spec(intent, items)
+        groups_by_id = {g["id"]: g for g in spec["groups"]}
+        assert "hpc_1" in groups_by_id["worker_sub_box"]["nodes"]
+        assert "hpc_2" in groups_by_id["worker_sub_box"]["nodes"]
+        assert "hpc_3" in groups_by_id["worker_sub_box"]["nodes"]
+        assert "fss_1" in groups_by_id["storage_sub_box"]["nodes"]
+
+    def test_sequential_edges_injected_for_hpc(self):
+        """Edges should connect bas→cp→worker→storage in order."""
+        items = self._hpc_items()
+        intent = validate_layout_intent(self._hpc_intent_data(items), items)
+        from agent.intent_compiler import compile_intent_to_flat_spec
+        spec = compile_intent_to_flat_spec(intent, items)
+        pairs = {(e["source"], e["target"]) for e in spec["edges"]}
+        assert ("bas_sub_box",    "cp_sub_box")      in pairs
+        assert ("cp_sub_box",     "worker_sub_box")  in pairs
+        assert ("worker_sub_box", "storage_sub_box") in pairs
+
+    def test_layout_engine_accepts_hpc_spec(self):
+        """End-to-end: HPC intent → flat spec → draw_dict (no OCI needed)."""
+        items = self._hpc_items()
+        intent = validate_layout_intent(self._hpc_intent_data(items), items)
+        from agent.intent_compiler import compile_intent_to_flat_spec
+        flat_spec = compile_intent_to_flat_spec(intent, items)
+        items_by_id = {i.id: i for i in items}
+        draw_dict = spec_to_draw_dict(flat_spec, items_by_id)
+        node_ids = {n["id"] for n in draw_dict["nodes"]}
+        assert "hpc_1" in node_ids
+        assert "fss_1" in node_ids
+
+    def test_prompt_contains_hpc_pattern(self):
+        """The LLM prompt must describe the HPC pattern so the LLM can detect it."""
+        items = self._hpc_items()
+        prompt = build_layout_intent_prompt(items)
+        assert "bare metal" in prompt.lower() or "HPC" in prompt
+        assert "worker_sub_box" in prompt or "worker" in prompt.lower()
+
+    def test_prompt_contains_groups_field(self):
+        """The output format in the prompt must include a 'groups' array."""
+        items = self._hpc_items()
+        prompt = build_layout_intent_prompt(items)
+        assert '"groups"' in prompt

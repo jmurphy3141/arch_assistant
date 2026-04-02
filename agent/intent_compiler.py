@@ -14,9 +14,8 @@ Output format:
       "data":     [...]
     },
     "groups": [
-      {"id": "pub_sub_box", "label": "Public Subnet", "nodes": [...]},
-      {"id": "app_sub_box", "label": "App Subnet",    "nodes": [...]},
-      {"id": "db_sub_box",  "label": "DB Subnet",     "nodes": [...]}
+      {"id": "<slug>", "label": "<display name>", "nodes": [...]},
+      ...
     ],
     "edges": [...]
   }
@@ -25,18 +24,26 @@ The 'vcn_box' is synthesised by layout_engine._compute_positions_legacy()
 from the group bounding boxes — it MUST NOT appear in the spec.
 
 Fixed edges injected deterministically (by compiler, not by LLM):
-  igw_id → vcn_box       (if IGW placement exists)
-  pub_sub_box → app_sub_box  (if both groups are non-empty)
-  app_sub_box → db_sub_box   (if both groups are non-empty)
-  on_prem → vcn_box      (added for label-bearing edge; layout engine also
-                          injects a label-less fallback for legacy specs)
+  igw_id  → vcn_box   (if IGW placement exists)
+  on_prem → vcn_box   (if on_prem placement exists)
+  group[i] → group[i+1]  (sequential edges between adjacent subnet groups)
+
+When the LLM declares explicit groups (intent.groups), those define the
+display labels and ordering.  When no groups are declared the compiler falls
+back to the classic 3-tier order (pub_sub_box → app_sub_box → db_sub_box).
 """
 from __future__ import annotations
 
 from agent.layout_intent import LayoutIntent, Placement, GROUP_LABELS
 
-# Fixed group display order
+# Classic 3-tier fallback order (used when the LLM declares no groups)
 _GROUP_ORDER = ["pub_sub_box", "app_sub_box", "db_sub_box"]
+
+# Legacy edge labels for the well-known 3-tier pairs
+_LEGACY_EDGE_LABELS = {
+    ("pub_sub_box", "app_sub_box"): "HTTP",
+    ("app_sub_box", "db_sub_box"):  "Data Access",
+}
 
 # Connectivity labels for on_prem → vcn edge
 _CONN_LABELS = {
@@ -81,19 +88,44 @@ def compile_intent_to_flat_spec(
             "label": label,
         })
 
+    # ── Determine group ordering and labels ───────────────────────────────────
+    # When the LLM declared explicit groups, use those (sorted by .order).
+    # Otherwise fall back to the classic 3-tier order.
+    if intent.groups:
+        sorted_decls = sorted(intent.groups, key=lambda g: g.order)
+        group_order  = [g.id for g in sorted_decls]
+        group_labels = {g.id: g.label for g in sorted_decls}
+    else:
+        group_order  = list(_GROUP_ORDER)
+        group_labels = dict(GROUP_LABELS)
+
     # ── Build groups ──────────────────────────────────────────────────────────
-    group_members: dict[str, list[str]] = {g: [] for g in _GROUP_ORDER}
+    group_members: dict[str, list[str]] = {gid: [] for gid in group_order}
+    extra_members: dict[str, list[str]] = {}   # groups in placements but not declared
+
     for p in intent.placements:
-        if p.group and p.group in group_members:
+        if not p.group:
+            continue
+        if p.group in group_members:
             group_members[p.group].append(p.id)
+        else:
+            extra_members.setdefault(p.group, []).append(p.id)
 
     groups: list[dict] = []
-    for gid in _GROUP_ORDER:
+    for gid in group_order:
         members = group_members[gid]
         if members:
             groups.append({
                 "id":    gid,
-                "label": GROUP_LABELS[gid],
+                "label": group_labels.get(gid, gid.replace("_", " ").title()),
+                "nodes": members,
+            })
+    # Append any groups referenced in placements but missing from the declaration
+    for gid, members in extra_members.items():
+        if members:
+            groups.append({
+                "id":    gid,
+                "label": gid.replace("_", " ").title(),
                 "nodes": members,
             })
 
@@ -135,14 +167,12 @@ def compile_intent_to_flat_spec(
         _add("e_igw_vcn", igw_id, "vcn_box", "Internet",
              ex=0.5, ey=1.0, nx=0.5, ny=0.0)
 
-    # pub_sub_box → app_sub_box
-    if "pub_sub_box" in all_group_ids and "app_sub_box" in all_group_ids:
-        _add("e_pub_app", "pub_sub_box", "app_sub_box", "HTTP",
-             ex=0.5, ey=1.0, nx=0.5, ny=0.0)
-
-    # app_sub_box → db_sub_box
-    if "app_sub_box" in all_group_ids and "db_sub_box" in all_group_ids:
-        _add("e_app_db", "app_sub_box", "db_sub_box", "Data Access",
+    # Sequential edges between adjacent subnet groups (group[i] → group[i+1])
+    for i in range(len(groups) - 1):
+        src = groups[i]["id"]
+        tgt = groups[i + 1]["id"]
+        label = _LEGACY_EDGE_LABELS.get((src, tgt), "")
+        _add(f"e_{src}_{tgt}", src, tgt, label,
              ex=0.5, ey=1.0, nx=0.5, ny=0.0)
 
     return {
