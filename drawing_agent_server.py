@@ -1003,6 +1003,19 @@ def health():
     }
 
 
+@app.get("/config")
+def get_config():
+    """Return UI configuration (region, model info). No secrets exposed."""
+    return {
+        "region":           REGION,
+        "agent_version":    AGENT_VERSION,
+        "default_model_id": INFERENCE_MODEL_ID,
+        "models": [
+            {"id": INFERENCE_MODEL_ID, "name": "OCI GenAI (Inference)"},
+        ] if INFERENCE_MODEL_ID else [],
+    }
+
+
 @app.get("/mcp/tools")
 def mcp_tools():
     return {"tools": [
