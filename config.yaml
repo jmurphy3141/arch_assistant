@@ -90,17 +90,8 @@ terraform:
     - "oracle-quickstart/oci-hpc"          # HPC cluster patterns on OCI bare metal
     - "ncusato/kove-terraform-oci"
 
-# OIDC / session auth
-# Set enabled: true and fill in the OIDC fields to require login.
-# Secrets are read from environment variables — never stored here.
-auth:
-  enabled: false                          # flip to true to enforce OIDC login
-  oidc_issuer: ""                         # e.g. https://login.microsoftonline.com/{tenant}/v2.0
-  client_id: ""                           # OAuth2 client ID
-  client_secret_env: "OIDC_CLIENT_SECRET" # env var holding the client secret
-  redirect_uri: ""                        # e.g. https://drawing-agent.example.com/oauth2/callback
-  session_secret_env: "SESSION_SECRET"    # env var holding the session signing secret
-  scopes: "openid email profile"
+# Auth is configured entirely via environment variables (see .env.example).
+# No auth settings belong here — they contain secrets or per-deployment values.
 
 # Server
 host: "0.0.0.0"

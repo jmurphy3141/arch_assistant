@@ -61,7 +61,19 @@ chmod 600 ~/.drawing-agent-secret
 ```bash
 cd ~/drawing-agent
 
+# Without auth (open access — suitable for private subnet)
 SESSION_SECRET=$(cat ~/.drawing-agent-secret) \
+python3.11 -m uvicorn drawing_agent_server:app \
+  --host 0.0.0.0 --port 8080
+
+# With OCI Identity Domain auth
+SESSION_SECRET=$(cat ~/.drawing-agent-secret) \
+OIDC_CLIENT_ID=ocid1.oauth2client.oc1.. \
+OIDC_CLIENT_SECRET=<secret> \
+OIDC_AUTHORIZATION_ENDPOINT=https://idcs-example.identity.oraclecloud.com/oauth2/v1/authorize \
+OIDC_TOKEN_ENDPOINT=https://idcs-example.identity.oraclecloud.com/oauth2/v1/token \
+OIDC_USERINFO_ENDPOINT=https://idcs-example.identity.oraclecloud.com/oauth2/v1/userinfo \
+OIDC_REDIRECT_URI=https://your-host/oauth2/callback \
 python3.11 -m uvicorn drawing_agent_server:app \
   --host 0.0.0.0 --port 8080
 ```
@@ -159,34 +171,44 @@ pip3.11 install -r requirements.txt
 
 ---
 
-## Configuration (config.yaml)
+## Configuration
 
-| Section | Key | What it controls |
-|---------|-----|-----------------|
-| `region` | — | OCI region (e.g. `us-phoenix-1`) |
-| `inference.enabled` | — | Use direct OCI GenAI Inference (true) vs legacy ADK (false) |
-| `inference.model_id` | — | OCI GenAI model OCID |
-| `inference.service_endpoint` | — | OCI GenAI endpoint URL |
-| `compartment_id` | — | Compartment for GenAI calls |
-| `auth.enabled` | — | Require OIDC login (default: `false`) |
-| `auth.oidc_issuer` | — | OIDC issuer URL (e.g. Entra / Okta) |
-| `auth.client_id` | — | OAuth2 client ID |
-| `auth.redirect_uri` | — | Must match what's registered in the identity provider |
-| `persistence.enabled` | — | Write diagrams to OCI Object Storage |
+### config.yaml — non-secret OCI settings
 
-### Enabling OIDC login
+| Key | What it controls |
+|-----|-----------------|
+| `region` | OCI region (e.g. `us-chicago-1`) |
+| `inference.enabled` | Use direct OCI GenAI Inference (true) vs legacy ADK (false) |
+| `inference.model_id` | OCI GenAI model OCID |
+| `inference.service_endpoint` | OCI GenAI endpoint URL |
+| `compartment_id` | Compartment for GenAI calls |
+| `persistence.enabled` | Write diagrams to OCI Object Storage |
 
-Set `auth.enabled: true` in `config.yaml` and fill in the other `auth.*` fields.
-Supply the client secret via the `OIDC_CLIENT_SECRET` env var:
+### .env — secrets and per-deployment values
 
-```bash
-SESSION_SECRET=$(cat ~/.drawing-agent-secret) \
-OIDC_CLIENT_SECRET=<your-secret> \
-python3.11 -m uvicorn drawing_agent_server:app --host 0.0.0.0 --port 8080
-```
+Copy `.env.example` to `.env` and fill in the values.
+On OCI Compute (production) set these via systemd `EnvironmentFile` or OCI Vault
+instead of a `.env` file.
 
-When `auth.enabled: false` (default), all endpoints are open — suitable for
-a private OCI subnet where network access is the only control.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SESSION_SECRET` | ✅ | Long random string for signing session cookies. Generate: `openssl rand -hex 32`. Keep stable across restarts. |
+| `OIDC_CLIENT_ID` | for auth | Confidential app client ID from OCI Identity Domain |
+| `OIDC_CLIENT_SECRET` | for auth | Confidential app client secret |
+| `OIDC_AUTHORIZATION_ENDPOINT` | for auth | Identity Domain OAuth authorize URL |
+| `OIDC_TOKEN_ENDPOINT` | for auth | Identity Domain OAuth token URL |
+| `OIDC_USERINFO_ENDPOINT` | for auth | Identity Domain OIDC userinfo URL |
+| `OIDC_REDIRECT_URI` | for auth | Callback URL registered in the Identity Domain app |
+| `OIDC_LOGOUT_ENDPOINT` | optional | Identity Domain logout URL (IdP single logout) |
+| `OIDC_REQUIRED_GROUP` | optional | Require membership in this Identity Domain group |
+| `OIDC_SCOPE` | optional | OAuth scopes (default: `openid profile email`) |
+
+**Auth is automatically enabled** when `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`,
+`OIDC_AUTHORIZATION_ENDPOINT`, and `OIDC_TOKEN_ENDPOINT` are all set.
+Leave them unset to run without authentication (suitable for a private OCI subnet).
+
+The OIDC endpoint URLs are found in the OCI Console under:
+**Identity → Domains → your domain → Applications → your app → OAuth configuration**
 
 ---
 

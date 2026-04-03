@@ -47,6 +47,13 @@ from typing import Any, Dict, List, Optional
 import anyio
 import yaml
 from contextlib import asynccontextmanager
+
+# Load .env if present (development / non-systemd deployments)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
@@ -143,18 +150,22 @@ TERRAFORM_TOP_P         = float(_terraform_cfg.get("top_p", 0.9))
 TERRAFORM_TOP_K         = int(_terraform_cfg.get("top_k", 0))
 TERRAFORM_EXAMPLE_REPOS = _terraform_cfg.get("example_repos", [])
 
-# ── Auth / session config ────────────────────────────────────────────────────
-_auth_cfg             = _cfg.get("auth", {})
-AUTH_ENABLED          = bool(_auth_cfg.get("enabled", False))
-AUTH_OIDC_ISSUER      = _auth_cfg.get("oidc_issuer", "")
-AUTH_CLIENT_ID        = _auth_cfg.get("client_id", "")
-AUTH_CLIENT_SECRET    = os.environ.get(_auth_cfg.get("client_secret_env", "OIDC_CLIENT_SECRET"), "")
-AUTH_REDIRECT_URI     = _auth_cfg.get("redirect_uri", "")
-AUTH_SCOPES           = _auth_cfg.get("scopes", "openid email profile")
-_SESSION_SECRET       = os.environ.get(
-    _auth_cfg.get("session_secret_env", "SESSION_SECRET"),
-    "dev-secret-change-in-prod",
-)
+# ── Auth / session config — all from environment, matching BOM agent pattern ──
+# Set these in .env (dev) or as systemd EnvironmentFile / OCI Vault (prod).
+# Auth is automatically enabled when the four required OIDC vars are present.
+OIDC_CLIENT_ID              = os.environ.get("OIDC_CLIENT_ID", "")
+OIDC_CLIENT_SECRET          = os.environ.get("OIDC_CLIENT_SECRET", "")
+OIDC_AUTHORIZATION_ENDPOINT = os.environ.get("OIDC_AUTHORIZATION_ENDPOINT", "")
+OIDC_TOKEN_ENDPOINT         = os.environ.get("OIDC_TOKEN_ENDPOINT", "")
+OIDC_USERINFO_ENDPOINT      = os.environ.get("OIDC_USERINFO_ENDPOINT", "")
+OIDC_REDIRECT_URI           = os.environ.get("OIDC_REDIRECT_URI", "")
+OIDC_LOGOUT_ENDPOINT        = os.environ.get("OIDC_LOGOUT_ENDPOINT", "")
+OIDC_REQUIRED_GROUP         = os.environ.get("OIDC_REQUIRED_GROUP", "")
+OIDC_SCOPE                  = os.environ.get("OIDC_SCOPE", "openid profile email")
+_SESSION_SECRET             = os.environ.get("SESSION_SECRET", "dev-secret-change-in-prod")
+
+AUTH_ENABLED = all([OIDC_CLIENT_ID, OIDC_CLIENT_SECRET,
+                    OIDC_AUTHORIZATION_ENDPOINT, OIDC_TOKEN_ENDPOINT])
 
 # ── Fleet identity ───────────────────────────────────────────────────────────
 AGENT_ID    = _cfg.get("agent_id", "agent3-oci-drawing")
@@ -763,48 +774,27 @@ def _ensure_state_defaults() -> None:
 
 
 # ── OIDC helpers ─────────────────────────────────────────────────────────────
-
-_oidc_discovery: dict = {}
-
-
-def _fetch_oidc_discovery() -> dict:
-    """Fetch and cache the OIDC discovery document (thread-safe first-fetch)."""
-    global _oidc_discovery
-    if _oidc_discovery:
-        return _oidc_discovery
-    if not AUTH_OIDC_ISSUER:
-        return {}
-    url = f"{AUTH_OIDC_ISSUER.rstrip('/')}/.well-known/openid-configuration"
-    with _urlreq.urlopen(url, timeout=10) as r:
-        _oidc_discovery = json.loads(r.read())
-    return _oidc_discovery
-
-
-def _oidc_endpoint(key: str) -> str:
-    doc = _fetch_oidc_discovery()
-    return doc.get(key, "")
-
+# OCI Identity Domain exposes explicit endpoints — no discovery document needed.
+# Endpoints are read directly from environment variables at startup.
 
 def _exchange_code(code: str) -> dict:
     """Exchange an authorization code for tokens (sync, run in thread)."""
-    token_url = _oidc_endpoint("token_endpoint")
     data = urllib.parse.urlencode({
         "grant_type":    "authorization_code",
         "code":          code,
-        "redirect_uri":  AUTH_REDIRECT_URI,
-        "client_id":     AUTH_CLIENT_ID,
-        "client_secret": AUTH_CLIENT_SECRET,
+        "redirect_uri":  OIDC_REDIRECT_URI,
+        "client_id":     OIDC_CLIENT_ID,
+        "client_secret": OIDC_CLIENT_SECRET,
     }).encode()
-    req = _urlreq.Request(token_url, data=data, method="POST")
+    req = _urlreq.Request(OIDC_TOKEN_ENDPOINT, data=data, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     with _urlreq.urlopen(req, timeout=10) as r:
         return json.loads(r.read())
 
 
 def _fetch_userinfo(access_token: str) -> dict:
-    """Fetch the OIDC userinfo endpoint (sync, run in thread)."""
-    userinfo_url = _oidc_endpoint("userinfo_endpoint")
-    req = _urlreq.Request(userinfo_url)
+    """Fetch user profile from the OIDC userinfo endpoint (sync, run in thread)."""
+    req = _urlreq.Request(OIDC_USERINFO_ENDPOINT)
     req.add_header("Authorization", f"Bearer {access_token}")
     with _urlreq.urlopen(req, timeout=10) as r:
         return json.loads(r.read())
@@ -843,15 +833,14 @@ async def login(request: Request):
     request.session["oauth_state"] = state
     params = {
         "response_type": "code",
-        "client_id":     AUTH_CLIENT_ID,
-        "redirect_uri":  AUTH_REDIRECT_URI,
-        "scope":         AUTH_SCOPES,
+        "client_id":     OIDC_CLIENT_ID,
+        "redirect_uri":  OIDC_REDIRECT_URI,
+        "scope":         OIDC_SCOPE,
         "state":         state,
     }
-    authorize_url = _oidc_endpoint("authorization_endpoint")
-    if not authorize_url:
-        raise HTTPException(503, "OIDC issuer not configured — check config.yaml auth.oidc_issuer")
-    return RedirectResponse(f"{authorize_url}?{urllib.parse.urlencode(params)}")
+    if not OIDC_AUTHORIZATION_ENDPOINT:
+        raise HTTPException(503, "OIDC_AUTHORIZATION_ENDPOINT is not set — check your .env")
+    return RedirectResponse(f"{OIDC_AUTHORIZATION_ENDPOINT}?{urllib.parse.urlencode(params)}")
 
 
 @app.get("/oauth2/callback")
@@ -876,6 +865,17 @@ async def oauth2_callback(
         logger.error("OIDC token exchange failed: %s", exc)
         return HTMLResponse(f"<h3>Token exchange failed.</h3><pre>{exc}</pre><a href='/login'>Retry</a>", status_code=502)
 
+    # Optional group membership check
+    if OIDC_REQUIRED_GROUP:
+        groups = userinfo.get("groups", [])
+        if OIDC_REQUIRED_GROUP not in groups:
+            return HTMLResponse(
+                f"<h3>Access denied.</h3>"
+                f"<p>You must be a member of group <code>{OIDC_REQUIRED_GROUP}</code>.</p>"
+                f"<a href='/logout'>Sign out</a>",
+                status_code=403,
+            )
+
     request.session["user"] = {
         "email": userinfo.get("email", ""),
         "name":  userinfo.get("name") or userinfo.get("email", "unknown"),
@@ -885,8 +885,11 @@ async def oauth2_callback(
 
 @app.get("/logout")
 async def logout(request: Request):
-    """Clear session and redirect to login (or root when auth is disabled)."""
+    """Clear session. If OIDC_LOGOUT_ENDPOINT is set, redirect there (IdP single logout)."""
     request.session.clear()
+    if AUTH_ENABLED and OIDC_LOGOUT_ENDPOINT:
+        params = {"post_logout_redirect_uri": OIDC_REDIRECT_URI.rsplit("/oauth2/callback", 1)[0] + "/login"}
+        return RedirectResponse(f"{OIDC_LOGOUT_ENDPOINT}?{urllib.parse.urlencode(params)}", status_code=302)
     return RedirectResponse("/login" if AUTH_ENABLED else "/", status_code=302)
 
 
