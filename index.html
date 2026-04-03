@@ -299,17 +299,24 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 <div class="notif" id="notif"></div>
 <script>
 // ── State ────────────────────────────────────────────────────────────────────
-let clientId    = 'ui-' + Math.random().toString(36).slice(2, 10);
-let diagramName = '';
-let downloadUrl = '';
-let phase       = 'upload'; // upload | clarifying | done
+let clientId       = 'ui-' + Math.random().toString(36).slice(2, 10);
+let diagramName    = '';
+let downloadUrl    = '';
+let phase          = 'upload'; // upload | clarifying | done
+let clarifyContext = null;     // echoed back to /clarify for stateless flow
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadConfig();
 
+function handle401(res) {
+  if (res.status === 401) { window.location.href = '/login'; return true; }
+  return false;
+}
+
 async function loadConfig() {
   try {
     const res = await fetch('/config');
+    if (handle401(res)) return;
     if (!res.ok) throw new Error();
     const cfg = await res.json();
     document.getElementById('regionText').textContent = cfg.region || 'us-chicago-1';
@@ -410,6 +417,7 @@ async function uploadBOM() {
     const res = await fetch('/upload-bom', { method: 'POST', body: formData });
     removeTyping();
 
+    if (handle401(res)) return;
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
       throw new Error(err.detail || `HTTP ${res.status}`);
@@ -431,6 +439,7 @@ async function uploadBOM() {
 // ── Handle server response (both /upload-bom and /clarify) ───────────────────
 function handleResponse(data) {
   if (data.status === 'need_clarification') {
+    clarifyContext = data._clarify_context || null;  // store for stateless /clarify
     const qs = (data.questions || []).map((q, i) => `${i+1}. ${q.question || q}`).join('\n\n');
     appendMsg('assistant', qs || 'I need a few more details before I can generate the diagram.', 'question');
     phase = 'clarifying';
@@ -472,13 +481,19 @@ async function submitAnswers() {
   setStep(2);
 
   try {
+    const body = { client_id: clientId, answers, diagram_name: diagramName };
+    if (clarifyContext) {
+      body.items_json = clarifyContext.items_json;
+      body.prompt     = clarifyContext.prompt;
+    }
     const res = await fetch('/clarify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, answers, diagram_name: diagramName })
+      body: JSON.stringify(body)
     });
     removeTyping();
 
+    if (handle401(res)) return;
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
       throw new Error(err.detail || `HTTP ${res.status}`);
@@ -631,6 +646,7 @@ function resetSession() {
   document.getElementById('answerBox').value             = '';
   document.getElementById('uploadHint').textContent      = 'Upload a BOM to get started';
   document.getElementById('genBtn').disabled             = false;
+  clarifyContext = null;
 }
 </script>
 </body>

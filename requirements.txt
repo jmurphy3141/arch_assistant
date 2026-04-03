@@ -6,5 +6,7 @@ python-multipart>=0.0.9
 openpyxl>=3.1.0
 pyyaml>=6.0
 
+itsdangerous>=2.1.2          # SessionMiddleware cookie signing
+
 # OCI SDK with ADK (Agent Development Kit)
 oci[adk]==2.165.1

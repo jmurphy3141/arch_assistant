@@ -28,13 +28,18 @@ v1.3.2 additions:
 """
 
 import asyncio
+import dataclasses
 import functools
 import hashlib
 import json
 import logging
 import os
 import re
+import secrets
 import tempfile
+import threading
+import urllib.parse
+import urllib.request as _urlreq
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -42,9 +47,10 @@ from typing import Any, Dict, List, Optional
 import anyio
 import yaml
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
-from fastapi.responses import JSONResponse, FileResponse, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
 try:
     from oci.addons.adk import Agent, AgentClient
@@ -137,12 +143,28 @@ TERRAFORM_TOP_P         = float(_terraform_cfg.get("top_p", 0.9))
 TERRAFORM_TOP_K         = int(_terraform_cfg.get("top_k", 0))
 TERRAFORM_EXAMPLE_REPOS = _terraform_cfg.get("example_repos", [])
 
+# ── Auth / session config ────────────────────────────────────────────────────
+_auth_cfg             = _cfg.get("auth", {})
+AUTH_ENABLED          = bool(_auth_cfg.get("enabled", False))
+AUTH_OIDC_ISSUER      = _auth_cfg.get("oidc_issuer", "")
+AUTH_CLIENT_ID        = _auth_cfg.get("client_id", "")
+AUTH_CLIENT_SECRET    = os.environ.get(_auth_cfg.get("client_secret_env", "OIDC_CLIENT_SECRET"), "")
+AUTH_REDIRECT_URI     = _auth_cfg.get("redirect_uri", "")
+AUTH_SCOPES           = _auth_cfg.get("scopes", "openid email profile")
+_SESSION_SECRET       = os.environ.get(
+    _auth_cfg.get("session_secret_env", "SESSION_SECRET"),
+    "dev-secret-change-in-prod",
+)
+
 # ── Fleet identity ───────────────────────────────────────────────────────────
 AGENT_ID    = _cfg.get("agent_id", "agent3-oci-drawing")
 FLEET_CFG   = _cfg.get("fleet", {})
 
 AGENT_VERSION  = "1.3.2"
 SCHEMA_VERSION = {"spec": "1.1", "draw_dict": "1.0"}
+
+# ── Session middleware (must be added before first request) ───────────────────
+app.add_middleware(SessionMiddleware, secret_key=_SESSION_SECRET, https_only=False)
 
 # ── Global mutable state ───────────────────────────────────────────────────────
 _oci_agent: Optional[Any] = None          # real OCI Agent, set in startup
@@ -161,6 +183,10 @@ class ClarifyRequest(BaseModel):
     answers:      str
     client_id:    Optional[str] = "default"
     diagram_name: Optional[str] = "oci_architecture"
+    # Stateless path: client echoes these back from the need_clarification response.
+    # When present, /clarify uses them directly instead of looking up PENDING_CLARIFY.
+    items_json:   Optional[str] = None
+    prompt:       Optional[str] = None
 
 
 class GenerateRequest(BaseModel):
@@ -324,8 +350,10 @@ def _clarify_response(
     request_id: str,
     input_hash: str,
     questions: list,
+    items: Optional[list] = None,
+    prompt: str = "",
 ) -> dict:
-    return {
+    resp: dict = {
         "status":         "need_clarification",
         "agent_version":  AGENT_VERSION,
         "schema_version": SCHEMA_VERSION,
@@ -336,6 +364,14 @@ def _clarify_response(
         "questions":      questions,
         "errors":         [],
     }
+    # Include serialised context so the browser can echo it back on /clarify,
+    # making the conversation stateless (no PENDING_CLARIFY look-up needed).
+    if items is not None:
+        resp["_clarify_context"] = {
+            "items_json": json.dumps([dataclasses.asdict(i) for i in items]),
+            "prompt":     prompt,
+        }
+    return resp
 
 
 async def run_pipeline(
@@ -371,6 +407,8 @@ async def run_pipeline(
         return _clarify_response(
             client_id, diagram_name, request_id, input_hash,
             spec.get("questions", []),
+            items=items,
+            prompt=prompt,
         )
 
     # ── Option 1: LayoutIntent path ───────────────────────────────────────────
@@ -419,6 +457,8 @@ async def run_pipeline(
                     "blocking": True,
                 }
             ],
+            items=items,
+            prompt=prompt,
         )
 
     # ── Layout engine (CPU-bound) — run in thread ─────────────────────────────
@@ -722,6 +762,134 @@ def _ensure_state_defaults() -> None:
             app.state.text_runner = None
 
 
+# ── OIDC helpers ─────────────────────────────────────────────────────────────
+
+_oidc_discovery: dict = {}
+
+
+def _fetch_oidc_discovery() -> dict:
+    """Fetch and cache the OIDC discovery document (thread-safe first-fetch)."""
+    global _oidc_discovery
+    if _oidc_discovery:
+        return _oidc_discovery
+    if not AUTH_OIDC_ISSUER:
+        return {}
+    url = f"{AUTH_OIDC_ISSUER.rstrip('/')}/.well-known/openid-configuration"
+    with _urlreq.urlopen(url, timeout=10) as r:
+        _oidc_discovery = json.loads(r.read())
+    return _oidc_discovery
+
+
+def _oidc_endpoint(key: str) -> str:
+    doc = _fetch_oidc_discovery()
+    return doc.get(key, "")
+
+
+def _exchange_code(code: str) -> dict:
+    """Exchange an authorization code for tokens (sync, run in thread)."""
+    token_url = _oidc_endpoint("token_endpoint")
+    data = urllib.parse.urlencode({
+        "grant_type":    "authorization_code",
+        "code":          code,
+        "redirect_uri":  AUTH_REDIRECT_URI,
+        "client_id":     AUTH_CLIENT_ID,
+        "client_secret": AUTH_CLIENT_SECRET,
+    }).encode()
+    req = _urlreq.Request(token_url, data=data, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    with _urlreq.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+def _fetch_userinfo(access_token: str) -> dict:
+    """Fetch the OIDC userinfo endpoint (sync, run in thread)."""
+    userinfo_url = _oidc_endpoint("userinfo_endpoint")
+    req = _urlreq.Request(userinfo_url)
+    req.add_header("Authorization", f"Bearer {access_token}")
+    with _urlreq.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+async def require_user(request: Request) -> dict:
+    """
+    FastAPI dependency — returns the session user dict or raises HTTP 401.
+    When auth is disabled (AUTH_ENABLED=False), returns a dummy local user
+    so all endpoints work without modification.
+    """
+    if not AUTH_ENABLED:
+        return {"email": "local", "name": "Local User"}
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required. Visit /login.")
+    return user
+
+
+# ── Auth routes ───────────────────────────────────────────────────────────────
+
+@app.get("/")
+async def serve_ui(request: Request):
+    """Serve the single-page UI. Redirects to /login when auth is required."""
+    if AUTH_ENABLED and not request.session.get("user"):
+        return RedirectResponse("/login", status_code=302)
+    return FileResponse(str(Path(__file__).parent / "index.html"))
+
+
+@app.get("/login")
+async def login(request: Request):
+    """Initiate OIDC authorization code flow."""
+    if not AUTH_ENABLED:
+        return RedirectResponse("/", status_code=302)
+    state = secrets.token_urlsafe(16)
+    request.session["oauth_state"] = state
+    params = {
+        "response_type": "code",
+        "client_id":     AUTH_CLIENT_ID,
+        "redirect_uri":  AUTH_REDIRECT_URI,
+        "scope":         AUTH_SCOPES,
+        "state":         state,
+    }
+    authorize_url = _oidc_endpoint("authorization_endpoint")
+    if not authorize_url:
+        raise HTTPException(503, "OIDC issuer not configured — check config.yaml auth.oidc_issuer")
+    return RedirectResponse(f"{authorize_url}?{urllib.parse.urlencode(params)}")
+
+
+@app.get("/oauth2/callback")
+async def oauth2_callback(
+    request: Request,
+    code: Optional[str]  = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+):
+    """OIDC callback — exchange code for tokens, store user in session."""
+    if error:
+        return HTMLResponse(f"<h3>Auth error: {error}</h3><a href='/login'>Try again</a>", status_code=400)
+    if not code or state != request.session.pop("oauth_state", None):
+        return HTMLResponse("<h3>Invalid or expired state.</h3><a href='/login'>Try again</a>", status_code=400)
+
+    try:
+        tokens   = await anyio.to_thread.run_sync(functools.partial(_exchange_code, code))
+        userinfo = await anyio.to_thread.run_sync(
+            functools.partial(_fetch_userinfo, tokens.get("access_token", ""))
+        )
+    except Exception as exc:
+        logger.error("OIDC token exchange failed: %s", exc)
+        return HTMLResponse(f"<h3>Token exchange failed.</h3><pre>{exc}</pre><a href='/login'>Retry</a>", status_code=502)
+
+    request.session["user"] = {
+        "email": userinfo.get("email", ""),
+        "name":  userinfo.get("name") or userinfo.get("email", "unknown"),
+    }
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    """Clear session and redirect to login (or root when auth is disabled)."""
+    request.session.clear()
+    return RedirectResponse("/login" if AUTH_ENABLED else "/", status_code=302)
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────────
 
 @app.post("/upload-bom")
@@ -731,6 +899,7 @@ async def upload_bom(
     context:      str        = Form(default=""),
     diagram_name: str        = Form(default="oci_architecture"),
     client_id:    str        = Form(default="default"),
+    _user:        dict       = Depends(require_user),
 ):
     """
     Upload an Excel BOM + optional context file.
@@ -789,34 +958,52 @@ async def upload_bom(
 
 
 @app.post("/clarify")
-async def clarify(req: ClarifyRequest):
+async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
     """
     Submit answers to clarification questions from /upload-bom or /generate.
     Re-runs the pipeline with answers appended to the original prompt.
+
+    Stateless path (preferred for browser clients):
+      The browser echoes back items_json + prompt from the _clarify_context
+      field of the need_clarification response.  No server-side state needed.
+
+    Stateful fallback (A2A / legacy):
+      If items_json/prompt are absent, falls back to PENDING_CLARIFY lookup
+      keyed by client_id.
     """
     request_id = str(uuid.uuid4())
     input_hash = compute_input_hash(req.answers or "")
 
-    pending = PENDING_CLARIFY.get(req.client_id)
-    if not pending:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"No pending clarification for client_id '{req.client_id}'. "
-                "Call /upload-bom or /generate first."
-            ),
-        )
-
     try:
+        # ── Stateless path ────────────────────────────────────────────────────
+        if req.items_json and req.prompt:
+            from agent.bom_parser import ServiceItem
+            raw_items = json.loads(req.items_json)
+            items = [ServiceItem(**r) for r in raw_items]
+            base_prompt = req.prompt
+        else:
+            # ── Stateful fallback ─────────────────────────────────────────────
+            pending = PENDING_CLARIFY.get(req.client_id)
+            if not pending:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"No pending clarification for client_id '{req.client_id}'. "
+                        "Call /upload-bom or /generate first."
+                    ),
+                )
+            items      = pending["items"]
+            base_prompt = pending["prompt"]
+
         enriched_prompt = (
-            pending["prompt"]
+            base_prompt
             + f"\n\nCLARIFICATION ANSWERS:\n{req.answers.strip()}\n\n"
             + "Now produce the layout spec JSON using the answers above. "
             + "Output ONLY valid JSON."
         )
 
         result = await run_pipeline(
-            items        = pending["items"],
+            items        = items,
             prompt       = enriched_prompt,
             diagram_name = req.diagram_name,
             client_id    = req.client_id,
@@ -839,7 +1026,7 @@ async def clarify(req: ClarifyRequest):
 
 
 @app.post("/generate")
-async def generate_from_resources(req: GenerateRequest):
+async def generate_from_resources(req: GenerateRequest, _user: dict = Depends(require_user)):
     """Generate diagram from a pre-parsed resource list (JSON body)."""
     request_id = str(uuid.uuid4())
 
@@ -911,7 +1098,7 @@ async def generate_from_resources(req: GenerateRequest):
 
 
 @app.post("/chat")
-def chat(req: ChatRequest):
+async def chat(req: ChatRequest, _user: dict = Depends(require_user)):
     """Free-form chat with the drawing agent."""
     try:
         result = call_llm(req.message, req.client_id)
@@ -921,10 +1108,11 @@ def chat(req: ChatRequest):
 
 
 @app.get("/download/{filename}")
-def download_file(
+async def download_file(
     filename:     str,
     client_id:    Optional[str] = Query(default=None),
     diagram_name: Optional[str] = Query(default=None),
+    _user:        dict          = Depends(require_user),
 ):
     """
     Download a generated artifact.
@@ -1014,6 +1202,24 @@ def get_config():
             {"id": INFERENCE_MODEL_ID, "name": "OCI GenAI (Inference)"},
         ] if INFERENCE_MODEL_ID else [],
     }
+
+
+@app.post("/refresh-data")
+def refresh_data(_user: dict = Depends(require_user)):
+    """
+    Reload the LLM runner and text runner in a background thread.
+    Returns immediately; the reload happens asynchronously.
+    Useful after updating config.yaml or cycling OCI credentials.
+    """
+    def _reload():
+        logger.info("/refresh-data: reloading runners")
+        app.state.llm_runner  = None
+        app.state.text_runner = None
+        _startup(app)
+        logger.info("/refresh-data: reload complete")
+
+    threading.Thread(target=_reload, daemon=True).start()
+    return {"status": "refreshing", "agent_version": AGENT_VERSION}
 
 
 @app.get("/mcp/tools")
