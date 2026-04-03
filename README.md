@@ -1,341 +1,297 @@
-# OCI Drawing Agent (Agent 3 v1.3.2)
+# OCI Drawing Agent (Agent 3 — v1.3.2)
 
-Converts an Excel Bill of Materials (BOM) into a draw.io OCI architecture diagram.
-Part of a 7-agent OCI fleet.
+Converts an Excel Bill of Materials (BOM) into a fully-editable draw.io OCI
+architecture diagram. Correct OCI icon stencils, VCN topology, subnets, and
+gateways — all in one Python process.
 
 ```
-BOM.xlsx + optional context
+BOM.xlsx + optional context file
   ↓
-FastAPI server (server/)   ←──  OCI GenAI ADK (layout compiler)
+drawing_agent_server.py  (FastAPI — serves UI + API on the same port)
   ↓
-React SPA (ui/)            ←──  OCI Load Balancer + WAF
+OCI GenAI (layout compiler LLM)
   ↓
-.drawio artifact + JSON artefacts
+.drawio file   ←  download straight from the browser
 ```
 
 ---
 
-## UI Quick Start
+## Accessing the UI
 
-```bash
-cd ui
-cp .env.example .env          # VITE_API_BASE_URL=/api (default, keep as-is)
-npm install
-npm run dev                   # http://localhost:8080  (proxies /api → localhost:8000)
+The server serves the web interface directly — **there is no separate front-end
+process**. Once the server is running, open a browser and go to:
+
+```
+http://<instance-ip>:8080
 ```
 
-**Build (static files for deployment):**
+That's it. The page lets you drag-and-drop a BOM.xlsx, optionally attach a
+requirements file or paste context, then download the generated `.drawio` file.
+
+---
+
+## Running on OCI (Instance Principal)
+
+The server uses **OCI Instance Principal** auth — no `~/.oci/config` needed.
+The only secret you must supply is `SESSION_SECRET` (used to sign browser
+session cookies).
+
+### One-time setup: generate and store the session secret
+
 ```bash
-npm run build                 # output: ui/dist/
+# Generate a stable secret and save it to a file (mode 600)
+openssl rand -hex 32 > ~/.drawing-agent-secret
+chmod 600 ~/.drawing-agent-secret
 ```
 
-**Run tests:**
+> Store this file permanently — if it changes, all active browser sessions
+> are invalidated and users must log in again.
+>
+> For higher security, store the secret in **OCI Vault** and fetch it at startup:
+> ```bash
+> SESSION_SECRET=$(oci secrets secret-bundle get \
+>   --secret-id ocid1.vaultsecret.oc1... \
+>   --auth instance_principal \
+>   --query 'data."secret-bundle-content".content' \
+>   --raw-output | base64 -d)
+> ```
+
+### Start the server (foreground)
+
 ```bash
-npm test                      # vitest run (headless)
-npm run test:watch            # interactive watch mode
+cd ~/drawing-agent
+
+SESSION_SECRET=$(cat ~/.drawing-agent-secret) \
+python3.11 -m uvicorn drawing_agent_server:app \
+  --host 0.0.0.0 --port 8080
+```
+
+### Start the server (background / persistent)
+
+```bash
+cd ~/drawing-agent
+
+SESSION_SECRET=$(cat ~/.drawing-agent-secret) \
+nohup python3.11 -m uvicorn drawing_agent_server:app \
+  --host 0.0.0.0 --port 8080 > agent.log 2>&1 &
+
+# Verify it started
+sleep 3 && curl -s http://localhost:8080/health | python3 -m json.tool
+```
+
+### Restart after a code update
+
+```bash
+pkill -f uvicorn
+
+SESSION_SECRET=$(cat ~/.drawing-agent-secret) \
+nohup python3.11 -m uvicorn drawing_agent_server:app \
+  --host 0.0.0.0 --port 8080 > agent.log 2>&1 &
 ```
 
 ---
 
-## Server Quick Start
+## systemd Service (recommended for production)
 
-```bash
-cd server
-cp .env.example .env          # fill in ALLOWED_BUCKETS etc.
-pip install -r requirements.txt
-```
-
-**Run (from repo root):**
-```bash
-uvicorn server.app.main:app \
-  --host 0.0.0.0 --port 8000 \
-  --proxy-headers --forwarded-allow-ips='*'
-```
-
-**Run tests:**
-```bash
-cd server
-pytest -v
-```
-
-**Legacy server still works on port 8080 (unchanged):**
-```bash
-uvicorn drawing_agent_server:app --host 0.0.0.0 --port 8080 --reload
-```
-
----
-
-## Single-VM Deployment Notes
-
-The recommended deployment topology runs both services on **one OCI Compute VM**:
-
-| Service | Port | Process |
-|---------|------|---------|
-| React SPA (static) | **8080** | `serve -s ui/dist -l 8080` or nginx |
-| FastAPI API | **8000** | `uvicorn server.app.main:app --port 8000` |
-
-An **OCI Load Balancer** (with optional WAF) sits in front and routes by path:
-
-| Path pattern | Backend |
-|-------------|---------|
-| `/api/*`    | VM:8000 (FastAPI) |
-| `/*`        | VM:8080 (React SPA) |
-
-Because both are served via the same domain the UI calls the API using the
-**relative path** `/api` — no CORS configuration needed.
-
-### Process management (systemd example)
+Create `/etc/systemd/system/drawing-agent.service`:
 
 ```ini
-# /etc/systemd/system/oci-drawing-api.service
 [Unit]
-Description=OCI Drawing Agent API
+Description=OCI Drawing Agent
 After=network.target
 
 [Service]
 User=opc
-WorkingDirectory=/home/opc/arch_assistant
-ExecStart=/home/opc/.venv/bin/uvicorn server.app.main:app \
-    --host 127.0.0.1 --port 8000 \
-    --proxy-headers --forwarded-allow-ips='*'
+WorkingDirectory=/home/opc/drawing-agent
+EnvironmentFile=/home/opc/.drawing-agent-secret.env
+ExecStart=/usr/bin/python3.11 -m uvicorn drawing_agent_server:app \
+    --host 0.0.0.0 --port 8080
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-```ini
-# /etc/systemd/system/oci-drawing-ui.service
-[Unit]
-Description=OCI Drawing Agent UI
-After=network.target
+Create `/home/opc/.drawing-agent-secret.env` (mode `600`):
 
-[Service]
-User=opc
-WorkingDirectory=/home/opc/arch_assistant/ui
-ExecStart=/usr/bin/npx serve -s dist -l 8080
-Restart=on-failure
+```
+SESSION_SECRET=<your-64-char-hex>
+```
 
-[Install]
-WantedBy=multi-user.target
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now drawing-agent
+sudo systemctl status drawing-agent
 ```
 
 ---
 
-## Curl Quick Start
+## Deploy updated files to OCI
 
 ```bash
-HOST=http://localhost:8000   # or https://your-lb-host
+scp drawing_agent_server.py index.html config.yaml opc@10.0.3.47:~/drawing-agent/
+scp agent/bom_parser.py agent/layout_engine.py agent/drawio_generator.py \
+    agent/oci_standards.py agent/layout_intent.py agent/intent_compiler.py \
+    opc@10.0.3.47:~/drawing-agent/agent/
+
+ssh opc@10.0.3.47 '
+  pkill -f uvicorn
+  SESSION_SECRET=$(cat ~/.drawing-agent-secret)
+  cd ~/drawing-agent
+  nohup python3.11 -m uvicorn drawing_agent_server:app --host 0.0.0.0 --port 8080 \
+    > agent.log 2>&1 &
+  sleep 3
+  curl -s http://localhost:8080/health
+'
+```
+
+---
+
+## Install dependencies
+
+```bash
+# Python 3.11+ required (OCI ADK incompatible with 3.9)
+pip3.11 install -r requirements.txt
+```
+
+---
+
+## Configuration (config.yaml)
+
+| Section | Key | What it controls |
+|---------|-----|-----------------|
+| `region` | — | OCI region (e.g. `us-phoenix-1`) |
+| `inference.enabled` | — | Use direct OCI GenAI Inference (true) vs legacy ADK (false) |
+| `inference.model_id` | — | OCI GenAI model OCID |
+| `inference.service_endpoint` | — | OCI GenAI endpoint URL |
+| `compartment_id` | — | Compartment for GenAI calls |
+| `auth.enabled` | — | Require OIDC login (default: `false`) |
+| `auth.oidc_issuer` | — | OIDC issuer URL (e.g. Entra / Okta) |
+| `auth.client_id` | — | OAuth2 client ID |
+| `auth.redirect_uri` | — | Must match what's registered in the identity provider |
+| `persistence.enabled` | — | Write diagrams to OCI Object Storage |
+
+### Enabling OIDC login
+
+Set `auth.enabled: true` in `config.yaml` and fill in the other `auth.*` fields.
+Supply the client secret via the `OIDC_CLIENT_SECRET` env var:
+
+```bash
+SESSION_SECRET=$(cat ~/.drawing-agent-secret) \
+OIDC_CLIENT_SECRET=<your-secret> \
+python3.11 -m uvicorn drawing_agent_server:app --host 0.0.0.0 --port 8080
+```
+
+When `auth.enabled: false` (default), all endpoints are open — suitable for
+a private OCI subnet where network access is the only control.
+
+---
+
+## API endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Web UI (served directly by the server) |
+| `POST` | `/upload-bom` | Upload BOM.xlsx → diagram or clarification questions |
+| `POST` | `/clarify` | Submit answers to clarification questions |
+| `POST` | `/generate` | Generate from a JSON resource list |
+| `GET` | `/download/{file}` | Download generated `.drawio` file |
+| `POST` | `/refresh-data` | Reload LLM runner in background (no restart needed) |
+| `GET` | `/health` | Health check |
+| `GET` | `/config` | UI configuration (region, model info) |
+| `GET` | `/login` | Initiate OIDC login (only when auth enabled) |
+| `GET` | `/logout` | Clear session |
+| `GET` | `/.well-known/agent.json` | A2A agent card (machine-to-machine discovery) |
+| `POST` | `/api/a2a/task` | A2A task endpoint (fleet integration) |
+| `GET` | `/mcp/tools` | MCP tool manifest |
+
+---
+
+## API smoke tests
+
+```bash
+HOST=http://10.0.3.47:8080
 
 # Health
-curl -s $HOST/api/health | jq .
+curl -s $HOST/health | python3 -m json.tool
 
 # Upload BOM
-curl -X POST $HOST/api/upload-bom \
+curl -X POST $HOST/upload-bom \
   -F "file=@BOM.xlsx" \
-  -F "diagram_name=my_arch" \
-  -F "client_id=my-uuid" | jq .status
+  -F "diagram_name=test_diagram" \
+  -F "client_id=test1" | python3 -m json.tool
 
-# Generate inline (JSON body)
-curl -X POST $HOST/api/generate \
+# With requirements context
+curl -X POST $HOST/upload-bom \
+  -F "file=@BOM.xlsx" \
+  -F "context_file=@requirements.md" \
+  -F "diagram_name=test_diagram" \
+  -F "client_id=test1" | python3 -m json.tool
+
+# Answer clarification questions (stateless — echo back _clarify_context fields)
+curl -X POST $HOST/clarify \
   -H "Content-Type: application/json" \
   -d '{
-    "resources": [
-      {"id":"lb_1","oci_type":"load balancer","label":"LB","layer":"ingress"},
-      {"id":"compute_1","oci_type":"compute","label":"App","layer":"compute"},
-      {"id":"db_1","oci_type":"database","label":"DB","layer":"data"}
-    ],
-    "diagram_name": "my_arch",
-    "client_id": "my-uuid"
-  }' | jq '{status,request_id,input_hash}'
-
-# Generate bucket mode (resources.json in OCI Object Storage)
-curl -X POST $HOST/api/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "resources_from_bucket": {"bucket":"my-bucket","object":"resources.json"},
-    "diagram_name": "my_arch",
-    "client_id": "my-uuid"
-  }' | jq .status
-
-# Clarify (after need_clarification response)
-curl -X POST $HOST/api/clarify \
-  -H "Content-Type: application/json" \
-  -d '{"client_id":"my-uuid","diagram_name":"my_arch","answers":"Single region, active-passive HA"}' \
-  | jq .status
+    "client_id": "test1",
+    "answers": "6 regions, active-passive HA",
+    "diagram_name": "test_diagram",
+    "items_json": "<value from need_clarification response>",
+    "prompt":     "<value from need_clarification response>"
+  }'
 
 # Download diagram
-curl -o my_arch.drawio \
-  "$HOST/api/download/diagram.drawio?client_id=my-uuid&diagram_name=my_arch"
-
-# Validate bucket refs without generating
-curl -X POST $HOST/api/inputs/resolve \
-  -H "Content-Type: application/json" \
-  -d '{"resources_from_bucket":{"bucket":"my-bucket","object":"resources.json"}}' \
-  | jq .
+curl -o test_diagram.drawio \
+  "$HOST/download/diagram.drawio?client_id=test1&diagram_name=test_diagram"
 ```
 
 ---
 
-## OCI LB / WAF Notes
+## Run tests locally
 
-### Load Balancer backend sets
-
-| Backend set | Protocol | Port | Health-check path |
-|-------------|----------|------|------------------|
-| `api-backend` | HTTP | 8000 | `/api/health` |
-| `ui-backend`  | HTTP | 8080 | `/` (200 OK from static) |
-
-### Listener rules (path-based routing)
-
+```bash
+pytest tests/ -v
 ```
-IF path begins with /api/  → route to api-backend
-DEFAULT                    → route to ui-backend
-```
-
-### WAF recommended policies
-
-| Policy | Value |
-|--------|-------|
-| Max request body size | 30 MB (covers BOM upload) |
-| Rate limit | 100 req/min per IP (adjust to load) |
-| Allow `/api/upload-bom` POST | body up to 25 MB |
-| Protection rules | OWASP Core Ruleset (CRS) enabled |
-
-### Backend set timeouts
-
-The layout+LLM pipeline can take 30–60 s for complex BOMs.
-Set backend **connection idle timeout** to **120 s** minimum.
-
-### Security
-
-- Instance Principal auth — no credentials stored anywhere.
-- `ALLOWED_BUCKETS` env var enforces server-side bucket allowlist.
-- UI never fetches from OCI directly; all bucket access is server-side.
-- WAF handles TLS termination; backend uses plain HTTP on private network.
 
 ---
 
-## Repository Structure
+## Repository structure
 
 ```
 arch_assistant/
-├── drawing_agent_server.py     # Legacy server (port 8080, backwards compat)
-├── a2a_server.py               # A2A protocol server (port 8081)
-├── mcp_server.py               # MCP stdio server
-├── config.yaml                 # OCI endpoint IDs, region
+├── drawing_agent_server.py     # FastAPI server — UI + API in one process
+├── index.html                  # Single-page web UI (served by the server)
+├── config.yaml                 # Region, model, auth, persistence config
+├── requirements.txt
 ├── Dockerfile
 │
-├── agent/                      # Core library (shared by both servers)
-│   ├── bom_parser.py
-│   ├── layout_engine.py
-│   ├── drawio_generator.py
-│   ├── oci_standards.py
-│   ├── layout_intent.py
-│   ├── intent_compiler.py
+├── agent/
+│   ├── bom_parser.py           # BOM → ServiceItem list + LLM prompt
+│   ├── layout_engine.py        # Layout spec → x,y positions
+│   ├── drawio_generator.py     # Positions → draw.io XML
+│   ├── oci_standards.py        # OCI icon stencils (147KB)
+│   ├── layout_intent.py        # LayoutIntent validation
+│   ├── intent_compiler.py      # LayoutIntent → flat spec
 │   └── persistence_objectstore.py
 │
-├── server/                     # FastAPI server (port 8000, /api prefix)
-│   ├── app/
-│   │   └── main.py             # Full FastAPI app with bucket mode
-│   ├── services/
-│   │   └── oci_object_storage.py  # Mockable OCI bucket helper
-│   ├── tests/
-│   │   ├── conftest.py
-│   │   └── test_api.py
-│   ├── requirements.txt
-│   ├── pytest.ini
-│   └── .env.example
-│
-├── ui/                         # React + Vite + TypeScript SPA
-│   ├── src/
-│   │   ├── App.tsx
-│   │   ├── main.tsx
-│   │   ├── api/client.ts       # All API calls
-│   │   ├── agents/registry.ts  # Agent fleet registry
-│   │   ├── flow/runner.ts      # Multi-agent flow abstraction
-│   │   ├── hooks/
-│   │   │   ├── useClientId.ts  # Stable UUID from localStorage
-│   │   │   └── useHealth.ts    # Health polling
-│   │   ├── components/
-│   │   │   ├── HealthIndicator.tsx
-│   │   │   ├── UploadBom.tsx
-│   │   │   ├── GenerateForm.tsx
-│   │   │   ├── ResponseDisplay.tsx
-│   │   │   └── ClarifyForm.tsx
-│   │   └── __tests__/
-│   │       ├── setup.ts
-│   │       ├── handlers.ts     # MSW request handlers
-│   │       └── App.test.tsx
-│   ├── package.json
-│   ├── vite.config.ts
-│   └── .env.example
-│
-├── tests/                      # Existing root-level tests
-│   ├── test_bom_parser.py
-│   ├── test_layout_engine.py
-│   └── scenarios/
-│
-└── README.md
+└── tests/
+    ├── test_bom_parser.py
+    ├── test_layout_engine.py
+    ├── test_intent_compiler.py
+    └── fixtures/
+        └── sample_bom.xlsx
+```
 
 ---
 
-## OCI Object Storage — Artifact Persistence
+## OCI environment
 
-Diagrams and JSON artefacts are persisted to OCI Object Storage when
-`persistence.enabled: true` in `config.yaml`.
-
-### Key layout in the bucket
-
-```
-{prefix}/{client_id}/{diagram_name}/{request_id}/diagram.drawio
-{prefix}/{client_id}/{diagram_name}/{request_id}/spec.json
-{prefix}/{client_id}/{diagram_name}/{request_id}/draw_dict.json
-{prefix}/{client_id}/{diagram_name}/{request_id}/render_manifest.json
-{prefix}/{client_id}/{diagram_name}/{request_id}/node_to_resource_map.json
-{prefix}/{client_id}/{diagram_name}/LATEST.json          ← written last (atomic)
-```
-
-`store_inputs: false` (default) — raw BOM content is **never** stored.
-
-### Required IAM policies
-
-The OCI Compute instance must be in a dynamic group whose matching rule
-covers Agent 3's instance OCID or compartment, e.g.:
-
-```
-Any {instance.compartment.id = 'ocid1.compartment.oc1..aaaa...'}
-```
-
-Grant the dynamic group the following policies **in the bucket's compartment**:
-
-```hcl
-# Allow Agent 3 to write artefacts
-Allow dynamic-group <dg-name> to manage objects
-  in compartment id ocid1.compartment.oc1..aaaaaaaam3ygxdq2vqr7djdhxo76uy6k6n523azgwdcei73wekc7u5v52lea
-  where target.bucket.name = 'agent_assistante'
-
-# Allow Agent 3 to read (download endpoint)
-Allow dynamic-group <dg-name> to read objects
-  in compartment id ocid1.compartment.oc1..aaaaaaaam3ygxdq2vqr7djdhxo76uy6k6n523azgwdcei73wekc7u5v52lea
-  where target.bucket.name = 'agent_assistante'
-```
-
-Minimum required verbs: `manage objects` (for put/delete) and `read objects`
-(for get/head). No bucket-level permissions are needed for this use case.
-
-### Security note
-
-Raw BOM files and context text are **not** persisted by default
-(`store_inputs: false`). Only sanitised, agent-generated artefacts
-(diagram XML + JSON) are written to Object Storage. Enable `store_inputs`
-only after internal data-handling approval.
-
-### Smoke test (on OCI Compute only)
-
-```bash
-python scripts/object_store_smoke.py
-```
-
-Writes and reads back a small test object; prints `OK` on success.
-```
+| Setting | Value |
+|---------|-------|
+| Host | `opc@10.0.3.47` |
+| Port | **8080** |
+| Python | 3.11+ |
+| Auth | Instance Principal (no config file needed) |
+| Region | `us-phoenix-1` |
