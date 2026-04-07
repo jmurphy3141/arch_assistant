@@ -559,7 +559,7 @@ async def run_pipeline(
         await anyio.to_thread.run_sync(
             functools.partial(
                 persist_artifacts,
-                object_store, prefix, client_id, diagram_name, request_id, artifacts,
+                object_store, prefix, client_id, diagram_name, artifacts,
             )
         )
 

@@ -154,10 +154,9 @@ class TestObjectStorage:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        request_id = data["request_id"]
 
-        # Find all artifact keys under the request_id prefix
-        prefix = f"diagrams/os001/mydiag/{request_id}/"
+        # Find all artifact keys under the v1 prefix
+        prefix = "diagrams/os001/mydiag/v1/"
         stored_filenames = {
             k[len(prefix):]
             for k in store.list_keys()
@@ -180,14 +179,13 @@ class TestObjectStorage:
 
         assert resp.status_code == 200
         data = resp.json()
-        request_id = data["request_id"]
 
         latest_key = "diagrams/os002/mydiag/LATEST.json"
         assert store.head(latest_key), "LATEST.json was not written"
 
         latest = json.loads(store.get(latest_key).decode("utf-8"))
-        assert latest["schema_version"] == "1.0"
-        assert latest["request_id"] == request_id
+        assert latest["schema_version"] == "1.1"
+        assert latest["version"] == 1
 
         for filename, artifact_key in latest["artifacts"].items():
             assert store.head(artifact_key), (

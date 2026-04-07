@@ -6,7 +6,7 @@ Unit tests for agent/object_store_oci.py.
 All OCI SDK calls are mocked — no real credentials or network access.
 Tests validate:
   1. Correct endpoint / namespace / bucket forwarded to the SDK client.
-  2. Key formatting (prefix/client/diagram/request_id/filename).
+  2. Key formatting (prefix/client/diagram/v{N}/filename).
   3. Atomicity: LATEST.json is only written after all artifacts succeed.
   4. get() KeyError on 404, PermissionError on 403.
   5. head() returns True/False correctly.
@@ -211,15 +211,15 @@ class TestHead:
 
 
 # ---------------------------------------------------------------------------
-# 5. Key formatting — prefix/client_id/diagram_name/request_id/filename
+# 5. Key formatting — prefix/client_id/diagram_name/v{N}/filename
 # ---------------------------------------------------------------------------
 
 class TestKeyFormatting:
     def test_artifact_key_format(self, store_and_client):
         store, mock_client, _ = store_and_client
-        store.put("agent3/myclient/mydiag/req-abc/spec.json", b"{}", "application/json")
+        store.put("agent3/myclient/mydiag/v1/spec.json", b"{}", "application/json")
         kwargs = mock_client.put_object.call_args.kwargs
-        assert kwargs["object_name"] == "agent3/myclient/mydiag/req-abc/spec.json"
+        assert kwargs["object_name"] == "agent3/myclient/mydiag/v1/spec.json"
 
     def test_latest_json_key_format(self, store_and_client):
         store, mock_client, _ = store_and_client
@@ -245,12 +245,15 @@ class TestAtomicityWithPersistArtifacts:
             "node_to_resource_map.json": b"{}",
         }
         result = persist_artifacts(
-            store, "agent3", "c1", "mydiag", "req1", artifacts
+            store, "agent3", "c1", "mydiag", artifacts
         )
 
         assert result is not None
-        assert result["request_id"] == "req1"
+        assert result["version"] == 1
         assert set(result["artifacts"].keys()) == set(artifacts.keys())
+        # Artifact paths use v1 folder
+        for path in result["artifacts"].values():
+            assert "/v1/" in path
 
         # Verify put was called once per artifact + once for LATEST.json
         assert mock_client.put_object.call_count == len(artifacts) + 1
@@ -277,7 +280,7 @@ class TestAtomicityWithPersistArtifacts:
             "draw_dict.json":       b"{}",   # this one triggers the error
         }
         result = persist_artifacts(
-            store, "agent3", "c1", "mydiag", "req-fail", artifacts
+            store, "agent3", "c1", "mydiag", artifacts
         )
         assert result is None
 

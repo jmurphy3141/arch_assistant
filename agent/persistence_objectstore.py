@@ -84,7 +84,7 @@ class InMemoryObjectStore(ObjectStoreBase):
 
 # ── Persistence helper ─────────────────────────────────────────────────────────
 
-LATEST_JSON_SCHEMA_VERSION = "1.0"
+LATEST_JSON_SCHEMA_VERSION = "1.1"
 
 # Artifacts that may be fetched via the download endpoint
 ARTIFACT_ALLOWLIST = frozenset({
@@ -101,29 +101,43 @@ def persist_artifacts(
     prefix: str,
     client_id: str,
     diagram_name: str,
-    request_id: str,
     artifacts: dict[str, bytes],
 ) -> Optional[dict]:
     """
     Upload artifacts to:
-        {prefix}/{client_id}/{diagram_name}/{request_id}/<filename>
+        {prefix}/{client_id}/{diagram_name}/v{N}/<filename>
+
+    N is auto-incremented by reading the current version from LATEST.json.
+    First upload → v1, second → v2, etc.
 
     Then (only if ALL uploads succeed) write LATEST.json to:
         {prefix}/{client_id}/{diagram_name}/LATEST.json
 
-    LATEST.json schema (schema_version "1.0"):
+    LATEST.json schema (schema_version "1.1"):
     {
-        "schema_version": "1.0",
-        "request_id": "...",
+        "schema_version": "1.1",
+        "version": 2,
         "artifacts": {
-            "diagram.drawio": "{prefix}/.../{request_id}/diagram.drawio",
+            "diagram.drawio": "{prefix}/{client_id}/{diagram_name}/v2/diagram.drawio",
             ...
         }
     }
 
     Returns the LATEST.json dict on success, None if any artifact upload failed.
     """
-    base = f"{prefix}/{client_id}/{diagram_name}/{request_id}"
+    latest_key = f"{prefix}/{client_id}/{diagram_name}/LATEST.json"
+
+    # Determine next version number
+    version = 1
+    if store.head(latest_key):
+        try:
+            existing = json.loads(store.get(latest_key))
+            version = int(existing.get("version", 0)) + 1
+        except Exception:
+            pass  # corrupt LATEST.json — start at v1
+
+    version_str = f"v{version}"
+    base = f"{prefix}/{client_id}/{diagram_name}/{version_str}"
     artifact_keys: dict[str, str] = {}
 
     try:
@@ -141,9 +155,8 @@ def persist_artifacts(
     # All artifacts succeeded — atomically update LATEST.json
     latest = {
         "schema_version": LATEST_JSON_SCHEMA_VERSION,
-        "request_id": request_id,
+        "version": version,
         "artifacts": artifact_keys,
     }
-    latest_key = f"{prefix}/{client_id}/{diagram_name}/LATEST.json"
     store.put(latest_key, json.dumps(latest, indent=2).encode("utf-8"), "application/json")
     return latest
