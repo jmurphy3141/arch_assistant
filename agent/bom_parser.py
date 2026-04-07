@@ -503,6 +503,53 @@ def _detect_topology_pattern(items: list[ServiceItem]) -> str:
     return _TOPOLOGY_3TIER
 
 
+def _build_edge_examples(items: list[ServiceItem], topology: str) -> str:
+    """Generate topology-appropriate edge examples using actual service IDs from the BOM."""
+    import json as _json
+    ids = {i.oci_type: i.id for i in items}  # last id wins (fine for examples)
+
+    edges: list[dict] = []
+    ctr = [0]
+
+    def _e(src_type: str, tgt_type: str, label: str) -> None:
+        src = ids.get(src_type)
+        tgt = ids.get(tgt_type)
+        if src and tgt and src != tgt:
+            ctr[0] += 1
+            edges.append({"id": f"e{ctr[0]}", "source": src, "target": tgt, "label": label})
+
+    if topology == _TOPOLOGY_HPC_OKE:
+        _e("internet gateway", "bastion",          "SSH/22")
+        _e("bastion",          "container engine",  "kubectl")
+        _e("bastion",          "bare metal",         "SSH")
+        _e("container engine", "bare metal",         "RDMA")
+        _e("bare metal",       "file storage",       "NFS")
+        _e("nat gateway",      "internet",           "Outbound")
+        _e("service gateway",  "object storage",     "OCI Services")
+        _e("service gateway",  "logging",            "OCI Services")
+
+    elif topology == _TOPOLOGY_DATA_PLATFORM:
+        _e("internet gateway", "waf",            "HTTPS/443")
+        _e("waf",              "api gateway",    "HTTPS/443")
+        _e("api gateway",      "functions",      "Invoke")
+        _e("functions",        "queue",          "Enqueue")
+        _e("functions",        "database",       "SQL")
+        _e("functions",        "object storage", "PUT/GET")
+        _e("nat gateway",      "internet",       "Outbound")
+
+    else:  # STANDARD_3TIER
+        _e("internet gateway", "waf",            "HTTPS/443")
+        _e("waf",              "load balancer",  "HTTPS/443")
+        _e("load balancer",    "compute",        "HTTP")
+        _e("compute",          "database",       "SQL/5432")
+        _e("bastion",          "compute",        "SSH")
+        _e("on premises",      "drg",            "FastConnect")
+        _e("nat gateway",      "internet",       "Outbound")
+        _e("service gateway",  "object storage", "OCI Services")
+
+    return _json.dumps(edges, indent=4)
+
+
 def build_layout_intent_prompt(
     items: list[ServiceItem],
     questionnaire_text: str = "",
@@ -512,50 +559,45 @@ def build_layout_intent_prompt(
     """
     Build a compact LayoutIntent prompt.
 
-    Topology pattern is detected deterministically in Python before the prompt
-    is sent to the LLM.  The detected groups are injected as directives so the
-    LLM cannot fall back to 3-tier for HPC or data-platform workloads.
+    Python detects the likely topology from BOM service types and injects it
+    as a suggestion.  The LLM owns topology detection and can override based on
+    free-text context.  The LLM also declares data-flow edges between services —
+    that is the primary value it adds over deterministic Python logic.
 
     questionnaire_text: answers to a pre-flight questionnaire, if any.
     notes_text:         meeting notes or other free-text input, if any.
     context:            generic context string (e.g. from uploaded context file).
     """
+    import json as _json
+
     topology   = _detect_topology_pattern(items)
     groups     = _TOPOLOGY_GROUPS[topology]
     group_map  = _TOPOLOGY_GROUP_MAP[topology]
-
-    # Build service list with pre-assigned group hints
-    def _group_hint(item: ServiceItem) -> str:
-        if item.oci_type in _NO_GROUP_TYPES:
-            return "null"
-        return f'"{group_map.get(item.oci_type, "null")}"'
-
-    service_rows = "\n".join(
-        f'  {{"id": "{i.id}", "oci_type": "{i.oci_type}", "suggested_layer": "{i.layer}", "group_hint": {_group_hint(i)}}}'
-        for i in items
-    )
-
-    # Build groups JSON block for the directive section
-    import json as _json
-    groups_json = _json.dumps(groups, indent=4)
-
-    # Build the explicit placement table
-    placement_rules = "\n".join(
-        f"  {oci_type!r:30s} → {gid}"
-        for oci_type, gid in group_map.items()
-    )
-
-    # Build the output example using the detected topology's groups
-    example_groups = _json.dumps(
-        [{"id": g["id"], "label": g["label"], "order": g["order"]} for g in groups],
-        indent=4,
-    )
 
     topology_label = {
         _TOPOLOGY_HPC_OKE:       "HPC on OKE (bare metal RDMA + container engine + file storage)",
         _TOPOLOGY_DATA_PLATFORM: "Data Platform (streaming + functions + data lake)",
         _TOPOLOGY_3TIER:         "Standard 3-Tier (web app + compute + database)",
     }[topology]
+
+    # Service list with group hints (suggestions, not mandates)
+    def _group_hint(item: ServiceItem) -> str:
+        if item.oci_type in _NO_GROUP_TYPES:
+            return "null"
+        hint = group_map.get(item.oci_type)
+        return f'"{hint}"' if hint else "null"
+
+    service_rows = "\n".join(
+        f'  {{"id": "{i.id}", "oci_type": "{i.oci_type}", "suggested_layer": "{i.layer}", "group_hint": {_group_hint(i)}}}'
+        for i in items
+    )
+
+    suggested_groups_json = _json.dumps(groups, indent=4)
+    example_groups_json   = _json.dumps(
+        [{"id": g["id"], "label": g["label"], "order": g["order"]} for g in groups],
+        indent=4,
+    )
+    edge_examples = _build_edge_examples(items, topology)
 
     extra_blocks = ""
     if questionnaire_text and questionnaire_text.strip():
@@ -565,48 +607,69 @@ def build_layout_intent_prompt(
     if context and context.strip():
         extra_blocks += f"\nADDITIONAL CONTEXT:\n{context.strip()}\n"
 
-    return f"""You are an OCI architecture intent compiler.
-Assign each service from the BOM to the correct layer and subnet group.
+    return f"""You are an OCI solutions architect and layout compiler.
+Given a list of OCI services from a Bill of Materials, you must:
+  1. Decide the subnet topology (groups)
+  2. Assign each service to the correct layer and group
+  3. Declare the data-flow edges between services
+  4. Set deployment hints (region count, HA, DR, connectivity)
 Output ONLY valid JSON — either a LayoutIntent or a NeedClarification object.
 {extra_blocks}
 ═══════════════════════════════════════════════════════
-TOPOLOGY PATTERN (pre-classified from BOM — DO NOT CHANGE):
+SUGGESTED TOPOLOGY (detected from BOM service types):
   {topology_label}
 ═══════════════════════════════════════════════════════
-You MUST copy these groups verbatim into the "groups" array of your output.
-Do NOT use pub_sub_box / app_sub_box / db_sub_box unless the topology is STANDARD_3TIER.
-Do NOT invent different group IDs.
+This is a suggestion based on what services are present.
+If ADDITIONAL CONTEXT above indicates a different architecture, use that instead.
 
-REQUIRED GROUPS:
-{groups_json}
+Suggested groups (use these unless context requires a different topology):
+{suggested_groups_json}
+
+Suggested group assignment per service type:
+{chr(10).join(f"  {t!r:30s} → {g}" for t, g in group_map.items())}
+  — gateways (internet gateway, nat gateway, service gateway, drg) → group=null
+  — managed services (object storage, logging, monitoring, iam)    → group=null
+  — external (on premises, internet, users)                        → group=null
 
 ═══════════════════════════════════════════════════════
-INPUT SERVICES (group_hint = pre-assigned group slug):
+INPUT SERVICES (from BOM + baseline injection):
 ═══════════════════════════════════════════════════════
 [
 {service_rows}
 ]
 
 ═══════════════════════════════════════════════════════
-GROUP ASSIGNMENT RULES (apply exactly — do not deviate):
+DEPLOYMENT HINTS (read from context — do not ask)
 ═══════════════════════════════════════════════════════
-{placement_rules}
-
-  — gateways (internet gateway, nat gateway, service gateway, drg)
-      → layer=ingress, group=null   (straddle VCN edge; not inside a subnet)
-  — managed services (object storage, logging, monitoring, iam, certificates)
-      → layer=data, group=null      (outside VCN)
-  — external (on premises, internet, users, admins, workstation)
-      → layer=external, group=null
+region_count:                   count explicit region mentions; default 1
+availability_domains_per_region: 2 if "multi-AD" or "HA"; else 1
+dr_enabled:                     true only if "DR" or "disaster recovery" stated
+on_prem_connectivity:           "fastconnect" if DRG in BOM; "vpn" if VPN; "none" if neither
 
 ═══════════════════════════════════════════════════════
-DEPLOYMENT HINTS RULES (apply defaults, do not ask)
+STEP 3 — DECLARE DATA-FLOW EDGES (this is your key contribution)
 ═══════════════════════════════════════════════════════
-region_count: 1 unless "multi-region", "DR", or 2+ regions are mentioned.
-availability_domains_per_region: 1 unless "multi-AD", "HA", or 2+ ADs mentioned.
-dr_enabled: false unless "DR" or disaster recovery is explicitly mentioned.
-on_prem_connectivity: "fastconnect" if DRG/FastConnect in BOM; "vpn" if VPN;
-                      "none" if no on-premises service; else "unknown".
+Declare the connections between services using their exact IDs from INPUT SERVICES.
+
+Edge rules:
+  - internet → internet_gateway                     (always, if both exist)
+  - internet_gateway → first ingress service         (WAF, LB, or Bastion)
+  - waf → load_balancer (if both present)
+  - load_balancer / api_gateway → compute tier       (traffic path)
+  - bastion → compute / bare_metal                   (SSH management)
+  - compute → database                               (data access)
+  - on_prem → drg                                    (FastConnect / VPN)
+  - nat_gateway → internet                           (outbound)
+  - service_gateway → object_storage / logging       (OCI managed services path)
+  HPC-specific:
+  - container_engine → bare_metal                    (RDMA orchestration)
+  - bare_metal → file_storage                        (NFS shared storage)
+
+Example edges for this topology (adapt IDs to match INPUT SERVICES exactly):
+{edge_examples}
+
+Only declare edges between IDs that exist in INPUT SERVICES.
+Use short protocol labels: "HTTPS/443", "SSH", "SQL/5432", "RDMA", "NFS", "Outbound", etc.
 
 ═══════════════════════════════════════════════════════
 OUTPUT FORMAT — LayoutIntent
@@ -619,11 +682,12 @@ OUTPUT FORMAT — LayoutIntent
     "dr_enabled": false,
     "on_prem_connectivity": "fastconnect"
   }},
-  "groups": {example_groups},
+  "groups": {example_groups_json},
   "placements": [
     {{"id": "<exact-id-from-input>", "oci_type": "<type>", "layer": "<layer>", "group": "<group-slug-or-null>"}},
     ...
   ],
+  "edges": {edge_examples},
   "assumptions": [
     {{"id": "ha_mode", "statement": "Single AD assumed", "reason": "No HA signal in BOM", "risk": "low"}}
   ],
@@ -633,16 +697,14 @@ OUTPUT FORMAT — LayoutIntent
 OR — NeedClarification (ONLY if truly blocking):
 {{"status": "need_clarification", "questions": [{{"id": "<id>", "question": "...", "blocking": true}}]}}
 
-Allowed question IDs (use ONLY these): regions.count, regions.mode, ha.ads, connectivity.onprem, dr.rpo_rto
+Allowed question IDs: regions.count, regions.mode, ha.ads, connectivity.onprem, dr.rpo_rto
 
-CRITICAL RULES:
-1. Copy the REQUIRED GROUPS above into your "groups" array without modification.
-2. Every id from INPUT SERVICES must appear exactly once in placements.
-3. Do NOT invent services not in the INPUT SERVICES list.
-4. Use the exact id values from INPUT SERVICES (e.g. "compute_1", "bastion_1").
-5. Every group slug used in placements must match a group in your "groups" array.
-6. Follow the group_hint for each service — only deviate if the hint is "null".
-7. Output ONLY valid JSON. No markdown, no prose, no code fences."""
+RULES:
+1. Every id from INPUT SERVICES must appear exactly once in placements.
+2. Every group slug in placements must appear in the groups array.
+3. Use exact id values from INPUT SERVICES — do not rename them.
+4. edges must only reference ids that exist in INPUT SERVICES.
+5. Output ONLY valid JSON. No markdown, no prose, no code fences."""
 
 
 def bom_to_llm_input(

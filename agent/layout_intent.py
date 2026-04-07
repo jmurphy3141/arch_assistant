@@ -76,12 +76,22 @@ class Assumption:
 
 
 @dataclass
+class EdgeDecl:
+    """LLM-declared data-flow edge between two service IDs."""
+    id: str
+    source: str
+    target: str
+    label: str = ""
+
+
+@dataclass
 class LayoutIntent:
     schema_version: str
     deployment_hints: DeploymentHints
     placements: list[Placement]
     groups: list[GroupDecl] = field(default_factory=list)
     assumptions: list[Assumption] = field(default_factory=list)
+    edges: list[EdgeDecl] = field(default_factory=list)
     fixed_edges_policy: bool = True
 
 
@@ -228,11 +238,24 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
 
     fixed_edges_policy = bool(data.get("fixed_edges_policy", True))
 
+    # ── edges (LLM-declared data-flow connections) ────────────────────────────
+    edges: list[EdgeDecl] = []
+    all_placement_ids = {p.id for p in placements}
+    for e in (data.get("edges") or []):
+        eid    = str(e.get("id", "")).strip()
+        source = str(e.get("source", "")).strip()
+        target = str(e.get("target", "")).strip()
+        label  = str(e.get("label", ""))
+        # Silently drop edges with missing/empty required fields
+        if eid and source and target:
+            edges.append(EdgeDecl(id=eid, source=source, target=target, label=label))
+
     return LayoutIntent(
         schema_version=schema_version,
         deployment_hints=hints,
         placements=placements,
         groups=groups,
         assumptions=assumptions,
+        edges=edges,
         fixed_edges_policy=fixed_edges_policy,
     )

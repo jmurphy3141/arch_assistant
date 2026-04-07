@@ -15,7 +15,7 @@ import pytest
 
 from agent.bom_parser import ServiceItem, build_layout_intent_prompt
 from agent.layout_intent import (
-    LayoutIntent, DeploymentHints, Placement, GroupDecl, Assumption,
+    LayoutIntent, DeploymentHints, Placement, GroupDecl, Assumption, EdgeDecl,
     validate_layout_intent, LayoutIntentError,
     VALID_LAYERS, VALID_GROUPS,
 )
@@ -637,3 +637,155 @@ class TestDynamicTopology:
         items = self._hpc_items()
         prompt = build_layout_intent_prompt(items)
         assert '"groups"' in prompt
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LLM-declared edges
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestLlmEdges:
+    """Verify that LLM-declared edges are used in place of the sequential fallback."""
+
+    def _items_with_edges(self):
+        return [
+            ServiceItem(id="on_prem",          oci_type="on premises",     label="On-Premises",      layer="external"),
+            ServiceItem(id="internet",          oci_type="internet",        label="Internet",         layer="external"),
+            ServiceItem(id="internet_gateway",  oci_type="internet gateway",label="IGW",              layer="ingress"),
+            ServiceItem(id="waf",               oci_type="waf",             label="WAF",              layer="ingress"),
+            ServiceItem(id="load_balancer_1",   oci_type="load balancer",   label="LB",               layer="ingress"),
+            ServiceItem(id="compute_1",         oci_type="compute",         label="Compute",          layer="compute"),
+            ServiceItem(id="database_1",        oci_type="database",        label="DB",               layer="data"),
+            ServiceItem(id="bastion_1",         oci_type="bastion",         label="Bastion",          layer="ingress"),
+            ServiceItem(id="nat_gateway",       oci_type="nat gateway",     label="NAT",              layer="ingress"),
+        ]
+
+    def _intent_data_with_edges(self, items):
+        group_map = {
+            "waf": "pub_sub_box", "load balancer": "pub_sub_box", "bastion": "pub_sub_box",
+            "compute": "app_sub_box", "database": "db_sub_box",
+        }
+        return {
+            "schema_version": "1.0",
+            "deployment_hints": {"region_count": 1, "availability_domains_per_region": 1,
+                                 "dr_enabled": False, "on_prem_connectivity": "fastconnect"},
+            "groups": [
+                {"id": "pub_sub_box", "label": "Public Subnet", "order": 0},
+                {"id": "app_sub_box", "label": "App Subnet",    "order": 1},
+                {"id": "db_sub_box",  "label": "DB Subnet",     "order": 2},
+            ],
+            "placements": [
+                {"id": i.id, "oci_type": i.oci_type, "layer": i.layer,
+                 "group": group_map.get(i.oci_type)}
+                for i in items
+            ],
+            "edges": [
+                {"id": "e1", "source": "internet",        "target": "internet_gateway", "label": "HTTPS"},
+                {"id": "e2", "source": "internet_gateway","target": "waf",              "label": "HTTPS/443"},
+                {"id": "e3", "source": "waf",             "target": "load_balancer_1",  "label": "HTTPS/443"},
+                {"id": "e4", "source": "load_balancer_1", "target": "compute_1",        "label": "HTTP"},
+                {"id": "e5", "source": "compute_1",       "target": "database_1",       "label": "SQL/5432"},
+                {"id": "e6", "source": "bastion_1",       "target": "compute_1",        "label": "SSH"},
+                {"id": "e7", "source": "nat_gateway",     "target": "internet",         "label": "Outbound"},
+            ],
+            "assumptions": [],
+            "fixed_edges_policy": True,
+        }
+
+    def test_validator_parses_edges(self):
+        items = self._items_with_edges()
+        intent = validate_layout_intent(self._intent_data_with_edges(items), items)
+        assert len(intent.edges) == 7
+
+    def test_edge_fields_preserved(self):
+        items = self._items_with_edges()
+        intent = validate_layout_intent(self._intent_data_with_edges(items), items)
+        e = next(e for e in intent.edges if e.id == "e5")
+        assert e.source == "compute_1"
+        assert e.target == "database_1"
+        assert e.label  == "SQL/5432"
+
+    def test_llm_edges_appear_in_compiled_spec(self):
+        items = self._items_with_edges()
+        intent = validate_layout_intent(self._intent_data_with_edges(items), items)
+        spec = compile_intent_to_flat_spec(intent, items)
+        pairs = {(e["source"], e["target"]) for e in spec["edges"]}
+        assert ("waf",            "load_balancer_1") in pairs
+        assert ("load_balancer_1","compute_1")        in pairs
+        assert ("compute_1",      "database_1")       in pairs
+        assert ("bastion_1",      "compute_1")        in pairs
+
+    def test_sequential_fallback_not_added_when_llm_edges_present(self):
+        """When LLM provides edges, the subnet-chain fallback must NOT be added."""
+        items = self._items_with_edges()
+        intent = validate_layout_intent(self._intent_data_with_edges(items), items)
+        spec = compile_intent_to_flat_spec(intent, items)
+        pairs = {(e["source"], e["target"]) for e in spec["edges"]}
+        # These are the fallback chain edges — must be absent when LLM edges provided
+        assert ("pub_sub_box", "app_sub_box") not in pairs
+        assert ("app_sub_box", "db_sub_box")  not in pairs
+
+    def test_structural_edges_always_present_with_llm_edges(self):
+        """on_prem→vcn_box and igw→vcn_box are structural and always injected."""
+        items = self._items_with_edges()
+        intent = validate_layout_intent(self._intent_data_with_edges(items), items)
+        spec = compile_intent_to_flat_spec(intent, items)
+        pairs = {(e["source"], e["target"]) for e in spec["edges"]}
+        assert ("on_prem",         "vcn_box") in pairs
+        assert ("internet_gateway","vcn_box") in pairs
+
+    def test_edges_with_unknown_source_silently_dropped(self):
+        """An edge referencing a non-existent source ID must be dropped, not crash."""
+        items = self._items_with_edges()
+        data = self._intent_data_with_edges(items)
+        # Inject an edge with a non-existent source
+        data["edges"].append({"id": "bad", "source": "ghost_service", "target": "compute_1", "label": "?"})
+        intent = validate_layout_intent(data, items)
+        spec = compile_intent_to_flat_spec(intent, items)
+        edge_ids = [e["id"] for e in spec["edges"]]
+        assert "bad" not in edge_ids
+
+    def test_no_edges_declared_uses_sequential_fallback(self):
+        """When intent.edges is empty, the sequential subnet chain is used as fallback."""
+        items = self._items_with_edges()
+        data = self._intent_data_with_edges(items)
+        data["edges"] = []  # LLM declared no edges
+        intent = validate_layout_intent(data, items)
+        spec = compile_intent_to_flat_spec(intent, items)
+        pairs = {(e["source"], e["target"]) for e in spec["edges"]}
+        assert ("pub_sub_box", "app_sub_box") in pairs
+        assert ("app_sub_box", "db_sub_box")  in pairs
+
+    def test_prompt_contains_edges_field(self):
+        """The output format in the prompt must include an 'edges' array."""
+        items = self._items_with_edges()
+        prompt = build_layout_intent_prompt(items)
+        assert '"edges"' in prompt
+
+    def test_prompt_contains_edge_examples(self):
+        """Prompt must show concrete edge examples using actual service IDs."""
+        items = self._items_with_edges()
+        prompt = build_layout_intent_prompt(items)
+        # At minimum, the edge example should reference some of our actual IDs
+        assert "compute_1" in prompt or "load_balancer_1" in prompt or "database_1" in prompt
+
+    def test_hpc_prompt_contains_rdma_edge(self):
+        """HPC topology prompt must mention RDMA in edge examples."""
+        items = [
+            ServiceItem(id="bastion_1",   oci_type="bastion",          label="Bastion", layer="ingress"),
+            ServiceItem(id="oke_1",       oci_type="container engine", label="OKE",     layer="compute"),
+            ServiceItem(id="bm_1",        oci_type="bare metal",       label="BM",      layer="compute"),
+            ServiceItem(id="fss_1",       oci_type="file storage",     label="FSS",     layer="data"),
+            ServiceItem(id="nat_gateway", oci_type="nat gateway",      label="NAT",     layer="ingress"),
+        ]
+        prompt = build_layout_intent_prompt(items)
+        assert "RDMA" in prompt
+
+    def test_edge_decl_dataclass(self):
+        e = EdgeDecl(id="e1", source="a", target="b", label="HTTP")
+        assert e.id == "e1"
+        assert e.source == "a"
+        assert e.target == "b"
+        assert e.label  == "HTTP"
+
+    def test_edge_label_defaults_to_empty_string(self):
+        e = EdgeDecl(id="e1", source="a", target="b")
+        assert e.label == ""

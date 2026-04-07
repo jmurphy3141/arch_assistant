@@ -34,7 +34,7 @@ back to the classic 3-tier order (pub_sub_box → app_sub_box → db_sub_box).
 """
 from __future__ import annotations
 
-from agent.layout_intent import LayoutIntent, Placement, GROUP_LABELS
+from agent.layout_intent import LayoutIntent, Placement, GROUP_LABELS, EdgeDecl
 
 # Classic 3-tier fallback order (used when the LLM declares no groups)
 _GROUP_ORDER = ["pub_sub_box", "app_sub_box", "db_sub_box"]
@@ -135,7 +135,7 @@ def compile_intent_to_flat_spec(
     # vcn_box is synthesised by the layout engine; include it for edge targets
     vcn_exists = bool(groups)  # vcn_box is created iff there are any groups
 
-    # ── Build fixed edges ─────────────────────────────────────────────────────
+    # ── Build edges ───────────────────────────────────────────────────────────
     edges: list[dict] = []
 
     def _add(eid: str, src: str, tgt: str, label: str,
@@ -149,6 +149,8 @@ def compile_intent_to_flat_spec(
                 "id": eid, "source": src, "target": tgt, "label": label,
                 "exitX": ex, "exitY": ey, "entryX": nx, "entryY": ny,
             })
+
+    # ── Structural edges (always injected — positional, not data-flow) ────────
 
     # on_prem → vcn_box
     if "on_prem" in all_node_ids and vcn_exists:
@@ -167,13 +169,20 @@ def compile_intent_to_flat_spec(
         _add("e_igw_vcn", igw_id, "vcn_box", "Internet",
              ex=0.5, ey=1.0, nx=0.5, ny=0.0)
 
-    # Sequential edges between adjacent subnet groups (group[i] → group[i+1])
-    for i in range(len(groups) - 1):
-        src = groups[i]["id"]
-        tgt = groups[i + 1]["id"]
-        label = _LEGACY_EDGE_LABELS.get((src, tgt), "")
-        _add(f"e_{src}_{tgt}", src, tgt, label,
-             ex=0.5, ey=1.0, nx=0.5, ny=0.0)
+    # ── Data-flow edges ───────────────────────────────────────────────────────
+    # When the LLM declared edges, use those (richer, topology-aware).
+    # Otherwise fall back to sequential subnet-to-subnet chain edges.
+    if intent.edges:
+        for e in intent.edges:
+            _add(e.id, e.source, e.target, e.label)
+    else:
+        # Fallback: sequential edges between adjacent subnet groups
+        for i in range(len(groups) - 1):
+            src = groups[i]["id"]
+            tgt = groups[i + 1]["id"]
+            label = _LEGACY_EDGE_LABELS.get((src, tgt), "")
+            _add(f"e_{src}_{tgt}", src, tgt, label,
+                 ex=0.5, ey=1.0, nx=0.5, ny=0.0)
 
     return {
         "layers": layers,
