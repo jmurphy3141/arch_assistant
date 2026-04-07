@@ -544,9 +544,13 @@ def compute_positions(layout_spec: dict | str) -> tuple[list[PositionedNode], li
 def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], list[PositionedBox]]:
     """
     Backward-compatible layout for old flat spec format (has 'layers' key).
-    Wraps old PositionedGroup output as PositionedBox for uniform return type.
+
+    Groups are rendered as full-width horizontal rows stacked vertically inside
+    the VCN box.  Non-grouped nodes are placed as follows:
+      - external layer → left column
+      - gateway types (IGW, NAT, DRG, SGW) → on VCN box edges
+      - anything else → row below the last group
     """
-    # Import inline to avoid circular issues if ever split
     layers: dict = layout_spec.get("layers", {})
     groups_spec: list = layout_spec.get("groups", [])
 
@@ -557,93 +561,101 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
 
     LAYER_ORDER = ["external", "ingress", "compute", "async", "data"]
 
-    PAGE_MARGIN_L = 50
-    LAYER_GAP_L = 40
-    NODE_GAP_Y_L = 24
-    GROUP_PAD_X_L = 24
-    GROUP_PAD_Y_L = 36
-    GROUP_GAP_Y_L = 20
-    N_LAYERS = 6
-    LAYER_W_L = (PAGE_W - 2 * PAGE_MARGIN_L - (N_LAYERS - 1) * LAYER_GAP_L) / N_LAYERS
-    LAYER_CENTRES = {
-        "external": PAGE_MARGIN_L + LAYER_W_L * 0 + LAYER_GAP_L * 0 + LAYER_W_L / 2,
-        "ingress":  PAGE_MARGIN_L + LAYER_W_L * 1 + LAYER_GAP_L * 1 + LAYER_W_L / 2,
-        "compute":  PAGE_MARGIN_L + LAYER_W_L * 2 + LAYER_GAP_L * 2 + LAYER_W_L / 2,
-        "async":    PAGE_MARGIN_L + LAYER_W_L * 3 + LAYER_GAP_L * 3 + LAYER_W_L / 2,
-        "data":     PAGE_MARGIN_L + LAYER_W_L * 4 + LAYER_GAP_L * 4 + LAYER_W_L / 2,
-        "region":   PAGE_MARGIN_L + LAYER_W_L * 5 + LAYER_GAP_L * 5 + LAYER_W_L / 2,
-    }
+    # Flatten all nodes with their layer annotated
+    all_nodes_flat: list[dict] = []
+    for layer_name in LAYER_ORDER:
+        for n in layers.get(layer_name, []):
+            all_nodes_flat.append({**n, "_layer": layer_name})
+
+    GATEWAY_TYPES = frozenset([
+        "internet gateway", "nat gateway", "service gateway",
+        "drg", "dynamic routing gateway",
+    ])
+
+    # Layout constants
+    PAGE_MARGIN_L  = 50
+    VCN_X          = PAGE_MARGIN_L + EXT_W + EXT_GAP   # 164
+    VCN_RIGHT      = PAGE_W - PAGE_MARGIN_L             # 1604
+    VCN_TOTAL_W    = VCN_RIGHT - VCN_X                  # 1440
+    VCN_Y_START    = PAGE_MARGIN_L + EXT_TOP_H          # 120
+    VCN_TOP_PAD    = 60    # breathing room above first group row
+
+    ROW_PAD_X      = 20   # group row inset from VCN edges
+    ROW_INNER_W    = VCN_TOTAL_W - 2 * ROW_PAD_X
+    ROW_PAD_TOP    = 32   # room for the group label
+    ROW_PAD_BOT    = 12
+    ROW_H          = ROW_PAD_TOP + ICON_SLOT + ROW_PAD_BOT   # ≈ 120 px
+    ROW_GAP_Y      = 12
+
+    NODE_GAP_Y_L   = 24   # used only for external column spacing
 
     positioned: list[PositionedNode] = []
+    group_boxes:  list[PositionedBox] = []
 
-    for layer_name in LAYER_ORDER:
-        node_list = layers.get(layer_name, [])
-        if not node_list:
-            continue
+    # 1. Groups → full-width horizontal rows stacked top-to-bottom
+    cur_row_y = VCN_Y_START + VCN_TOP_PAD
 
-        cx = LAYER_CENTRES.get(layer_name, PAGE_MARGIN_L + LAYER_W_L / 2)
-
-        def sort_key(n):
-            gid = node_to_group.get(n["id"], "zzz")
-            return (gid, n["id"])
-
-        node_list_sorted = sorted(node_list, key=sort_key)
-        cur_y = PAGE_MARGIN_L + GROUP_PAD_Y_L
-        current_group = None
-
-        for n in node_list_sorted:
-            nid   = n["id"]
-            label = n.get("label", nid)
-            ntype = n.get("type", "")
-            gid   = node_to_group.get(nid)
-
-            if gid != current_group:
-                if current_group is not None:
-                    if gid == "region_box":
-                        cur_y = PAGE_MARGIN_L + GROUP_PAD_Y_L
-                    else:
-                        cur_y += GROUP_GAP_Y_L
-                current_group = gid
-
-            if gid == "region_box":
-                ix = LAYER_CENTRES["region"] - ICON_W / 2
-            else:
-                ix = cx - ICON_W / 2
-
-            positioned.append(PositionedNode(
-                id=nid, label=label, oci_type=ntype,
-                x=ix, y=cur_y, w=ICON_W, h=ICON_SLOT,
-            ))
-            cur_y += ICON_SLOT + NODE_GAP_Y_L
-
-    # Build group boxes
-    group_boxes: list[PositionedBox] = []
     for g in groups_spec:
-        gid   = g["id"]
-        label = g["label"]
-        # filter members that belong to this group — use node_to_group
-        members = [p for p in positioned if node_to_group.get(p.id) == gid]
+        gid     = g["id"]
+        members = [n for n in all_nodes_flat
+                   if node_to_group.get(n["id"]) == gid]
         if not members:
             continue
 
-        min_x = min(p.x for p in members) - GROUP_PAD_X_L
-        max_x = max(p.x + p.w for p in members) + GROUP_PAD_X_L
-        min_y = min(p.y for p in members) - GROUP_PAD_Y_L
-        max_y = max(p.y + p.h for p in members) + GROUP_PAD_Y_L / 2
+        row_x = VCN_X + ROW_PAD_X
+        row_y = cur_row_y
+        row_w = ROW_INNER_W
+        row_h = ROW_H
+
+        n_members    = len(members)
+        content_w    = n_members * ICON_W + max(n_members - 1, 0) * NODE_GAP_X
+        node_start_x = row_x + (row_w - content_w) / 2
+        node_y       = row_y + ROW_PAD_TOP
+
+        for i, n in enumerate(members):
+            positioned.append(PositionedNode(
+                id=n["id"],
+                label=n.get("label", n["id"]),
+                oci_type=n.get("type", ""),
+                x=node_start_x + i * (ICON_W + NODE_GAP_X),
+                y=node_y,
+                w=ICON_W,
+                h=ICON_SLOT,
+            ))
 
         group_boxes.append(PositionedBox(
-            id=gid, label=label,
+            id=gid,
+            label=g.get("label", gid.replace("_", " ").title()),
             box_type="_subnet_box",
-            x=min_x, y=min_y,
-            w=max_x - min_x, h=max_y - min_y,
+            x=row_x,
+            y=row_y,
+            w=row_w,
+            h=row_h,
         ))
+        cur_row_y += row_h + ROW_GAP_Y
 
-    # Synthesise a vcn_box that wraps all subnet group boxes and prepend it.
-    # Guard: skip if a vcn_box was already produced from the spec's groups list.
+    # 2. External nodes → left column
+    ext_nodes = [n for n in all_nodes_flat
+                 if n["_layer"] == "external" and n["id"] not in node_to_group]
+    ext_x = PAGE_MARGIN_L
+    ext_y = VCN_Y_START + VCN_TOP_PAD
+    for n in ext_nodes:
+        positioned.append(PositionedNode(
+            id=n["id"],
+            label=n.get("label", n["id"]),
+            oci_type=n.get("type", ""),
+            x=ext_x,
+            y=ext_y,
+            w=ICON_W,
+            h=ICON_SLOT,
+        ))
+        ext_y += ICON_SLOT + NODE_GAP_Y_L
+
+    # 3. Synthesise VCN box wrapping all group rows
     VCN_PAD = 40
     if group_boxes and not any(b.id == "vcn_box" for b in group_boxes):
-        bx = min(b.x for b in group_boxes) - VCN_PAD
-        by = min(b.y for b in group_boxes) - VCN_PAD
+        bx  = min(b.x for b in group_boxes) - VCN_PAD
+        by  = min(b.y for b in group_boxes) - VCN_PAD
         bx2 = max(b.x + b.w for b in group_boxes) + VCN_PAD
         by2 = max(b.y + b.h for b in group_boxes) + VCN_PAD
         vcn_box = PositionedBox(
@@ -652,6 +664,64 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
             x=bx, y=by, w=bx2 - bx, h=by2 - by,
         )
         group_boxes = [vcn_box] + group_boxes
+
+    # 4. Gateway nodes → on VCN box edges
+    vcn = group_boxes[0] if group_boxes else None
+    gw_nodes = [n for n in all_nodes_flat
+                if n.get("type", "").lower() in GATEWAY_TYPES
+                and n["id"] not in node_to_group]
+    nat_y_placed: float | None = None
+
+    for gw in gw_nodes:
+        gtype = gw.get("type", "").lower()
+        if vcn:
+            if gtype == "internet gateway":
+                gx = vcn.x + vcn.w / 2 - ICON_W / 2
+                gy = vcn.y - ICON_H / 2
+            elif gtype in ("drg", "dynamic routing gateway"):
+                gx = vcn.x - ICON_W / 2
+                gy = vcn.y + vcn.h * 0.4
+            elif gtype == "nat gateway":
+                gx = vcn.x + vcn.w - ICON_W / 2
+                gy = vcn.y + vcn.h * 0.3
+                nat_y_placed = gy
+            elif gtype == "service gateway":
+                gx = vcn.x + vcn.w - ICON_W / 2
+                ref_y = nat_y_placed if nat_y_placed is not None else vcn.y + vcn.h * 0.3
+                gy = ref_y + ICON_SLOT + 20
+            else:
+                gx = vcn.x + vcn.w / 2 - ICON_W / 2
+                gy = vcn.y - ICON_H / 2
+        else:
+            gx = PAGE_MARGIN_L
+            gy = PAGE_MARGIN_L + VCN_TOP_PAD
+
+        positioned.append(PositionedNode(
+            id=gw["id"],
+            label=gw.get("label", gw["id"]),
+            oci_type=gtype,
+            x=gx,
+            y=gy,
+            w=ICON_W,
+            h=ICON_SLOT,
+        ))
+
+    # 5. Any remaining ungrouped non-external non-gateway nodes → row below groups
+    placed_ids = {p.id for p in positioned}
+    remaining  = [n for n in all_nodes_flat if n["id"] not in placed_ids]
+    rem_x = VCN_X + ROW_PAD_X
+    rem_y = cur_row_y + ROW_GAP_Y
+    for n in remaining:
+        positioned.append(PositionedNode(
+            id=n["id"],
+            label=n.get("label", n["id"]),
+            oci_type=n.get("type", ""),
+            x=rem_x,
+            y=rem_y,
+            w=ICON_W,
+            h=ICON_SLOT,
+        ))
+        rem_x += ICON_W + NODE_GAP_X
 
     return positioned, group_boxes
 
