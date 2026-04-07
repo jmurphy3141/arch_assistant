@@ -122,6 +122,48 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
         on_prem_connectivity=conn,
     )
 
+    # ── groups (parsed first so auto-fill can use declared topology) ─────────
+    groups: list[GroupDecl] = []
+    for g in (data.get("groups") or []):
+        gid = str(g.get("id", "")).strip()
+        if not gid or not _GROUP_SLUG_RE.match(gid):
+            continue  # silently skip malformed entries
+        groups.append(GroupDecl(
+            id=gid,
+            label=str(g.get("label", gid.replace("_", " ").title())),
+            order=int(g.get("order", 0) or 0),
+        ))
+
+    # Build layer→group fallback from declared groups (first group per order tier)
+    # Falls back to the classic 3-tier names when no groups are declared.
+    _sorted_groups = sorted(groups, key=lambda g: g.order) if groups else []
+    _n = len(_sorted_groups)
+    if _n >= 3:
+        _layer_to_group_fallback: dict[str, str | None] = {
+            "ingress": _sorted_groups[0].id,
+            "compute": _sorted_groups[1].id,
+            "data":    _sorted_groups[_n - 1].id,  # last group = storage/data tier
+        }
+    elif _n == 2:
+        _layer_to_group_fallback = {
+            "ingress": _sorted_groups[0].id,
+            "compute": _sorted_groups[0].id,
+            "data":    _sorted_groups[1].id,
+        }
+    elif _n == 1:
+        _layer_to_group_fallback = {
+            "ingress": _sorted_groups[0].id,
+            "compute": _sorted_groups[0].id,
+            "data":    _sorted_groups[0].id,
+        }
+    else:
+        # No groups declared — classic 3-tier fallback
+        _layer_to_group_fallback = {
+            "ingress": "pub_sub_box",
+            "compute": "app_sub_box",
+            "data":    "db_sub_box",
+        }
+
     # ── placements ────────────────────────────────────────────────────────────
     placements_raw = data.get("placements", [])
     if not isinstance(placements_raw, list):
@@ -166,31 +208,13 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
             _log = logging.getLogger(__name__)
             _log.warning("LLM dropped placements — auto-filling: %s", sorted(missing))
             items_by_id = {i.id: i for i in items}
-            # Default group by layer
-            _layer_to_group = {
-                "ingress": "pub_sub_box",
-                "compute": "app_sub_box",
-                "data":    "db_sub_box",
-            }
             for mid in sorted(missing):
                 si = items_by_id[mid]
                 layer = si.layer if si.layer in VALID_LAYERS else "data"
-                group = _layer_to_group.get(layer)  # None for external/async
+                group = _layer_to_group_fallback.get(layer)  # None for external/async
                 seen_ids.add(mid)
                 placements.append(Placement(id=mid, oci_type=si.oci_type,
                                             layer=layer, group=group))
-
-    # ── groups (optional — LLM-declared subnet topology) ─────────────────────
-    groups: list[GroupDecl] = []
-    for g in (data.get("groups") or []):
-        gid = str(g.get("id", "")).strip()
-        if not gid or not _GROUP_SLUG_RE.match(gid):
-            continue  # silently skip malformed entries
-        groups.append(GroupDecl(
-            id=gid,
-            label=str(g.get("label", gid.replace("_", " ").title())),
-            order=int(g.get("order", 0) or 0),
-        ))
 
     # ── assumptions ───────────────────────────────────────────────────────────
     assumptions: list[Assumption] = []

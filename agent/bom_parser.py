@@ -408,6 +408,101 @@ IMPORTANT RULES FOR OUTPUT:
 8. Output ONLY valid JSON. No markdown, no prose, no code fences."""
 
 
+# ── Topology pattern detection ────────────────────────────────────────────────
+
+_TOPOLOGY_HPC_OKE       = "HPC_OKE"
+_TOPOLOGY_DATA_PLATFORM = "DATA_PLATFORM"
+_TOPOLOGY_3TIER         = "STANDARD_3TIER"
+
+# Pre-declared groups per topology (injected as directives, not suggestions)
+_TOPOLOGY_GROUPS: dict[str, list[dict]] = {
+    _TOPOLOGY_HPC_OKE: [
+        {"id": "bas_sub_box",    "label": "Bastion Subnet (Public)", "order": 0},
+        {"id": "cp_sub_box",     "label": "Control Plane Subnet",    "order": 1},
+        {"id": "worker_sub_box", "label": "Worker Subnet (Private)", "order": 2},
+        {"id": "storage_sub_box","label": "Storage Subnet",          "order": 3},
+    ],
+    _TOPOLOGY_DATA_PLATFORM: [
+        {"id": "ingest_sub_box", "label": "Ingest Subnet",    "order": 0},
+        {"id": "proc_sub_box",   "label": "Processing Subnet","order": 1},
+        {"id": "store_sub_box",  "label": "Storage Subnet",   "order": 2},
+    ],
+    _TOPOLOGY_3TIER: [
+        {"id": "pub_sub_box",    "label": "Public Subnet",    "order": 0},
+        {"id": "app_sub_box",    "label": "App Subnet",       "order": 1},
+        {"id": "db_sub_box",     "label": "DB Subnet",        "order": 2},
+    ],
+}
+
+# Explicit group assignment per oci_type per topology
+_TOPOLOGY_GROUP_MAP: dict[str, dict[str, str]] = {
+    _TOPOLOGY_HPC_OKE: {
+        "bastion":          "bas_sub_box",
+        "waf":              "bas_sub_box",
+        "load balancer":    "bas_sub_box",
+        "container engine": "cp_sub_box",
+        "bare metal":       "worker_sub_box",
+        "compute":          "worker_sub_box",
+        "file storage":     "storage_sub_box",
+        "database":         "storage_sub_box",
+        "vault":            "storage_sub_box",
+    },
+    _TOPOLOGY_DATA_PLATFORM: {
+        "waf":              "ingest_sub_box",
+        "load balancer":    "ingest_sub_box",
+        "bastion":          "ingest_sub_box",
+        "api gateway":      "ingest_sub_box",
+        "queue":            "ingest_sub_box",
+        "functions":        "proc_sub_box",
+        "compute":          "proc_sub_box",
+        "container engine": "proc_sub_box",
+        "database":         "store_sub_box",
+        "file storage":     "store_sub_box",
+        "vault":            "store_sub_box",
+    },
+    _TOPOLOGY_3TIER: {
+        "waf":              "pub_sub_box",
+        "load balancer":    "pub_sub_box",
+        "bastion":          "pub_sub_box",
+        "compute":          "app_sub_box",
+        "container engine": "app_sub_box",
+        "functions":        "app_sub_box",
+        "api gateway":      "app_sub_box",
+        "queue":            "app_sub_box",
+        "database":         "db_sub_box",
+        "vault":            "db_sub_box",
+        "file storage":     "db_sub_box",
+    },
+}
+
+# oci_types that are never placed inside a subnet group (gateways + managed services)
+_NO_GROUP_TYPES = frozenset([
+    "internet gateway", "nat gateway", "service gateway", "drg",
+    "object storage", "logging", "monitoring", "iam", "certificates",
+    "on premises", "internet", "users", "admins", "workstation",
+])
+
+
+def _detect_topology_pattern(items: list[ServiceItem]) -> str:
+    """Classify the architecture pattern from service types (deterministic, no LLM)."""
+    types = {i.oci_type for i in items}
+    has_bare_metal = "bare metal" in types
+    has_oke        = "container engine" in types
+    has_fss        = "file storage" in types
+
+    # Bare metal alone or OKE + FSS both signal HPC workloads
+    if has_bare_metal or (has_oke and has_fss):
+        return _TOPOLOGY_HPC_OKE
+
+    # Streaming-dominated, no bare metal, no significant relational DB
+    has_streaming = "queue" in types or "streaming" in types
+    has_db        = "database" in types
+    if has_streaming and not has_bare_metal and not has_db:
+        return _TOPOLOGY_DATA_PLATFORM
+
+    return _TOPOLOGY_3TIER
+
+
 def build_layout_intent_prompt(
     items: list[ServiceItem],
     questionnaire_text: str = "",
@@ -417,18 +512,50 @@ def build_layout_intent_prompt(
     """
     Build a compact LayoutIntent prompt.
 
-    The LLM is asked to output ONLY a LayoutIntent JSON (placements +
-    deployment_hints + assumptions), NOT a full topology spec.  Deterministic
-    code in intent_compiler.py expands it to the full draw.io spec.
+    Topology pattern is detected deterministically in Python before the prompt
+    is sent to the LLM.  The detected groups are injected as directives so the
+    LLM cannot fall back to 3-tier for HPC or data-platform workloads.
 
     questionnaire_text: answers to a pre-flight questionnaire, if any.
     notes_text:         meeting notes or other free-text input, if any.
     context:            generic context string (e.g. from uploaded context file).
     """
-    service_list = "\n".join(
-        f'  {{"id": "{i.id}", "oci_type": "{i.oci_type}", "suggested_layer": "{i.layer}"}}'
+    topology   = _detect_topology_pattern(items)
+    groups     = _TOPOLOGY_GROUPS[topology]
+    group_map  = _TOPOLOGY_GROUP_MAP[topology]
+
+    # Build service list with pre-assigned group hints
+    def _group_hint(item: ServiceItem) -> str:
+        if item.oci_type in _NO_GROUP_TYPES:
+            return "null"
+        return f'"{group_map.get(item.oci_type, "null")}"'
+
+    service_rows = "\n".join(
+        f'  {{"id": "{i.id}", "oci_type": "{i.oci_type}", "suggested_layer": "{i.layer}", "group_hint": {_group_hint(i)}}}'
         for i in items
     )
+
+    # Build groups JSON block for the directive section
+    import json as _json
+    groups_json = _json.dumps(groups, indent=4)
+
+    # Build the explicit placement table
+    placement_rules = "\n".join(
+        f"  {oci_type!r:30s} → {gid}"
+        for oci_type, gid in group_map.items()
+    )
+
+    # Build the output example using the detected topology's groups
+    example_groups = _json.dumps(
+        [{"id": g["id"], "label": g["label"], "order": g["order"]} for g in groups],
+        indent=4,
+    )
+
+    topology_label = {
+        _TOPOLOGY_HPC_OKE:       "HPC on OKE (bare metal RDMA + container engine + file storage)",
+        _TOPOLOGY_DATA_PLATFORM: "Data Platform (streaming + functions + data lake)",
+        _TOPOLOGY_3TIER:         "Standard 3-Tier (web app + compute + database)",
+    }[topology]
 
     extra_blocks = ""
     if questionnaire_text and questionnaire_text.strip():
@@ -439,68 +566,38 @@ def build_layout_intent_prompt(
         extra_blocks += f"\nADDITIONAL CONTEXT:\n{context.strip()}\n"
 
     return f"""You are an OCI architecture intent compiler.
-Classify each service from the BOM into its correct OCI architectural layer and subnet group,
-then declare the subnet topology that matches the architecture pattern you detect.
+Assign each service from the BOM to the correct layer and subnet group.
 Output ONLY valid JSON — either a LayoutIntent or a NeedClarification object.
 {extra_blocks}
 ═══════════════════════════════════════════════════════
-INPUT SERVICES (from BOM + baseline injection):
+TOPOLOGY PATTERN (pre-classified from BOM — DO NOT CHANGE):
+  {topology_label}
+═══════════════════════════════════════════════════════
+You MUST copy these groups verbatim into the "groups" array of your output.
+Do NOT use pub_sub_box / app_sub_box / db_sub_box unless the topology is STANDARD_3TIER.
+Do NOT invent different group IDs.
+
+REQUIRED GROUPS:
+{groups_json}
+
+═══════════════════════════════════════════════════════
+INPUT SERVICES (group_hint = pre-assigned group slug):
 ═══════════════════════════════════════════════════════
 [
-{service_list}
+{service_rows}
 ]
 
 ═══════════════════════════════════════════════════════
-STEP 1 — DETECT TOPOLOGY PATTERN
+GROUP ASSIGNMENT RULES (apply exactly — do not deviate):
 ═══════════════════════════════════════════════════════
-Identify the architecture pattern from the services above, then declare
-the appropriate subnet groups.  Common patterns:
+{placement_rules}
 
-STANDARD 3-TIER (web app with load balancer + compute + database):
-  groups:
-    {{"id": "pub_sub_box",    "label": "Public Subnet",          "order": 0}}
-    {{"id": "app_sub_box",    "label": "App Subnet",             "order": 1}}
-    {{"id": "db_sub_box",     "label": "DB Subnet",              "order": 2}}
-
-HPC ON OKE (bare metal RDMA nodes + file storage + container engine):
-  groups:
-    {{"id": "bas_sub_box",    "label": "Bastion Subnet (Public)", "order": 0}}
-    {{"id": "cp_sub_box",     "label": "Control Plane Subnet",   "order": 1}}
-    {{"id": "worker_sub_box", "label": "Worker Subnet (Private)","order": 2}}
-    {{"id": "storage_sub_box","label": "Storage Subnet",         "order": 3}}
-
-DATA PLATFORM (streaming + functions + data lake + analytics):
-  groups:
-    {{"id": "ingest_sub_box", "label": "Ingest Subnet",          "order": 0}}
-    {{"id": "proc_sub_box",   "label": "Processing Subnet",      "order": 1}}
-    {{"id": "store_sub_box",  "label": "Storage Subnet",         "order": 2}}
-
-You may define any group IDs and labels that accurately reflect the
-architecture — do not invent groups not justified by the services present.
-
-═══════════════════════════════════════════════════════
-STEP 2 — CLASSIFY EACH SERVICE
-═══════════════════════════════════════════════════════
-layer must be one of: external | ingress | compute | async | data
-group must be a slug from your declared groups above, or null.
-
-Deterministic layer mappings (apply without asking):
-  on premises, internet, users, admins, workstation
-    → layer=external, group=null
-  internet gateway, nat gateway, service gateway, drg
-    → layer=ingress, group=null  (gateways straddle VCN; not in a subnet)
-  waf, load balancer
-    → layer=ingress, group=<public/bastion subnet>
-  bastion
-    → layer=ingress, group=<public/bastion subnet>
-  compute, bare metal, container engine, functions, api gateway
-    → layer=compute, group=<appropriate compute subnet>
-  queue, streaming
-    → layer=async, group=<appropriate subnet>
-  database, vault, file storage
-    → layer=data, group=<appropriate data/storage subnet>
-  object storage, logging, monitoring, iam, certificates
-    → layer=data, group=null  (OCI managed services; outside VCN)
+  — gateways (internet gateway, nat gateway, service gateway, drg)
+      → layer=ingress, group=null   (straddle VCN edge; not inside a subnet)
+  — managed services (object storage, logging, monitoring, iam, certificates)
+      → layer=data, group=null      (outside VCN)
+  — external (on premises, internet, users, admins, workstation)
+      → layer=external, group=null
 
 ═══════════════════════════════════════════════════════
 DEPLOYMENT HINTS RULES (apply defaults, do not ask)
@@ -510,13 +607,6 @@ availability_domains_per_region: 1 unless "multi-AD", "HA", or 2+ ADs mentioned.
 dr_enabled: false unless "DR" or disaster recovery is explicitly mentioned.
 on_prem_connectivity: "fastconnect" if DRG/FastConnect in BOM; "vpn" if VPN;
                       "none" if no on-premises service; else "unknown".
-
-═══════════════════════════════════════════════════════
-ASSUMPTION RULES
-═══════════════════════════════════════════════════════
-For every gap not covered by the above rules, add one assumption entry.
-Only ask for clarification if topology is FUNDAMENTALLY unknown and cannot
-be inferred from the BOM or context.
 
 ═══════════════════════════════════════════════════════
 OUTPUT FORMAT — LayoutIntent
@@ -529,11 +619,7 @@ OUTPUT FORMAT — LayoutIntent
     "dr_enabled": false,
     "on_prem_connectivity": "fastconnect"
   }},
-  "groups": [
-    {{"id": "pub_sub_box", "label": "Public Subnet", "order": 0}},
-    {{"id": "app_sub_box", "label": "App Subnet",    "order": 1}},
-    {{"id": "db_sub_box",  "label": "DB Subnet",     "order": 2}}
-  ],
+  "groups": {example_groups},
   "placements": [
     {{"id": "<exact-id-from-input>", "oci_type": "<type>", "layer": "<layer>", "group": "<group-slug-or-null>"}},
     ...
@@ -549,12 +635,14 @@ OR — NeedClarification (ONLY if truly blocking):
 
 Allowed question IDs (use ONLY these): regions.count, regions.mode, ha.ads, connectivity.onprem, dr.rpo_rto
 
-IMPORTANT RULES:
-1. Every id from INPUT SERVICES must appear exactly once in placements.
-2. Do NOT invent services not in the INPUT SERVICES list.
-3. Use the exact id values from INPUT SERVICES (e.g. "compute_1", "bastion_1").
-4. Every group slug used in placements must also appear in the groups array.
-5. Output ONLY valid JSON. No markdown, no prose, no code fences."""
+CRITICAL RULES:
+1. Copy the REQUIRED GROUPS above into your "groups" array without modification.
+2. Every id from INPUT SERVICES must appear exactly once in placements.
+3. Do NOT invent services not in the INPUT SERVICES list.
+4. Use the exact id values from INPUT SERVICES (e.g. "compute_1", "bastion_1").
+5. Every group slug used in placements must match a group in your "groups" array.
+6. Follow the group_hint for each service — only deviate if the hint is "null".
+7. Output ONLY valid JSON. No markdown, no prose, no code fences."""
 
 
 def bom_to_llm_input(
