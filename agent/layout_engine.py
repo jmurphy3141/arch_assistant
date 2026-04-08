@@ -591,6 +591,7 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
 
     positioned: list[PositionedNode] = []
     group_boxes:  list[PositionedBox] = []
+    placed_ids:   set[str] = set()   # tracks every node placed so far — no duplicates
 
     # 1. Groups → full-width horizontal rows stacked top-to-bottom
     cur_row_y = VCN_Y_START + VCN_TOP_PAD
@@ -613,6 +614,8 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
         node_y       = row_y + ROW_PAD_TOP
 
         for i, n in enumerate(members):
+            if n["id"] in placed_ids:
+                continue
             positioned.append(PositionedNode(
                 id=n["id"],
                 label=n.get("label", n["id"]),
@@ -622,6 +625,7 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
                 w=ICON_W,
                 h=ICON_SLOT,
             ))
+            placed_ids.add(n["id"])
 
         group_boxes.append(PositionedBox(
             id=gid,
@@ -634,24 +638,7 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
         ))
         cur_row_y += row_h + ROW_GAP_Y
 
-    # 2. External nodes → left column
-    ext_nodes = [n for n in all_nodes_flat
-                 if n["_layer"] == "external" and n["id"] not in node_to_group]
-    ext_x = PAGE_MARGIN_L
-    ext_y = VCN_Y_START + VCN_TOP_PAD
-    for n in ext_nodes:
-        positioned.append(PositionedNode(
-            id=n["id"],
-            label=n.get("label", n["id"]),
-            oci_type=n.get("type", ""),
-            x=ext_x,
-            y=ext_y,
-            w=ICON_W,
-            h=ICON_SLOT,
-        ))
-        ext_y += ICON_SLOT + NODE_GAP_Y_L
-
-    # 3. Synthesise VCN box wrapping all group rows
+    # 2. Synthesise VCN box wrapping all group rows
     VCN_PAD = 40
     if group_boxes and not any(b.id == "vcn_box" for b in group_boxes):
         bx  = min(b.x for b in group_boxes) - VCN_PAD
@@ -665,11 +652,11 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
         )
         group_boxes = [vcn_box] + group_boxes
 
-    # 4. Gateway nodes → on VCN box edges
+    # 3. Gateway nodes → on VCN box edges
     vcn = group_boxes[0] if group_boxes else None
     gw_nodes = [n for n in all_nodes_flat
                 if n.get("type", "").lower() in GATEWAY_TYPES
-                and n["id"] not in node_to_group]
+                and n["id"] not in placed_ids]
     nat_y_placed: float | None = None
 
     for gw in gw_nodes:
@@ -705,10 +692,29 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
             w=ICON_W,
             h=ICON_SLOT,
         ))
+        placed_ids.add(gw["id"])
 
-    # 5. Any remaining ungrouped non-external non-gateway nodes → row below groups
-    placed_ids = {p.id for p in positioned}
-    remaining  = [n for n in all_nodes_flat if n["id"] not in placed_ids]
+    # 4. External nodes → left column (placed after gateways so gateway-typed
+    #    external nodes like IGW don't get double-placed)
+    ext_nodes = [n for n in all_nodes_flat
+                 if n["_layer"] == "external" and n["id"] not in placed_ids]
+    ext_x = PAGE_MARGIN_L
+    ext_y = VCN_Y_START + VCN_TOP_PAD
+    for n in ext_nodes:
+        positioned.append(PositionedNode(
+            id=n["id"],
+            label=n.get("label", n["id"]),
+            oci_type=n.get("type", ""),
+            x=ext_x,
+            y=ext_y,
+            w=ICON_W,
+            h=ICON_SLOT,
+        ))
+        ext_y += ICON_SLOT + NODE_GAP_Y_L
+        placed_ids.add(n["id"])
+
+    # 5. Any remaining nodes → row below groups
+    remaining = [n for n in all_nodes_flat if n["id"] not in placed_ids]
     rem_x = VCN_X + ROW_PAD_X
     rem_y = cur_row_y + ROW_GAP_Y
     for n in remaining:
@@ -722,6 +728,7 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
             h=ICON_SLOT,
         ))
         rem_x += ICON_W + NODE_GAP_X
+        placed_ids.add(n["id"])
 
     return positioned, group_boxes
 
