@@ -2,7 +2,7 @@
 tests/test_intent_compiler.py
 ------------------------------
 Unit tests for agent/layout_intent.py (validator) and
-agent/intent_compiler.py (LayoutIntent → legacy flat spec).
+agent/intent_compiler.py (LayoutIntent → hierarchical spec).
 
 All tests are fully offline — no OCI auth, no BOM.xlsx fixture required.
 
@@ -21,6 +21,32 @@ from agent.layout_intent import (
 )
 from agent.intent_compiler import compile_intent_to_flat_spec
 from agent.layout_engine import spec_to_draw_dict
+
+
+# ── Hierarchical spec helpers ──────────────────────────────────────────────────
+
+def _all_subnets(spec: dict) -> list[dict]:
+    """Return all subnet dicts from every region/AD in the hierarchical spec."""
+    subs = []
+    for region in spec.get("regions", []):
+        for ad in region.get("availability_domains", []):
+            subs.extend(ad.get("subnets", []))
+    return subs
+
+
+def _subnet_by_id(spec: dict, gid: str) -> dict | None:
+    return next((s for s in _all_subnets(spec) if s["id"] == gid), None)
+
+
+def _subnet_node_ids(subnet: dict) -> list[str]:
+    return [n["id"] for n in subnet.get("nodes", [])]
+
+
+def _all_gateways(spec: dict) -> list[dict]:
+    gws = []
+    for region in spec.get("regions", []):
+        gws.extend(region.get("gateways", []))
+    return gws
 
 
 # ── Shared fixtures ────────────────────────────────────────────────────────────
@@ -82,65 +108,73 @@ class TestIntentCompilerLayersGroupsEdges:
         intent = validate_layout_intent(_minimal_intent_data(items), items)
         return compile_intent_to_flat_spec(intent, items)
 
-    def test_flat_spec_has_required_keys(self):
+    def test_spec_has_required_keys(self):
         spec = self._compile()
-        assert "layers" in spec
-        assert "groups" in spec
+        assert "deployment_type" in spec
+        assert "regions" in spec
+        assert "external" in spec
         assert "edges" in spec
 
-    def test_all_five_layers_present(self):
+    def test_deployment_type_single_ad(self):
         spec = self._compile()
-        assert set(spec["layers"].keys()) == {"external", "ingress", "compute", "async", "data"}
+        assert spec["deployment_type"] == "single_ad"
 
-    def test_on_prem_in_external_layer(self):
+    def test_region_box_present(self):
         spec = self._compile()
-        ids = [n["id"] for n in spec["layers"]["external"]]
+        assert len(spec["regions"]) == 1
+        assert spec["regions"][0]["id"] == "region_box"
+
+    def test_ad_box_present(self):
+        spec = self._compile()
+        ads = spec["regions"][0]["availability_domains"]
+        assert len(ads) == 1
+        assert ads[0]["id"] == "ad1_box"
+
+    def test_fd_boxes_present_in_single_ad(self):
+        spec = self._compile()
+        fds = spec["regions"][0]["availability_domains"][0]["fault_domains"]
+        assert len(fds) == 3
+        assert fds[0]["id"] == "fd1_box"
+
+    def test_on_prem_in_external(self):
+        spec = self._compile()
+        ids = [n["id"] for n in spec["external"]]
         assert "on_prem" in ids
 
-    def test_igw_in_ingress_layer(self):
+    def test_igw_in_gateways(self):
         spec = self._compile()
-        ids = [n["id"] for n in spec["layers"]["ingress"]]
-        assert "internet_gateway" in ids
+        gw_ids = [g["id"] for g in _all_gateways(spec)]
+        assert "internet_gateway" in gw_ids
 
-    def test_compute_in_compute_layer(self):
+    def test_compute_in_app_subnet(self):
         spec = self._compile()
-        ids = [n["id"] for n in spec["layers"]["compute"]]
-        assert "compute_1" in ids
+        sub = _subnet_by_id(spec, "app_sub_box")
+        assert sub is not None
+        assert "compute_1" in _subnet_node_ids(sub)
 
-    def test_database_in_data_layer(self):
+    def test_database_in_db_subnet(self):
         spec = self._compile()
-        ids = [n["id"] for n in spec["layers"]["data"]]
-        assert "database_1" in ids
+        sub = _subnet_by_id(spec, "db_sub_box")
+        assert sub is not None
+        assert "database_1" in _subnet_node_ids(sub)
 
-    def test_app_sub_box_group_contains_compute(self):
-        spec = self._compile()
-        app_group = next((g for g in spec["groups"] if g["id"] == "app_sub_box"), None)
-        assert app_group is not None
-        assert "compute_1" in app_group["nodes"]
-
-    def test_db_sub_box_group_contains_database(self):
-        spec = self._compile()
-        db_group = next((g for g in spec["groups"] if g["id"] == "db_sub_box"), None)
-        assert db_group is not None
-        assert "database_1" in db_group["nodes"]
-
-    def test_igw_vcn_edge_injected(self):
-        """internet_gateway → vcn_box edge must be present when IGW exists."""
+    def test_igw_region_edge_injected(self):
+        """internet_gateway → region_box edge must be present when IGW exists."""
         spec = self._compile()
         pairs = {(e["source"], e["target"]) for e in spec["edges"]}
-        assert ("internet_gateway", "vcn_box") in pairs
+        assert ("internet_gateway", "region_box") in pairs
 
-    def test_on_prem_vcn_edge_injected(self):
-        """on_prem → vcn_box edge must be present when on_prem exists."""
+    def test_on_prem_region_edge_injected(self):
+        """on_prem → region_box edge must be present when on_prem exists."""
         spec = self._compile()
         pairs = {(e["source"], e["target"]) for e in spec["edges"]}
-        assert ("on_prem", "vcn_box") in pairs
+        assert ("on_prem", "region_box") in pairs
 
-    def test_on_prem_vcn_edge_label_fastconnect(self):
+    def test_on_prem_region_edge_label_fastconnect(self):
         spec = self._compile()
         edge = next(
             (e for e in spec["edges"]
-             if e["source"] == "on_prem" and e["target"] == "vcn_box"),
+             if e["source"] == "on_prem" and e["target"] == "region_box"),
             None,
         )
         assert edge is not None
@@ -151,21 +185,6 @@ class TestIntentCompilerLayersGroupsEdges:
         spec = self._compile()
         pairs = {(e["source"], e["target"]) for e in spec["edges"]}
         assert ("app_sub_box", "db_sub_box") in pairs
-
-    def test_no_vcn_box_in_layers(self):
-        """vcn_box is synthesised by layout engine; must NOT appear in layers."""
-        spec = self._compile()
-        all_node_ids = [
-            n["id"]
-            for layer_nodes in spec["layers"].values()
-            for n in layer_nodes
-        ]
-        assert "vcn_box" not in all_node_ids
-
-    def test_no_vcn_box_in_groups(self):
-        spec = self._compile()
-        group_ids = [g["id"] for g in spec["groups"]]
-        assert "vcn_box" not in group_ids
 
     def test_output_is_deterministic(self):
         """Compiling the same intent twice produces identical output."""
@@ -178,12 +197,12 @@ class TestIntentCompilerLayersGroupsEdges:
         assert spec_a == spec_b
 
     def test_layout_engine_accepts_compiled_spec(self):
-        """The compiled legacy spec must be accepted by spec_to_draw_dict()."""
+        """The compiled hierarchical spec must be accepted by spec_to_draw_dict()."""
         items = _items()
         intent = validate_layout_intent(_minimal_intent_data(items), items)
-        flat_spec = compile_intent_to_flat_spec(intent, items)
+        spec = compile_intent_to_flat_spec(intent, items)
         items_by_id = {i.id: i for i in items}
-        draw_dict = spec_to_draw_dict(flat_spec, items_by_id)
+        draw_dict = spec_to_draw_dict(spec, items_by_id)
         assert "nodes" in draw_dict
         assert "edges" in draw_dict
         node_ids = {n["id"] for n in draw_dict["nodes"]}
@@ -416,25 +435,25 @@ class TestBomOnlyScenario:
         items = self._make_bom_items()
         intent = validate_layout_intent(self._make_intent_data(items), items)
         spec = compile_intent_to_flat_spec(intent, items)
-        app_group = next((g for g in spec["groups"] if g["id"] == "app_sub_box"), None)
-        assert app_group is not None
-        assert "compute_1" in app_group["nodes"]
+        sub = _subnet_by_id(spec, "app_sub_box")
+        assert sub is not None
+        assert "compute_1" in _subnet_node_ids(sub)
 
     def test_spec_contains_database_in_db_group(self):
         items = self._make_bom_items()
         intent = validate_layout_intent(self._make_intent_data(items), items)
         spec = compile_intent_to_flat_spec(intent, items)
-        db_group = next((g for g in spec["groups"] if g["id"] == "db_sub_box"), None)
-        assert db_group is not None
-        assert "database_1" in db_group["nodes"]
+        sub = _subnet_by_id(spec, "db_sub_box")
+        assert sub is not None
+        assert "database_1" in _subnet_node_ids(sub)
 
     def test_spec_accepted_by_layout_engine(self):
-        """End-to-end: BOM items → intent → flat spec → draw_dict (no OCI needed)."""
+        """End-to-end: BOM items → intent → hierarchical spec → draw_dict (no OCI needed)."""
         items = self._make_bom_items()
         intent = validate_layout_intent(self._make_intent_data(items), items)
-        flat_spec = compile_intent_to_flat_spec(intent, items)
+        spec = compile_intent_to_flat_spec(intent, items)
         items_by_id = {i.id: i for i in items}
-        draw_dict = spec_to_draw_dict(flat_spec, items_by_id)
+        draw_dict = spec_to_draw_dict(spec, items_by_id)
         assert draw_dict["nodes"]
         node_ids = {n["id"] for n in draw_dict["nodes"]}
         assert "compute_1"  in node_ids
@@ -455,8 +474,8 @@ class TestBomOnlyScenario:
 
 class TestEdgeCases:
 
-    def test_no_groups_no_edge_injected(self):
-        """If no groups exist (all nodes are ungrouped), no group edges appear."""
+    def test_no_groups_no_subnet_edge_injected(self):
+        """If no subnet groups exist (all nodes are external/gateways), no group chain edges appear."""
         items = [
             ServiceItem(id="on_prem", oci_type="on premises", label="On-Premises", layer="external"),
         ]
@@ -469,7 +488,6 @@ class TestEdgeCases:
         }
         intent = validate_layout_intent(data, items)
         spec = compile_intent_to_flat_spec(intent, items)
-        # No group edges
         pairs = {(e["source"], e["target"]) for e in spec["edges"]}
         assert ("pub_sub_box", "app_sub_box") not in pairs
         assert ("app_sub_box", "db_sub_box") not in pairs
@@ -574,20 +592,19 @@ class TestDynamicTopology:
     def test_groups_sorted_by_order(self):
         items = self._hpc_items()
         intent = validate_layout_intent(self._hpc_intent_data(items), items)
-        import copy
         from agent.intent_compiler import compile_intent_to_flat_spec
         spec = compile_intent_to_flat_spec(intent, items)
-        group_ids = [g["id"] for g in spec["groups"]]
-        assert group_ids.index("bas_sub_box")    < group_ids.index("cp_sub_box")
-        assert group_ids.index("cp_sub_box")     < group_ids.index("worker_sub_box")
-        assert group_ids.index("worker_sub_box") < group_ids.index("storage_sub_box")
+        sub_ids = [s["id"] for s in _all_subnets(spec)]
+        assert sub_ids.index("bas_sub_box")    < sub_ids.index("cp_sub_box")
+        assert sub_ids.index("cp_sub_box")     < sub_ids.index("worker_sub_box")
+        assert sub_ids.index("worker_sub_box") < sub_ids.index("storage_sub_box")
 
     def test_hpc_group_labels_used(self):
         items = self._hpc_items()
         intent = validate_layout_intent(self._hpc_intent_data(items), items)
         from agent.intent_compiler import compile_intent_to_flat_spec
         spec = compile_intent_to_flat_spec(intent, items)
-        labels = {g["id"]: g["label"] for g in spec["groups"]}
+        labels = {s["id"]: s["label"] for s in _all_subnets(spec)}
         assert labels["worker_sub_box"]  == "Worker Subnet (Private)"
         assert labels["storage_sub_box"] == "Storage Subnet"
 
@@ -596,11 +613,11 @@ class TestDynamicTopology:
         intent = validate_layout_intent(self._hpc_intent_data(items), items)
         from agent.intent_compiler import compile_intent_to_flat_spec
         spec = compile_intent_to_flat_spec(intent, items)
-        groups_by_id = {g["id"]: g for g in spec["groups"]}
-        assert "hpc_1" in groups_by_id["worker_sub_box"]["nodes"]
-        assert "hpc_2" in groups_by_id["worker_sub_box"]["nodes"]
-        assert "hpc_3" in groups_by_id["worker_sub_box"]["nodes"]
-        assert "fss_1" in groups_by_id["storage_sub_box"]["nodes"]
+        subs_by_id = {s["id"]: s for s in _all_subnets(spec)}
+        assert "hpc_1" in _subnet_node_ids(subs_by_id["worker_sub_box"])
+        assert "hpc_2" in _subnet_node_ids(subs_by_id["worker_sub_box"])
+        assert "hpc_3" in _subnet_node_ids(subs_by_id["worker_sub_box"])
+        assert "fss_1" in _subnet_node_ids(subs_by_id["storage_sub_box"])
 
     def test_sequential_edges_injected_for_hpc(self):
         """Edges should connect bas→cp→worker→storage in order."""
@@ -614,13 +631,13 @@ class TestDynamicTopology:
         assert ("worker_sub_box", "storage_sub_box") in pairs
 
     def test_layout_engine_accepts_hpc_spec(self):
-        """End-to-end: HPC intent → flat spec → draw_dict (no OCI needed)."""
+        """End-to-end: HPC intent → hierarchical spec → draw_dict (no OCI needed)."""
         items = self._hpc_items()
         intent = validate_layout_intent(self._hpc_intent_data(items), items)
         from agent.intent_compiler import compile_intent_to_flat_spec
-        flat_spec = compile_intent_to_flat_spec(intent, items)
+        spec = compile_intent_to_flat_spec(intent, items)
         items_by_id = {i.id: i for i in items}
-        draw_dict = spec_to_draw_dict(flat_spec, items_by_id)
+        draw_dict = spec_to_draw_dict(spec, items_by_id)
         node_ids = {n["id"] for n in draw_dict["nodes"]}
         assert "hpc_1" in node_ids
         assert "fss_1" in node_ids
@@ -724,13 +741,13 @@ class TestLlmEdges:
         assert ("app_sub_box", "db_sub_box")  not in pairs
 
     def test_structural_edges_always_present_with_llm_edges(self):
-        """on_prem→vcn_box and igw→vcn_box are structural and always injected."""
+        """on_prem→region_box and igw→region_box are structural and always injected."""
         items = self._items_with_edges()
         intent = validate_layout_intent(self._intent_data_with_edges(items), items)
         spec = compile_intent_to_flat_spec(intent, items)
         pairs = {(e["source"], e["target"]) for e in spec["edges"]}
-        assert ("on_prem",         "vcn_box") in pairs
-        assert ("internet_gateway","vcn_box") in pairs
+        assert ("on_prem",          "region_box") in pairs
+        assert ("internet_gateway", "region_box") in pairs
 
     def test_edges_with_unknown_source_silently_dropped(self):
         """An edge referencing a non-existent source ID must be dropped, not crash."""
