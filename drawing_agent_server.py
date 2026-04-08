@@ -134,6 +134,13 @@ PERSISTENCE_NAMESPACE = _per_cfg.get("namespace", "")
 PERSISTENCE_BUCKET    = _per_cfg.get("bucket_name", "")
 PERSISTENCE_PREFIX    = _per_cfg.get("prefix", "diagrams")
 
+# ── Git push config ──────────────────────────────────────────────────────────
+_git_cfg              = _cfg.get("git_push", {})
+GIT_PUSH_ENABLED      = _git_cfg.get("enabled", False)
+GIT_PUSH_REPO         = _git_cfg.get("repo_path", str(Path(__file__).parent))
+GIT_PUSH_SUBDIR       = _git_cfg.get("output_subdir", "tests/fixtures/outputs")
+GIT_PUSH_BRANCH       = _git_cfg.get("branch", "main")
+
 # ── Writing agents config ────────────────────────────────────────────────────
 _writing_cfg           = _cfg.get("writing", {})
 WRITING_MAX_TOKENS     = int(_writing_cfg.get("max_tokens", 4000))
@@ -548,6 +555,7 @@ async def run_pipeline(
     persistence_cfg  = getattr(app.state, "persistence_config", None) or {}
     prefix           = persistence_cfg.get("prefix", "diagrams")
 
+    persisted_version = 0
     if object_store is not None:
         artifacts = {
             "diagram.drawio":          drawio_xml.encode("utf-8"),
@@ -556,12 +564,21 @@ async def run_pipeline(
             "render_manifest.json":    json.dumps(render_manifest).encode("utf-8"),
             "node_to_resource_map.json": json.dumps(node_to_resource_map).encode("utf-8"),
         }
-        await anyio.to_thread.run_sync(
+        latest = await anyio.to_thread.run_sync(
             functools.partial(
                 persist_artifacts,
                 object_store, prefix, client_id, diagram_name, artifacts,
             )
         )
+        if latest:
+            persisted_version = latest.get("version", 0)
+
+    if GIT_PUSH_ENABLED:
+        threading.Thread(
+            target=_push_diagram_to_git,
+            args=(drawio_xml, client_id, diagram_name, persisted_version),
+            daemon=True,
+        ).start()
 
     return {
         "status":                "ok",
@@ -588,6 +605,45 @@ async def run_pipeline(
         },
         "errors": [],
     }
+
+
+# ── Git push helper ─────────────────────────────────────────────────────────────
+def _push_diagram_to_git(drawio_xml: str, client_id: str, diagram_name: str, version: int) -> None:
+    """
+    Write the diagram XML to the git repo and push to the configured branch.
+    Runs in a daemon thread — failures are logged but never surface to the caller.
+
+    Output path: {GIT_PUSH_REPO}/{GIT_PUSH_SUBDIR}/{client_id}/{diagram_name}.drawio
+    Always overwrites the file so the latest output is always at a fixed path;
+    git history preserves every version.
+    """
+    import subprocess
+
+    try:
+        repo     = Path(GIT_PUSH_REPO)
+        out_dir  = repo / GIT_PUSH_SUBDIR / client_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / f"{diagram_name}.drawio"
+        out_file.write_text(drawio_xml, encoding="utf-8")
+
+        subprocess.run(
+            ["git", "-C", str(repo), "add", str(out_file.relative_to(repo))],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m",
+             f"diagram: {client_id}/{diagram_name} v{version}"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "push", "origin", GIT_PUSH_BRANCH],
+            check=True, capture_output=True,
+        )
+        logger.info(
+            "Git push ok: %s/%s v%d → %s", client_id, diagram_name, version, GIT_PUSH_BRANCH
+        )
+    except Exception as exc:
+        logger.warning("Git push failed (non-fatal): %s", exc)
 
 
 # ── Startup ─────────────────────────────────────────────────────────────────────

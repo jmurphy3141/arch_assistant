@@ -50,6 +50,13 @@ persistence:
   prefix: "agent3"
   store_inputs: false   # set true only after internal approval
 
+# Git push — auto-commit generated diagrams to the repo for easy review/comparison
+git_push:
+  enabled: false          # set true on the OCI server to activate
+  repo_path: "/home/opc/drawing-agent"
+  output_subdir: "tests/fixtures/outputs"
+  branch: "claude/webapp-fastapi-tests-sWH4S"
+
 # Writing agents (POV + JEP document generation)
 # These share the same OCI GenAI inference endpoint but use different
 # temperature/token settings for long-form document writing.
