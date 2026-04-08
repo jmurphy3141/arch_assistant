@@ -574,9 +574,8 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
 
     # Layout constants
     PAGE_MARGIN_L  = 50
-    VCN_X          = PAGE_MARGIN_L + EXT_W + EXT_GAP   # 164
-    VCN_RIGHT      = PAGE_W - PAGE_MARGIN_L             # 1604
-    VCN_TOTAL_W    = VCN_RIGHT - VCN_X                  # 1440
+    VCN_X          = 360   # aligns synthesised VCN box to x≈340 (matches reference v8 x=342)
+    VCN_TOTAL_W    = 900   # VCN width ≈ 940px after padding; subnets ≈ 860px (v8: 812px)
     VCN_Y_START    = PAGE_MARGIN_L + EXT_TOP_H          # 120
     VCN_TOP_PAD    = 60    # breathing room above first group row
 
