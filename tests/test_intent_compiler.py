@@ -740,14 +740,16 @@ class TestLlmEdges:
         assert ("pub_sub_box", "app_sub_box") not in pairs
         assert ("app_sub_box", "db_sub_box")  not in pairs
 
-    def test_structural_edges_always_present_with_llm_edges(self):
-        """on_prem→region_box and igw→region_box are structural and always injected."""
+    def test_structural_edges_only_when_llm_didnt_cover_them(self):
+        """Structural edges are injected only when LLM didn't already source those nodes.
+        on_prem is never a source in the LLM edges → structural edge injected.
+        internet_gateway IS a source in LLM edges (e2) → structural edge NOT injected."""
         items = self._items_with_edges()
         intent = validate_layout_intent(self._intent_data_with_edges(items), items)
         spec = compile_intent_to_flat_spec(intent, items)
         pairs = {(e["source"], e["target"]) for e in spec["edges"]}
-        assert ("on_prem",          "region_box") in pairs
-        assert ("internet_gateway", "region_box") in pairs
+        assert ("on_prem", "region_box") in pairs               # not covered by LLM → injected
+        assert ("internet_gateway", "region_box") not in pairs  # LLM sourced it → not injected
 
     def test_edges_with_unknown_source_silently_dropped(self):
         """An edge referencing a non-existent source ID must be dropped, not crash."""

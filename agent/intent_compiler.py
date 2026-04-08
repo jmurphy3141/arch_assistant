@@ -259,20 +259,6 @@ def compile_intent_to_flat_spec(
             })
             existing_pairs.add((src, tgt))
 
-    # Structural edges (always injected)
-    if "on_prem" in all_node_ids:
-        conn_label = _CONN_LABELS.get(hints.on_prem_connectivity, "Private Link")
-        _add("e_on_prem_region", "on_prem", "region_box", conn_label,
-             ex=1.0, ey=0.5, nx=0.0, ny=0.5)
-
-    igw_id = next(
-        (p.id for p in intent.placements if p.oci_type == "internet gateway"),
-        None,
-    )
-    if igw_id:
-        _add("e_igw_region", igw_id, "region_box", "Internet",
-             ex=0.5, ey=1.0, nx=0.5, ny=0.0)
-
     # Data-flow edges: use LLM-declared edges, or fall back to sequential chain
     if intent.edges:
         for e in intent.edges:
@@ -281,6 +267,20 @@ def compile_intent_to_flat_spec(
         sub_ids = [s["id"] for s in subnets]
         for i in range(len(sub_ids) - 1):
             _add(f"e_{sub_ids[i]}_{sub_ids[i+1]}", sub_ids[i], sub_ids[i+1], "")
+
+    # Structural edges — only injected when the LLM didn't already cover these nodes
+    # (avoids duplicate/redundant paths cluttering the diagram)
+    igw_id = next((p.id for p in intent.placements if p.oci_type == "internet gateway"), None)
+    llm_sources = {e.source for e in intent.edges} if intent.edges else set()
+
+    if "on_prem" in all_node_ids and "on_prem" not in llm_sources:
+        conn_label = _CONN_LABELS.get(hints.on_prem_connectivity, "Private Link")
+        _add("e_on_prem_region", "on_prem", "region_box", conn_label,
+             ex=1.0, ey=0.5, nx=0.0, ny=0.5)
+
+    if igw_id and igw_id not in llm_sources:
+        _add("e_igw_region", igw_id, "region_box", "Internet",
+             ex=0.5, ey=1.0, nx=0.5, ny=0.0)
 
     return {
         "deployment_type": deployment_type,

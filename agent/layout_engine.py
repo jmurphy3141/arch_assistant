@@ -556,20 +556,43 @@ def compute_positions(layout_spec: dict | str) -> tuple[list[PositionedNode], li
         left_y += ICON_SLOT + NODE_GAP_X
 
     if top_ext:
-        n_top = len(top_ext)
-        total_top_w = n_top * ICON_W + (n_top - 1) * NODE_GAP_X
-        top_start_x = REGION_X + (REGION_W - total_top_w) / 2
+        # Find the IGW position (if placed) so "internet" aligns above it
+        igw_node = next(
+            (n for n in all_nodes if n.oci_type in ("internet gateway",)),
+            None,
+        )
+        igw_x = igw_node.x if igw_node else REGION_X + (REGION_W - ICON_W) / 2
+
         top_y = PAGE_MARGIN
-        for j, ext in enumerate(top_ext):
+        # Separate "internet/public internet" from other top elements
+        internet_nodes = [e for e in top_ext if e.get("type", "").lower() in ("internet", "public internet")]
+        other_top      = [e for e in top_ext if e not in internet_nodes]
+
+        for ext in internet_nodes:
             all_nodes.append(PositionedNode(
                 id=ext["id"],
                 label=ext.get("label", ext["id"]),
                 oci_type=ext.get("type", ""),
-                x=top_start_x + j * (ICON_W + NODE_GAP_X),
+                x=igw_x,          # align with IGW
                 y=top_y,
                 w=ICON_W,
                 h=ICON_SLOT,
             ))
+
+        if other_top:
+            n_top = len(other_top)
+            total_top_w = n_top * ICON_W + (n_top - 1) * NODE_GAP_X
+            top_start_x = REGION_X + (REGION_W - total_top_w) / 2
+            for j, ext in enumerate(other_top):
+                all_nodes.append(PositionedNode(
+                    id=ext["id"],
+                    label=ext.get("label", ext["id"]),
+                    oci_type=ext.get("type", ""),
+                    x=top_start_x + j * (ICON_W + NODE_GAP_X),
+                    y=top_y,
+                    w=ICON_W,
+                    h=ICON_SLOT,
+                ))
 
     return all_nodes, all_boxes
 
