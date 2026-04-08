@@ -260,8 +260,14 @@ def compile_intent_to_flat_spec(
             existing_pairs.add((src, tgt))
 
     # Data-flow edges: use LLM-declared edges, or fall back to sequential chain
+    group_ids = {s["id"] for s in subnets}
     if intent.edges:
         for e in intent.edges:
+            # Drop edges where source/target is a subnet container box.
+            # draw.io routes these to the box perimeter, causing lines to cut
+            # through the subnet interior and cross service icons.
+            if e.source in group_ids or e.target in group_ids:
+                continue
             _add(e.id, e.source, e.target, e.label)
     else:
         sub_ids = [s["id"] for s in subnets]
