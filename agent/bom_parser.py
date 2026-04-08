@@ -519,14 +519,18 @@ def _build_edge_examples(items: list[ServiceItem], topology: str) -> str:
             edges.append({"id": f"e{ctr[0]}", "source": src, "target": tgt, "label": label})
 
     if topology == _TOPOLOGY_HPC_OKE:
-        _e("internet gateway", "bastion",          "SSH/22")
-        _e("bastion",          "container engine",  "kubectl")
-        _e("bastion",          "bare metal",         "SSH")
-        _e("container engine", "bare metal",         "RDMA")
-        _e("bare metal",       "file storage",       "NFS")
-        _e("nat gateway",      "internet",           "Outbound")
-        _e("service gateway",  "object storage",     "OCI Services")
-        _e("service gateway",  "logging",            "OCI Services")
+        _e("internet",         "internet gateway",   "Inbound")
+        _e("internet gateway", "waf",                "HTTPS/443")
+        _e("internet gateway", "bastion",            "SSH/22")
+        _e("on premises",      "drg",                "FastConnect")
+        _e("drg",              "bastion",            "SSH/22")
+        _e("bastion",          "container engine",   "kubectl")
+        _e("bastion",          "bare metal",          "SSH")
+        _e("container engine", "bare metal",          "RDMA")
+        _e("bare metal",       "file storage",        "NFS")
+        _e("nat gateway",      "internet",            "Outbound")
+        _e("service gateway",  "object storage",      "OCI Services")
+        _e("service gateway",  "logging",             "OCI Services")
 
     elif topology == _TOPOLOGY_DATA_PLATFORM:
         _e("internet gateway", "waf",            "HTTPS/443")
@@ -671,6 +675,10 @@ Example edges for this topology (adapt IDs to match INPUT SERVICES exactly):
 Only declare edges between IDs that exist in INPUT SERVICES.
 Use short protocol labels: "HTTPS/443", "SSH", "SQL/5432", "RDMA", "NFS", "Outbound", etc.
 
+CRITICAL: edge source and target must be service icon IDs from INPUT SERVICES only.
+NEVER use group/subnet IDs (e.g. bas_sub_box, cp_sub_box, worker_sub_box, storage_sub_box)
+as edge source or target — those are layout containers, not connectable services.
+
 ═══════════════════════════════════════════════════════
 OUTPUT FORMAT — LayoutIntent
 ═══════════════════════════════════════════════════════
@@ -703,7 +711,7 @@ RULES:
 1. Every id from INPUT SERVICES must appear exactly once in placements.
 2. Every group slug in placements must appear in the groups array.
 3. Use exact id values from INPUT SERVICES — do not rename them.
-4. edges must only reference ids that exist in INPUT SERVICES.
+4. edges must only reference ids that exist in INPUT SERVICES — NEVER group/subnet IDs like bas_sub_box.
 5. Output ONLY valid JSON. No markdown, no prose, no code fences."""
 
 
