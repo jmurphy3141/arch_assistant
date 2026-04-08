@@ -90,15 +90,24 @@ def _subnet_box_size(subnet_spec: dict) -> tuple[float, float]:
     return max(cw + 2 * SUB_PAD_X, MIN_SUBNET_W), ch + SUB_PAD_TOP + SUB_PAD_BOT
 
 
-def _place_subnet_nodes(subnet_spec: dict, box_x: float, box_y: float) -> list[PositionedNode]:
-    """Place nodes in a horizontal row centred inside the subnet box."""
+def _place_subnet_nodes(
+    subnet_spec: dict,
+    box_x: float,
+    box_y: float,
+    actual_box_w: float | None = None,
+) -> list[PositionedNode]:
+    """Place nodes in a horizontal row centred inside the subnet box.
+
+    actual_box_w: the rendered box width (may differ from natural content width
+    when the box is stretched to fill the full available column).
+    """
     nodes_spec = subnet_spec.get("nodes", [])
     if not nodes_spec:
         return []
 
     n = len(nodes_spec)
     total_w = n * ICON_W + (n - 1) * NODE_GAP_X
-    box_w, _ = _subnet_box_size(subnet_spec)
+    box_w = actual_box_w if actual_box_w is not None else _subnet_box_size(subnet_spec)[0]
     start_x = box_x + (box_w - total_w) / 2
     node_y = box_y + SUB_PAD_TOP
 
@@ -149,7 +158,7 @@ def _layout_subnets_vertical(
             w=sub_w,
             h=sub_h,
         ))
-        nodes.extend(_place_subnet_nodes(sub, sub_x, cur_y))
+        nodes.extend(_place_subnet_nodes(sub, sub_x, cur_y, actual_box_w=sub_w))
         cur_y += sub_h + SUB_GAP_Y
 
     total_h = cur_y - origin_y - SUB_GAP_Y if subnets else 0

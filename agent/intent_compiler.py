@@ -72,6 +72,26 @@ EXTERNAL_OCI_TYPES = frozenset([
     "workstation", "browser",
 ])
 
+# OCI platform services — rendered in the right column inside the region box
+# (outside subnet rows, accessible via Service Gateway)
+OCI_SERVICE_TYPES = frozenset([
+    "object storage", "object store",
+    "iam", "identity", "identity and access management",
+    "logging", "logging analytics",
+    "monitoring", "apm", "application performance monitoring",
+    "audit", "auditing",
+    "certificates", "certificate service",
+    "vault", "key management", "key vault",
+    "notifications", "events",
+    "service connector", "connector hub",
+    "streaming", "queue",
+    "functions", "api gateway",
+    "waf", "web application firewall",
+    "bastions",  # OCI Bastion Service (managed) vs bastion host (compute)
+    "dns", "traffic management",
+    "nosql", "search",
+])
+
 # Classic 3-tier fallback when the LLM declares no groups
 _GROUP_ORDER = ["pub_sub_box", "app_sub_box", "db_sub_box"]
 
@@ -103,6 +123,7 @@ def compile_intent_to_flat_spec(
     # ── Classify placements ────────────────────────────────────────────────────
     gateway_placements:  list[Placement] = []
     external_placements: list[Placement] = []
+    service_placements:  list[Placement] = []   # OCI platform services → right column
     subnet_placements:   list[Placement] = []
 
     for p in intent.placements:
@@ -111,6 +132,8 @@ def compile_intent_to_flat_spec(
             gateway_placements.append(p)
         elif p.layer == "external" or oci_low in EXTERNAL_OCI_TYPES:
             external_placements.append(p)
+        elif oci_low in OCI_SERVICE_TYPES:
+            service_placements.append(p)
         else:
             subnet_placements.append(p)
 
@@ -171,6 +194,13 @@ def compile_intent_to_flat_spec(
         label = item.label if item else p.id
         external.append({"id": p.id, "type": p.oci_type, "label": label})
 
+    # ── OCI platform services (right column inside region) ─────────────────────
+    oci_services: list[dict] = []
+    for p in service_placements:
+        item  = items_by_id.get(p.id)
+        label = item.label if item else p.id
+        oci_services.append({"id": p.id, "type": p.oci_type, "label": label})
+
     # ── Deployment type ────────────────────────────────────────────────────────
     n_ads     = max(1, hints.availability_domains_per_region)
     n_regions = max(1, hints.region_count)
@@ -206,7 +236,7 @@ def compile_intent_to_flat_spec(
         "regional_subnets":     [],
         "availability_domains": ads,
         "gateways":             gateways,
-        "oci_services":         [],
+        "oci_services":         oci_services,
     }
 
     # ── Edge ID set for deduplication ─────────────────────────────────────────
