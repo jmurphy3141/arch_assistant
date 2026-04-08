@@ -39,13 +39,14 @@ LABEL_H  = 20
 ICON_SLOT = ICON_H + LABEL_H + 8   # 76px vertical per icon including label
 NODE_GAP_X = 14
 
-SUB_PAD_X = 14; SUB_PAD_TOP = 32; SUB_PAD_BOT = 10; SUB_GAP_Y = 12
+SUB_PAD_X = 14; SUB_PAD_TOP = 32; SUB_PAD_BOT = 10; SUB_GAP_Y = 24  # 24px gap for cleaner edge routing
 MIN_SUBNET_W = 200   # minimum subnet box width — prevents single-icon subnets from being too narrow
 FD_PAD_X  = 12; FD_PAD_TOP  = 32; FD_PAD_BOT  = 12; FD_GAP_X  = 12
 AD_PAD_X  = 14; AD_PAD_TOP  = 36; AD_PAD_BOT  = 14; AD_GAP_X  = 20
-REG_PAD_X = 20; REG_PAD_TOP = 40; REG_PAD_BOT = 20; REG_SUB_GAP_Y = 14
+REG_PAD_X = 70; REG_PAD_TOP = 40; REG_PAD_BOT = 30; REG_SUB_GAP_Y = 14  # wide lateral margins for edge routing
 SVC_COL_W   = 80   # right-margin column reserved for OCI platform services inside region
-SVC_COL_GAP = 16   # gap between AD right edge and services column
+SVC_COL_GAP = 20   # gap between AD right edge and services column
+GW_TOP_GAP  = 16   # gap between gateway row and AD box top
 MULTI_REGION_GAP = 30
 
 # Single-region position constants
@@ -424,41 +425,37 @@ def _layout_region(
         h=region_h,
     )
 
-    # 3. Gateway nodes — straddling the AD right edge (NAT/SGW) or region edges (IGW/DRG)
+    # 3. Gateway nodes — all at the TOP of the region, spread left-to-right
+    # Order: DRG (left) → IGW (center-left) → NAT (center-right) → SGW (right)
+    # This gives a clean "data enters at top" flow with edges running straight down.
+    _GW_ORDER = {
+        "drg": 0, "dynamic routing gateway": 0,
+        "internet gateway": 1,
+        "nat gateway": 2,
+        "service gateway": 3,
+    }
+    sorted_gws = sorted(gateways, key=lambda g: _GW_ORDER.get(g.get("type", "").lower(), 99))
+    n_gw = len(sorted_gws)
     gateway_nodes: list[PositionedNode] = []
-    nat_y = None
 
-    for gw in gateways:
-        gtype = gw.get("type", "").lower()
-        pos   = gw.get("position", "").lower()
+    if n_gw > 0:
+        # Spread gateways evenly across the AD inner width at the top of region
+        gw_span  = inner_w                         # spread across AD column width
+        gw_gap   = (gw_span - n_gw * ICON_W) / max(n_gw - 1, 1) if n_gw > 1 else 0
+        gw_start = inner_x                          # align with AD left edge
+        gy       = origin_y - ICON_H / 2           # straddle the top edge of region
 
-        if gtype == "internet gateway" or pos == "top":
-            gx = origin_x + region_w / 2 - ICON_W / 2
-            gy = origin_y - ICON_H / 2
-        elif gtype == "drg" or pos == "left":
-            gx = origin_x - ICON_W / 2
-            gy = origin_y + region_h * 0.4
-        elif gtype == "nat gateway" or (pos == "right" and nat_y is None):
-            gx = ad_right - ICON_W / 2   # straddle the AD right edge
-            gy = origin_y + region_h * 0.3
-            nat_y = gy
-        elif pos == "right" or gtype == "service gateway":
-            gx = ad_right - ICON_W / 2
-            ref_y = nat_y if nat_y is not None else origin_y + region_h * 0.3
-            gy = ref_y + ICON_SLOT + 20
-        else:
-            gx = origin_x + region_w / 2 - ICON_W / 2
-            gy = origin_y - ICON_H / 2
-
-        gateway_nodes.append(PositionedNode(
-            id=gw["id"],
-            label=gw.get("label", gw["id"]),
-            oci_type=gtype,
-            x=gx,
-            y=gy,
-            w=ICON_W,
-            h=ICON_SLOT,
-        ))
+        for i, gw in enumerate(sorted_gws):
+            gx = gw_start + i * (ICON_W + gw_gap)
+            gateway_nodes.append(PositionedNode(
+                id=gw["id"],
+                label=gw.get("label", gw["id"]),
+                oci_type=gw.get("type", "").lower(),
+                x=gx,
+                y=gy,
+                w=ICON_W,
+                h=ICON_SLOT,
+            ))
 
     # 4. OCI services — right-margin column inside the region box
     svc_x = origin_x + region_w - REG_PAD_X - ICON_W
