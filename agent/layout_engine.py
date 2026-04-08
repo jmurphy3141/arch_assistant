@@ -241,7 +241,12 @@ def _layout_ad_single(
     available_w: float,
 ) -> tuple[PositionedBox, list[PositionedBox], list[PositionedNode]]:
     """
-    Layout an AD for single_ad mode: FD boxes side by side, then AD-level subnets below.
+    Layout an AD for single_ad mode.
+
+    FD boxes are tall vertical columns (matching reference v8 style).
+    AD-level subnets are full-width horizontal rows that visually cross all FD
+    columns — they start just below the FD label strip and are drawn on top of
+    the FD boxes in the flat XML (later in document order = on top visually).
     """
     fault_domains = ad_spec.get("fault_domains", [])
     ad_subnets    = ad_spec.get("subnets", [])
@@ -249,32 +254,46 @@ def _layout_ad_single(
     all_boxes: list[PositionedBox] = []
     all_nodes: list[PositionedNode] = []
 
-    cur_y = origin_y + AD_PAD_TOP
     inner_x = origin_x + AD_PAD_X
     inner_w = available_w - 2 * AD_PAD_X
+    fd_origin_y = origin_y + AD_PAD_TOP
 
+    # Subnets start just below the FD label strip (FD_PAD_TOP = label area height)
+    sub_start_y = fd_origin_y + (FD_PAD_TOP if fault_domains else 0)
+
+    # Compute subnet positions first — needed to calculate FD column height
+    sub_boxes: list[PositionedBox] = []
+    sub_nodes: list[PositionedNode] = []
+    subs_h = 0
+    if ad_subnets:
+        sub_boxes, sub_nodes, subs_h = _layout_subnets_vertical(
+            ad_subnets, inner_x, sub_start_y, inner_w
+        )
+
+    # FD boxes: tall vertical columns sized to cover all subnets
     if fault_domains:
         n_fds = len(fault_domains)
         fd_w = (inner_w - (n_fds - 1) * FD_GAP_X) / n_fds
-        max_fd_h = 0
+        fd_h = FD_PAD_TOP + (subs_h if subs_h > 0 else FD_PAD_BOT * 2)
 
         for i, fd in enumerate(fault_domains):
             fd_x = inner_x + i * (fd_w + FD_GAP_X)
-            fd_box, sub_boxes, sub_nodes = _layout_fd(fd, fd_x, cur_y, fd_w)
+            fd_box = PositionedBox(
+                id=fd["id"],
+                label=fd.get("label", fd["id"]),
+                box_type="_fd_box",
+                x=fd_x,
+                y=fd_origin_y,
+                w=fd_w,
+                h=fd_h,
+            )
             all_boxes.append(fd_box)
-            all_boxes.extend(sub_boxes)
-            all_nodes.extend(sub_nodes)
-            max_fd_h = max(max_fd_h, fd_box.h)
 
-        cur_y += max_fd_h + SUB_GAP_Y
+    # Subnets drawn after FD boxes so they render on top in flat XML
+    all_boxes.extend(sub_boxes)
+    all_nodes.extend(sub_nodes)
 
-    # AD-level subnets (e.g. DB tier spanning both FDs)
-    if ad_subnets:
-        sub_boxes, sub_nodes, subs_h = _layout_subnets_vertical(ad_subnets, inner_x, cur_y, inner_w)
-        all_boxes.extend(sub_boxes)
-        all_nodes.extend(sub_nodes)
-        cur_y += subs_h + SUB_GAP_Y
-
+    cur_y = sub_start_y + subs_h + SUB_GAP_Y
     ad_h = cur_y - origin_y + AD_PAD_BOT
     ad_box = PositionedBox(
         id=ad_spec["id"],
