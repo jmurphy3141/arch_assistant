@@ -85,9 +85,7 @@ OCI_SERVICE_TYPES = frozenset([
     "notifications", "events",
     "service connector", "connector hub",
     "streaming", "queue",
-    "functions", "api gateway",
-    "waf", "web application firewall",
-    "bastions",  # OCI Bastion Service (managed) vs bastion host (compute)
+    "api gateway",
     "dns", "traffic management",
     "nosql", "search",
 ])

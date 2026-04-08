@@ -44,6 +44,8 @@ MIN_SUBNET_W = 200   # minimum subnet box width — prevents single-icon subnets
 FD_PAD_X  = 12; FD_PAD_TOP  = 32; FD_PAD_BOT  = 12; FD_GAP_X  = 12
 AD_PAD_X  = 14; AD_PAD_TOP  = 36; AD_PAD_BOT  = 14; AD_GAP_X  = 20
 REG_PAD_X = 20; REG_PAD_TOP = 40; REG_PAD_BOT = 20; REG_SUB_GAP_Y = 14
+SVC_COL_W   = 80   # right-margin column reserved for OCI platform services inside region
+SVC_COL_GAP = 16   # gap between AD right edge and services column
 MULTI_REGION_GAP = 30
 
 # Single-region position constants
@@ -370,9 +372,16 @@ def _layout_region(
     all_boxes: list[PositionedBox] = []
     all_nodes: list[PositionedNode] = []
 
-    inner_x = origin_x + REG_PAD_X
-    inner_w = region_w - 2 * REG_PAD_X
-    cur_y   = origin_y + REG_PAD_TOP
+    # Reserve right-margin column for OCI platform services inside the region
+    has_services = bool(oci_services)
+    svc_reserve  = (SVC_COL_W + SVC_COL_GAP) if has_services else 0
+
+    inner_x  = origin_x + REG_PAD_X
+    inner_w  = region_w - 2 * REG_PAD_X - svc_reserve   # narrowed when services present
+    cur_y    = origin_y + REG_PAD_TOP
+
+    # AD right edge (used for gateway straddling and services column position)
+    ad_right = inner_x + inner_w
 
     # 1. Regional subnets — side by side horizontally
     if regional_subnets:
@@ -415,7 +424,7 @@ def _layout_region(
         h=region_h,
     )
 
-    # 3. Gateway nodes — positioned relative to region box edges
+    # 3. Gateway nodes — straddling the AD right edge (NAT/SGW) or region edges (IGW/DRG)
     gateway_nodes: list[PositionedNode] = []
     nat_y = None
 
@@ -430,12 +439,11 @@ def _layout_region(
             gx = origin_x - ICON_W / 2
             gy = origin_y + region_h * 0.4
         elif gtype == "nat gateway" or (pos == "right" and nat_y is None):
-            gx = origin_x + region_w - ICON_W / 2
+            gx = ad_right - ICON_W / 2   # straddle the AD right edge
             gy = origin_y + region_h * 0.3
             nat_y = gy
         elif pos == "right" or gtype == "service gateway":
-            # Service GW below NAT
-            gx = origin_x + region_w - ICON_W / 2
+            gx = ad_right - ICON_W / 2
             ref_y = nat_y if nat_y is not None else origin_y + region_h * 0.3
             gy = ref_y + ICON_SLOT + 20
         else:
@@ -452,8 +460,8 @@ def _layout_region(
             h=ICON_SLOT,
         ))
 
-    # 4. OCI services — column to the right
-    svc_x = origin_x + region_w + EXT_GAP + 20
+    # 4. OCI services — right-margin column inside the region box
+    svc_x = origin_x + region_w - REG_PAD_X - ICON_W
     svc_y = origin_y + REG_PAD_TOP
     for svc in oci_services:
         all_nodes.append(PositionedNode(
