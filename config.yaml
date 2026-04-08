@@ -52,7 +52,7 @@ persistence:
 
 # Git push — auto-commit generated diagrams to the repo for easy review/comparison
 git_push:
-  enabled: false          # set true on the OCI server to activate
+  enabled: true           # auto-push generated diagrams to git for review
   repo_path: "/home/opc/drawing-agent"
   output_subdir: "tests/fixtures/outputs"
   branch: "claude/webapp-fastapi-tests-sWH4S"
