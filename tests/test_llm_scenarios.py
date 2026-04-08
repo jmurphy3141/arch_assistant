@@ -320,19 +320,19 @@ class TestScenario1FullInfo:
             assert 0 <= n["x"] <= PAGE_W, f"Node {n['id']} x={n['x']} out of bounds"
             assert 0 <= n["y"] <= PAGE_H, f"Node {n['id']} y={n['y']} out of bounds"
 
-    def test_subnet_widths_not_stretched(self):
-        """Single-node subnets must not stretch to fill the full column."""
-        from agent.layout_engine import MIN_SUBNET_W, REGION_W
-        for sub in _subnet_boxes(self.d):
-            node_count = sum(
-                1 for n in self.d["nodes"]
-                if sub["x"] <= n["x"] <= sub["x"] + sub["w"]
-                and sub["y"] <= n["y"] <= sub["y"] + sub["h"]
+    def test_subnet_widths_fill_available(self):
+        """AD-level subnets (vertically stacked) must fill the full available width.
+        Regional subnets placed horizontally side-by-side may be narrower."""
+        from agent.layout_engine import REGION_W
+        subs = _subnet_boxes(self.d)
+        # Subnets sharing a y-value are in a horizontal row; skip those
+        from collections import Counter
+        y_counts = Counter(round(s["y"]) for s in subs)
+        vertical_subs = [s for s in subs if y_counts[round(s["y"])] == 1]
+        for sub in vertical_subs:
+            assert sub["w"] >= REGION_W * 0.3, (
+                f"Subnet {sub['id']} is too narrow: w={sub['w']:.0f} (region_w={REGION_W})"
             )
-            if node_count <= 2:
-                assert sub["w"] <= REGION_W * 0.4, (
-                    f"Subnet {sub['id']} with {node_count} node(s) is too wide: w={sub['w']:.0f}"
-                )
 
     def test_xml_is_valid_drawio(self):
         assert "mxGraphModel" in self.xml
@@ -381,18 +381,19 @@ class TestScenario2PartialInfoWithAssumptions:
         assert "pub_sub_lb"  in igw_targets
         assert "priv_sub_lb" in drg_targets
 
-    def test_subnet_widths_not_stretched(self):
-        from agent.layout_engine import MIN_SUBNET_W, REGION_W
-        for sub in _subnet_boxes(self.d):
-            node_count = sum(
-                1 for n in self.d["nodes"]
-                if sub["x"] <= n["x"] <= sub["x"] + sub["w"]
-                and sub["y"] <= n["y"] <= sub["y"] + sub["h"]
+    def test_subnet_widths_fill_available(self):
+        """AD-level subnets (vertically stacked) must fill the full available width.
+        Regional subnets placed horizontally side-by-side may be narrower."""
+        from agent.layout_engine import REGION_W
+        subs = _subnet_boxes(self.d)
+        # Subnets sharing a y-value are in a horizontal row; skip those
+        from collections import Counter
+        y_counts = Counter(round(s["y"]) for s in subs)
+        vertical_subs = [s for s in subs if y_counts[round(s["y"])] == 1]
+        for sub in vertical_subs:
+            assert sub["w"] >= REGION_W * 0.3, (
+                f"Subnet {sub['id']} is too narrow: w={sub['w']:.0f} (region_w={REGION_W})"
             )
-            if node_count <= 1:
-                assert sub["w"] <= REGION_W * 0.4, (
-                    f"Single-node subnet {sub['id']} too wide: w={sub['w']:.0f}"
-                )
 
     def test_xml_valid(self):
         assert "mxGraphModel" in self.xml

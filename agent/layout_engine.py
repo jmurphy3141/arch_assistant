@@ -123,9 +123,9 @@ def _layout_subnets_vertical(
     available_w: float,
 ) -> tuple[list[PositionedBox], list[PositionedNode], float]:
     """
-    Stack subnet boxes vertically. Each box uses its natural (content-based) width,
-    centred within available_w. Prevents single-icon subnets from stretching to fill
-    the full column.
+    Stack subnet boxes vertically. Each box fills the full available_w (matching
+    the OCI reference layout where subnets are full-width rows). Icons are centred
+    inside each subnet box.
     Returns (boxes, nodes, total_height_used).
     """
     boxes: list[PositionedBox] = []
@@ -133,10 +133,10 @@ def _layout_subnets_vertical(
     cur_y = origin_y
 
     for sub in subnets:
-        sub_w, sub_h = _subnet_box_size(sub)
-        # Centre within the available column; clamp so it never exceeds available_w
-        sub_w = min(sub_w, available_w)
-        sub_x = origin_x + (available_w - sub_w) / 2
+        _, sub_h = _subnet_box_size(sub)
+        # Subnets fill the full available width (OCI reference style)
+        sub_w = available_w
+        sub_x = origin_x
 
         tier = sub.get("tier", "app")
         boxes.append(PositionedBox(
