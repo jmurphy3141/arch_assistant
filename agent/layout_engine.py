@@ -44,9 +44,11 @@ MIN_SUBNET_W = 200   # minimum subnet box width — prevents single-icon subnets
 FD_PAD_X  = 12; FD_PAD_TOP  = 32; FD_PAD_BOT  = 12; FD_GAP_X  = 12
 AD_PAD_X  = 14; AD_PAD_TOP  = 36; AD_PAD_BOT  = 14; AD_GAP_X  = 20
 REG_PAD_X = 70; REG_PAD_TOP = 40; REG_PAD_BOT = 30; REG_SUB_GAP_Y = 14  # wide lateral margins for edge routing
-SVC_COL_W   = 80   # right-margin column reserved for OCI platform services inside region
-SVC_COL_GAP = 20   # gap between AD right edge and services column
-GW_TOP_GAP  = 16   # gap between gateway row and AD box top
+VCN_PAD_X   = 14   # VCN box inner left/right padding
+VCN_PAD_TOP = 32   # VCN box label strip height
+VCN_PAD_BOT = 14   # VCN box bottom padding
+SVC_COL_W      = 80   # services column width (right of VCN, inside region)
+SVC_COL_MARGIN = 40   # gap between VCN right edge and services column (for flow lines)
 MULTI_REGION_GAP = 30
 
 # Single-region position constants
@@ -362,8 +364,17 @@ def _layout_region(
 ) -> tuple[PositionedBox, list[PositionedBox], list[PositionedNode], list[PositionedNode]]:
     """
     Layout a region box with all its contents.
+
+    Structure (left-to-right inside region):
+      ┌─ Region box ──────────────────────────────────────────────────────┐
+      │  [gateways straddle VCN top edge — REG_PAD_TOP gives clearance]  │
+      │  ┌─ VCN box ─────────────────────────┐  [SVC_COL_MARGIN gap]    │
+      │  │  regional subnets (horizontal)    │  [OCI services column]   │
+      │  │  AD boxes (side by side)          │  (inside region,         │
+      │  └───────────────────────────────────┘   outside VCN)           │
+      └───────────────────────────────────────────────────────────────────┘
+
     Returns (region_box, all_sub_boxes, all_icon_nodes, gateway_nodes).
-    Gateway nodes are positioned relative to region box edges.
     """
     regional_subnets = region_spec.get("regional_subnets", [])
     ads              = region_spec.get("availability_domains", [])
@@ -373,34 +384,41 @@ def _layout_region(
     all_boxes: list[PositionedBox] = []
     all_nodes: list[PositionedNode] = []
 
-    # Reserve right-margin column for OCI platform services inside the region
     has_services = bool(oci_services)
-    svc_reserve  = (SVC_COL_W + SVC_COL_GAP) if has_services else 0
 
-    inner_x  = origin_x + REG_PAD_X
-    inner_w  = region_w - 2 * REG_PAD_X - svc_reserve   # narrowed when services present
-    cur_y    = origin_y + REG_PAD_TOP
+    # ── VCN box geometry ──────────────────────────────────────────────────────
+    # VCN left edge sits REG_PAD_X inside the region.
+    # VCN top edge sits REG_PAD_TOP below the region top — gateways straddle this Y.
+    vcn_x = origin_x + REG_PAD_X
+    vcn_y = origin_y + REG_PAD_TOP
 
-    # AD right edge (used for gateway straddling and services column position)
-    ad_right = inner_x + inner_w
+    # Shrink VCN width to leave a services column + routing margin on the right
+    svc_reserve = (SVC_COL_MARGIN + SVC_COL_W) if has_services else 0
+    vcn_w = region_w - 2 * REG_PAD_X - svc_reserve
 
-    # 1. Regional subnets — side by side horizontally
+    vcn_inner_x = vcn_x + VCN_PAD_X
+    vcn_inner_y = vcn_y + VCN_PAD_TOP
+    vcn_inner_w = vcn_w - 2 * VCN_PAD_X
+
+    cur_y = vcn_inner_y
+
+    # 1. Regional subnets — side by side horizontally inside VCN
     if regional_subnets:
         rsub_boxes, rsub_nodes, rsub_h = _layout_subnets_horizontal(
-            regional_subnets, inner_x, cur_y, inner_w
+            regional_subnets, vcn_inner_x, cur_y, vcn_inner_w
         )
         all_boxes.extend(rsub_boxes)
         all_nodes.extend(rsub_nodes)
         cur_y += rsub_h + REG_SUB_GAP_Y
 
-    # 2. AD boxes — side by side horizontally
+    # 2. AD boxes — side by side horizontally inside VCN
     if ads:
         n_ads = len(ads)
-        ad_w = (inner_w - (n_ads - 1) * AD_GAP_X) / n_ads
+        ad_w = (vcn_inner_w - (n_ads - 1) * AD_GAP_X) / n_ads
         max_ad_h = 0
 
         for i, ad in enumerate(ads):
-            ad_x = inner_x + i * (ad_w + AD_GAP_X)
+            ad_x = vcn_inner_x + i * (ad_w + AD_GAP_X)
             if deployment_type == "single_ad":
                 ad_box, sub_boxes, sub_nodes = _layout_ad_single(ad, ad_x, cur_y, ad_w)
             else:
@@ -413,7 +431,24 @@ def _layout_region(
 
         cur_y += max_ad_h + REG_SUB_GAP_Y
 
-    region_h = cur_y - origin_y + REG_PAD_BOT
+    # VCN height wraps its content
+    content_h = cur_y - vcn_inner_y
+    vcn_h = VCN_PAD_TOP + max(content_h - REG_SUB_GAP_Y, 0) + VCN_PAD_BOT
+
+    vcn_box = PositionedBox(
+        id=region_spec["id"] + "_vcn",
+        label="VCN",
+        box_type="_vcn_box",
+        x=vcn_x,
+        y=vcn_y,
+        w=vcn_w,
+        h=vcn_h,
+    )
+    # Insert before AD/subnet boxes so it renders behind them
+    all_boxes.insert(0, vcn_box)
+
+    # Region height: region top → VCN bottom + bottom padding
+    region_h = (vcn_y + vcn_h) - origin_y + REG_PAD_BOT
 
     region_box = PositionedBox(
         id=region_spec["id"],
@@ -425,9 +460,8 @@ def _layout_region(
         h=region_h,
     )
 
-    # 3. Gateway nodes — all at the TOP of the region, spread left-to-right
-    # Order: DRG (left) → IGW (center-left) → NAT (center-right) → SGW (right)
-    # This gives a clean "data enters at top" flow with edges running straight down.
+    # 3. Gateway nodes — straddle the VCN top edge, spread across VCN width
+    # Order: DRG (left) → IGW → NAT → SGW (right)
     _GW_ORDER = {
         "drg": 0, "dynamic routing gateway": 0,
         "internet gateway": 1,
@@ -439,11 +473,9 @@ def _layout_region(
     gateway_nodes: list[PositionedNode] = []
 
     if n_gw > 0:
-        # Spread gateways evenly across the AD inner width at the top of region
-        gw_span  = inner_w                         # spread across AD column width
-        gw_gap   = (gw_span - n_gw * ICON_W) / max(n_gw - 1, 1) if n_gw > 1 else 0
-        gw_start = inner_x                          # align with AD left edge
-        gy       = origin_y - ICON_H / 2           # straddle the top edge of region
+        gw_gap   = (vcn_w - n_gw * ICON_W) / max(n_gw - 1, 1) if n_gw > 1 else 0
+        gw_start = vcn_x
+        gy       = vcn_y - ICON_H // 2   # straddle the VCN top edge
 
         for i, gw in enumerate(sorted_gws):
             gx = gw_start + i * (ICON_W + gw_gap)
@@ -457,9 +489,9 @@ def _layout_region(
                 h=ICON_SLOT,
             ))
 
-    # 4. OCI services — right-margin column inside the region box
-    svc_x = origin_x + region_w - REG_PAD_X - ICON_W
-    svc_y = origin_y + REG_PAD_TOP
+    # 4. OCI services — right of VCN, inside region, SVC_COL_MARGIN gap for flow lines
+    svc_x = vcn_x + vcn_w + SVC_COL_MARGIN
+    svc_y = vcn_y + VCN_PAD_TOP   # align with VCN content top
     for svc in oci_services:
         all_nodes.append(PositionedNode(
             id=svc["id"],

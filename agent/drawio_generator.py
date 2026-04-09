@@ -47,6 +47,7 @@ PAGE_H = 1169
 GROUP_STYLES = {
     # New box_type keys
     "_region_box":     "whiteSpace=wrap;html=1;strokeWidth=2;dashed=0;rounded=1;arcSize=2;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=#F5F4F2;fontColor=#312D2A;strokeColor=#312D2A;fontSize=13;fontStyle=1;spacingLeft=8;spacingTop=5;",
+    "_vcn_box":        "whiteSpace=wrap;html=1;strokeWidth=2;dashed=0;rounded=1;arcSize=2;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=#FFFFFF;fontColor=#AE562C;strokeColor=#AE562C;fontSize=12;fontStyle=1;spacingLeft=8;spacingTop=5;",
     "_ad_box":         "whiteSpace=wrap;html=1;strokeWidth=1;dashed=0;rounded=1;arcSize=3;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=#EAEAE8;fontColor=#312D2A;strokeColor=#312D2A;fontSize=11;fontStyle=1;spacingLeft=8;spacingTop=5;",
     "_fd_box":         "whiteSpace=wrap;html=1;strokeWidth=1;dashed=1;rounded=1;arcSize=3;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=none;fontColor=#312D2A;strokeColor=#5F5F5C;fontSize=10;fontStyle=1;spacingLeft=8;spacingTop=5;",
     "_subnet_ingress": "whiteSpace=wrap;html=1;strokeWidth=1;dashed=0;rounded=1;arcSize=5;align=left;fontFamily=Oracle Sans;verticalAlign=top;fillColor=#FFFFFF;fontColor=#AE562C;strokeColor=#AE562C;fontSize=10;fontStyle=1;spacingLeft=8;spacingTop=5;",
@@ -73,7 +74,7 @@ EDGE_STYLE = (
 )
 
 # Draw order for box types (lower index = drawn first = furthest back)
-BOX_TYPE_ORDER = ["_region_box", "_ad_box", "_fd_box", "_subnet_box"]
+BOX_TYPE_ORDER = ["_region_box", "_vcn_box", "_ad_box", "_fd_box", "_subnet_box"]
 
 
 def _uid() -> str:
