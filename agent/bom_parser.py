@@ -176,6 +176,10 @@ def parse_bom(xlsx_path: str | Path, context: str = "") -> list[ServiceItem]:
                     oci_type, layer = t, l
                     break
             if not oci_type:
+                logger.warning(
+                    "parse_bom: unrecognized SKU=%r desc=%r — row skipped (add to SKU_MAP or DESC_MAP)",
+                    sku, desc,
+                )
                 continue
 
         # Deduplicate by oci_type (one icon per service type)
