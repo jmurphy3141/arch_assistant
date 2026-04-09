@@ -1666,6 +1666,26 @@ async def _a2a_upload_bom(task: A2ATask) -> dict:
                                 request_id, input_hash)
     if result["status"] == "ok":
         IDEMPOTENCY_CACHE[cache_key] = result
+        # Mirror diagram back alongside the source BOM so it's easy to find.
+        # BOM path:    agent3/maurtis/oci_bom_priced.xlsx
+        # Output path: agent3/maurtis/diagram.drawio
+        object_store = getattr(app.state, "object_store", None)
+        if object_store is not None:
+            bom_folder = str(Path(ref.object).parent)
+            bom_output_key = f"{bom_folder}/diagram.drawio"
+            try:
+                await anyio.to_thread.run_sync(
+                    functools.partial(
+                        object_store.put,
+                        bom_output_key,
+                        result["drawio_xml"].encode("utf-8"),
+                        "text/xml",
+                    )
+                )
+                logger.info("upload_bom: mirrored diagram to %s", bom_output_key)
+                result["bom_folder_output"] = bom_output_key
+            except Exception as mirror_exc:
+                logger.warning("upload_bom: mirror to %s failed: %s", bom_output_key, mirror_exc)
     return result
 
 
