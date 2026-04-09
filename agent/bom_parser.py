@@ -519,37 +519,26 @@ def _build_edge_examples(items: list[ServiceItem], topology: str) -> str:
             edges.append({"id": f"e{ctr[0]}", "source": src, "target": tgt, "label": label})
 
     if topology == _TOPOLOGY_HPC_OKE:
-        _e("internet",         "internet gateway",   "Inbound")
-        _e("internet gateway", "waf",                "HTTPS/443")
-        _e("internet gateway", "bastion",            "SSH/22")
-        _e("on premises",      "drg",                "FastConnect")
-        _e("drg",              "bastion",            "SSH/22")
-        _e("bastion",          "container engine",   "kubectl")
-        _e("bastion",          "bare metal",          "SSH")
-        _e("container engine", "bare metal",          "RDMA")
-        _e("bare metal",       "file storage",        "NFS")
-        _e("nat gateway",      "internet",            "Outbound")
-        _e("service gateway",  "object storage",      "OCI Services")
-        _e("service gateway",  "logging",             "OCI Services")
+        # Cross-boundary entry (non-obvious: requires explicit FastConnect link)
+        _e("on premises",      "drg",           "FastConnect")
+        # Special RDMA fabric between compute nodes (non-obvious high-speed network)
+        _e("container engine", "bare metal",    "RDMA")
+        # Storage mount (non-obvious: NFS over dedicated storage network)
+        _e("bare metal",       "file storage",  "NFS")
 
     elif topology == _TOPOLOGY_DATA_PLATFORM:
-        _e("internet gateway", "waf",            "HTTPS/443")
-        _e("waf",              "api gateway",    "HTTPS/443")
+        # Application data-plane paths (non-obvious service-to-service calls)
         _e("api gateway",      "functions",      "Invoke")
         _e("functions",        "queue",          "Enqueue")
         _e("functions",        "database",       "SQL")
         _e("functions",        "object storage", "PUT/GET")
-        _e("nat gateway",      "internet",       "Outbound")
 
     else:  # STANDARD_3TIER
-        _e("internet gateway", "waf",            "HTTPS/443")
-        _e("waf",              "load balancer",  "HTTPS/443")
-        _e("load balancer",    "compute",        "HTTP")
-        _e("compute",          "database",       "SQL/5432")
-        _e("bastion",          "compute",        "SSH")
-        _e("on premises",      "drg",            "FastConnect")
-        _e("nat gateway",      "internet",       "Outbound")
-        _e("service gateway",  "object storage", "OCI Services")
+        # Cross-boundary entry
+        _e("on premises",   "drg",          "FastConnect")
+        # Application data path (non-obvious tier-to-tier calls)
+        _e("load balancer", "compute",      "HTTP")
+        _e("compute",       "database",     "SQL/5432")
 
     return _json.dumps(edges, indent=4)
 
@@ -651,23 +640,28 @@ dr_enabled:                     true only if "DR" or "disaster recovery" stated
 on_prem_connectivity:           "fastconnect" if DRG in BOM; "vpn" if VPN; "none" if neither
 
 ═══════════════════════════════════════════════════════
-STEP 3 — DECLARE DATA-FLOW EDGES (this is your key contribution)
+STEP 3 — DECLARE DATA-FLOW EDGES (minimal and purposeful)
 ═══════════════════════════════════════════════════════
-Declare the connections between services using their exact IDs from INPUT SERVICES.
+OCI diagrams use ELEMENT POSITION to convey most connectivity.
+Gateways straddling VCN edges and services grouped in subnets already
+tell the reader how traffic flows — no line needed.
 
-Edge rules:
-  - internet → internet_gateway                     (always, if both exist)
-  - internet_gateway → first ingress service         (WAF, LB, or Bastion)
-  - waf → load_balancer (if both present)
-  - load_balancer / api_gateway → compute tier       (traffic path)
-  - bastion → compute / bare_metal                   (SSH management)
-  - compute → database                               (data access)
-  - on_prem → drg                                    (FastConnect / VPN)
-  - nat_gateway → internet                           (outbound)
-  - service_gateway → object_storage / logging       (OCI managed services path)
-  HPC-specific:
-  - container_engine → bare_metal                    (RDMA orchestration)
-  - bare_metal → file_storage                        (NFS shared storage)
+ONLY declare an explicit edge when the connection is NON-OBVIOUS from layout:
+  ✓ Special network fabrics:    bare_metal ↔ bare_metal  (RDMA / RoCE)
+  ✓ Storage mounts:             compute/bare_metal → file_storage  (NFS)
+  ✓ Cross-boundary entry point: on_prem → drg  (FastConnect / VPN)
+  ✓ Application data path:      compute → database  (SQL)
+  ✓ Key API/service calls:      waf → load_balancer, functions → database
+
+NEVER declare these — they are implied by gateway placement and need no line:
+  ✗ internet → internet_gateway        (implied: IGW straddles VCN top)
+  ✗ internet_gateway → waf/lb/bastion  (implied: IGW on VCN top edge)
+  ✗ nat_gateway → internet             (implied: NAT on VCN top/right)
+  ✗ service_gateway → any service      (implied: SGW on VCN right edge)
+  ✗ drg → bastion / compute            (implied: DRG on VCN left edge)
+  ✗ bastion → compute / bare_metal     (implied: co-located in same subnet)
+
+Target: 2–5 edges. If the topology has fewer non-obvious connections, output [].
 
 Example edges for this topology (adapt IDs to match INPUT SERVICES exactly):
 {edge_examples}

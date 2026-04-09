@@ -294,26 +294,22 @@ class TestScenario1FullInfo:
         assert "db_sub_ad1"  in subnet_ids
         assert "db_sub_ad2"  in subnet_ids
 
-    def test_igw_to_public_ingress_edge(self):
-        pairs = _edge_pairs(self.d)
-        # auto-injected edge: IGW → public ingress subnet
-        igw_targets = {tgt for (src, tgt) in pairs if src == "igw"}
-        assert "pub_sub_lb" in igw_targets, f"IGW not connected to pub_sub_lb; targets={igw_targets}"
+    def test_igw_present_as_node(self):
+        """IGW communicates via position (VCN top edge) — no explicit edge required."""
+        node_ids = {n["id"] for n in self.d["nodes"]}
+        assert "igw" in node_ids, "IGW node missing from diagram"
 
-    def test_drg_to_private_ingress_edge(self):
-        pairs = _edge_pairs(self.d)
-        drg_targets = {tgt for (src, tgt) in pairs if src == "drg"}
-        assert "priv_sub_lb" in drg_targets, f"DRG not connected to priv_sub_lb; targets={drg_targets}"
+    def test_drg_present_as_node(self):
+        """DRG communicates via position (VCN left edge) — no explicit edge required."""
+        node_ids = {n["id"] for n in self.d["nodes"]}
+        assert "drg" in node_ids, "DRG node missing from diagram"
 
-    def test_web_to_app_edge(self):
+    def test_no_gateway_to_subnet_edges(self):
+        """Gateway connectivity is implied by position; no gateway→subnet lines."""
         pairs = _edge_pairs(self.d)
-        assert any(src.startswith("web_sub") and tgt.startswith("app_sub") for src, tgt in pairs), \
-            "No web→app tier edge found"
-
-    def test_app_to_db_edge(self):
-        pairs = _edge_pairs(self.d)
-        assert any(src.startswith("app_sub") and tgt.startswith("db_sub") for src, tgt in pairs), \
-            "No app→db tier edge found"
+        subnet_ids = {b["id"] for b in self.d["boxes"] if b["box_type"] == "_subnet_box"}
+        gw_to_subnet = [(s, t) for s, t in pairs if t in subnet_ids]
+        assert gw_to_subnet == [], f"Unexpected gateway→subnet edges: {gw_to_subnet}"
 
     def test_all_nodes_within_page_bounds(self):
         for n in self.d["nodes"]:
@@ -374,12 +370,11 @@ class TestScenario2PartialInfoWithAssumptions:
         assert "calypso_ad1" in ids
         assert "calypso_ad2" in ids
 
-    def test_correct_edge_topology(self):
-        pairs = _edge_pairs(self.d)
-        igw_targets = {tgt for src, tgt in pairs if src == "igw"}
-        drg_targets = {tgt for src, tgt in pairs if src == "drg"}
-        assert "pub_sub_lb"  in igw_targets
-        assert "priv_sub_lb" in drg_targets
+    def test_gateways_present_as_nodes(self):
+        """Gateways communicate via position — no explicit subnet edges required."""
+        node_ids = _node_ids(self.d)
+        assert "igw" in node_ids, "IGW node missing"
+        assert "drg" in node_ids, "DRG node missing"
 
     def test_subnet_widths_fill_available(self):
         """AD-level subnets (vertically stacked) must fill the full available width.
@@ -500,19 +495,15 @@ class TestCrossScenarioConsistency:
         assert "mxGraphModel" in xml, f"{name}: invalid XML"
 
     @pytest.mark.parametrize("name,spec", SPECS)
-    def test_igw_connects_to_public_ingress(self, name, spec):
+    def test_igw_present_as_node(self, name, spec):
+        """IGW communicates via position — no explicit subnet edge required."""
         d, _ = _run_pipeline(spec)
-        pairs = _edge_pairs(d)
-        igw_targets = {tgt for src, tgt in pairs if src == "igw"}
-        assert "pub_sub_lb" in igw_targets, (
-            f"{name}: IGW should connect to pub_sub_lb, got {igw_targets}"
-        )
+        node_ids = {n["id"] for n in d["nodes"]}
+        assert "igw" in node_ids, f"{name}: IGW node missing"
 
     @pytest.mark.parametrize("name,spec", SPECS)
-    def test_drg_connects_to_private_ingress(self, name, spec):
+    def test_drg_present_as_node(self, name, spec):
+        """DRG communicates via position — no explicit subnet edge required."""
         d, _ = _run_pipeline(spec)
-        pairs = _edge_pairs(d)
-        drg_targets = {tgt for src, tgt in pairs if src == "drg"}
-        assert "priv_sub_lb" in drg_targets, (
-            f"{name}: DRG should connect to priv_sub_lb, got {drg_targets}"
-        )
+        node_ids = {n["id"] for n in d["nodes"]}
+        assert "drg" in node_ids, f"{name}: DRG node missing"

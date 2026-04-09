@@ -991,36 +991,17 @@ def spec_to_draw_dict(
         None
     )
 
-    # Fixed topology edges — injected selectively to avoid crossing spec edges.
+    # Fixed topology edges — tier fallbacks only.
     #
-    # Gateway fallbacks (igw→subnet, drg→subnet, nat→internet, sgw→service):
-    #   Skip if that gateway is already a source in the spec — the LLM already
-    #   drew its outgoing connection, so adding a duplicate subnet-box edge
-    #   creates crossings.
+    # Gateway positions (DRG on left, IGW/NAT on top, SGW on right) already
+    # convey connectivity visually.  No explicit gateway→subnet lines needed.
     #
-    # Tier fallbacks (pub→web, web→app, app→db):
-    #   Only inject when the spec has no icon-level (internal) edges at all.
-    #   When the LLM provides bastion→compute, compute→OKE, etc., the tier
-    #   subnet-to-subnet chains are redundant and cause crossing lines.
+    # Tier fallbacks (pub→web, web→app, app→db) are injected ONLY when the
+    # spec provides zero edges — acts as a last-resort visual guide for diagrams
+    # where the LLM returned an empty edge list.
     spec_sources = {e.get("source", "") for e in edges_spec}
 
-    _INFRA_OCI_TYPES = {
-        "drg", "internet gateway", "nat gateway", "service gateway",
-        "internet", "public internet", "on premises",
-    }
-    infra_ids = {n.id for n in nodes_out if n.oci_type in _INFRA_OCI_TYPES}
-    has_icon_edges = any(src not in infra_ids for src in spec_sources)
-
-    if drg_id not in spec_sources:
-        _add_edge(drg_id, priv_ingress, "HTTP", ex=1.0, ey=0.5, nx=0.0, ny=0.5)
-    if igw_id not in spec_sources:
-        _add_edge(igw_id, pub_ingress, "HTTPS/443", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
-    if nat_id not in spec_sources:
-        _add_edge(nat_id, ext_internet, "Outbound", ex=1.0, ey=0.5, nx=0.0, ny=0.5)
-    if sgw_id not in spec_sources:
-        _add_edge(sgw_id, oci_svc_node, "Internal", ex=1.0, ey=0.5, nx=0.0, ny=0.5)
-
-    if not has_icon_edges:
+    if not edges_spec:
         _add_edge(pub_ingress, web_sub, "HTTP", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
         _add_edge(web_sub, app_sub, "HTTP", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
         _add_edge(app_sub, db_sub, "Data Access", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
