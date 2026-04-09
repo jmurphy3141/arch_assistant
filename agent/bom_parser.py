@@ -49,52 +49,172 @@ SKU_MAP: dict[str, tuple] = {
 }
 
 DESC_MAP: dict[str, tuple] = {
-    # Compute shapes — keyword order matters (most-specific first)
-    "bare metal":             ("bare metal",       "compute"),
+    # ── Compute: Bare Metal (most specific first) ────────────────────────────
     "bm.optimized":           ("bare metal",       "compute"),  # HPC BM.Optimized3.36
     "bm.hpc":                 ("bare metal",       "compute"),
-    "rdma":                   ("bare metal",       "compute"),
+    "bm.standard":            ("bare metal",       "compute"),
+    "bm.densio":              ("bare metal",       "compute"),
+    "bm.gpu":                 ("bare metal",       "compute"),
+    "bare metal":             ("bare metal",       "compute"),
+    "rdma":                   ("bare metal",       "compute"),  # RDMA cluster
+
+    # ── Compute: Container / OKE ─────────────────────────────────────────────
     "container instances":    ("container engine", "compute"),
     "oke enhanced":           ("container engine", "compute"),
     "oke":                    ("container engine", "compute"),
     "kubernetes":             ("container engine", "compute"),
-    "gpu":                    ("compute",          "compute"),  # GPU shapes
-    "vm.standard":            ("compute",          "compute"),  # any VM.Standard shape
+
+    # ── Compute: VM shapes ───────────────────────────────────────────────────
+    "vm.standard":            ("compute",          "compute"),
     "vm.optimized":           ("compute",          "compute"),
-    "flex":                   ("compute",          "compute"),  # E3/E4/E6.Flex
-    "standard - e":           ("compute",          "compute"),  # E3/E4/E6 OCPU/memory rows
+    "vm.gpu":                 ("compute",          "compute"),
+    "gpu":                    ("compute",          "compute"),
+    "flex":                   ("compute",          "compute"),  # E3/E4/E6/A1 Flex
+    "standard - e":           ("compute",          "compute"),  # E3/E4/E6
     "standard - a":           ("compute",          "compute"),  # Ampere A1
     "ocpu per hour":          ("compute",          "compute"),  # any OCPU billing row
-    # Database
+
+    # ── Compute: Analytics / Data platforms ──────────────────────────────────
+    "data science":           ("compute",          "compute"),  # OCI Data Science notebooks
+    "big data":               ("compute",          "compute"),  # BDS master/worker nodes
+    "analytics cloud":        ("compute",          "compute"),  # OAC
+    "data flow":              ("compute",          "compute"),  # Spark/Data Flow
+    "goldengate":             ("compute",          "compute"),  # GoldenGate Microservices
+    "data integration":       ("compute",          "compute"),  # OCI DIS
+    "integration":            ("compute",          "compute"),  # Oracle Integration Cloud
+    "visual builder":         ("compute",          "compute"),  # Oracle VBCS
+    "process automation":     ("compute",          "compute"),  # OPA
+
+    # ── Database ─────────────────────────────────────────────────────────────
     "autonomous database":    ("database",         "data"),
+    "autonomous transaction":  ("database",        "data"),     # ATP
+    "autonomous data warehouse": ("database",      "data"),     # ADW
+    "heatwave":               ("database",         "data"),     # MySQL HeatWave
     "mysql":                  ("database",         "data"),
     "postgresql":             ("database",         "data"),
     "nosql":                  ("database",         "data"),
     "exadata":                ("database",         "data"),
     "base database":          ("database",         "data"),
-    # Storage
+    "database service":       ("database",         "data"),
+    "opensearch":             ("database",         "data"),     # OCI Search/OpenSearch
+    "cache":                  ("database",         "data"),     # OCI Cache (Redis)
+    "redis":                  ("database",         "data"),
+
+    # ── Storage ──────────────────────────────────────────────────────────────
     "file storage":           ("file storage",     "data"),
     "object storage":         ("object storage",   "data"),
     "block volume":           (None,               None),       # implied by compute — skip
-    # Networking / ingress
+
+    # ── Networking / Ingress ─────────────────────────────────────────────────
     "fastconnect":            ("drg",              "ingress"),
     "network load balancer":  ("load balancer",    "ingress"),
     "load balancer":          ("load balancer",    "ingress"),
     "api gateway":            ("api gateway",      "ingress"),
     "bastion":                ("bastion",          "ingress"),
+    "web application firewall": ("waf",            "ingress"),
     "waf":                    ("waf",              "ingress"),
-    # Async / integration
+
+    # ── Async / Messaging / Integration ──────────────────────────────────────
     "streaming":              ("queue",            "async"),
     "queue":                  ("queue",            "async"),
     "kafka":                  ("queue",            "async"),
+    "email delivery":         ("queue",            "async"),
+    "notifications":          ("queue",            "async"),
+    "events":                 ("queue",            "async"),
     "functions":              ("functions",        "compute"),
-    # Management / security
+
+    # ── Security / IAM ───────────────────────────────────────────────────────
     "identity and access":    ("iam",              "data"),
     "vault":                  ("vault",            "data"),
     "secrets on oci vault":   ("vault",            "data"),
+    "key management":         ("vault",            "data"),     # KMS
+    "certificates":           ("vault",            "data"),
+    "cloud guard":            ("monitoring",       "data"),
+    "security advisor":       ("monitoring",       "data"),
+    "vulnerability scanning": ("monitoring",       "data"),
+
+    # ── Observability / Management ───────────────────────────────────────────
     "logging":                ("logging",          "data"),
     "monitoring":             ("monitoring",       "data"),
+    "application performance monitoring": ("monitoring", "data"),
+    "operations insights":    ("monitoring",       "data"),
+    "database management":    ("monitoring",       "data"),
+    "devops":                 ("monitoring",       "data"),     # OCI DevOps service
+
+    # ── Explicit skips (billing rows that carry no architectural node) ────────
+    "bandwidth":              (None,               None),
+    "data transfer":          (None,               None),
+    "dns":                    (None,               None),
+    "virtual cloud network":  (None,               None),
+    "vcn":                    (None,               None),
+    "support":                (None,               None),
+    "overage":                (None,               None),
+    "commitment":             (None,               None),
 }
+
+
+# ── Description normalisation ────────────────────────────────────────────────
+
+_OCI_PREFIXES = (
+    "oracle cloud infrastructure ",
+    "oracle cloud ",
+    "oci ",
+    "oracle ",
+)
+
+def _normalize_desc(desc: str) -> str:
+    """Strip Oracle/OCI branding so 'Oracle Cloud Infrastructure MySQL ...' matches 'mysql'."""
+    for prefix in _OCI_PREFIXES:
+        if desc.startswith(prefix):
+            return desc[len(prefix):].strip()
+    return desc
+
+
+# ── Token-based last-resort inference ────────────────────────────────────────
+
+# Billing/infra tokens that produce no architectural node
+_SKIP_TOKENS = frozenset({
+    "bandwidth", "data transfer", "transfer", "license", "support",
+    "overage", "commitment", "prepay", "vcn", "subnet", "vnic",
+    "dhcp", "route table", "security list", "nsg", "peering",
+    "reserved ip", "private ip", "nat ip",
+})
+
+def _infer_from_tokens(desc: str) -> tuple | None:
+    """
+    Token-level heuristics for OCI billing descriptions that didn't match DESC_MAP.
+
+    OCI billing rows reliably encode their category via billing unit:
+      - "OCPU" / "OCPU per hour"       → compute (or database when combined with ADB keywords)
+      - "ECPU" / "ECPU per hour"       → database (only ADB/ADB-S uses ECPU billing)
+      - "storage", "gb per month"      → None (implied, skip)
+      - known skip tokens              → None (billing overhead, skip)
+
+    Returns (oci_type, layer), (None, None) to skip, or None when confidence is low.
+    """
+    # Hard skip: known billing/infra overhead tokens
+    if any(token in desc for token in _SKIP_TOKENS):
+        return (None, None)
+
+    # ECPU rows are exclusively Autonomous Database billing
+    if "ecpu" in desc:
+        return ("database", "data")
+
+    # OCPU rows: ADB OCPU → database; everything else → compute
+    if "ocpu" in desc:
+        if any(db in desc for db in ("autonomous", "adb", "data warehouse", "transaction processing")):
+            return ("database", "data")
+        return ("compute", "compute")
+
+    # Node rows in cluster contexts
+    if "node" in desc and any(t in desc for t in ("worker", "master", "infra", "compute")):
+        return ("compute", "compute")
+
+    # Storage rows: skip
+    if any(t in desc for t in ("storage", "gb per month", "tb per month")):
+        return (None, None)
+
+    return None  # genuinely unknown — caller logs warning
 
 # Best-practice additions (always injected)
 BEST_PRACTICE = [
@@ -163,23 +283,44 @@ def parse_bom(xlsx_path: str | Path, context: str = "") -> list[ServiceItem]:
         qty  = d.get("quantity")
         note = str(d.get(hdrs[-1], "") or "")
 
-        # SKU lookup
+        # ── Tier 1: exact SKU lookup ─────────────────────────────────────────
         if sku in SKU_MAP:
             oci_type, layer = SKU_MAP[sku]
             if not oci_type or not layer:
                 continue
         else:
-            # Description lookup
             oci_type, layer = None, None
+
+            # ── Tier 2a: DESC_MAP on raw description ─────────────────────────
             for key, (t, l) in DESC_MAP.items():
                 if key in desc:
                     oci_type, layer = t, l
                     break
+
+            # ── Tier 2b: DESC_MAP on normalised description (strip OCI prefix)
+            if not oci_type:
+                norm = _normalize_desc(desc)
+                if norm != desc:
+                    for key, (t, l) in DESC_MAP.items():
+                        if key in norm:
+                            oci_type, layer = t, l
+                            break
+
+            # ── Tier 3: token-level billing-unit inference ───────────────────
+            if not oci_type:
+                inferred = _infer_from_tokens(desc)
+                if inferred is not None:
+                    oci_type, layer = inferred
+
+            # If still None after all tiers → row has no architectural node
             if not oci_type:
                 logger.warning(
-                    "parse_bom: unrecognized SKU=%r desc=%r — row skipped (add to SKU_MAP or DESC_MAP)",
+                    "parse_bom: unrecognized SKU=%r desc=%r — row skipped",
                     sku, desc,
                 )
+                continue
+            # (None, None) means "explicitly skip this billing row silently"
+            if oci_type is None:
                 continue
 
         # Deduplicate by oci_type (one icon per service type)
