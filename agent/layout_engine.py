@@ -908,20 +908,39 @@ def spec_to_draw_dict(
         None
     )
 
-    # DRG → first private ingress subnet
-    _add_edge(drg_id, priv_ingress, "HTTP", ex=1.0, ey=0.5, nx=0.0, ny=0.5)
-    # IGW → first public ingress subnet
-    _add_edge(igw_id, pub_ingress, "HTTPS/443", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
-    # Public LB subnet → web tier
-    _add_edge(pub_ingress, web_sub, "HTTP", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
-    # Web → app
-    _add_edge(web_sub, app_sub, "HTTP", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
-    # App → DB
-    _add_edge(app_sub, db_sub, "Data Access", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
-    # NAT → internet
-    _add_edge(nat_id, ext_internet, "Outbound", ex=1.0, ey=0.5, nx=0.0, ny=0.5)
-    # Service GW → first OCI service
-    _add_edge(sgw_id, oci_svc_node, "Internal", ex=1.0, ey=0.5, nx=0.0, ny=0.5)
+    # Fixed topology edges — injected selectively to avoid crossing spec edges.
+    #
+    # Gateway fallbacks (igw→subnet, drg→subnet, nat→internet, sgw→service):
+    #   Skip if that gateway is already a source in the spec — the LLM already
+    #   drew its outgoing connection, so adding a duplicate subnet-box edge
+    #   creates crossings.
+    #
+    # Tier fallbacks (pub→web, web→app, app→db):
+    #   Only inject when the spec has no icon-level (internal) edges at all.
+    #   When the LLM provides bastion→compute, compute→OKE, etc., the tier
+    #   subnet-to-subnet chains are redundant and cause crossing lines.
+    spec_sources = {e.get("source", "") for e in edges_spec}
+
+    _INFRA_OCI_TYPES = {
+        "drg", "internet gateway", "nat gateway", "service gateway",
+        "internet", "public internet", "on premises",
+    }
+    infra_ids = {n.id for n in nodes_out if n.oci_type in _INFRA_OCI_TYPES}
+    has_icon_edges = any(src not in infra_ids for src in spec_sources)
+
+    if drg_id not in spec_sources:
+        _add_edge(drg_id, priv_ingress, "HTTP", ex=1.0, ey=0.5, nx=0.0, ny=0.5)
+    if igw_id not in spec_sources:
+        _add_edge(igw_id, pub_ingress, "HTTPS/443", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
+    if nat_id not in spec_sources:
+        _add_edge(nat_id, ext_internet, "Outbound", ex=1.0, ey=0.5, nx=0.0, ny=0.5)
+    if sgw_id not in spec_sources:
+        _add_edge(sgw_id, oci_svc_node, "Internal", ex=1.0, ey=0.5, nx=0.0, ny=0.5)
+
+    if not has_icon_edges:
+        _add_edge(pub_ingress, web_sub, "HTTP", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
+        _add_edge(web_sub, app_sub, "HTTP", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
+        _add_edge(app_sub, db_sub, "Data Access", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
 
     # Legacy-only: on_prem → vcn_box with deterministic edge id
     if is_legacy and "on_prem" in all_ids and "vcn_box" in all_ids:
