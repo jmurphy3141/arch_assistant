@@ -272,7 +272,12 @@ def parse_bom(xlsx_path: str | Path, context: str = "") -> list[ServiceItem]:
     hdrs = None
     for row in bom.iter_rows(values_only=True):
         if hdrs is None:
-            hdrs = [str(c).lower().strip() if c else f"c{i}" for i, c in enumerate(row)]
+            candidate = [str(c).lower().strip() if c else f"c{i}" for i, c in enumerate(row)]
+            # Skip metadata rows until we find the real header (must contain both
+            # "sku" and "description" columns).  OCI BOM exports often have 2-4
+            # title/discount rows before the actual column header row.
+            if "sku" in candidate and "description" in candidate:
+                hdrs = candidate
             continue
         if not any(v is not None for v in row):
             continue
