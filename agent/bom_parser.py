@@ -18,33 +18,82 @@ logger = logging.getLogger(__name__)
 
 # ── SKU → (oci_type, default_layer) ─────────────────────────────────────────
 SKU_MAP: dict[str, tuple] = {
-    "B94176": ("compute",           "compute"),
-    "B94177": (None,                None),       # memory — part of compute
-    "B91961": (None,                None),       # block storage — implied
-    "B91962": (None,                None),       # block perf — implied
-    "B99060": ("database",          "data"),
-    "B99062": (None,                None),       # db storage — implied
-    "B91628": ("object storage",    "data"),
-    "B93030": ("load balancer",     "ingress"),
-    "B93031": (None,                None),       # LB bandwidth — implied
-    "B88325": ("drg",               "ingress"),
-    "B90618": ("functions",         "compute"),
-    "B90617": (None,                None),       # fn execution — part of functions
-    "B92072": ("api gateway",       "ingress"),
-    "B95697": ("queue",             "async"),
+    # Compute — VM shapes (all generations map to "compute")
+    "B94176":  ("compute",           "compute"),   # E3/E4 OCPU
+    "B94177":  (None,                None),        # E3/E4 memory — part of compute
+    "B111129": ("compute",           "compute"),   # E6 OCPU
+    "B111130": (None,                None),        # E6 memory — part of compute
+    "B88317":  ("compute",           "compute"),   # A1 Flex OCPU
+    "B88318":  (None,                None),        # A1 memory — part of compute
+    # Block Storage
+    "B91961":  (None,                None),        # block volume storage — implied by compute
+    "B91962":  (None,                None),        # block volume perf — implied
+    # Database
+    "B99060":  ("database",          "data"),
+    "B99062":  (None,                None),        # db storage — implied
+    # Object Storage
+    "B91628":  ("object storage",    "data"),
+    # Load Balancer
+    "B93030":  ("load balancer",     "ingress"),
+    "B93031":  (None,                None),        # LB bandwidth — implied
+    # FastConnect / DRG
+    "B88325":  ("drg",               "ingress"),   # FastConnect 1 Gbps
+    "B88326":  ("drg",               "ingress"),   # FastConnect 10 Gbps
+    "B88327":  ("drg",               "ingress"),   # FastConnect 100 Gbps
+    # Functions
+    "B90618":  ("functions",         "compute"),
+    "B90617":  (None,                None),        # fn execution — part of functions
+    # API Gateway / Queue
+    "B92072":  ("api gateway",       "ingress"),
+    "B95697":  ("queue",             "async"),
 }
 
 DESC_MAP: dict[str, tuple] = {
-    "container instances": ("container engine", "compute"),
-    "oke enhanced":        ("container engine", "compute"),  # OKE Enhanced Cluster
-    "bm.optimized":        ("bare metal",       "compute"),  # HPC bare metal (BM.Optimized3.36)
-    "bare metal":          ("bare metal",       "compute"),
-    "rdma":                ("bare metal",       "compute"),  # RDMA cluster node
-    "file storage":        ("file storage",     "data"),     # FSS NFS PVC
-    "bastion":             ("bastion",           "ingress"),
-    "identity and access": ("iam",               "data"),
-    "network load balancer":("load balancer",    "ingress"),
-    "secrets on oci vault": ("vault",            "data"),
+    # Compute shapes — keyword order matters (most-specific first)
+    "bare metal":             ("bare metal",       "compute"),
+    "bm.optimized":           ("bare metal",       "compute"),  # HPC BM.Optimized3.36
+    "bm.hpc":                 ("bare metal",       "compute"),
+    "rdma":                   ("bare metal",       "compute"),
+    "container instances":    ("container engine", "compute"),
+    "oke enhanced":           ("container engine", "compute"),
+    "oke":                    ("container engine", "compute"),
+    "kubernetes":             ("container engine", "compute"),
+    "gpu":                    ("compute",          "compute"),  # GPU shapes
+    "vm.standard":            ("compute",          "compute"),  # any VM.Standard shape
+    "vm.optimized":           ("compute",          "compute"),
+    "flex":                   ("compute",          "compute"),  # E3/E4/E6.Flex
+    "standard - e":           ("compute",          "compute"),  # E3/E4/E6 OCPU/memory rows
+    "standard - a":           ("compute",          "compute"),  # Ampere A1
+    "ocpu per hour":          ("compute",          "compute"),  # any OCPU billing row
+    # Database
+    "autonomous database":    ("database",         "data"),
+    "mysql":                  ("database",         "data"),
+    "postgresql":             ("database",         "data"),
+    "nosql":                  ("database",         "data"),
+    "exadata":                ("database",         "data"),
+    "base database":          ("database",         "data"),
+    # Storage
+    "file storage":           ("file storage",     "data"),
+    "object storage":         ("object storage",   "data"),
+    "block volume":           (None,               None),       # implied by compute — skip
+    # Networking / ingress
+    "fastconnect":            ("drg",              "ingress"),
+    "network load balancer":  ("load balancer",    "ingress"),
+    "load balancer":          ("load balancer",    "ingress"),
+    "api gateway":            ("api gateway",      "ingress"),
+    "bastion":                ("bastion",          "ingress"),
+    "waf":                    ("waf",              "ingress"),
+    # Async / integration
+    "streaming":              ("queue",            "async"),
+    "queue":                  ("queue",            "async"),
+    "kafka":                  ("queue",            "async"),
+    "functions":              ("functions",        "compute"),
+    # Management / security
+    "identity and access":    ("iam",              "data"),
+    "vault":                  ("vault",            "data"),
+    "secrets on oci vault":   ("vault",            "data"),
+    "logging":                ("logging",          "data"),
+    "monitoring":             ("monitoring",       "data"),
 }
 
 # Best-practice additions (always injected)
