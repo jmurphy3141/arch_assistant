@@ -899,6 +899,9 @@ def spec_to_draw_dict(
     # Collect all node/box IDs to check what exists
     all_ids = set(node_by_id.keys()) | set(box_by_id.keys())
 
+    # Container box IDs — never valid edge endpoints
+    container_ids = set(box_by_id.keys())
+
     # Collect LLM-provided edge source/target pairs to avoid duplicates
     existing_pairs: set[tuple[str, str]] = set()
     for e in edges_spec:
@@ -906,8 +909,11 @@ def spec_to_draw_dict(
 
     draw_edges = []
 
-    # Copy spec edges (exit/entry will be overridden by smart routing below)
+    # Copy spec edges, dropping any that target container boxes
     for e in edges_spec:
+        src, tgt = e.get("source", ""), e.get("target", "")
+        if src in container_ids or tgt in container_ids:
+            continue   # silently drop — container boxes are not connectable
         draw_edges.append({
             "id":     e.get("id", f"e_{e.get('source','')}_{e.get('target','')}"),
             "source": e.get("source", ""),

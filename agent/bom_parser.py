@@ -656,10 +656,13 @@ ONLY declare an explicit edge when the connection is NON-OBVIOUS from layout:
 NEVER declare these — they are implied by gateway placement and need no line:
   ✗ internet → internet_gateway        (implied: IGW straddles VCN top)
   ✗ internet_gateway → waf/lb/bastion  (implied: IGW on VCN top edge)
+  ✗ internet_gateway → region_box      (region_box is a container, not connectable)
   ✗ nat_gateway → internet             (implied: NAT on VCN top/right)
   ✗ service_gateway → any service      (implied: SGW on VCN right edge)
   ✗ drg → bastion / compute            (implied: DRG on VCN left edge)
   ✗ bastion → compute / bare_metal     (implied: co-located in same subnet)
+
+CRITICAL: NEVER use region_box, vcn_box, or any subnet box ID as edge source or target.
 
 Target: 2–5 edges. If the topology has fewer non-obvious connections, output [].
 
