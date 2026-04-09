@@ -460,34 +460,55 @@ def _layout_region(
         h=region_h,
     )
 
-    # 3. Gateway nodes — straddle the VCN top edge, spread across VCN width
-    # Order: DRG (left) → IGW → NAT → SGW (right)
-    _GW_ORDER = {
-        "drg": 0, "dynamic routing gateway": 0,
-        "internet gateway": 1,
-        "nat gateway": 2,
-        "service gateway": 3,
+    # 3. Gateway nodes — placed by their natural OCI edge:
+    #   DRG          → straddles VCN LEFT edge  (on-prem/FastConnect from left)
+    #   IGW, NAT     → straddle VCN TOP edge    (internet traffic from above)
+    #   SGW          → straddles VCN RIGHT edge (OCI services to the right)
+    _GW_EDGE = {
+        "drg": "left", "dynamic routing gateway": "left",
+        "internet gateway": "top",
+        "nat gateway": "top",
+        "service gateway": "right",
     }
-    sorted_gws = sorted(gateways, key=lambda g: _GW_ORDER.get(g.get("type", "").lower(), 99))
-    n_gw = len(sorted_gws)
+    _TOP_ORDER  = {"internet gateway": 0, "nat gateway": 1}
     gateway_nodes: list[PositionedNode] = []
 
-    if n_gw > 0:
-        gw_gap   = (vcn_w - n_gw * ICON_W) / max(n_gw - 1, 1) if n_gw > 1 else 0
-        gw_start = vcn_x
-        gy       = vcn_y - ICON_H // 2   # straddle the VCN top edge
+    top_gws   = [g for g in gateways if _GW_EDGE.get(g.get("type","").lower(),"top") == "top"]
+    left_gws  = [g for g in gateways if _GW_EDGE.get(g.get("type","").lower(),"top") == "left"]
+    right_gws = [g for g in gateways if _GW_EDGE.get(g.get("type","").lower(),"top") == "right"]
+    top_gws   = sorted(top_gws, key=lambda g: _TOP_ORDER.get(g.get("type","").lower(), 99))
 
-        for i, gw in enumerate(sorted_gws):
-            gx = gw_start + i * (ICON_W + gw_gap)
+    # Top gateways: spread across VCN top edge
+    n_top = len(top_gws)
+    if n_top > 0:
+        top_gap = (vcn_w - n_top * ICON_W) / max(n_top - 1, 1) if n_top > 1 else 0
+        top_gy  = vcn_y - ICON_H // 2
+        for i, gw in enumerate(top_gws):
             gateway_nodes.append(PositionedNode(
-                id=gw["id"],
-                label=gw.get("label", gw["id"]),
+                id=gw["id"], label=gw.get("label", gw["id"]),
                 oci_type=gw.get("type", "").lower(),
-                x=gx,
-                y=gy,
-                w=ICON_W,
-                h=ICON_SLOT,
+                x=vcn_x + i * (ICON_W + top_gap), y=top_gy, w=ICON_W, h=ICON_SLOT,
             ))
+
+    # Left gateways: straddle VCN left edge, stacked vertically near top
+    for i, gw in enumerate(left_gws):
+        gateway_nodes.append(PositionedNode(
+            id=gw["id"], label=gw.get("label", gw["id"]),
+            oci_type=gw.get("type", "").lower(),
+            x=vcn_x - ICON_W // 2,
+            y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
+            w=ICON_W, h=ICON_SLOT,
+        ))
+
+    # Right gateways: straddle VCN right edge, stacked vertically near top
+    for i, gw in enumerate(right_gws):
+        gateway_nodes.append(PositionedNode(
+            id=gw["id"], label=gw.get("label", gw["id"]),
+            oci_type=gw.get("type", "").lower(),
+            x=vcn_x + vcn_w - ICON_W // 2,
+            y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
+            w=ICON_W, h=ICON_SLOT,
+        ))
 
     # 4. OCI services — right of VCN, inside region, SVC_COL_MARGIN gap for flow lines
     svc_x = vcn_x + vcn_w + SVC_COL_MARGIN
@@ -820,6 +841,36 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
     return positioned, group_boxes
 
 
+def _smart_edge_points(
+    src: PositionedNode, tgt: PositionedNode,
+) -> tuple[float, float, float, float]:
+    """
+    Return (exitX, exitY, entryX, entryY) based on the relative position of
+    source and target node centres.  Keeps flow lines in the routing gutters
+    (side margins, inter-subnet gaps) rather than routing through boxes.
+
+    Priority: horizontal wins when |dx| >= |dy| (avoids most subnet crossings
+    since subnets are full-width horizontal bands).
+    """
+    src_cx = src.x + src.w / 2
+    src_cy = src.y + src.h / 2
+    tgt_cx = tgt.x + tgt.w / 2
+    tgt_cy = tgt.y + tgt.h / 2
+    dx = tgt_cx - src_cx
+    dy = tgt_cy - src_cy
+
+    if abs(dx) >= abs(dy):
+        if dx >= 0:
+            return 1.0, 0.5, 0.0, 0.5   # exit right → enter left
+        else:
+            return 0.0, 0.5, 1.0, 0.5   # exit left  → enter right
+    else:
+        if dy >= 0:
+            return 0.5, 1.0, 0.5, 0.0   # exit bottom → enter top
+        else:
+            return 0.5, 0.0, 0.5, 1.0   # exit top    → enter bottom
+
+
 def spec_to_draw_dict(
     layout_spec: dict | str,
     items_by_id: dict[str, object],
@@ -855,7 +906,7 @@ def spec_to_draw_dict(
 
     draw_edges = []
 
-    # Copy spec edges
+    # Copy spec edges (exit/entry will be overridden by smart routing below)
     for e in edges_spec:
         draw_edges.append({
             "id":     e.get("id", f"e_{e.get('source','')}_{e.get('target','')}"),
@@ -986,6 +1037,21 @@ def spec_to_draw_dict(
                 "entryX": 0.0, "entryY": 0.5,
             })
             existing_pairs.add(("on_prem", "vcn_box"))
+
+    # ── Smart edge routing ────────────────────────────────────────────────────
+    # Override exit/entry connection points on every edge based on the relative
+    # position of source and target nodes.  This keeps lines in the routing
+    # gutters (side margins, inter-subnet gaps) and prevents them from cutting
+    # through container boxes.
+    for edge in draw_edges:
+        src_node = node_by_id.get(edge["source"])
+        tgt_node = node_by_id.get(edge["target"])
+        if src_node and tgt_node:
+            ex, ey, nx, ny = _smart_edge_points(src_node, tgt_node)
+            edge["exitX"]  = ex
+            edge["exitY"]  = ey
+            edge["entryX"] = nx
+            edge["entryY"] = ny
 
     # Convert PositionedBox/Node to serialisable dicts
     draw_nodes = [
