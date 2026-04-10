@@ -11,6 +11,7 @@ const T = {
   accent:  '#e8571a',
   accentG: 'rgba(232,87,26,0.15)',
   text:    '#cdd2e0',
+  label:   '#8892a4',   // readable label colour — between muted and text
   muted:   '#454d64',
   green:   '#2ecc8a',
   red:     '#e8415a',
@@ -97,15 +98,22 @@ const QUESTIONNAIRE: QItem[] = [
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-function formatQAnswers(answers: Record<string, string | string[]>): string {
-  const lines: string[] = ['ARCHITECTURE QUESTIONNAIRE:'];
+/**
+ * Always emit all questionnaire questions.
+ * Pre-filled answers are included as-is; blank items get "[infer from BOM or ask]"
+ * so the LLM knows to try to infer rather than silently skip.
+ */
+function formatQuestionnaire(answers: Record<string, string | string[]>): string {
+  const lines: string[] = [
+    'ARCHITECTURE QUESTIONNAIRE:',
+    '(Use the BOM and context to answer each item where possible. Only request clarification for items you genuinely cannot determine.)',
+  ];
   for (const q of QUESTIONNAIRE) {
     const ans = answers[q.id];
-    if (!ans || (Array.isArray(ans) && ans.length === 0)) continue;
-    const val = Array.isArray(ans) ? ans.join(', ') : ans;
-    lines.push(`  ${q.label}: ${val}`);
+    const val = Array.isArray(ans) ? ans.join(', ') : (ans || '');
+    lines.push(`  ${q.label}: ${val || '[infer from BOM or ask]'}`);
   }
-  return lines.length > 1 ? lines.join('\n') : '';
+  return lines.join('\n');
 }
 
 // ── Static styles ─────────────────────────────────────────────────────────
@@ -123,7 +131,7 @@ const s = {
     fontWeight: 700,
     letterSpacing: '0.15em',
     textTransform: 'uppercase' as const,
-    color: T.muted,
+    color: T.label,
     marginBottom: '0.75rem',
   } as React.CSSProperties,
   row: {
@@ -143,7 +151,7 @@ const s = {
     fontSize: '0.7rem',
     fontWeight: 600,
     letterSpacing: '0.06em',
-    color: T.muted,
+    color: T.label,
     textTransform: 'uppercase' as const,
   } as React.CSSProperties,
   input: {
@@ -192,8 +200,8 @@ const s = {
     gap: '0.8rem',
   } as React.CSSProperties,
   qLabel: {
-    fontSize: '0.7rem',
-    color: T.muted,
+    fontSize: '0.72rem',
+    color: T.label,
     fontWeight: 600,
     letterSpacing: '0.05em',
     marginBottom: '0.25rem',
@@ -303,8 +311,7 @@ export function UploadBom({
       parts.push(`CONTEXT_FILE: ${DEFAULT_PREFIX}/${customerId}/${ctxFile.trim()}`);
     }
 
-    const qText = formatQAnswers(qAnswers);
-    if (qText) parts.push(qText);
+    parts.push(formatQuestionnaire(qAnswers));
 
     if (buildOnPrior && priorNotes.trim()) {
       parts.push(`EXISTING DEPLOYMENT:\n  ${priorNotes.trim()}`);
@@ -369,7 +376,7 @@ export function UploadBom({
               placeholder="e.g. maurits, acme-corp"
               required
             />
-            <span style={{ fontSize: '0.65rem', color: T.muted }}>
+            <span style={{ fontSize: '0.65rem', color: T.label }}>
               Bucket folder: <code style={{ color: T.accent }}>{DEFAULT_PREFIX}/{customerId || '<customer>'}/</code>
             </span>
           </div>
@@ -389,7 +396,7 @@ export function UploadBom({
 
         <div style={s.row}>
           <div style={s.fieldWrap}>
-            <label style={s.label}>Context / Notes Filename <span style={{ color: T.muted }}>(optional)</span></label>
+            <label style={s.label}>Context / Notes Filename <span style={{ color: T.label }}>(optional)</span></label>
             <input
               style={s.input}
               type="text"
@@ -422,7 +429,7 @@ export function UploadBom({
           >
             {buildOnPrior ? '✓ Building on existing deployment' : 'Building on existing deployment?'}
           </button>
-          <span style={{ fontSize: '0.65rem', color: T.muted }}>
+          <span style={{ fontSize: '0.65rem', color: T.label }}>
             Toggle if extending an existing OCI architecture
           </span>
         </div>
@@ -444,8 +451,8 @@ export function UploadBom({
       <div style={s.qSection}>
         <div style={s.qHeader} onClick={() => setQOpen(v => !v)}>
           <span style={s.qTitle}>Architecture Questionnaire</span>
-          <span style={{ fontSize: '0.65rem', color: T.muted }}>
-            {qOpen ? '▲ collapse' : '▼ expand'} — helps the AI produce a better diagram
+          <span style={{ fontSize: '0.65rem', color: T.label }}>
+            {qOpen ? '▲ collapse' : '▼ expand'} — fill in what you know; AI infers the rest
           </span>
         </div>
 
@@ -506,7 +513,7 @@ export function UploadBom({
       </div>
 
       {/* ── Bucket path preview ──────────────────────────────────────────── */}
-      <div style={{ marginBottom: '0.75rem', fontSize: '0.68rem', color: T.muted, lineHeight: 1.7 }}>
+      <div style={{ marginBottom: '0.75rem', fontSize: '0.68rem', color: T.label, lineHeight: 1.7 }}>
         <span style={{ color: T.text }}>Source: </span>
         <code style={{ color: T.accent }}>
           oci://{DEFAULT_BUCKET}/{DEFAULT_PREFIX}/{customerId || '<customer>'}/{bomFile || '<bom.xlsx>'}
