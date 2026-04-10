@@ -1,0 +1,71 @@
+/* OCI Agent Fleet — dark theme global styles */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap');
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+:root {
+  --bg:       #08090d;
+  --surface:  #0e1016;
+  --card:     #12151d;
+  --border:   #1c2030;
+  --border2:  #242840;
+  --accent:   #e8571a;
+  --accentG:  rgba(232, 87, 26, 0.15);
+  --text:     #cdd2e0;
+  --muted:    #454d64;
+  --green:    #2ecc8a;
+  --red:      #e8415a;
+  --gold:     #f0a500;
+  --font:     'JetBrains Mono', monospace;
+  --display:  'Syne', sans-serif;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+/* Default form element dark styling */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="search"],
+textarea,
+select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-family: var(--font);
+  font-size: 0.8rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+input[type="text"]:focus,
+input[type="email"]:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }

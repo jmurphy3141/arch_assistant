@@ -144,6 +144,43 @@ export async function apiInputsResolve(body: object): Promise<ResolveResponse> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// A2A task endpoint
+// ---------------------------------------------------------------------------
+
+export interface A2ATask {
+  task_id: string;
+  skill: string;
+  client_id: string;
+  inputs: Record<string, unknown>;
+}
+
+/** Call the A2A upload_bom skill — BOM and context fetched server-side from OCI bucket. */
+export async function apiA2AUploadBom(
+  customerId: string,
+  bomObject: string,
+  diagramName: string,
+  context?: string,
+  namespace = 'oraclejamescalise',
+  bucket = 'agent_assistante',
+): Promise<GenerateResponse> {
+  const task: A2ATask = {
+    task_id: crypto.randomUUID(),
+    skill: 'upload_bom',
+    client_id: customerId,
+    inputs: {
+      bom_from_bucket: { namespace, bucket, object: bomObject },
+      diagram_name: diagramName,
+      ...(context?.trim() ? { context } : {}),
+    },
+  };
+  return apiFetch<GenerateResponse>('/a2a/task', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(task),
+  });
+}
+
 /** Build a download URL for a named artifact. */
 export function downloadUrl(
   filename: string,

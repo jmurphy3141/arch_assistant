@@ -56,6 +56,7 @@ except ImportError:
     pass
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -872,12 +873,24 @@ async def require_user(request: Request) -> dict:
 
 # ── Auth routes ───────────────────────────────────────────────────────────────
 
+_UI_DIST = Path(__file__).parent / "ui" / "dist"
+_UI_INDEX = _UI_DIST / "index.html"
+_LEGACY_INDEX = Path(__file__).parent / "index.html"
+
+# Mount built React assets so /assets/... requests are served correctly.
+_UI_ASSETS = _UI_DIST / "assets"
+if _UI_ASSETS.exists():
+    app.mount("/assets", StaticFiles(directory=_UI_ASSETS), name="ui_assets")
+
+
 @app.get("/")
 async def serve_ui(request: Request):
-    """Serve the single-page UI. Redirects to /login when auth is required."""
+    """Serve the React SPA. Falls back to legacy index.html when dist not built."""
     if AUTH_ENABLED and not request.session.get("user"):
         return RedirectResponse("/login", status_code=302)
-    return FileResponse(str(Path(__file__).parent / "index.html"))
+    if _UI_INDEX.exists():
+        return FileResponse(str(_UI_INDEX))
+    return FileResponse(str(_LEGACY_INDEX))
 
 
 @app.get("/login")

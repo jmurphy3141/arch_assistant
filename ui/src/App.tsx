@@ -78,32 +78,38 @@ export function App() {
 
   const btnStyle = (active: boolean): React.CSSProperties => ({
     padding: '0.3rem 0.75rem',
-    border: active ? '2px solid #c00' : '1px solid #ccc',
-    background: active ? '#fff0f0' : '#fff',
+    border: active ? '1px solid #e8571a' : '1px solid #1c2030',
+    background: active ? 'rgba(232,87,26,0.15)' : '#0e1016',
+    color: active ? '#e8571a' : '#cdd2e0',
     cursor: active ? 'default' : 'pointer',
-    fontWeight: active ? 'bold' : 'normal',
-    borderRadius: '3px',
-    fontSize: '0.85rem',
+    fontWeight: active ? 700 : 400,
+    borderRadius: 4,
+    fontSize: '0.75rem',
+    fontFamily: "'JetBrains Mono', monospace",
+    letterSpacing: '0.04em',
+    transition: 'all 0.15s',
   });
 
   return (
-    <div style={{ maxWidth: '900px', margin: '0 auto', padding: '1rem', fontFamily: 'sans-serif' }}>
-      <header style={{ borderBottom: '2px solid #e00', paddingBottom: '0.5rem', marginBottom: '1rem' }}>
-        <h1 style={{ margin: 0, fontSize: '1.4rem' }}>
-          OCI Agent Fleet{' '}
-          <small style={{ fontWeight: 'normal', fontSize: '0.82rem', color: '#666' }}>
-            Drawing · POV · JEP · Terraform · WAF
-          </small>
-        </h1>
-        <HealthIndicator />
+    <div style={{ maxWidth: '960px', margin: '0 auto', padding: '1.25rem', fontFamily: "'JetBrains Mono', monospace", background: '#08090d', minHeight: '100vh', color: '#cdd2e0' }}>
+      <header style={{ borderBottom: '1px solid #1c2030', paddingBottom: '0.75rem', marginBottom: '1.25rem' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <h1 style={{ margin: 0, fontFamily: "'Syne', sans-serif", fontSize: '1.4rem', fontWeight: 800, letterSpacing: '-0.03em', color: '#fff' }}>
+            OCI<span style={{ color: '#e8571a' }}>.</span>Agent Fleet
+            <small style={{ fontWeight: 400, fontSize: '0.68rem', color: '#454d64', marginLeft: '0.75rem', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: "'JetBrains Mono', monospace" }}>
+              Drawing · POV · JEP · Terraform · WAF
+            </small>
+          </h1>
+          <HealthIndicator />
+        </div>
       </header>
 
       {/* Tab bar */}
       <div style={{ marginBottom: '1.25rem', display: 'flex', gap: '0.3rem', flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: '0.78rem', color: '#888', marginRight: '0.1rem' }}>Diagrams:</span>
+        <span style={{ fontSize: '0.62rem', color: '#454d64', marginRight: '0.2rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Diagrams:</span>
         <button style={btnStyle(mode === 'upload')}   onClick={() => switchMode('upload')}>Upload BOM</button>
         <button style={btnStyle(mode === 'generate')} onClick={() => switchMode('generate')}>Generate</button>
-        <span style={{ fontSize: '0.78rem', color: '#888', margin: '0 0.1rem 0 0.75rem' }}>Documents:</span>
+        <span style={{ fontSize: '0.62rem', color: '#454d64', margin: '0 0.2rem 0 0.75rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Documents:</span>
         <button style={btnStyle(mode === 'notes')}     onClick={() => switchMode('notes')}>Notes</button>
         <button style={btnStyle(mode === 'pov')}       onClick={() => switchMode('pov')}>POV</button>
         <button style={btnStyle(mode === 'jep')}       onClick={() => switchMode('jep')}>JEP</button>
@@ -115,7 +121,9 @@ export function App() {
       {mode === 'upload' && (
         <UploadBom
           clientId={clientId}
+          customerId={customerId}
           diagramName={diagramName}
+          onCustomerIdChange={handleCustomerIdChange}
           onDiagramNameChange={handleDiagramNameChange}
           onResult={handleResult}
           onError={handleError}
@@ -138,9 +146,13 @@ export function App() {
             <div
               data-testid="error-display"
               style={{
-                marginTop: '1rem', padding: '0.75rem', background: '#fff0f0',
-                border: '1px solid #c00', borderRadius: '4px',
+                marginTop: '1rem', padding: '0.75rem',
+                background: 'rgba(232,65,90,0.08)',
+                border: '1px solid rgba(232,65,90,0.4)',
+                borderRadius: 4,
                 whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                fontSize: '0.8rem', color: '#e8415a',
+                fontFamily: "'JetBrains Mono', monospace",
               }}
             >
               <strong>Error:</strong> {error}
@@ -174,8 +186,8 @@ export function App() {
         <WafForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
       )}
 
-      <footer style={{ marginTop: '2rem', fontSize: '0.75rem', color: '#999', borderTop: '1px solid #eee', paddingTop: '0.5rem' }}>
-        client_id: <code data-testid="client-id-display">{clientId}</code>
+      <footer style={{ marginTop: '2rem', fontSize: '0.65rem', color: '#454d64', borderTop: '1px solid #1c2030', paddingTop: '0.5rem' }}>
+        client_id: <code data-testid="client-id-display" style={{ color: '#e8571a' }}>{clientId}</code>
       </footer>
     </div>
   );

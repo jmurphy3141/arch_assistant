@@ -1,46 +1,346 @@
-import React, { useRef, useState } from 'react';
-import { apiUploadBom, type GenerateResponse } from '../api/client';
-import type { ApiError } from '../api/client';
+import React, { useState } from 'react';
+import { apiA2AUploadBom, type GenerateResponse, type ApiError } from '../api/client';
 
-interface Props {
-  clientId: string;
-  diagramName: string;
-  onDiagramNameChange: (name: string) => void;
-  onResult: (r: GenerateResponse) => void;
-  onError: (msg: string) => void;
+// ── Design tokens matching the dark OCI theme ─────────────────────────────
+const T = {
+  bg:      '#08090d',
+  surface: '#0e1016',
+  card:    '#12151d',
+  border:  '#1c2030',
+  border2: '#242840',
+  accent:  '#e8571a',
+  accentG: 'rgba(232,87,26,0.15)',
+  text:    '#cdd2e0',
+  muted:   '#454d64',
+  green:   '#2ecc8a',
+  red:     '#e8415a',
+  gold:    '#f0a500',
+  font:    "'JetBrains Mono', monospace",
+  display: "'Syne', sans-serif",
+} as const;
+
+// ── Bucket defaults (from config.yaml) ───────────────────────────────────
+const DEFAULT_NAMESPACE = 'oraclejamescalise';
+const DEFAULT_BUCKET    = 'agent_assistante';
+const DEFAULT_PREFIX    = 'agent3';
+
+// ── Architecture questionnaire ────────────────────────────────────────────
+interface QItem {
+  id:   string;
+  label: string;
+  type: 'radio' | 'checkbox' | 'text';
+  options?: string[];
+  placeholder?: string;
 }
 
+const QUESTIONNAIRE: QItem[] = [
+  {
+    id: 'regions',
+    label: 'Deployment scope',
+    type: 'radio',
+    options: ['Single region', '2 regions — active-passive', '2 regions — active-active', '3+ regions'],
+  },
+  {
+    id: 'ha',
+    label: 'High availability',
+    type: 'radio',
+    options: ['HA required (multiple ADs)', 'Single AD acceptable', 'Not specified'],
+  },
+  {
+    id: 'internet',
+    label: 'Internet-facing endpoints',
+    type: 'radio',
+    options: ['Yes — public load balancer required', 'No — internal / private only', 'Not specified'],
+  },
+  {
+    id: 'onprem',
+    label: 'On-premises connectivity',
+    type: 'radio',
+    options: ['IPSec VPN', 'FastConnect (dedicated circuit)', 'Both VPN + FastConnect', 'Cloud-only (none)'],
+  },
+  {
+    id: 'security',
+    label: 'Security requirements',
+    type: 'checkbox',
+    options: ['WAF (Web Application Firewall)', 'DDoS protection', 'Bastion host for admin access', 'Private endpoints only (no public IPs)'],
+  },
+  {
+    id: 'workload',
+    label: 'Workload type',
+    type: 'checkbox',
+    options: ['Traditional VMs', 'Containers / OKE (Kubernetes)', 'Functions / Serverless', 'HPC / GPU'],
+  },
+  {
+    id: 'data',
+    label: 'Data classification',
+    type: 'radio',
+    options: ['Public', 'Internal', 'Confidential', 'Restricted / Regulated'],
+  },
+  {
+    id: 'compliance',
+    label: 'Compliance requirements (if any)',
+    type: 'text',
+    placeholder: 'e.g. PCI-DSS, HIPAA, SOC 2, ISO 27001 — or leave blank',
+  },
+  {
+    id: 'scale',
+    label: 'Expected scale',
+    type: 'text',
+    placeholder: 'e.g. 500 concurrent users, 10 000 TPS, 50 TB data',
+  },
+  {
+    id: 'notes',
+    label: 'Additional requirements or constraints',
+    type: 'text',
+    placeholder: 'Anything else the architect should know',
+  },
+];
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+function formatQAnswers(answers: Record<string, string | string[]>): string {
+  const lines: string[] = ['ARCHITECTURE QUESTIONNAIRE:'];
+  for (const q of QUESTIONNAIRE) {
+    const ans = answers[q.id];
+    if (!ans || (Array.isArray(ans) && ans.length === 0)) continue;
+    const val = Array.isArray(ans) ? ans.join(', ') : ans;
+    lines.push(`  ${q.label}: ${val}`);
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+// ── Static styles ─────────────────────────────────────────────────────────
+const s = {
+  section: {
+    background: T.card,
+    border: `1px solid ${T.border}`,
+    borderRadius: 6,
+    padding: '1rem 1.25rem',
+    marginBottom: '0.75rem',
+  } as React.CSSProperties,
+  sectionTitle: {
+    fontFamily: T.display,
+    fontSize: '0.7rem',
+    fontWeight: 700,
+    letterSpacing: '0.15em',
+    textTransform: 'uppercase' as const,
+    color: T.muted,
+    marginBottom: '0.75rem',
+  } as React.CSSProperties,
+  row: {
+    display: 'flex',
+    gap: '0.75rem',
+    marginBottom: '0.75rem',
+    flexWrap: 'wrap' as const,
+  } as React.CSSProperties,
+  fieldWrap: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '0.3rem',
+    flex: 1,
+    minWidth: 180,
+  } as React.CSSProperties,
+  label: {
+    fontSize: '0.7rem',
+    fontWeight: 600,
+    letterSpacing: '0.06em',
+    color: T.muted,
+    textTransform: 'uppercase' as const,
+  } as React.CSSProperties,
+  input: {
+    background: T.surface,
+    color: T.text,
+    border: `1px solid ${T.border}`,
+    borderRadius: 4,
+    padding: '6px 10px',
+    fontFamily: T.font,
+    fontSize: '0.8rem',
+    outline: 'none',
+    width: '100%',
+  } as React.CSSProperties,
+  radioGroup: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: '0.35rem',
+  } as React.CSSProperties,
+  qSection: {
+    background: T.surface,
+    border: `1px solid ${T.border}`,
+    borderRadius: 6,
+    marginBottom: '0.75rem',
+    overflow: 'hidden',
+  } as React.CSSProperties,
+  qHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '0.6rem 1rem',
+    cursor: 'pointer',
+    background: T.card,
+    borderBottom: `1px solid ${T.border}`,
+  } as React.CSSProperties,
+  qTitle: {
+    fontSize: '0.72rem',
+    fontWeight: 700,
+    letterSpacing: '0.1em',
+    textTransform: 'uppercase' as const,
+    color: T.text,
+  } as React.CSSProperties,
+  qBody: {
+    padding: '0.75rem 1rem',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '0.8rem',
+  } as React.CSSProperties,
+  qLabel: {
+    fontSize: '0.7rem',
+    color: T.muted,
+    fontWeight: 600,
+    letterSpacing: '0.05em',
+    marginBottom: '0.25rem',
+  } as React.CSSProperties,
+};
+
+// ── Dynamic style functions ────────────────────────────────────────────────
+function pillStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: '4px 10px',
+    borderRadius: 4,
+    border: `1px solid ${active ? T.accent : T.border}`,
+    background: active ? T.accentG : T.surface,
+    color: active ? T.accent : T.text,
+    fontSize: '0.72rem',
+    cursor: 'pointer',
+    userSelect: 'none',
+    fontFamily: T.font,
+    transition: 'all 0.15s',
+  };
+}
+
+function submitBtnStyle(loading: boolean): React.CSSProperties {
+  return {
+    background: loading ? T.muted : T.accent,
+    color: '#fff',
+    border: 'none',
+    borderRadius: 4,
+    padding: '10px 24px',
+    fontFamily: T.font,
+    fontSize: '0.82rem',
+    fontWeight: 700,
+    letterSpacing: '0.08em',
+    cursor: loading ? 'default' : 'pointer',
+    opacity: loading ? 0.6 : 1,
+    transition: 'all 0.15s',
+  };
+}
+
+function toggleBtnStyle(active: boolean): React.CSSProperties {
+  return {
+    background: active ? T.accentG : 'transparent',
+    color: active ? T.accent : T.muted,
+    border: `1px solid ${active ? T.accent : T.border}`,
+    borderRadius: 4,
+    padding: '4px 12px',
+    fontFamily: T.font,
+    fontSize: '0.72rem',
+    fontWeight: 600,
+    cursor: 'pointer',
+    transition: 'all 0.15s',
+  };
+}
+
+// ── Props ─────────────────────────────────────────────────────────────────
+interface Props {
+  clientId:             string;
+  customerId:           string;
+  diagramName:          string;
+  onCustomerIdChange:   (id: string) => void;
+  onDiagramNameChange:  (name: string) => void;
+  onResult:             (r: GenerateResponse) => void;
+  onError:              (msg: string) => void;
+}
+
+// ── Component ─────────────────────────────────────────────────────────────
 export function UploadBom({
-  clientId,
+  customerId,
   diagramName,
+  onCustomerIdChange,
   onDiagramNameChange,
   onResult,
   onError,
 }: Props) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const ctxFileRef = useRef<HTMLInputElement>(null);
-  const [context, setContext] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [bomFile,     setBomFile]     = useState('oci_bom_priced.xlsx');
+  const [ctxFile,     setCtxFile]     = useState('');
+  const [buildOnPrior, setBuildOnPrior] = useState(false);
+  const [priorNotes,  setPriorNotes]  = useState('');
+  const [qOpen,       setQOpen]       = useState(true);
+  const [qAnswers,    setQAnswers]    = useState<Record<string, string | string[]>>({});
+  const [loading,     setLoading]     = useState(false);
 
+  // ── Questionnaire helpers ───────────────────────────────────────────────
+  function setRadio(id: string, val: string) {
+    setQAnswers(prev => ({ ...prev, [id]: val }));
+  }
+
+  function toggleCheckbox(id: string, val: string) {
+    setQAnswers(prev => {
+      const cur = (prev[id] as string[] | undefined) ?? [];
+      return {
+        ...prev,
+        [id]: cur.includes(val) ? cur.filter(x => x !== val) : [...cur, val],
+      };
+    });
+  }
+
+  function setTextAnswer(id: string, val: string) {
+    setQAnswers(prev => ({ ...prev, [id]: val }));
+  }
+
+  // ── Build full context string ───────────────────────────────────────────
+  function buildContext(): string {
+    const parts: string[] = [];
+
+    if (ctxFile.trim()) {
+      parts.push(`CONTEXT_FILE: ${DEFAULT_PREFIX}/${customerId}/${ctxFile.trim()}`);
+    }
+
+    const qText = formatQAnswers(qAnswers);
+    if (qText) parts.push(qText);
+
+    if (buildOnPrior && priorNotes.trim()) {
+      parts.push(`EXISTING DEPLOYMENT:\n  ${priorNotes.trim()}`);
+    } else if (buildOnPrior) {
+      parts.push('EXISTING DEPLOYMENT: true — building on prior architecture version');
+    }
+
+    return parts.join('\n\n');
+  }
+
+  // ── Submit ──────────────────────────────────────────────────────────────
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const file = fileRef.current?.files?.[0];
-    if (!file) {
-      onError('Please select a BOM Excel file.');
+
+    if (!customerId.trim()) {
+      onError('Customer ID is required — it defines the bucket folder.');
+      return;
+    }
+    if (!bomFile.trim()) {
+      onError('BOM filename is required.');
       return;
     }
 
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('diagram_name', diagramName);
-    fd.append('client_id', clientId);
-    if (context.trim()) fd.append('context', context);
-    const ctxFile = ctxFileRef.current?.files?.[0];
-    if (ctxFile) fd.append('context_file', ctxFile);
+    const bomObject = `${DEFAULT_PREFIX}/${customerId.trim()}/${bomFile.trim()}`;
+    const context   = buildContext();
 
     setLoading(true);
     try {
-      const result = await apiUploadBom(fd);
+      const result = await apiA2AUploadBom(
+        customerId.trim(),
+        bomObject,
+        diagramName || 'oci_architecture',
+        context || undefined,
+        DEFAULT_NAMESPACE,
+        DEFAULT_BUCKET,
+      );
       onResult(result);
     } catch (err: unknown) {
       const e = err as ApiError;
@@ -50,51 +350,176 @@ export function UploadBom({
     }
   }
 
+  // ── Render ──────────────────────────────────────────────────────────────
   return (
-    <form onSubmit={handleSubmit} data-testid="upload-bom-form">
-      <div style={{ marginBottom: '0.75rem' }}>
-        <label>
-          Diagram name:&nbsp;
-          <input
-            type="text"
-            value={diagramName}
-            onChange={(e) => onDiagramNameChange(e.target.value)}
-            required
-            style={{ width: '18rem' }}
-          />
-        </label>
+    <form onSubmit={handleSubmit} data-testid="upload-bom-form" style={{ fontFamily: T.font }}>
+
+      {/* ── Customer + BOM location ─────────────────────────────────────── */}
+      <div style={s.section}>
+        <div style={s.sectionTitle}>Customer &amp; BOM Location</div>
+
+        <div style={s.row}>
+          <div style={s.fieldWrap}>
+            <label style={s.label}>Customer ID</label>
+            <input
+              style={s.input}
+              type="text"
+              value={customerId}
+              onChange={e => onCustomerIdChange(e.target.value)}
+              placeholder="e.g. maurits, acme-corp"
+              required
+            />
+            <span style={{ fontSize: '0.65rem', color: T.muted }}>
+              Bucket folder: <code style={{ color: T.accent }}>{DEFAULT_PREFIX}/{customerId || '<customer>'}/</code>
+            </span>
+          </div>
+
+          <div style={s.fieldWrap}>
+            <label style={s.label}>BOM Filename</label>
+            <input
+              style={s.input}
+              type="text"
+              value={bomFile}
+              onChange={e => setBomFile(e.target.value)}
+              placeholder="oci_bom_priced.xlsx"
+              required
+            />
+          </div>
+        </div>
+
+        <div style={s.row}>
+          <div style={s.fieldWrap}>
+            <label style={s.label}>Context / Notes Filename <span style={{ color: T.muted }}>(optional)</span></label>
+            <input
+              style={s.input}
+              type="text"
+              value={ctxFile}
+              onChange={e => setCtxFile(e.target.value)}
+              placeholder="requirements.md or notes.txt"
+            />
+          </div>
+
+          <div style={s.fieldWrap}>
+            <label style={s.label}>Diagram Name</label>
+            <input
+              style={s.input}
+              type="text"
+              value={diagramName}
+              onChange={e => onDiagramNameChange(e.target.value)}
+              placeholder="oci_architecture"
+            />
+          </div>
+        </div>
       </div>
 
-      <div style={{ marginBottom: '0.75rem' }}>
-        <label>
-          BOM file (.xlsx):{' '}
-          <input ref={fileRef} type="file" accept=".xlsx,.xls" required />
-        </label>
+      {/* ── Prior version ───────────────────────────────────────────────── */}
+      <div style={s.section}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: buildOnPrior ? '0.75rem' : 0 }}>
+          <button
+            type="button"
+            style={toggleBtnStyle(buildOnPrior)}
+            onClick={() => setBuildOnPrior(v => !v)}
+          >
+            {buildOnPrior ? '✓ Building on existing deployment' : 'Building on existing deployment?'}
+          </button>
+          <span style={{ fontSize: '0.65rem', color: T.muted }}>
+            Toggle if extending an existing OCI architecture
+          </span>
+        </div>
+        {buildOnPrior && (
+          <div style={s.fieldWrap}>
+            <label style={s.label}>Existing architecture notes or version reference</label>
+            <textarea
+              style={{ ...s.input, resize: 'vertical' as const, minHeight: 64 }}
+              value={priorNotes}
+              onChange={e => setPriorNotes(e.target.value)}
+              placeholder="e.g. v2 diagram, 3-tier web with existing DB subnet 10.0.3.0/24"
+              rows={3}
+            />
+          </div>
+        )}
       </div>
 
-      <div style={{ marginBottom: '0.75rem' }}>
-        <label>
-          Context file (optional):{' '}
-          <input ref={ctxFileRef} type="file" />
-        </label>
+      {/* ── Architecture questionnaire ───────────────────────────────────── */}
+      <div style={s.qSection}>
+        <div style={s.qHeader} onClick={() => setQOpen(v => !v)}>
+          <span style={s.qTitle}>Architecture Questionnaire</span>
+          <span style={{ fontSize: '0.65rem', color: T.muted }}>
+            {qOpen ? '▲ collapse' : '▼ expand'} — helps the AI produce a better diagram
+          </span>
+        </div>
+
+        {qOpen && (
+          <div style={s.qBody}>
+            {QUESTIONNAIRE.map(q => (
+              <div key={q.id}>
+                <div style={s.qLabel}>{q.label}</div>
+
+                {q.type === 'radio' && q.options && (
+                  <div style={s.radioGroup}>
+                    {q.options.map(opt => {
+                      const active = qAnswers[q.id] === opt;
+                      return (
+                        <span
+                          key={opt}
+                          style={pillStyle(active)}
+                          onClick={() => setRadio(q.id, active ? '' : opt)}
+                        >
+                          {opt}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {q.type === 'checkbox' && q.options && (
+                  <div style={s.radioGroup}>
+                    {q.options.map(opt => {
+                      const cur = (qAnswers[q.id] as string[] | undefined) ?? [];
+                      const active = cur.includes(opt);
+                      return (
+                        <span
+                          key={opt}
+                          style={pillStyle(active)}
+                          onClick={() => toggleCheckbox(q.id, opt)}
+                        >
+                          {opt}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {q.type === 'text' && (
+                  <input
+                    style={s.input}
+                    type="text"
+                    value={(qAnswers[q.id] as string | undefined) ?? ''}
+                    onChange={e => setTextAnswer(q.id, e.target.value)}
+                    placeholder={q.placeholder}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      <div style={{ marginBottom: '0.75rem' }}>
-        <label>
-          Context text (optional):
-          <br />
-          <textarea
-            value={context}
-            onChange={(e) => setContext(e.target.value)}
-            rows={3}
-            style={{ width: '100%' }}
-            placeholder="e.g. 6 regions, HA active-passive"
-          />
-        </label>
+      {/* ── Bucket path preview ──────────────────────────────────────────── */}
+      <div style={{ marginBottom: '0.75rem', fontSize: '0.68rem', color: T.muted, lineHeight: 1.7 }}>
+        <span style={{ color: T.text }}>Source: </span>
+        <code style={{ color: T.accent }}>
+          oci://{DEFAULT_BUCKET}/{DEFAULT_PREFIX}/{customerId || '<customer>'}/{bomFile || '<bom.xlsx>'}
+        </code>
+        <br />
+        <span style={{ color: T.text }}>Output: </span>
+        <code style={{ color: T.green }}>
+          oci://{DEFAULT_BUCKET}/{DEFAULT_PREFIX}/{customerId || '<customer>'}/diagram.drawio
+        </code>
       </div>
 
-      <button type="submit" disabled={loading}>
-        {loading ? 'Uploading…' : 'Upload BOM & Generate'}
+      <button type="submit" style={submitBtnStyle(loading)} disabled={loading}>
+        {loading ? 'Generating diagram…' : 'Generate Architecture Diagram'}
       </button>
     </form>
   );
