@@ -110,7 +110,10 @@ export interface ResolveResponse {
 // ---------------------------------------------------------------------------
 
 export async function apiHealth(): Promise<HealthResponse> {
-  return apiFetch<HealthResponse>('/health');
+  // Health is at /health (no /api prefix)
+  const resp = await fetch('/health');
+  if (!resp.ok) throw { status: resp.status, detail: await resp.text() } as ApiError;
+  return resp.json() as Promise<HealthResponse>;
 }
 
 export async function apiGenerate(req: GenerateRequest): Promise<GenerateResponse> {
@@ -155,6 +158,14 @@ export interface A2ATask {
   inputs: Record<string, unknown>;
 }
 
+interface A2AResponse {
+  task_id:       string;
+  agent_id:      string;
+  status:        'ok' | 'need_clarification' | 'error';
+  outputs:       Record<string, unknown>;
+  error_message?: string | null;
+}
+
 /** Call the A2A upload_bom skill — BOM and context fetched server-side from OCI bucket. */
 export async function apiA2AUploadBom(
   customerId: string,
@@ -174,11 +185,23 @@ export async function apiA2AUploadBom(
       ...(context?.trim() ? { context } : {}),
     },
   };
-  return apiFetch<GenerateResponse>('/a2a/task', {
+  const raw = await apiFetch<A2AResponse>('/a2a/task', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(task),
   });
+
+  // A2A wraps errors as status="error" with HTTP 200 — surface them as ApiError
+  if (raw.status === 'error') {
+    const err: ApiError = {
+      status: 500,
+      detail: raw.error_message ?? 'Unknown error from drawing agent',
+    };
+    throw err;
+  }
+
+  // Success: outputs contains the full GenerateResponse
+  return raw.outputs as unknown as GenerateResponse;
 }
 
 /** Build a download URL for a named artifact. */
