@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { apiA2AUploadBom, type GenerateResponse, type ApiError } from '../api/client';
+import React, { useState, useRef, useCallback } from 'react';
+import { apiA2AUploadBom, apiUploadToBucket, type GenerateResponse, type ApiError } from '../api/client';
 
 // ── Design tokens matching the dark OCI theme ─────────────────────────────
 const T = {
@@ -276,13 +276,33 @@ export function UploadBom({
   onResult,
   onError,
 }: Props) {
+  // Drag-and-drop state
+  const [droppedBom,   setDroppedBom]   = useState<File | null>(null);
+  const [droppedCtx,   setDroppedCtx]   = useState<File | null>(null);
+  const [dragOver,     setDragOver]     = useState<'bom' | 'ctx' | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<string>('');
+  const bomInputRef = useRef<HTMLInputElement>(null);
+  const ctxInputRef = useRef<HTMLInputElement>(null);
+
+  // Bucket-path fallback (used when no file dropped)
   const [bomFile,     setBomFile]     = useState('oci_bom_priced.xlsx');
   const [ctxFile,     setCtxFile]     = useState('');
+
   const [buildOnPrior, setBuildOnPrior] = useState(false);
   const [priorNotes,  setPriorNotes]  = useState('');
   const [qOpen,       setQOpen]       = useState(true);
   const [qAnswers,    setQAnswers]    = useState<Record<string, string | string[]>>({});
   const [loading,     setLoading]     = useState(false);
+
+  // ── Drag-and-drop handlers ──────────────────────────────────────────────
+  const onDrop = useCallback((e: React.DragEvent, zone: 'bom' | 'ctx') => {
+    e.preventDefault();
+    setDragOver(null);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    if (zone === 'bom') { setDroppedBom(file); setBomFile(file.name); }
+    else                { setDroppedCtx(file); setCtxFile(file.name); }
+  }, []);
 
   // ── Questionnaire helpers ───────────────────────────────────────────────
   function setRadio(id: string, val: string) {
@@ -330,16 +350,28 @@ export function UploadBom({
       onError('Customer ID is required — it defines the bucket folder.');
       return;
     }
-    if (!bomFile.trim()) {
-      onError('BOM filename is required.');
+    if (!droppedBom && !bomFile.trim()) {
+      onError('Drop a BOM file or enter a BOM filename.');
       return;
     }
 
-    const bomObject = `${DEFAULT_PREFIX}/${customerId.trim()}/${bomFile.trim()}`;
-    const context   = buildContext();
-
     setLoading(true);
+    setUploadStatus('');
     try {
+      // 1. Upload dropped files to bucket (if any)
+      if (droppedBom) {
+        setUploadStatus('Uploading BOM to bucket…');
+        await apiUploadToBucket(customerId.trim(), droppedBom);
+      }
+      if (droppedCtx) {
+        setUploadStatus('Uploading context file…');
+        await apiUploadToBucket(customerId.trim(), droppedCtx);
+      }
+
+      // 2. Generate diagram via A2A
+      setUploadStatus('Generating diagram…');
+      const bomObject = `${DEFAULT_PREFIX}/${customerId.trim()}/${droppedBom ? droppedBom.name : bomFile.trim()}`;
+      const context   = buildContext();
       const result = await apiA2AUploadBom(
         customerId.trim(),
         bomObject,
@@ -348,8 +380,10 @@ export function UploadBom({
         DEFAULT_NAMESPACE,
         DEFAULT_BUCKET,
       );
+      setUploadStatus('');
       onResult(result);
     } catch (err: unknown) {
+      setUploadStatus('');
       const e = err as ApiError;
       onError(`${e.status}: ${e.detail}`);
     } finally {
@@ -382,31 +416,6 @@ export function UploadBom({
           </div>
 
           <div style={s.fieldWrap}>
-            <label style={s.label}>BOM Filename</label>
-            <input
-              style={s.input}
-              type="text"
-              value={bomFile}
-              onChange={e => setBomFile(e.target.value)}
-              placeholder="oci_bom_priced.xlsx"
-              required
-            />
-          </div>
-        </div>
-
-        <div style={s.row}>
-          <div style={s.fieldWrap}>
-            <label style={s.label}>Context / Notes Filename <span style={{ color: T.label }}>(optional)</span></label>
-            <input
-              style={s.input}
-              type="text"
-              value={ctxFile}
-              onChange={e => setCtxFile(e.target.value)}
-              placeholder="requirements.md or notes.txt"
-            />
-          </div>
-
-          <div style={s.fieldWrap}>
             <label style={s.label}>Diagram Name</label>
             <input
               style={s.input}
@@ -414,6 +423,94 @@ export function UploadBom({
               value={diagramName}
               onChange={e => onDiagramNameChange(e.target.value)}
               placeholder="oci_architecture"
+            />
+          </div>
+        </div>
+
+        {/* ── Drop zones ─────────────────────────────────────────────────── */}
+        <div style={s.row}>
+          {/* BOM drop zone */}
+          <div style={s.fieldWrap}>
+            <label style={s.label}>BOM File (.xlsx)</label>
+            <div
+              style={{
+                border: `2px dashed ${dragOver === 'bom' ? T.accent : droppedBom ? T.green : T.border}`,
+                borderRadius: 6,
+                padding: '1rem',
+                textAlign: 'center',
+                cursor: 'pointer',
+                background: dragOver === 'bom' ? T.accentG : droppedBom ? 'rgba(46,204,138,0.06)' : T.surface,
+                transition: 'all 0.15s',
+                fontSize: '0.75rem',
+                color: droppedBom ? T.green : T.label,
+              }}
+              onDragOver={e => { e.preventDefault(); setDragOver('bom'); }}
+              onDragLeave={() => setDragOver(null)}
+              onDrop={e => onDrop(e, 'bom')}
+              onClick={() => bomInputRef.current?.click()}
+            >
+              {droppedBom
+                ? `✓ ${droppedBom.name} (${(droppedBom.size / 1024).toFixed(0)} KB)`
+                : 'Drop BOM here or click to browse'}
+              <input
+                ref={bomInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                style={{ display: 'none' }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) { setDroppedBom(f); setBomFile(f.name); } }}
+              />
+            </div>
+            <span style={{ fontSize: '0.65rem', color: T.muted, marginTop: 2 }}>
+              or enter filename below if already in bucket
+            </span>
+            <input
+              style={{ ...s.input, marginTop: 2 }}
+              type="text"
+              value={bomFile}
+              onChange={e => setBomFile(e.target.value)}
+              placeholder="oci_bom_priced.xlsx"
+            />
+          </div>
+
+          {/* Context drop zone */}
+          <div style={s.fieldWrap}>
+            <label style={s.label}>Context / Notes <span style={{ color: T.label }}>(optional)</span></label>
+            <div
+              style={{
+                border: `2px dashed ${dragOver === 'ctx' ? T.accent : droppedCtx ? T.green : T.border}`,
+                borderRadius: 6,
+                padding: '1rem',
+                textAlign: 'center',
+                cursor: 'pointer',
+                background: dragOver === 'ctx' ? T.accentG : droppedCtx ? 'rgba(46,204,138,0.06)' : T.surface,
+                transition: 'all 0.15s',
+                fontSize: '0.75rem',
+                color: droppedCtx ? T.green : T.label,
+              }}
+              onDragOver={e => { e.preventDefault(); setDragOver('ctx'); }}
+              onDragLeave={() => setDragOver(null)}
+              onDrop={e => onDrop(e, 'ctx')}
+              onClick={() => ctxInputRef.current?.click()}
+            >
+              {droppedCtx
+                ? `✓ ${droppedCtx.name}`
+                : 'Drop context file here or click'}
+              <input
+                ref={ctxInputRef}
+                type="file"
+                style={{ display: 'none' }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) { setDroppedCtx(f); setCtxFile(f.name); } }}
+              />
+            </div>
+            <span style={{ fontSize: '0.65rem', color: T.muted, marginTop: 2 }}>
+              or enter filename if already in bucket
+            </span>
+            <input
+              style={{ ...s.input, marginTop: 2 }}
+              type="text"
+              value={ctxFile}
+              onChange={e => setCtxFile(e.target.value)}
+              placeholder="requirements.md or notes.txt"
             />
           </div>
         </div>
@@ -525,8 +622,14 @@ export function UploadBom({
         </code>
       </div>
 
+      {uploadStatus && (
+        <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: T.gold }}>
+          ⏳ {uploadStatus}
+        </div>
+      )}
+
       <button type="submit" style={submitBtnStyle(loading)} disabled={loading}>
-        {loading ? 'Generating diagram…' : 'Generate Architecture Diagram'}
+        {loading ? (uploadStatus || 'Working…') : (droppedBom ? 'Upload & Generate Diagram' : 'Generate Architecture Diagram')}
       </button>
     </form>
   );

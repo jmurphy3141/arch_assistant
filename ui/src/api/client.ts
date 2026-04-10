@@ -147,6 +147,23 @@ export async function apiInputsResolve(body: object): Promise<ResolveResponse> {
   });
 }
 
+export interface UploadToBucketResponse {
+  object_key: string;
+  filename:   string;
+  size:       number;
+}
+
+/** Upload a file to OCI Object Storage under agent3/{customerId}/. */
+export async function apiUploadToBucket(
+  customerId: string,
+  file: File,
+): Promise<UploadToBucketResponse> {
+  const fd = new FormData();
+  fd.append('customer_id', customerId);
+  fd.append('file', file);
+  return apiFetch<UploadToBucketResponse>('/upload-to-bucket', { method: 'POST', body: fd });
+}
+
 // ---------------------------------------------------------------------------
 // A2A task endpoint
 // ---------------------------------------------------------------------------

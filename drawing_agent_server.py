@@ -964,6 +964,32 @@ async def logout(request: Request):
 
 # ── Endpoints ───────────────────────────────────────────────────────────────────
 
+@app.post("/upload-to-bucket")
+async def upload_to_bucket(
+    file:        UploadFile = File(...),
+    customer_id: str        = Form(...),
+):
+    """
+    Upload a file (BOM or context) to OCI Object Storage at
+    agent3/{customer_id}/{filename}.  Called by the browser UI drag-and-drop
+    before triggering diagram generation via /api/a2a/task.
+    """
+    object_store = getattr(app.state, "object_store", None)
+    if object_store is None:
+        raise HTTPException(503, "OCI Object Storage not available on this server")
+
+    content  = await file.read()
+    filename = file.filename or "upload.xlsx"
+    object_key = f"agent3/{customer_id.strip()}/{filename}"
+    content_type = file.content_type or "application/octet-stream"
+
+    await anyio.to_thread.run_sync(
+        functools.partial(object_store.put, object_key, content, content_type)
+    )
+    logger.info("upload-to-bucket: wrote %s (%d bytes)", object_key, len(content))
+    return {"object_key": object_key, "filename": filename, "size": len(content)}
+
+
 @app.post("/upload-bom")
 async def upload_bom(
     file:         UploadFile = File(...),
