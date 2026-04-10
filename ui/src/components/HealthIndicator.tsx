@@ -20,19 +20,20 @@ export function HealthIndicator() {
   return (
     <div
       data-testid="health-indicator"
-      style={{ fontSize: '0.85rem', color: '#555', marginBottom: '0.5rem' }}
+      style={{ fontSize: '0.72rem', color: '#8892a4', fontFamily: "'JetBrains Mono', monospace" }}
     >
       <span>{dot}</span>{' '}
-      {loading && <span>Checking health…</span>}
-      {!loading && error && <span>Health error: {error}</span>}
+      {loading && <span>checking…</span>}
+      {!loading && error && <span style={{ color: '#e8415a' }}>health error: {error}</span>}
       {!loading && data && (
         <span>
-          Agent: <strong>{data.agent_version}</strong> — {data.status}
+          <strong style={{ color: '#cdd2e0' }}>{data.agent_version}</strong>
+          <span style={{ color: '#454d64' }}> · {data.status}</span>
         </span>
       )}
       {lastChecked && (
-        <span style={{ marginLeft: '0.75rem', color: '#999' }}>
-          (last checked: {fmt(lastChecked)})
+        <span style={{ marginLeft: '0.75rem', color: '#454d64' }}>
+          checked {fmt(lastChecked)}
         </span>
       )}
     </div>
