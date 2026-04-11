@@ -986,6 +986,7 @@ async def logout(request: Request):
 # ── Endpoints ───────────────────────────────────────────────────────────────────
 
 @app.post("/upload-to-bucket")
+@app.post("/api/upload-to-bucket")
 async def upload_to_bucket(
     file:        UploadFile = File(...),
     customer_id: str        = Form(...),
@@ -1012,6 +1013,7 @@ async def upload_to_bucket(
 
 
 @app.post("/upload-bom")
+@app.post("/api/upload-bom")
 async def upload_bom(
     file:         UploadFile = File(...),
     context_file: UploadFile = File(None),
@@ -1077,6 +1079,7 @@ async def upload_bom(
 
 
 @app.post("/clarify")
+@app.post("/api/clarify")
 async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
     """
     Submit answers to clarification questions from /upload-bom or /generate.
@@ -1145,6 +1148,7 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
 
 
 @app.post("/generate")
+@app.post("/api/generate")
 async def generate_from_resources(req: GenerateRequest, _user: dict = Depends(require_user)):
     """Generate diagram from a pre-parsed resource list (JSON body)."""
     request_id = str(uuid.uuid4())
@@ -1227,6 +1231,7 @@ async def chat(req: ChatRequest, _user: dict = Depends(require_user)):
 
 
 @app.get("/download/{filename}")
+@app.get("/api/download/{filename}")
 async def download_file(
     filename:     str,
     client_id:    Optional[str] = Query(default=None),
@@ -1311,6 +1316,7 @@ def health():
 
 
 @app.get("/config")
+@app.get("/api/config")
 def get_config():
     """Return UI configuration (region, model info). No secrets exposed."""
     return {
@@ -1854,7 +1860,7 @@ def _require_object_store():
 
 # ── Notes endpoints ──────────────────────────────────────────────────────────
 
-@app.post("/notes/upload")
+@app.post("/api/notes/upload")
 async def upload_note(
     customer_id: str        = Form(...),
     note_name:   str        = Form(default=""),
@@ -1880,7 +1886,7 @@ async def upload_note(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/notes/{customer_id}")
+@app.get("/api/notes/{customer_id}")
 async def list_customer_notes(customer_id: str):
     """List all notes for a customer."""
     store = _require_object_store()
@@ -1896,7 +1902,7 @@ async def list_customer_notes(customer_id: str):
 
 # ── POV endpoints ────────────────────────────────────────────────────────────
 
-@app.post("/pov/generate")
+@app.post("/api/pov/generate")
 async def pov_generate(req: PovRequest):
     """
     Generate or update a Point of View document for a customer.
@@ -1945,7 +1951,7 @@ async def pov_generate(req: PovRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/pov/{customer_id}/latest")
+@app.get("/api/pov/{customer_id}/latest")
 async def pov_latest(customer_id: str):
     """Return the latest POV document for a customer."""
     store = _require_object_store()
@@ -1957,7 +1963,7 @@ async def pov_latest(customer_id: str):
     return {"status": "ok", "customer_id": customer_id, "doc_type": "pov", "content": content}
 
 
-@app.get("/pov/{customer_id}/versions")
+@app.get("/api/pov/{customer_id}/versions")
 async def pov_versions(customer_id: str):
     """List all POV versions for a customer."""
     store = _require_object_store()
@@ -1969,7 +1975,7 @@ async def pov_versions(customer_id: str):
 
 # ── JEP endpoints ────────────────────────────────────────────────────────────
 
-@app.post("/jep/generate")
+@app.post("/api/jep/generate")
 async def jep_generate(req: JepRequest):
     """
     Generate or update a Joint Execution Plan for a customer.
@@ -2029,7 +2035,7 @@ async def jep_generate(req: JepRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/jep/{customer_id}/latest")
+@app.get("/api/jep/{customer_id}/latest")
 async def jep_latest(customer_id: str):
     """Return the latest JEP document for a customer."""
     store = _require_object_store()
@@ -2041,7 +2047,7 @@ async def jep_latest(customer_id: str):
     return {"status": "ok", "customer_id": customer_id, "doc_type": "jep", "content": content}
 
 
-@app.get("/jep/{customer_id}/versions")
+@app.get("/api/jep/{customer_id}/versions")
 async def jep_versions(customer_id: str):
     """List all JEP versions for a customer."""
     store = _require_object_store()
