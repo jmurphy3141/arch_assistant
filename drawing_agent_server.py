@@ -84,6 +84,15 @@ from agent.persistence_objectstore import (
     persist_artifacts,
     ARTIFACT_ALLOWLIST,
 )
+from agent.document_store import (
+    save_note,
+    list_notes,
+    list_versions,
+    get_latest_doc,
+)
+from agent.pov_agent import generate_pov
+from agent.jep_agent import generate_jep
+from agent.context_store import read_context, write_context, record_agent_run
 
 try:
     import server.services.oci_object_storage as _oci_storage
@@ -218,6 +227,18 @@ class GenerateRequest(BaseModel):
     customer_id:        Optional[str]  = None  # fleet context linkage
     customer_name:      Optional[str]  = ""
     deployment_hints:   Optional[dict] = {}
+
+
+class PovRequest(BaseModel):
+    customer_id:   str
+    customer_name: str
+
+
+class JepRequest(BaseModel):
+    customer_id:   str
+    customer_name: str
+    diagram_key:   Optional[str] = None
+    diagram_url:   Optional[str] = None
 
 
 class A2AObjectRef(BaseModel):
@@ -1829,6 +1850,207 @@ def _require_object_store():
             ),
         )
     return store
+
+
+# ── Notes endpoints ──────────────────────────────────────────────────────────
+
+@app.post("/notes/upload")
+async def upload_note(
+    customer_id: str        = Form(...),
+    note_name:   str        = Form(default=""),
+    file:        UploadFile = File(...),
+):
+    """
+    Upload a meeting notes file for a customer.
+
+    Stores to: notes/{customer_id}/{note_name}
+    Updates:   notes/{customer_id}/MANIFEST.json
+    """
+    store = _require_object_store()
+    name = note_name.strip() or (file.filename or "note.txt")
+    content_bytes = await file.read()
+    content_type  = file.content_type or "text/plain"
+    try:
+        key = await anyio.to_thread.run_sync(
+            functools.partial(save_note, store, customer_id, name, content_bytes, content_type)
+        )
+        return {"status": "ok", "key": key, "customer_id": customer_id, "note_name": name}
+    except Exception as exc:
+        logger.error("Error in /notes/upload: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/notes/{customer_id}")
+async def list_customer_notes(customer_id: str):
+    """List all notes for a customer."""
+    store = _require_object_store()
+    try:
+        notes = await anyio.to_thread.run_sync(
+            functools.partial(list_notes, store, customer_id)
+        )
+        return {"status": "ok", "customer_id": customer_id, "notes": notes}
+    except Exception as exc:
+        logger.error("Error in /notes/%s: %s", customer_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── POV endpoints ────────────────────────────────────────────────────────────
+
+@app.post("/pov/generate")
+async def pov_generate(req: PovRequest):
+    """
+    Generate or update a Point of View document for a customer.
+
+    Reads all notes from notes/{customer_id}/ and the previous POV version
+    (if any), then uses the LLM to produce an updated draft.
+
+    Saves to: pov/{customer_id}/v{n}.md + LATEST.md
+    """
+    store = _require_object_store()
+
+    def _run_pov():
+        def runner(prompt, system_message=""):
+            from agent.llm_inference_client import run_inference as _ri
+            return _ri(
+                prompt,
+                endpoint=INFERENCE_ENDPOINT,
+                model_id=INFERENCE_MODEL_ID,
+                compartment_id=COMPARTMENT_ID,
+                max_tokens=WRITING_MAX_TOKENS,
+                temperature=WRITING_TEMPERATURE,
+                top_p=WRITING_TOP_P,
+                top_k=WRITING_TOP_K,
+                system_message=system_message,
+            )
+        text_runner = getattr(app.state, "text_runner", None) or runner
+        return generate_pov(req.customer_id, req.customer_name, store, text_runner)
+
+    try:
+        result = await anyio.to_thread.run_sync(_run_pov)
+        return {
+            "status":        "ok",
+            "agent_version": AGENT_VERSION,
+            "customer_id":   req.customer_id,
+            "doc_type":      "pov",
+            "version":       result["version"],
+            "key":           result["key"],
+            "latest_key":    result["latest_key"],
+            "content":       result["content"],
+            "errors":        [],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error in /pov/generate: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/pov/{customer_id}/latest")
+async def pov_latest(customer_id: str):
+    """Return the latest POV document for a customer."""
+    store = _require_object_store()
+    content = await anyio.to_thread.run_sync(
+        functools.partial(get_latest_doc, store, "pov", customer_id)
+    )
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"No POV found for customer_id={customer_id!r}")
+    return {"status": "ok", "customer_id": customer_id, "doc_type": "pov", "content": content}
+
+
+@app.get("/pov/{customer_id}/versions")
+async def pov_versions(customer_id: str):
+    """List all POV versions for a customer."""
+    store = _require_object_store()
+    versions = await anyio.to_thread.run_sync(
+        functools.partial(list_versions, store, "pov", customer_id)
+    )
+    return {"status": "ok", "customer_id": customer_id, "doc_type": "pov", "versions": versions}
+
+
+# ── JEP endpoints ────────────────────────────────────────────────────────────
+
+@app.post("/jep/generate")
+async def jep_generate(req: JepRequest):
+    """
+    Generate or update a Joint Execution Plan for a customer.
+
+    Reads all notes from notes/{customer_id}/, the previous JEP (if any),
+    runs the stub BOM generator, references the latest diagram from the bucket,
+    then uses the LLM to produce an updated JEP draft.
+
+    Saves to: jep/{customer_id}/v{n}.md + LATEST.md
+    """
+    store = _require_object_store()
+    persistence_cfg = getattr(app.state, "persistence_config", None) or {}
+    prefix = persistence_cfg.get("prefix", "agent3")
+
+    def _run_jep():
+        text_runner = getattr(app.state, "text_runner", None)
+        if text_runner is None:
+            from agent.llm_inference_client import run_inference as _ri
+            def text_runner(prompt, system_message=""):
+                return _ri(
+                    prompt,
+                    endpoint=INFERENCE_ENDPOINT,
+                    model_id=INFERENCE_MODEL_ID,
+                    compartment_id=COMPARTMENT_ID,
+                    max_tokens=WRITING_MAX_TOKENS,
+                    temperature=WRITING_TEMPERATURE,
+                    top_p=WRITING_TOP_P,
+                    top_k=WRITING_TOP_K,
+                    system_message=system_message,
+                )
+        return generate_jep(
+            req.customer_id, req.customer_name, store, text_runner,
+            diagram_key=req.diagram_key,
+            diagram_url=req.diagram_url,
+            persistence_prefix=prefix,
+        )
+
+    try:
+        result = await anyio.to_thread.run_sync(_run_jep)
+        return {
+            "status":        "ok",
+            "agent_version": AGENT_VERSION,
+            "customer_id":   req.customer_id,
+            "doc_type":      "jep",
+            "version":       result["version"],
+            "key":           result["key"],
+            "latest_key":    result["latest_key"],
+            "content":       result["content"],
+            "bom":           result.get("bom"),
+            "diagram_key":   result.get("diagram_key"),
+            "errors":        [],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error in /jep/generate: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/jep/{customer_id}/latest")
+async def jep_latest(customer_id: str):
+    """Return the latest JEP document for a customer."""
+    store = _require_object_store()
+    content = await anyio.to_thread.run_sync(
+        functools.partial(get_latest_doc, store, "jep", customer_id)
+    )
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"No JEP found for customer_id={customer_id!r}")
+    return {"status": "ok", "customer_id": customer_id, "doc_type": "jep", "content": content}
+
+
+@app.get("/jep/{customer_id}/versions")
+async def jep_versions(customer_id: str):
+    """List all JEP versions for a customer."""
+    store = _require_object_store()
+    versions = await anyio.to_thread.run_sync(
+        functools.partial(list_versions, store, "jep", customer_id)
+    )
+    return {"status": "ok", "customer_id": customer_id, "doc_type": "jep", "versions": versions}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080)
