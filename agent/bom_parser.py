@@ -320,23 +320,130 @@ def _build_env_summary(wb, env_sheets: list[str]) -> str:
     return "\n".join(lines)
 
 
+# Types that represent shared infrastructure — only kept from the primary section.
+# Secondary environments (DR, Dev, etc.) contribute workload types only.
+_SHARED_INFRA_TYPES = frozenset([
+    "internet gateway", "nat gateway", "service gateway", "drg",
+    "waf", "load balancer", "logging", "monitoring", "iam", "vault",
+    "internet", "on premises", "bastion",
+])
+
+
+def _split_bom_into_sections(sheet) -> list[tuple[str, list, list]]:
+    """Split a single BOM sheet into named environment sections.
+
+    Each section starts with an optional label row (e.g. "Prod", "DR") followed
+    by a header row that contains both "sku" and "description" columns, then the
+    data rows for that environment.
+
+    Returns: list of (section_name, col_headers, row_dicts)
+    """
+    result: list[tuple[str, list, list]] = []
+    next_name: str = "Primary"   # name queued for the next section
+    cur_name:  str | None = None
+    cur_hdrs:  list | None = None
+    cur_rows:  list = []
+
+    for row in sheet.iter_rows(values_only=True):
+        # Skip fully empty rows
+        if not any(v is not None and str(v).strip() for v in row):
+            continue
+
+        col_names = [str(c).lower().strip() if c else "" for c in row]
+
+        # ── Is this a column-header row? ─────────────────────────────────────
+        if "sku" in col_names and "description" in col_names:
+            # Flush the current section before starting a new one
+            if cur_hdrs is not None and cur_rows:
+                result.append((cur_name, cur_hdrs, cur_rows))
+            cur_name  = next_name
+            next_name = f"Section {len(result) + 2}"  # fallback if no label precedes next
+            cur_hdrs  = col_names
+            cur_rows  = []
+            continue
+
+        # ── Is this a section-label row? ─────────────────────────────────────
+        # A label row has ≤3 non-empty cells, and the first cell is short text
+        # that doesn't look like a SKU (B + digits) or a plain number.
+        text_cells = [str(v).strip() for v in row if v is not None and str(v).strip()]
+        if text_cells:
+            first = text_cells[0]
+            is_sku    = (len(first) >= 5 and first[0].upper() == "B"
+                         and first[1:].isdigit())
+            is_number = first.replace(".", "").replace(",", "").isdigit()
+            if len(text_cells) <= 3 and not is_sku and not is_number and len(first) < 60:
+                next_name = first
+                continue
+
+        # ── Regular data row ──────────────────────────────────────────────────
+        if cur_hdrs is not None:
+            cur_rows.append(dict(zip(cur_hdrs, row)))
+
+    # Flush last section
+    if cur_hdrs is not None and cur_rows:
+        result.append((cur_name, cur_hdrs, cur_rows))
+
+    return result
+
+
+def _lookup_row(sku: str, desc: str) -> tuple[str | None, str | None]:
+    """Tier 1→3 service-type lookup for a single BOM row.
+    Returns (oci_type, layer); (None, None) means silently skip."""
+    # Tier 1: exact SKU
+    if sku in SKU_MAP:
+        return SKU_MAP[sku]
+
+    # Tier 2a: DESC_MAP on raw description
+    for key, (t, l) in DESC_MAP.items():
+        if key in desc:
+            return t, l
+
+    # Tier 2b: DESC_MAP on normalised description (strip OCI/Oracle prefix)
+    norm = _normalize_desc(desc)
+    if norm != desc:
+        for key, (t, l) in DESC_MAP.items():
+            if key in norm:
+                return t, l
+
+    # Tier 3: token-level billing-unit inference
+    inferred = _infer_from_tokens(desc)
+    if inferred is not None:
+        return inferred
+
+    return None, None   # genuinely unknown
+
+
 def parse_bom(xlsx_path: str | Path, context: str = "",
               sheet_name: str | None = None) -> list[ServiceItem]:
     """Parse BOM Excel → list of ServiceItems ready for LLM layout prompt.
 
-    sheet_name: if provided, parse that specific sheet; otherwise auto-detect
-    the primary environment sheet.
+    Handles both single-environment and multi-environment BOMs.  A multi-
+    environment BOM has repeated blocks in one sheet:
+        Prod
+        SKU | Description | Quantity ...
+        <data rows>
+        DR
+        SKU | Description | Quantity ...
+        <data rows>
+
+    Each environment gets its own ServiceItems (de-duplicated within the
+    section).  Shared infrastructure (gateways, WAF, etc.) is kept only from
+    the primary section.  Secondary environment items are tagged with the
+    section name in their ID and label.
+
+    sheet_name: if given, force that specific sheet; otherwise auto-detect.
     """
     import openpyxl
-    wb   = openpyxl.load_workbook(xlsx_path, data_only=True)
+    wb  = openpyxl.load_workbook(xlsx_path, data_only=True)
     if sheet_name and sheet_name in wb.sheetnames:
         bom = wb[sheet_name]
     else:
         primary = _find_bom_sheets(wb)[0]
         bom = wb[primary]
-    inp  = wb["Input"] if "Input" in wb.sheetnames else None
 
-    # Read input sheet for quantities
+    inp = wb["Input"] if "Input" in wb.sheetnames else None
+
+    # Optional AWS-style Input sheet (usually absent in OCI BOMs)
     input_data: dict[str, dict] = {}
     if inp:
         hdrs = None
@@ -353,121 +460,94 @@ def parse_bom(xlsx_path: str | Path, context: str = "",
     db_ocpu  = int((input_data.get("postgres rds", {}).get("vcpu count", 0) or 0) / 2)
     obj_gb   = input_data.get("postgres rds", {}).get("storage (gb)", 0) or 0
 
-    items: list[ServiceItem] = []
-    seen_types: set[str] = set()
-    counters: dict[str, int] = {}
+    # ── Split sheet into environment sections ─────────────────────────────────
+    sections = _split_bom_into_sections(bom)
+    if not sections:
+        sections = [("Primary", [], [])]
 
-    hdrs = None
-    for row in bom.iter_rows(values_only=True):
-        if hdrs is None:
-            candidate = [str(c).lower().strip() if c else f"c{i}" for i, c in enumerate(row)]
-            # Skip metadata rows until we find the real header (must contain both
-            # "sku" and "description" columns).  OCI BOM exports often have 2-4
-            # title/discount rows before the actual column header row.
-            if "sku" in candidate and "description" in candidate:
-                hdrs = candidate
-            continue
-        if not any(v is not None for v in row):
-            continue
-        d = dict(zip(hdrs, row))
+    items:      list[ServiceItem] = []
+    seen_global: set[str] = set()   # all oci_types seen so far (for infra dedup)
 
-        sku  = str(d.get("sku", "") or "").strip()
-        desc = str(d.get("description", "") or "").lower().strip()
-        qty  = d.get("quantity")
-        note = str(d.get(hdrs[-1], "") or "")
+    for sec_idx, (sec_name, sec_hdrs, sec_rows) in enumerate(sections):
+        is_primary = (sec_idx == 0)
+        # Secondary sections prefix IDs and suffix labels with env name
+        id_prefix  = "" if is_primary else f"{sec_name.lower()[:8].replace(' ', '_')}_"
+        lbl_suffix = "" if is_primary else f"\n({sec_name})"
 
-        # ── Tier 1: exact SKU lookup ─────────────────────────────────────────
-        if sku in SKU_MAP:
-            oci_type, layer = SKU_MAP[sku]
-            if not oci_type or not layer:
-                continue
-        else:
-            oci_type, layer = None, None
+        seen_local:    set[str]       = set()
+        counters_local: dict[str, int] = {}
 
-            # ── Tier 2a: DESC_MAP on raw description ─────────────────────────
-            for key, (t, l) in DESC_MAP.items():
-                if key in desc:
-                    oci_type, layer = t, l
-                    break
+        for d in sec_rows:
+            sku  = str(d.get("sku", "") or "").strip()
+            desc = str(d.get("description", "") or "").lower().strip()
+            qty  = d.get("quantity")
+            note = str(d.get(sec_hdrs[-1], "") or "") if sec_hdrs else ""
 
-            # ── Tier 2b: DESC_MAP on normalised description (strip OCI prefix)
-            if not oci_type:
-                norm = _normalize_desc(desc)
-                if norm != desc:
-                    for key, (t, l) in DESC_MAP.items():
-                        if key in norm:
-                            oci_type, layer = t, l
-                            break
+            oci_type, layer = _lookup_row(sku, desc)
 
-            # ── Tier 3: token-level billing-unit inference ───────────────────
-            if not oci_type:
-                inferred = _infer_from_tokens(desc)
-                if inferred is not None:
-                    oci_type, layer = inferred
-
-            # If still None after all tiers → row has no architectural node
-            if not oci_type:
+            if oci_type is None and layer is None:
+                # Genuinely unknown
                 logger.warning(
-                    "parse_bom: unrecognized SKU=%r desc=%r — row skipped",
-                    sku, desc,
+                    "parse_bom [%s]: unrecognized SKU=%r desc=%r — row skipped",
+                    sec_name, sku, desc,
                 )
                 continue
-            # (None, None) means "explicitly skip this billing row silently"
-            if oci_type is None:
+            if not oci_type:
+                # (None, None) = explicit skip (billing overhead row)
                 continue
 
-        # Deduplicate by oci_type (one icon per service type)
-        if oci_type in seen_types:
-            continue
-        seen_types.add(oci_type)
+            # Shared infrastructure only appears once (from the primary section)
+            if not is_primary and oci_type in _SHARED_INFRA_TYPES:
+                continue
 
-        counters[oci_type] = counters.get(oci_type, 0) + 1
-        nid = f"{oci_type.replace(' ', '_')}_{counters[oci_type]}"
+            # Deduplicate within this section
+            if oci_type in seen_local:
+                continue
+            seen_local.add(oci_type)
+            seen_global.add(oci_type)
 
-        # Build label with quantity context
-        label = _make_label(oci_type, qty, app_ocpu, db_ocpu, obj_gb, note)
+            counters_local[oci_type] = counters_local.get(oci_type, 0) + 1
+            nid   = f"{id_prefix}{oci_type.replace(' ', '_')}_{counters_local[oci_type]}"
+            label = _make_label(oci_type, qty, app_ocpu, db_ocpu, obj_gb, note) + lbl_suffix
 
-        items.append(ServiceItem(id=nid, oci_type=oci_type, label=label,
-                                 layer=layer, quantity=qty, notes=note))
+            items.append(ServiceItem(id=nid, oci_type=oci_type, label=label,
+                                     layer=layer, quantity=qty, notes=sec_name))
 
-    # Add On-Premises (always — FastConnect implies it)
+    # ── On-Premises (always) ──────────────────────────────────────────────────
     items.insert(0, ServiceItem(id="on_prem", oci_type="on premises",
                                 label="On-Premises\n(3 Offices)", layer="external"))
+    seen_global.add("on premises")
 
-    # Add best-practice services
+    # ── Best-practice services (once) ────────────────────────────────────────
     for bp in BEST_PRACTICE:
-        if bp["type"] not in seen_types:
+        if bp["type"] not in seen_global:
             items.append(ServiceItem(id=bp["id"], oci_type=bp["type"],
                                      label=bp["label"], layer=bp["layer"],
                                      notes="best practice"))
-            seen_types.add(bp["type"])
+            seen_global.add(bp["type"])
 
     # ── Baseline injection: Internet ─────────────────────────────────────────
-    # Inject when IGW is present (always true after BEST_PRACTICE), unless suppressed.
     if (
-        "internet gateway" in seen_types
+        "internet gateway" in seen_global
         and "NO_INTERNET_ENDPOINT=true" not in context
-        and "internet" not in seen_types
-        and not any(i.id == "internet" for i in items)
+        and "internet" not in seen_global
     ):
         items.append(ServiceItem(id="internet", oci_type="internet",
                                  label="Public Internet", layer="external",
                                  notes="injected_baseline"))
-        seen_types.add("internet")
+        seen_global.add("internet")
 
     # ── Baseline injection: Bastion ──────────────────────────────────────────
-    # Inject when any compute or database workload exists, unless suppressed.
     has_workload = any(i.oci_type in {"compute", "database"} for i in items)
     if (
         has_workload
         and "NO_BASTION=true" not in context
-        and "bastion" not in seen_types
-        and not any(i.id == "bastion_1" for i in items)
+        and "bastion" not in seen_global
     ):
         items.append(ServiceItem(id="bastion_1", oci_type="bastion",
                                  label="Bastion", layer="ingress",
                                  notes="injected_baseline"))
-        seen_types.add("bastion")
+        seen_global.add("bastion")
 
     return items
 
@@ -879,7 +959,39 @@ def build_layout_intent_prompt(
     )
     edge_examples = _build_edge_examples(items, topology)
 
+    # ── Multi-environment detection ──────────────────────────────────────────
+    # Items tagged with environment names (notes field) when BOM has multiple sections.
+    _reserved_notes = {"best practice", "injected_baseline", ""}
+    env_names = list(dict.fromkeys(
+        i.notes for i in items
+        if i.notes not in _reserved_notes
+    ))
+    multi_env_block = ""
+    if len(env_names) > 1:
+        env_items_by_name: dict[str, list[ServiceItem]] = {}
+        for i in items:
+            if i.notes not in _reserved_notes:
+                env_items_by_name.setdefault(i.notes, []).append(i)
+        env_lines = []
+        for env, env_items in env_items_by_name.items():
+            types = ", ".join(sorted({it.oci_type for it in env_items
+                                      if it.oci_type not in _SHARED_INFRA_TYPES}))
+            env_lines.append(f"  • {env}: {types}")
+        multi_env_block = (
+            "\nMULTI-ENVIRONMENT BOM:\n"
+            f"This BOM contains {len(env_names)} environments: {', '.join(env_names)}.\n"
+            "The INPUT SERVICES list below includes separate items for each environment\n"
+            "(item IDs are prefixed with the environment name for non-primary environments).\n"
+            "Shared infrastructure (gateways, WAF, monitoring) appears only once.\n"
+            "\nWorkloads per environment:\n" + "\n".join(env_lines) + "\n"
+            "\nRECOMMENDED LAYOUT: Create one subnet group per environment for workload\n"
+            "services (e.g. 'Prod App Subnet', 'DR App Subnet'). Shared infra sits\n"
+            "outside environment groups as usual.\n"
+        )
+
     extra_blocks = ""
+    if multi_env_block:
+        extra_blocks += multi_env_block
     if questionnaire_text and questionnaire_text.strip():
         extra_blocks += f"\nQUESTIONNAIRE ANSWERS:\n{questionnaire_text.strip()}\n"
     if notes_text and notes_text.strip():
