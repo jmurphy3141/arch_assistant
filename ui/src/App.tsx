@@ -55,7 +55,7 @@ export function App() {
     try {
       const r = await apiClarify({
         answers,
-        client_id: clientId,
+        client_id: customerId || clientId,
         diagram_name: diagramName,
       });
       setResult(r);
