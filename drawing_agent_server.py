@@ -228,9 +228,10 @@ class RefineRequest(BaseModel):
     client_id:    Optional[str] = "default"
     diagram_name: Optional[str] = "oci_architecture"
     # Stateless: echo back from the _refine_context field of the ok response
-    items_json:   Optional[str] = None
-    prompt:       Optional[str] = None
-    prev_spec:    Optional[str] = None  # JSON-encoded previous LayoutIntent
+    items_json:            Optional[str] = None
+    prompt:                Optional[str] = None
+    prev_spec:             Optional[str] = None   # JSON-encoded previous LayoutIntent
+    deployment_hints_json: Optional[str] = None   # echo from _refine_context to preserve mr_mode
 
 
 class GenerateRequest(BaseModel):
@@ -678,6 +679,7 @@ async def run_pipeline(
         }
         if layout_intent_spec is not None:
             refine_ctx["prev_spec"] = json.dumps(layout_intent_spec)
+        refine_ctx["deployment_hints_json"] = json.dumps(deployment_hints or {})
         resp["_refine_context"] = refine_ctx
     return resp
 
@@ -1245,17 +1247,26 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
     input_hash = compute_input_hash(req.feedback or "")
 
     try:
-        # ── Reconstruct items and base prompt ─────────────────────────────────
+        # ── Reconstruct items, base prompt, and deployment hints ───────────────
         if req.items_json and req.prompt:
             from agent.bom_parser import ServiceItem
             raw = json.loads(req.items_json)
-            items      = [ServiceItem(**r) for r in raw]
+            items       = [ServiceItem(**r) for r in raw]
             base_prompt = req.prompt
         else:
             raise HTTPException(
                 status_code=400,
                 detail="items_json and prompt are required for /refine (echo from _refine_context).",
             )
+
+        # Echo deployment_hints so multi_region_mode is preserved — without
+        # this the pipeline re-triggers the DR clarification question on every refine.
+        deployment_hints: dict = {}
+        if req.deployment_hints_json:
+            try:
+                deployment_hints = json.loads(req.deployment_hints_json)
+            except (json.JSONDecodeError, ValueError):
+                deployment_hints = {}
 
         prev_spec_section = ""
         if req.prev_spec:
@@ -1278,12 +1289,13 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
         )
 
         result = await run_pipeline(
-            items        = items,
-            prompt       = enriched_prompt,
-            diagram_name = req.diagram_name,
-            client_id    = req.client_id,
-            request_id   = request_id,
-            input_hash   = input_hash,
+            items            = items,
+            prompt           = enriched_prompt,
+            diagram_name     = req.diagram_name,
+            client_id        = req.client_id,
+            request_id       = request_id,
+            input_hash       = input_hash,
+            deployment_hints = deployment_hints,
         )
 
         # Restore original (un-enriched) prompt in _refine_context so that

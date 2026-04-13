@@ -86,9 +86,10 @@ export interface RefineRequest {
   client_id:    string;
   diagram_name: string;
   // Echo back from result._refine_context
-  items_json?:  string;
-  prompt?:      string;
-  prev_spec?:   string;  // JSON-encoded previous LayoutIntent
+  items_json?:             string;
+  prompt?:                 string;
+  prev_spec?:              string;  // JSON-encoded previous LayoutIntent
+  deployment_hints_json?:  string;  // preserves multi_region_mode across refine calls
 }
 
 export interface GenerateResponse {
