@@ -81,6 +81,15 @@ export interface ClarifyRequest {
   deployment_hints_json?: string;
 }
 
+export interface RefineRequest {
+  feedback:     string;
+  client_id:    string;
+  diagram_name: string;
+  // Echo back from result._refine_context
+  items_json?:  string;
+  prompt?:      string;
+}
+
 export interface GenerateResponse {
   status: 'ok' | 'need_clarification';
   agent_version: string;
@@ -130,6 +139,14 @@ export async function apiGenerate(req: GenerateRequest): Promise<GenerateRespons
 
 export async function apiClarify(req: ClarifyRequest): Promise<GenerateResponse> {
   return apiFetch<GenerateResponse>('/clarify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function apiRefineDiagram(req: RefineRequest): Promise<GenerateResponse> {
+  return apiFetch<GenerateResponse>('/refine', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),

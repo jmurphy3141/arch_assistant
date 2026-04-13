@@ -58,6 +58,9 @@ from __future__ import annotations
 
 from agent.layout_intent import LayoutIntent, Placement, GROUP_LABELS
 
+# Notes values that are NOT environment names (injected by bom_parser for infra/baseline)
+_RESERVED_NOTES = frozenset(["best practice", "injected_baseline", ""])
+
 # OCI gateway types — placed on region box edges by the layout engine
 GATEWAY_OCI_TYPES = frozenset([
     "internet gateway", "nat gateway", "service gateway",
@@ -202,46 +205,66 @@ def compile_intent_to_flat_spec(
     # ── Deployment type ────────────────────────────────────────────────────────
     n_ads     = max(1, hints.availability_domains_per_region)
     n_regions = max(1, hints.region_count)
-    if n_regions > 1:
+
+    # ── Detect multi-environment BOM (items tagged with env names) ────────────
+    # bom_parser tags each item's .notes with the section name (Prod, DR, Dev…).
+    # When multiple env tags are present, build one region per environment so
+    # they appear as separate OCI Compartments instead of mixed subnets.
+    env_names: list[str] = list(dict.fromkeys(
+        items_by_id[p.id].notes
+        for p in subnet_placements
+        if p.id in items_by_id and items_by_id[p.id].notes not in _RESERVED_NOTES
+    ))
+    is_multi_env = len(env_names) > 1
+
+    if is_multi_env:
         deployment_type = "multi_region"
-    elif n_ads > 1:
-        deployment_type = "multi_ad"
+        final_regions = _build_env_regions(
+            env_names, subnet_placements, items_by_id,
+            group_order, group_labels, gateways, oci_services,
+        )
     else:
-        deployment_type = "single_ad"
+        if n_regions > 1:
+            deployment_type = "multi_region"
+        elif n_ads > 1:
+            deployment_type = "multi_ad"
+        else:
+            deployment_type = "single_ad"
 
-    # ── Build AD boxes ─────────────────────────────────────────────────────────
-    ads: list[dict] = []
-    for ad_i in range(n_ads):
-        ad: dict = {
-            "id":    f"ad{ad_i + 1}_box",
-            "label": f"Availability Domain {ad_i + 1}",
-        }
-        if deployment_type == "single_ad":
-            # Standard OCI topology: 3 FD container boxes (empty — just the visual)
-            ad["fault_domains"] = [
-                {"id": f"fd{fd_i + 1}_box", "label": f"Fault Domain {fd_i + 1}", "subnets": []}
-                for fd_i in range(3)
-            ]
-        # Subnets at AD level; only AD 1 gets them
-        # (multi-AD subnet replication is a future enhancement)
-        ad["subnets"] = subnets if ad_i == 0 else []
-        ads.append(ad)
+        # ── Build AD boxes ─────────────────────────────────────────────────────
+        ads: list[dict] = []
+        for ad_i in range(n_ads):
+            ad: dict = {
+                "id":    f"ad{ad_i + 1}_box",
+                "label": f"Availability Domain {ad_i + 1}",
+            }
+            if deployment_type == "single_ad":
+                ad["fault_domains"] = [
+                    {"id": f"fd{fd_i + 1}_box", "label": f"Fault Domain {fd_i + 1}", "subnets": []}
+                    for fd_i in range(3)
+                ]
+            ad["subnets"] = subnets if ad_i == 0 else []
+            ads.append(ad)
 
-    # ── Build region ───────────────────────────────────────────────────────────
-    region: dict = {
-        "id":                   "region_box",
-        "label":                "OCI Region",
-        "regional_subnets":     [],
-        "availability_domains": ads,
-        "gateways":             gateways,
-        "oci_services":         oci_services,
-    }
+        final_regions = [{
+            "id":                   "region_box",
+            "label":                "OCI Region",
+            "regional_subnets":     [],
+            "availability_domains": ads,
+            "gateways":             gateways,
+            "oci_services":         oci_services,
+        }]
+
+    primary_region_id = final_regions[0]["id"] if final_regions else "region_box"
+    all_subnet_ids = {s["id"] for r in final_regions
+                      for ad in r.get("availability_domains", [])
+                      for s in ad.get("subnets", [])}
 
     # ── Edge ID set for deduplication ─────────────────────────────────────────
     all_node_ids  = {p.id  for p in intent.placements}
-    all_group_ids = {s["id"] for s in subnets}
-    all_ad_ids    = {a["id"] for a in ads}
-    all_ids = all_node_ids | all_group_ids | all_ad_ids | {"region_box"}
+    all_group_ids = all_subnet_ids
+    all_ad_ids    = {a["id"] for r in final_regions for a in r.get("availability_domains", [])}
+    all_ids = all_node_ids | all_group_ids | all_ad_ids | {primary_region_id}
 
     # ── Build edges ────────────────────────────────────────────────────────────
     edges: list[dict] = []
@@ -260,37 +283,35 @@ def compile_intent_to_flat_spec(
             existing_pairs.add((src, tgt))
 
     # Data-flow edges: use LLM-declared edges, or fall back to sequential chain
-    group_ids = {s["id"] for s in subnets}
     if intent.edges:
         for e in intent.edges:
             # Drop edges where source/target is a subnet container box.
-            # draw.io routes these to the box perimeter, causing lines to cut
-            # through the subnet interior and cross service icons.
-            if e.source in group_ids or e.target in group_ids:
+            if e.source in all_group_ids or e.target in all_group_ids:
                 continue
             _add(e.id, e.source, e.target, e.label)
     else:
-        sub_ids = [s["id"] for s in subnets]
+        # Sequential chain across subnets of the FIRST (primary) region only
+        first_ad = (final_regions[0].get("availability_domains") or [{}])[0]
+        sub_ids  = [s["id"] for s in first_ad.get("subnets", [])]
         for i in range(len(sub_ids) - 1):
             _add(f"e_{sub_ids[i]}_{sub_ids[i+1]}", sub_ids[i], sub_ids[i+1], "")
 
-    # Structural edges — only injected when the LLM didn't already cover these nodes
-    # (avoids duplicate/redundant paths cluttering the diagram)
+    # Structural edges — always point to the primary region
     igw_id = next((p.id for p in intent.placements if p.oci_type == "internet gateway"), None)
     llm_sources = {e.source for e in intent.edges} if intent.edges else set()
 
     if "on_prem" in all_node_ids and "on_prem" not in llm_sources:
         conn_label = _CONN_LABELS.get(hints.on_prem_connectivity, "Private Link")
-        _add("e_on_prem_region", "on_prem", "region_box", conn_label,
+        _add("e_on_prem_region", "on_prem", primary_region_id, conn_label,
              ex=1.0, ey=0.5, nx=0.0, ny=0.5)
 
     if igw_id and igw_id not in llm_sources:
-        _add("e_igw_region", igw_id, "region_box", "Internet",
+        _add("e_igw_region", igw_id, primary_region_id, "Internet",
              ex=0.5, ey=1.0, nx=0.5, ny=0.0)
 
     return {
         "deployment_type": deployment_type,
-        "regions":         [region],
+        "regions":         final_regions,
         "external":        external,
         "edges":           edges,
     }
@@ -315,3 +336,89 @@ def _tier(index: int, total: int) -> str:
     if index == total - 1:
         return "db"
     return "app"
+
+
+def _build_env_regions(
+    env_names: list[str],
+    subnet_placements: list,
+    items_by_id: dict,
+    group_order: list[str],
+    group_labels: dict[str, str],
+    gateways: list[dict],
+    oci_services: list[dict],
+) -> list[dict]:
+    """Build one OCI region (Compartment) per environment for multi-env BOMs.
+
+    Each environment's workload items are placed in their own subnet groups
+    inside a dedicated region box.  Gateways and OCI managed services belong
+    to the primary (first) environment only.
+    """
+    regions: list[dict] = []
+
+    for env_idx, env_name in enumerate(env_names):
+        env_ids = {p.id for p in subnet_placements
+                   if p.id in items_by_id
+                   and items_by_id[p.id].notes == env_name}
+        env_placements = [p for p in subnet_placements if p.id in env_ids]
+
+        # Assign nodes to groups, normalising env-prefixed group IDs
+        env_prefix = f"{env_name.lower()[:8].replace(' ', '_')}_"
+        group_nodes: dict[str, list[dict]] = {gid: [] for gid in group_order}
+        extra_nodes: dict[str, list[dict]] = {}
+
+        for p in env_placements:
+            item  = items_by_id.get(p.id)
+            label = item.label if item else p.id
+            node  = {"id": p.id, "type": p.oci_type, "label": label}
+            gid   = p.group or _default_group(p.layer, group_order)
+            # Strip env prefix if LLM echoed it back (e.g. "prod_app_sub_box")
+            if gid not in group_nodes:
+                stripped = gid[len(env_prefix):] if gid.startswith(env_prefix) else gid
+                gid = stripped if stripped in group_nodes else gid
+            if gid in group_nodes:
+                group_nodes[gid].append(node)
+            else:
+                extra_nodes.setdefault(gid, []).append(node)
+
+        # Build subnet list for this environment
+        env_subnets: list[dict] = []
+        for i, gid in enumerate(group_order):
+            nodes = group_nodes[gid]
+            if nodes:
+                env_subnets.append({
+                    "id":    f"e{env_idx}_{gid}",
+                    "label": group_labels.get(gid, gid.replace("_", " ").title()),
+                    "tier":  _tier(i, len(group_order)),
+                    "nodes": nodes,
+                })
+        for gid, nodes in extra_nodes.items():
+            if nodes:
+                env_subnets.append({
+                    "id":    f"e{env_idx}_{gid}",
+                    "label": gid.replace("_", " ").title(),
+                    "tier":  "app",
+                    "nodes": nodes,
+                })
+
+        # Use "region_box" for the first env so existing edge IDs stay valid
+        region_id = "region_box" if env_idx == 0 else f"region_{env_idx}_box"
+
+        regions.append({
+            "id":    region_id,
+            "label": f"{env_name} Compartment",
+            "regional_subnets": [],
+            "availability_domains": [{
+                "id":           f"ad_e{env_idx}_box",
+                "label":        "Availability Domain 1",
+                "fault_domains": [
+                    {"id": f"fd{j+1}_e{env_idx}_box",
+                     "label": f"Fault Domain {j+1}", "subnets": []}
+                    for j in range(3)
+                ],
+                "subnets": env_subnets,
+            }],
+            "gateways":    gateways    if env_idx == 0 else [],
+            "oci_services": oci_services if env_idx == 0 else [],
+        })
+
+    return regions

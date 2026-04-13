@@ -564,24 +564,34 @@ def compute_positions(layout_spec: dict | str) -> tuple[list[PositionedNode], li
         return [], []
 
     if n_regions == 1:
-        reg_positions = [(REGION_X, REGION_Y, REGION_W)]
-    else:
-        # Two regions side by side (multi_region)
-        single_w = (REGION_W - MULTI_REGION_GAP) / 2
-        reg_positions = [
-            (REGION_X, REGION_Y, single_w),
-            (REGION_X + single_w + MULTI_REGION_GAP, REGION_Y, single_w),
-        ]
-
-    for i, region_spec in enumerate(regions):
-        rx, ry, rw = reg_positions[i]
+        # Single region: full canvas width
         reg_box, sub_boxes, icon_nodes, gw_nodes = _layout_region(
-            region_spec, rx, ry, rw, deployment_type
+            regions[0], REGION_X, REGION_Y, REGION_W, deployment_type
         )
         all_boxes.append(reg_box)
         all_boxes.extend(sub_boxes)
         all_nodes.extend(icon_nodes)
         all_nodes.extend(gw_nodes)
+    else:
+        # N regions: 2-column grid, tracking each column's running height
+        MULTI_COL_GAP = MULTI_REGION_GAP
+        MULTI_ROW_GAP = 40
+        cols   = min(n_regions, 2)
+        col_w  = (REGION_W - (cols - 1) * MULTI_COL_GAP) / cols
+        col_ys = [float(REGION_Y)] * cols   # current Y top for each column
+
+        for i, region_spec in enumerate(regions):
+            col = i % cols
+            rx  = REGION_X + col * (col_w + MULTI_COL_GAP)
+            ry  = col_ys[col]
+            reg_box, sub_boxes, icon_nodes, gw_nodes = _layout_region(
+                region_spec, rx, ry, col_w, deployment_type
+            )
+            col_ys[col] = ry + reg_box.h + MULTI_ROW_GAP
+            all_boxes.append(reg_box)
+            all_boxes.extend(sub_boxes)
+            all_nodes.extend(icon_nodes)
+            all_nodes.extend(gw_nodes)
 
     # ── Place external elements ────────────────────────────────────────────────
     left_ext = [e for e in external if e.get("type", "").lower() in LEFT_EXTERNAL_TYPES]

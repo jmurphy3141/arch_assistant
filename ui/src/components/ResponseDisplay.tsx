@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { downloadUrl } from '../api/client';
 import type { GenerateResponse } from '../api/client';
 
@@ -12,9 +12,55 @@ const ARTIFACT_FILES = [
 
 interface Props {
   result: GenerateResponse;
+  onRefine?: (feedback: string) => void;
+  refineLoading?: boolean;
 }
 
-export function ResponseDisplay({ result }: Props) {
+const S = {
+  box: {
+    marginTop: '1.5rem',
+    padding: '0.75rem',
+    background: 'rgba(232,87,26,0.05)',
+    border: '1px solid rgba(232,87,26,0.25)',
+    borderRadius: 4,
+  } as React.CSSProperties,
+  label: {
+    fontSize: '0.72rem',
+    color: '#e8571a',
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase' as const,
+    marginBottom: '0.4rem',
+    display: 'block',
+  },
+  textarea: {
+    width: '100%',
+    minHeight: '70px',
+    background: '#0e1016',
+    border: '1px solid #1c2030',
+    borderRadius: 4,
+    color: '#cdd2e0',
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: '0.78rem',
+    padding: '0.5rem',
+    resize: 'vertical' as const,
+    boxSizing: 'border-box' as const,
+  },
+  btn: (disabled: boolean): React.CSSProperties => ({
+    marginTop: '0.5rem',
+    padding: '0.3rem 0.9rem',
+    background: disabled ? '#1c2030' : 'rgba(232,87,26,0.15)',
+    border: '1px solid ' + (disabled ? '#1c2030' : '#e8571a'),
+    color: disabled ? '#454d64' : '#e8571a',
+    cursor: disabled ? 'default' : 'pointer',
+    borderRadius: 4,
+    fontSize: '0.75rem',
+    fontFamily: "'JetBrains Mono', monospace",
+  }),
+};
+
+export function ResponseDisplay({ result, onRefine, refineLoading }: Props) {
+  const [feedback, setFeedback] = useState('');
+
   if (result.status === 'ok') {
     return (
       <div data-testid="response-ok">
@@ -61,6 +107,27 @@ export function ResponseDisplay({ result }: Props) {
             </li>
           ))}
         </ul>
+
+        {onRefine && (
+          <div style={S.box}>
+            <span style={S.label}>Refine Diagram</span>
+            <textarea
+              data-testid="refine-feedback"
+              style={S.textarea}
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              placeholder="Describe changes, e.g. &quot;Add a DB subnet to each compartment&quot; or &quot;Show the DR region as a full duplicate&quot;"
+            />
+            <button
+              data-testid="refine-submit"
+              style={S.btn(refineLoading === true || !feedback.trim())}
+              disabled={refineLoading === true || !feedback.trim()}
+              onClick={() => { onRefine(feedback); setFeedback(''); }}
+            >
+              {refineLoading ? 'Regenerating…' : 'Refine Diagram'}
+            </button>
+          </div>
+        )}
       </div>
     );
   }

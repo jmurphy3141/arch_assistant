@@ -222,6 +222,16 @@ class ClarifyRequest(BaseModel):
     deployment_hints_json: Optional[str] = None
 
 
+class RefineRequest(BaseModel):
+    """Request to refine an already-generated diagram based on free-text feedback."""
+    feedback:     str
+    client_id:    Optional[str] = "default"
+    diagram_name: Optional[str] = "oci_architecture"
+    # Stateless: echo back from the _refine_context field of the ok response
+    items_json:   Optional[str] = None
+    prompt:       Optional[str] = None
+
+
 class GenerateRequest(BaseModel):
     resources:          List[Dict[str, Any]]
     context:            Optional[str]  = ""
@@ -631,7 +641,7 @@ async def run_pipeline(
             daemon=True,
         ).start()
 
-    return {
+    resp: dict = {
         "status":                "ok",
         "agent_version":         AGENT_VERSION,
         "schema_version":        SCHEMA_VERSION,
@@ -656,6 +666,14 @@ async def run_pipeline(
         },
         "errors": [],
     }
+    # Attach refine context so the UI can request diagram changes without
+    # re-uploading the BOM.  Mirrors _clarify_context but for the "ok" path.
+    if items is not None:
+        resp["_refine_context"] = {
+            "items_json": json.dumps([dataclasses.asdict(i) for i in items]),
+            "prompt":     prompt,
+        }
+    return resp
 
 
 # ── Git push helper ─────────────────────────────────────────────────────────────
@@ -1203,6 +1221,62 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
         raise HTTPException(status_code=422, detail=f"LLM returned invalid JSON: {exc}")
     except Exception as exc:
         logger.error("Error in /clarify: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/refine")
+@app.post("/api/refine")
+async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)):
+    """
+    Refine an already-generated diagram based on free-text feedback.
+
+    The browser echoes back items_json + prompt from the _refine_context field
+    of the previous ok response.  The feedback is appended to the original prompt
+    and the pipeline is re-run — producing an updated diagram without re-uploading
+    the BOM.
+    """
+    request_id = str(uuid.uuid4())
+    input_hash = compute_input_hash(req.feedback or "")
+
+    try:
+        # ── Reconstruct items and base prompt ─────────────────────────────────
+        if req.items_json and req.prompt:
+            from agent.bom_parser import ServiceItem
+            raw = json.loads(req.items_json)
+            items      = [ServiceItem(**r) for r in raw]
+            base_prompt = req.prompt
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="items_json and prompt are required for /refine (echo from _refine_context).",
+            )
+
+        enriched_prompt = (
+            base_prompt
+            + "\n\n═══════════════════════════════════════════════════════\n"
+            + "DIAGRAM REFINEMENT REQUEST:\n"
+            + req.feedback.strip()
+            + "\n\nApply the requested changes to the diagram. "
+            + "Return an updated LayoutIntent JSON.\n"
+            + "Output ONLY valid JSON."
+        )
+
+        result = await run_pipeline(
+            items        = items,
+            prompt       = enriched_prompt,
+            diagram_name = req.diagram_name,
+            client_id    = req.client_id,
+            request_id   = request_id,
+            input_hash   = input_hash,
+        )
+        return JSONResponse(status_code=200, content=result)
+
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"LLM returned invalid JSON: {exc}")
+    except Exception as exc:
+        logger.error("Error in /refine: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

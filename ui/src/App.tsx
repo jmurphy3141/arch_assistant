@@ -10,7 +10,7 @@ import { JepForm } from './components/JepForm';
 import { TerraformForm } from './components/TerraformForm';
 import { WafForm } from './components/WafForm';
 import { useClientId, getLastDiagramName, saveLastDiagramName } from './hooks/useClientId';
-import { apiClarify, type GenerateResponse } from './api/client';
+import { apiClarify, apiRefineDiagram, type GenerateResponse } from './api/client';
 
 type Mode = 'upload' | 'generate' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
@@ -29,6 +29,7 @@ export function App() {
   const [result, setResult] = useState<GenerateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [clarifyLoading, setClarifyLoading] = useState(false);
+  const [refineLoading, setRefineLoading] = useState(false);
 
   function handleDiagramNameChange(name: string) {
     setDiagramName(name);
@@ -75,6 +76,33 @@ export function App() {
       setError(`Clarify error ${e.status}: ${e.detail}`);
     } finally {
       setClarifyLoading(false);
+    }
+  }
+
+  async function handleRefine(feedback: string) {
+    const ctx = result?._refine_context as {
+      items_json?: string; prompt?: string;
+    } | undefined;
+    if (!ctx?.items_json || !ctx?.prompt) {
+      setError('Refine context missing — please regenerate the diagram first.');
+      return;
+    }
+    setRefineLoading(true);
+    try {
+      const r = await apiRefineDiagram({
+        feedback,
+        client_id:    customerId || clientId,
+        diagram_name: diagramName,
+        items_json:   ctx.items_json,
+        prompt:       ctx.prompt,
+      });
+      setResult(r);
+      setError(null);
+    } catch (err: unknown) {
+      const e = err as { status: number; detail: string };
+      setError(`Refine error ${e.status}: ${e.detail}`);
+    } finally {
+      setRefineLoading(false);
     }
   }
 
@@ -168,7 +196,13 @@ export function App() {
               <strong>Error:</strong> {error}
             </div>
           )}
-          {result && result.status === 'ok' && <ResponseDisplay result={result} />}
+          {result && result.status === 'ok' && (
+            <ResponseDisplay
+              result={result}
+              onRefine={handleRefine}
+              refineLoading={refineLoading}
+            />
+          )}
           {result && result.status === 'need_clarification' && (
             <ClarifyForm result={result} onSubmit={handleClarify} loading={clarifyLoading} />
           )}
