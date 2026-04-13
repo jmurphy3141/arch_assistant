@@ -151,16 +151,19 @@ export interface UploadToBucketResponse {
   object_key: string;
   filename:   string;
   size:       number;
+  bom_type:   string;
 }
 
-/** Upload a file to OCI Object Storage under agent3/{customerId}/. */
+/** Upload a file to OCI Object Storage. bomType controls the prefix (main | poc). */
 export async function apiUploadToBucket(
   customerId: string,
   file: File,
+  bomType: 'main' | 'poc' = 'main',
 ): Promise<UploadToBucketResponse> {
   const fd = new FormData();
   fd.append('customer_id', customerId);
   fd.append('file', file);
+  fd.append('bom_type', bomType);
   return apiFetch<UploadToBucketResponse>('/upload-to-bucket', { method: 'POST', body: fd });
 }
 
@@ -347,12 +350,33 @@ export async function apiListNotes(customerId: string): Promise<NoteListResponse
 export async function apiGeneratePov(
   customerId: string,
   customerName: string,
+  feedback?: string,
 ): Promise<DocResponse> {
   return apiFetch<DocResponse>('/pov/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ customer_id: customerId, customer_name: customerName }),
+    body: JSON.stringify({
+      customer_id: customerId,
+      customer_name: customerName,
+      ...(feedback?.trim() ? { feedback } : {}),
+    }),
   });
+}
+
+export async function apiApprovePov(
+  customerId: string,
+  customerName: string,
+  content: string,
+): Promise<{ status: string; key: string }> {
+  return apiFetch('/pov/approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer_id: customerId, customer_name: customerName, content }),
+  });
+}
+
+export async function apiGetApprovedPov(customerId: string): Promise<DocLatestResponse> {
+  return apiFetch<DocLatestResponse>(`/pov/${encodeURIComponent(customerId)}/approved`);
 }
 
 export async function apiGetLatestPov(customerId: string): Promise<DocLatestResponse> {
@@ -363,10 +387,60 @@ export async function apiListPovVersions(customerId: string): Promise<DocVersion
   return apiFetch<DocVersionsResponse>(`/pov/${encodeURIComponent(customerId)}/versions`);
 }
 
+export interface KickoffQuestion {
+  id: string;
+  question: string;
+  hint: string;
+  known_value: string | null;
+}
+
+export interface JepKickoffResponse {
+  status: string;
+  customer_id: string;
+  questions: KickoffQuestion[];
+  extracted: Record<string, string | null>;
+  questions_key: string;
+}
+
+export interface JepQuestionsResponse {
+  status: string;
+  customer_id: string;
+  questions?: KickoffQuestion[];
+  answers?: Record<string, string>;
+  timestamp?: string;
+}
+
+export async function apiJepKickoff(
+  customerId: string,
+  customerName: string,
+): Promise<JepKickoffResponse> {
+  return apiFetch<JepKickoffResponse>('/jep/kickoff', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer_id: customerId, customer_name: customerName }),
+  });
+}
+
+export async function apiGetJepQuestions(customerId: string): Promise<JepQuestionsResponse> {
+  return apiFetch<JepQuestionsResponse>(`/jep/${encodeURIComponent(customerId)}/questions`);
+}
+
+export async function apiSaveJepAnswers(
+  customerId: string,
+  answers: Record<string, string>,
+): Promise<{ status: string; answers_saved: number }> {
+  return apiFetch('/jep/answers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer_id: customerId, answers }),
+  });
+}
+
 export async function apiGenerateJep(
   customerId: string,
   customerName: string,
   diagramKey?: string,
+  feedback?: string,
 ): Promise<DocResponse> {
   return apiFetch<DocResponse>('/jep/generate', {
     method: 'POST',
@@ -375,8 +449,25 @@ export async function apiGenerateJep(
       customer_id: customerId,
       customer_name: customerName,
       diagram_key: diagramKey || null,
+      ...(feedback?.trim() ? { feedback } : {}),
     }),
   });
+}
+
+export async function apiApproveJep(
+  customerId: string,
+  customerName: string,
+  content: string,
+): Promise<{ status: string; key: string }> {
+  return apiFetch('/jep/approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer_id: customerId, customer_name: customerName, content }),
+  });
+}
+
+export async function apiGetApprovedJep(customerId: string): Promise<DocLatestResponse> {
+  return apiFetch<DocLatestResponse>(`/jep/${encodeURIComponent(customerId)}/approved`);
 }
 
 export async function apiGetLatestJep(customerId: string): Promise<DocLatestResponse> {

@@ -89,9 +89,13 @@ from agent.document_store import (
     list_notes,
     list_versions,
     get_latest_doc,
+    save_approved_doc,
+    get_approved_doc,
+    get_jep_questions,
+    save_jep_questions,
 )
 from agent.pov_agent import generate_pov
-from agent.jep_agent import generate_jep
+from agent.jep_agent import generate_jep, kickoff_jep
 from agent.context_store import read_context, write_context, record_agent_run
 
 try:
@@ -232,13 +236,31 @@ class GenerateRequest(BaseModel):
 class PovRequest(BaseModel):
     customer_id:   str
     customer_name: str
+    feedback:      Optional[str] = None
 
 
 class JepRequest(BaseModel):
     customer_id:   str
     customer_name: str
+    feedback:      Optional[str] = None
     diagram_key:   Optional[str] = None
     diagram_url:   Optional[str] = None
+
+
+class ApproveDocRequest(BaseModel):
+    customer_id:   str
+    customer_name: str
+    content:       str
+
+
+class JepKickoffRequest(BaseModel):
+    customer_id:   str
+    customer_name: str
+
+
+class JepAnswersRequest(BaseModel):
+    customer_id: str
+    answers:     dict
 
 
 class A2AObjectRef(BaseModel):
@@ -990,11 +1012,16 @@ async def logout(request: Request):
 async def upload_to_bucket(
     file:        UploadFile = File(...),
     customer_id: str        = Form(...),
+    bom_type:    str        = Form(default="main"),
 ):
     """
-    Upload a file (BOM or context) to OCI Object Storage at
-    agent3/{customer_id}/{filename}.  Called by the browser UI drag-and-drop
-    before triggering diagram generation via /api/a2a/task.
+    Upload a file (BOM or context) to OCI Object Storage.
+
+    bom_type controls the bucket prefix:
+      main (default) → agent3/{customer_id}/{filename}
+      poc            → agent3/{customer_id}/poc/{filename}
+
+    Called by the browser UI drag-and-drop before triggering diagram generation.
     """
     object_store = getattr(app.state, "object_store", None)
     if object_store is None:
@@ -1002,14 +1029,20 @@ async def upload_to_bucket(
 
     content  = await file.read()
     filename = file.filename or "upload.xlsx"
-    object_key = f"agent3/{customer_id.strip()}/{filename}"
+    cid = customer_id.strip()
+
+    if bom_type == "poc":
+        object_key = f"agent3/{cid}/poc/{filename}"
+    else:
+        object_key = f"agent3/{cid}/{filename}"
+
     content_type = file.content_type or "application/octet-stream"
 
     await anyio.to_thread.run_sync(
         functools.partial(object_store.put, object_key, content, content_type)
     )
     logger.info("upload-to-bucket: wrote %s (%d bytes)", object_key, len(content))
-    return {"object_key": object_key, "filename": filename, "size": len(content)}
+    return {"object_key": object_key, "filename": filename, "size": len(content), "bom_type": bom_type}
 
 
 @app.post("/upload-bom")
@@ -1929,7 +1962,10 @@ async def pov_generate(req: PovRequest):
                 system_message=system_message,
             )
         text_runner = getattr(app.state, "text_runner", None) or runner
-        return generate_pov(req.customer_id, req.customer_name, store, text_runner)
+        return generate_pov(
+            req.customer_id, req.customer_name, store, text_runner,
+            feedback=req.feedback or "",
+        )
 
     try:
         result = await anyio.to_thread.run_sync(_run_pov)
@@ -2008,6 +2044,7 @@ async def jep_generate(req: JepRequest):
                 )
         return generate_jep(
             req.customer_id, req.customer_name, store, text_runner,
+            feedback=req.feedback or "",
             diagram_key=req.diagram_key,
             diagram_url=req.diagram_url,
             persistence_prefix=prefix,
@@ -2055,6 +2092,153 @@ async def jep_versions(customer_id: str):
         functools.partial(list_versions, store, "jep", customer_id)
     )
     return {"status": "ok", "customer_id": customer_id, "doc_type": "jep", "versions": versions}
+
+
+# ── POV approve endpoints ─────────────────────────────────────────────────────
+
+@app.post("/api/pov/approve")
+async def pov_approve(req: ApproveDocRequest):
+    """
+    Save the SA-approved version of a POV document.
+
+    Writes to: approved/{customer_id}/pov.md
+    This becomes the base for the next LLM generation run.
+    """
+    store = _require_object_store()
+    try:
+        key = await anyio.to_thread.run_sync(
+            functools.partial(save_approved_doc, store, "pov", req.customer_id, req.content)
+        )
+        from agent.notifications import notify
+        notify("pov_approved", req.customer_id,
+               f"Approved POV uploaded for {req.customer_name}")
+        return {"status": "ok", "customer_id": req.customer_id, "doc_type": "pov", "key": key}
+    except Exception as exc:
+        logger.error("Error in /pov/approve: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/pov/{customer_id}/approved")
+async def pov_get_approved(customer_id: str):
+    """Return the SA-approved POV for a customer, if one exists."""
+    store = _require_object_store()
+    content = await anyio.to_thread.run_sync(
+        functools.partial(get_approved_doc, store, "pov", customer_id)
+    )
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"No approved POV for customer_id={customer_id!r}")
+    return {"status": "ok", "customer_id": customer_id, "doc_type": "pov", "content": content}
+
+
+# ── JEP approve + kickoff endpoints ──────────────────────────────────────────
+
+@app.post("/api/jep/approve")
+async def jep_approve(req: ApproveDocRequest):
+    """
+    Save the SA-approved version of a JEP document.
+
+    Writes to: approved/{customer_id}/jep.md
+    This becomes the base for the next LLM generation run.
+    """
+    store = _require_object_store()
+    try:
+        key = await anyio.to_thread.run_sync(
+            functools.partial(save_approved_doc, store, "jep", req.customer_id, req.content)
+        )
+        from agent.notifications import notify
+        notify("jep_approved", req.customer_id,
+               f"Approved JEP uploaded for {req.customer_name}")
+        return {"status": "ok", "customer_id": req.customer_id, "doc_type": "jep", "key": key}
+    except Exception as exc:
+        logger.error("Error in /jep/approve: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/jep/{customer_id}/approved")
+async def jep_get_approved(customer_id: str):
+    """Return the SA-approved JEP for a customer, if one exists."""
+    store = _require_object_store()
+    content = await anyio.to_thread.run_sync(
+        functools.partial(get_approved_doc, store, "jep", customer_id)
+    )
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"No approved JEP for customer_id={customer_id!r}")
+    return {"status": "ok", "customer_id": customer_id, "doc_type": "jep", "content": content}
+
+
+@app.post("/api/jep/kickoff")
+async def jep_kickoff(req: JepKickoffRequest):
+    """
+    Scan all meeting notes for POC signals and generate clarifying questions.
+
+    Returns a list of questions for the SA to answer before generating the JEP.
+    Saves results to jep/{customer_id}/poc_questions.json.
+    """
+    store = _require_object_store()
+    persistence_cfg = getattr(app.state, "persistence_config", None) or {}
+
+    def _run_kickoff():
+        text_runner = getattr(app.state, "text_runner", None)
+        if text_runner is None:
+            from agent.llm_inference_client import run_inference as _ri
+            def text_runner(prompt, system_message=""):
+                return _ri(
+                    prompt,
+                    endpoint=INFERENCE_ENDPOINT,
+                    model_id=INFERENCE_MODEL_ID,
+                    compartment_id=COMPARTMENT_ID,
+                    max_tokens=WRITING_MAX_TOKENS,
+                    temperature=WRITING_TEMPERATURE,
+                    top_p=WRITING_TOP_P,
+                    top_k=WRITING_TOP_K,
+                    system_message=system_message,
+                )
+        return kickoff_jep(req.customer_id, req.customer_name, store, text_runner)
+
+    try:
+        result = await anyio.to_thread.run_sync(_run_kickoff)
+        return {
+            "status":        "ok",
+            "customer_id":   req.customer_id,
+            "questions":     result["questions"],
+            "extracted":     result["extracted"],
+            "questions_key": result["questions_key"],
+        }
+    except Exception as exc:
+        logger.error("Error in /jep/kickoff: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/jep/answers")
+async def jep_save_answers(req: JepAnswersRequest):
+    """
+    Save SA answers to the JEP kickoff questions.
+
+    Merges the answers dict into jep/{customer_id}/poc_questions.json.
+    """
+    store = _require_object_store()
+    try:
+        existing = await anyio.to_thread.run_sync(
+            functools.partial(get_jep_questions, store, req.customer_id)
+        )
+        questions = existing.get("questions", [])
+        await anyio.to_thread.run_sync(
+            functools.partial(save_jep_questions, store, req.customer_id, questions, req.answers)
+        )
+        return {"status": "ok", "customer_id": req.customer_id, "answers_saved": len(req.answers)}
+    except Exception as exc:
+        logger.error("Error in /jep/answers: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/jep/{customer_id}/questions")
+async def jep_get_questions(customer_id: str):
+    """Return the stored kickoff Q&A for a customer."""
+    store = _require_object_store()
+    data = await anyio.to_thread.run_sync(
+        functools.partial(get_jep_questions, store, customer_id)
+    )
+    return {"status": "ok", "customer_id": customer_id, **data}
 
 
 if __name__ == "__main__":

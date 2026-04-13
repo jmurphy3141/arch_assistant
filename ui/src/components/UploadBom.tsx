@@ -281,6 +281,7 @@ export function UploadBom({
   const [droppedCtx,   setDroppedCtx]   = useState<File | null>(null);
   const [dragOver,     setDragOver]     = useState<'bom' | 'ctx' | null>(null);
   const [uploadStatus, setUploadStatus] = useState<string>('');
+  const [bomType,      setBomType]      = useState<'main' | 'poc'>('main');
   const bomInputRef = useRef<HTMLInputElement>(null);
   const ctxInputRef = useRef<HTMLInputElement>(null);
 
@@ -361,11 +362,11 @@ export function UploadBom({
       // 1. Upload dropped files to bucket (if any)
       if (droppedBom) {
         setUploadStatus('Uploading BOM to bucket…');
-        await apiUploadToBucket(customerId.trim(), droppedBom);
+        await apiUploadToBucket(customerId.trim(), droppedBom, bomType);
       }
       if (droppedCtx) {
         setUploadStatus('Uploading context file…');
-        await apiUploadToBucket(customerId.trim(), droppedCtx);
+        await apiUploadToBucket(customerId.trim(), droppedCtx, bomType);
       }
 
       // 2. Generate diagram via A2A
@@ -425,6 +426,26 @@ export function UploadBom({
               placeholder="oci_architecture"
             />
           </div>
+        </div>
+
+        {/* ── BOM type toggle ────────────────────────────────────────────── */}
+        <div style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span style={s.label}>BOM type</span>
+          <span
+            style={pillStyle(bomType === 'main')}
+            onClick={() => setBomType('main')}
+          >
+            Main (production)
+          </span>
+          <span
+            style={pillStyle(bomType === 'poc')}
+            onClick={() => setBomType('poc')}
+          >
+            POC / JEP
+          </span>
+          <span style={{ fontSize: '0.65rem', color: T.label }}>
+            POC uploads to <code style={{ color: T.accent }}>agent3/{customerId || '<customer>'}/poc/</code>
+          </span>
         </div>
 
         {/* ── Drop zones ─────────────────────────────────────────────────── */}
@@ -613,12 +634,12 @@ export function UploadBom({
       <div style={{ marginBottom: '0.75rem', fontSize: '0.68rem', color: T.label, lineHeight: 1.7 }}>
         <span style={{ color: T.text }}>Source: </span>
         <code style={{ color: T.accent }}>
-          oci://{DEFAULT_BUCKET}/{DEFAULT_PREFIX}/{customerId || '<customer>'}/{bomFile || '<bom.xlsx>'}
+          oci://{DEFAULT_BUCKET}/{DEFAULT_PREFIX}/{customerId || '<customer>'}/{bomType === 'poc' ? 'poc/' : ''}{bomFile || '<bom.xlsx>'}
         </code>
         <br />
         <span style={{ color: T.text }}>Output: </span>
         <code style={{ color: T.green }}>
-          oci://{DEFAULT_BUCKET}/{DEFAULT_PREFIX}/{customerId || '<customer>'}/diagram.drawio
+          oci://{DEFAULT_BUCKET}/{DEFAULT_PREFIX}/{customerId || '<customer>'}/{bomType === 'poc' ? 'poc/' : ''}diagram.drawio
         </code>
       </div>
 
