@@ -212,13 +212,14 @@ class ChatRequest(BaseModel):
 
 
 class ClarifyRequest(BaseModel):
-    answers:      str
-    client_id:    Optional[str] = "default"
-    diagram_name: Optional[str] = "oci_architecture"
+    answers:               str
+    client_id:             Optional[str] = "default"
+    diagram_name:          Optional[str] = "oci_architecture"
     # Stateless path: client echoes these back from the need_clarification response.
     # When present, /clarify uses them directly instead of looking up PENDING_CLARIFY.
-    items_json:   Optional[str] = None
-    prompt:       Optional[str] = None
+    items_json:            Optional[str] = None
+    prompt:                Optional[str] = None
+    deployment_hints_json: Optional[str] = None
 
 
 class GenerateRequest(BaseModel):
@@ -414,6 +415,7 @@ def _clarify_response(
     questions: list,
     items: Optional[list] = None,
     prompt: str = "",
+    deployment_hints: Optional[dict] = None,
 ) -> dict:
     resp: dict = {
         "status":         "need_clarification",
@@ -430,8 +432,9 @@ def _clarify_response(
     # making the conversation stateless (no PENDING_CLARIFY look-up needed).
     if items is not None:
         resp["_clarify_context"] = {
-            "items_json": json.dumps([dataclasses.asdict(i) for i in items]),
-            "prompt":     prompt,
+            "items_json":            json.dumps([dataclasses.asdict(i) for i in items]),
+            "prompt":                prompt,
+            "deployment_hints_json": json.dumps(deployment_hints or {}),
         }
     return resp
 
@@ -462,15 +465,17 @@ async def run_pipeline(
     # ── Clarification requested by LLM ───────────────────────────────────────
     if spec.get("status") == "need_clarification":
         PENDING_CLARIFY[client_id] = {
-            "items":        items,
-            "prompt":       prompt,
-            "diagram_name": diagram_name,
+            "items":            items,
+            "prompt":           prompt,
+            "diagram_name":     diagram_name,
+            "deployment_hints": deployment_hints,
         }
         return _clarify_response(
             client_id, diagram_name, request_id, input_hash,
             spec.get("questions", []),
             items=items,
             prompt=prompt,
+            deployment_hints=deployment_hints,
         )
 
     # ── Option 1: LayoutIntent path ───────────────────────────────────────────
@@ -503,9 +508,10 @@ async def run_pipeline(
     )
     if is_multi_region and not mr_mode:
         PENDING_CLARIFY[client_id] = {
-            "items":        items,
-            "prompt":       prompt,
-            "diagram_name": diagram_name,
+            "items":            items,
+            "prompt":           prompt,
+            "diagram_name":     diagram_name,
+            "deployment_hints": deployment_hints,
         }
         return _clarify_response(
             client_id, diagram_name, request_id, input_hash,
@@ -521,6 +527,7 @@ async def run_pipeline(
             ],
             items=items,
             prompt=prompt,
+            deployment_hints=deployment_hints,
         )
 
     # ── Layout engine (CPU-bound) — run in thread ─────────────────────────────
@@ -1136,6 +1143,12 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
             raw_items = json.loads(req.items_json)
             items = [ServiceItem(**r) for r in raw_items]
             base_prompt = req.prompt
+            deployment_hints: dict = {}
+            if req.deployment_hints_json:
+                try:
+                    deployment_hints = json.loads(req.deployment_hints_json)
+                except (json.JSONDecodeError, ValueError):
+                    deployment_hints = {}
         else:
             # ── Stateful fallback ─────────────────────────────────────────────
             pending = PENDING_CLARIFY.get(req.client_id)
@@ -1147,8 +1160,20 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
                         "Call /upload-bom or /generate first."
                     ),
                 )
-            items      = pending["items"]
-            base_prompt = pending["prompt"]
+            items            = pending["items"]
+            base_prompt      = pending["prompt"]
+            deployment_hints = dict(pending.get("deployment_hints") or {})
+
+        # ── Map regions.mode answer to multi_region_mode deployment hint ──────
+        if "multi_region_mode" not in deployment_hints:
+            ans_lower = req.answers.lower()
+            if any(w in ans_lower for w in [
+                "dr", "disaster", " ha ", "standby", "failover",
+                "duplicate", "active-passive", "passive", "replica",
+            ]):
+                deployment_hints["multi_region_mode"] = "duplicate_drha"
+            elif any(w in ans_lower for w in ["split", "different workload", "active-active"]):
+                deployment_hints["multi_region_mode"] = "split"
 
         enriched_prompt = (
             base_prompt
@@ -1158,12 +1183,13 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
         )
 
         result = await run_pipeline(
-            items        = items,
-            prompt       = enriched_prompt,
-            diagram_name = req.diagram_name,
-            client_id    = req.client_id,
-            request_id   = request_id,
-            input_hash   = input_hash,
+            items            = items,
+            prompt           = enriched_prompt,
+            diagram_name     = req.diagram_name,
+            client_id        = req.client_id,
+            request_id       = request_id,
+            input_hash       = input_hash,
+            deployment_hints = deployment_hints,
         )
 
         if result["status"] == "ok":
