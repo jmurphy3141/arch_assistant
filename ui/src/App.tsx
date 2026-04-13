@@ -53,10 +53,14 @@ export function App() {
   async function handleClarify(answers: string) {
     setClarifyLoading(true);
     try {
+      // Prefer stateless path: echo _clarify_context back so the server
+      // doesn't need PENDING_CLARIFY (survives restarts, no client_id mismatch).
+      const ctx = result?._clarify_context as { items_json?: string; prompt?: string } | undefined;
       const r = await apiClarify({
         answers,
-        client_id: customerId || clientId,
+        client_id:   customerId || clientId,
         diagram_name: diagramName,
+        ...(ctx?.items_json && ctx?.prompt ? { items_json: ctx.items_json, prompt: ctx.prompt } : {}),
       });
       setResult(r);
       setError(null);

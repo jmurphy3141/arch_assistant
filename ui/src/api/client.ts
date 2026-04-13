@@ -72,9 +72,12 @@ export interface GenerateRequest {
 }
 
 export interface ClarifyRequest {
-  answers: string;
-  client_id: string;
+  answers:     string;
+  client_id:   string;
   diagram_name: string;
+  // Stateless path: echo these back from result._clarify_context
+  items_json?: string;
+  prompt?:     string;
 }
 
 export interface GenerateResponse {
