@@ -241,11 +241,99 @@ class ServiceItem:
     notes:    str = ""
 
 
-def parse_bom(xlsx_path: str | Path, context: str = "") -> list[ServiceItem]:
-    """Parse BOM Excel → list of ServiceItems ready for LLM layout prompt."""
+# ── Multi-environment sheet detection ────────────────────────────────────────
+
+# (priority, keyword) — higher number = more "production-like"
+_ENV_PRIORITY: list[tuple[int, str]] = [
+    (10, "prod"), (10, "production"),
+    (8,  "prototype"), (8, "proto"),
+    (5,  "dev"), (5, "development"),
+    (3,  "pristine"), (3, "base"),
+    (2,  "test"), (2, "uat"), (2, "staging"), (2, "preprod"),
+]
+
+def _env_sheet_priority(name: str) -> int:
+    """Return priority for an environment-named sheet (0 = not an env sheet)."""
+    n = name.lower()
+    for priority, kw in _ENV_PRIORITY:
+        if kw in n:
+            return priority
+    return 0
+
+
+def _find_bom_sheets(wb) -> list[str]:
+    """Return env sheet names sorted by priority (highest first).
+    Falls back to 'BOM' sheet or first sheet if no env-named sheets found."""
+    env_sheets = [(name, _env_sheet_priority(name)) for name in wb.sheetnames
+                  if _env_sheet_priority(name) > 0]
+    if env_sheets:
+        env_sheets.sort(key=lambda x: -x[1])
+        return [s[0] for s in env_sheets]
+    if "BOM" in wb.sheetnames:
+        return ["BOM"]
+    return [wb.worksheets[0].title]
+
+
+def _extract_sheet_quantities(sheet) -> dict:
+    """Scan a BOM sheet and return aggregate quantities by service category."""
+    hdrs = None
+    compute_ocpu = 0.0
+    db_qty = 0.0
+    storage_gb = 0.0
+    for row in sheet.iter_rows(values_only=True):
+        if hdrs is None:
+            candidate = [str(c).lower().strip() if c else "" for c in row]
+            if "sku" in candidate and "description" in candidate:
+                hdrs = candidate
+            continue
+        if not any(v is not None for v in row):
+            continue
+        d = dict(zip(hdrs, row))
+        desc = str(d.get("description", "") or "").lower()
+        qty = float(d.get("quantity") or 0)
+        if "ocpu" in desc and not any(t in desc for t in ("autonomous", "adb")):
+            compute_ocpu += qty
+        elif any(t in desc for t in ("autonomous", "adb", "ecpu")):
+            db_qty += qty
+        elif any(t in desc for t in ("storage", "gb per month", "tb per month", "block volume")):
+            storage_gb += qty
+    return {"compute_ocpu": int(compute_ocpu), "db_qty": int(db_qty), "storage_gb": int(storage_gb)}
+
+
+def _build_env_summary(wb, env_sheets: list[str]) -> str:
+    """Build a text summary of per-environment resource quantities for the LLM prompt."""
+    lines = [
+        "MULTI-ENVIRONMENT BOM: This workbook contains separate environment tabs.",
+        "The architecture diagram is drawn from the primary environment below.",
+        "Other environments use the SAME topology with different resource sizes.",
+        "",
+        "Environments detected:",
+    ]
+    for sheet_name in env_sheets:
+        q = _extract_sheet_quantities(wb[sheet_name])
+        lines.append(
+            f"  • {sheet_name}: {q['compute_ocpu']} compute OCPUs"
+            + (f", {q['db_qty']} DB OCPU/ECPU" if q["db_qty"] else "")
+            + (f", {q['storage_gb']:.0f} GB storage" if q["storage_gb"] else "")
+        )
+    lines.append(f"\nPrimary environment (used for diagram): {env_sheets[0]}")
+    return "\n".join(lines)
+
+
+def parse_bom(xlsx_path: str | Path, context: str = "",
+              sheet_name: str | None = None) -> list[ServiceItem]:
+    """Parse BOM Excel → list of ServiceItems ready for LLM layout prompt.
+
+    sheet_name: if provided, parse that specific sheet; otherwise auto-detect
+    the primary environment sheet.
+    """
     import openpyxl
     wb   = openpyxl.load_workbook(xlsx_path, data_only=True)
-    bom  = wb["BOM"] if "BOM" in wb.sheetnames else wb.worksheets[0]
+    if sheet_name and sheet_name in wb.sheetnames:
+        bom = wb[sheet_name]
+    else:
+        primary = _find_bom_sheets(wb)[0]
+        bom = wb[primary]
     inp  = wb["Input"] if "Input" in wb.sheetnames else None
 
     # Read input sheet for quantities
@@ -387,9 +475,9 @@ def parse_bom(xlsx_path: str | Path, context: str = "") -> list[ServiceItem]:
 def _make_label(oci_type: str, qty, app_ocpu: int, db_ocpu: int, obj_gb: float, note: str) -> str:
     q = int(qty) if qty else "?"
     labels = {
-        "compute":        f"Compute VM\n×{q}" if app_ocpu == 0 else f"Compute\n×{app_ocpu:,} OCPU",
+        "compute":        f"Compute\n×{q} OCPU",
         "bare metal":     f"HPC BM.Optimized3.36\n×{q} nodes",
-        "database":       f"PostgreSQL DB\n×{db_ocpu:,} OCPU",
+        "database":       f"PostgreSQL DB\n×{db_ocpu:,} OCPU" if db_ocpu else f"Database\n×{q} OCPU",
         "object storage": f"Object Storage\n{int(obj_gb*2/1024)} TB",
         "load balancer":  f"Load Balancer\n×{q} (per region)",
         "drg":            f"DRG / FastConnect\n×{q} ports",
@@ -924,11 +1012,23 @@ def bom_to_llm_input(
     questionnaire_text: answers to a pre-flight questionnaire, if any.
     notes_text: meeting notes or other free-text, if any.
     """
-    items = parse_bom(xlsx_path, context=context)
+    import openpyxl as _openpyxl
+    wb = _openpyxl.load_workbook(xlsx_path, data_only=True)
+    env_sheets = _find_bom_sheets(wb)
+
+    # Parse primary environment sheet
+    items = parse_bom(xlsx_path, context=context, sheet_name=env_sheets[0])
+
+    # If multiple environment tabs found, inject a summary into context
+    full_context = context
+    if len(env_sheets) > 1:
+        env_summary = _build_env_summary(wb, env_sheets)
+        full_context = f"{env_summary}\n\n{context}".strip() if context else env_summary
+
     prompt = build_layout_intent_prompt(
         items,
         questionnaire_text=questionnaire_text,
         notes_text=notes_text,
-        context=context,
+        context=full_context,
     )
     return items, prompt
