@@ -1268,25 +1268,40 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
             except (json.JSONDecodeError, ValueError):
                 deployment_hints = {}
 
-        prev_spec_section = ""
         if req.prev_spec:
-            prev_spec_section = (
-                "\n\n═══════════════════════════════════════════════════════\n"
-                "YOUR PREVIOUS LAYOUT INTENT (the diagram that is currently shown):\n"
-                + req.prev_spec
-                + "\n"
+            # ── Editor prompt: skip the full BOM prompt entirely ──────────────
+            # Sending the full BOM prompt causes the LLM to regenerate a fresh
+            # layout from the service list, ignoring the existing diagram.
+            # Instead give the LLM ONLY the current LayoutIntent + the change
+            # request so it has no choice but to modify the existing layout.
+            available_ids = ", ".join(
+                f"{i.id} ({i.oci_type})" for i in items
             )
-
-        enriched_prompt = (
-            base_prompt
-            + prev_spec_section
-            + "\n\n═══════════════════════════════════════════════════════\n"
-            + "DIAGRAM REFINEMENT REQUEST:\n"
-            + req.feedback.strip()
-            + "\n\nModify the LayoutIntent shown above to apply the requested changes. "
-            + "Return the COMPLETE updated LayoutIntent JSON (all placements, groups, edges). "
-            + "Output ONLY valid JSON."
-        )
+            enriched_prompt = (
+                "You are an OCI LayoutIntent editor.\n"
+                "Apply ONLY the requested change to the current LayoutIntent below.\n"
+                "Do NOT regenerate from scratch. Modify only what is requested and "
+                "keep everything else identical.\n"
+                "Output ONLY valid JSON — the complete updated LayoutIntent.\n"
+                "\n═══ CURRENT LAYOUT (modify this):\n"
+                + req.prev_spec
+                + "\n\n═══ AVAILABLE SERVICE IDs (from BOM — use these exact IDs):\n"
+                + available_ids
+                + "\n\n═══ REQUESTED CHANGE:\n"
+                + req.feedback.strip()
+                + "\n\nReturn the COMPLETE updated LayoutIntent JSON. Output ONLY valid JSON."
+            )
+        else:
+            # Fallback: no prev_spec, use full BOM prompt with feedback appended
+            enriched_prompt = (
+                base_prompt
+                + "\n\n═══════════════════════════════════════════════════════\n"
+                + "DIAGRAM REFINEMENT REQUEST:\n"
+                + req.feedback.strip()
+                + "\n\nApply the requested changes. "
+                + "Return the COMPLETE updated LayoutIntent JSON. "
+                + "Output ONLY valid JSON."
+            )
 
         result = await run_pipeline(
             items            = items,

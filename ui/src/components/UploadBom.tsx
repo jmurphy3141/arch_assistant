@@ -277,11 +277,12 @@ export function UploadBom({
   onError,
 }: Props) {
   // Drag-and-drop state
-  const [droppedBom,   setDroppedBom]   = useState<File | null>(null);
-  const [droppedCtx,   setDroppedCtx]   = useState<File | null>(null);
-  const [dragOver,     setDragOver]     = useState<'bom' | 'ctx' | null>(null);
-  const [uploadStatus, setUploadStatus] = useState<string>('');
-  const [bomType,      setBomType]      = useState<'main' | 'poc'>('main');
+  const [droppedBom,    setDroppedBom]    = useState<File | null>(null);
+  const [droppedCtx,    setDroppedCtx]    = useState<File | null>(null);
+  const [ctxContent,    setCtxContent]    = useState<string>('');   // actual file text
+  const [dragOver,      setDragOver]      = useState<'bom' | 'ctx' | null>(null);
+  const [uploadStatus,  setUploadStatus]  = useState<string>('');
+  const [bomType,       setBomType]       = useState<'main' | 'poc'>('main');
   const bomInputRef = useRef<HTMLInputElement>(null);
   const ctxInputRef = useRef<HTMLInputElement>(null);
 
@@ -295,6 +296,15 @@ export function UploadBom({
   const [qAnswers,    setQAnswers]    = useState<Record<string, string | string[]>>({});
   const [loading,     setLoading]     = useState(false);
 
+  /** Read a text file in the browser and update ctxContent state. */
+  function readCtxFile(file: File) {
+    setDroppedCtx(file);
+    setCtxFile(file.name);
+    const reader = new FileReader();
+    reader.onload = (ev) => setCtxContent((ev.target?.result as string) ?? '');
+    reader.readAsText(file);
+  }
+
   // ── Drag-and-drop handlers ──────────────────────────────────────────────
   const onDrop = useCallback((e: React.DragEvent, zone: 'bom' | 'ctx') => {
     e.preventDefault();
@@ -302,7 +312,7 @@ export function UploadBom({
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
     if (zone === 'bom') { setDroppedBom(file); setBomFile(file.name); }
-    else                { setDroppedCtx(file); setCtxFile(file.name); }
+    else                { readCtxFile(file); }
   }, []);
 
   // ── Questionnaire helpers ───────────────────────────────────────────────
@@ -328,7 +338,12 @@ export function UploadBom({
   function buildContext(): string {
     const parts: string[] = [];
 
-    if (ctxFile.trim()) {
+    // Include actual context file content if the file was dropped/selected in the browser.
+    // If only a bucket filename was typed (no file object), pass the path reference so the
+    // server can fetch it from OCI Object Storage.
+    if (ctxContent.trim()) {
+      parts.push(`CONTEXT DOCUMENT:\n${ctxContent.trim()}`);
+    } else if (!droppedCtx && ctxFile.trim()) {
       parts.push(`CONTEXT_FILE: ${DEFAULT_PREFIX}/${customerId}/${ctxFile.trim()}`);
     }
 
@@ -520,7 +535,7 @@ export function UploadBom({
                 ref={ctxInputRef}
                 type="file"
                 style={{ display: 'none' }}
-                onChange={e => { const f = e.target.files?.[0]; if (f) { setDroppedCtx(f); setCtxFile(f.name); } }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) readCtxFile(f); }}
               />
             </div>
             <span style={{ fontSize: '0.65rem', color: T.muted, marginTop: 2 }}>
