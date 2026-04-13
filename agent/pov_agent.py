@@ -6,18 +6,23 @@ Point of View (POV) document generator (Agent 4 in fleet).
 Each run:
   1. Reads context/{customer_id}/context.json
   2. Identifies notes not yet incorporated by this agent
-  3. Reads previous POV version (if any)
-  4. Calls LLM with: context summary + new notes + previous POV
-  5. Saves new versioned POV
-  6. Updates context file with this run's results
+  3. Reads base POV: approved version if one exists, else latest LLM-generated
+  4. Calls LLM with: context summary + new notes + feedback history + base POV
+  5. Saves new versioned POV + prompt log
+  6. Persists any new feedback entry
+  7. Updates context file with this run's results
 
 Storage
 -------
   Reads:  context/{customer_id}/context.json
           notes/{customer_id}/* (new notes only, diffed against context)
-          pov/{customer_id}/LATEST.md
+          approved/{customer_id}/pov.md       (preferred base — SA ground truth)
+          pov/{customer_id}/LATEST.md         (fallback base)
+          pov/{customer_id}/feedback.json     (prior correction history)
   Writes: pov/{customer_id}/v{n}.md + LATEST.md + MANIFEST.json
-          context/{customer_id}/context.json (updated)
+          pov/{customer_id}/v{n}_prompt_log.json
+          pov/{customer_id}/feedback.json     (if feedback provided)
+          context/{customer_id}/context.json  (updated)
 """
 from __future__ import annotations
 
@@ -31,7 +36,14 @@ from agent.context_store import (
     record_agent_run,
     write_context,
 )
-from agent.document_store import get_latest_doc, save_doc
+from agent.document_store import (
+    append_feedback,
+    get_best_base_doc,
+    get_feedback_history,
+    save_doc,
+    save_prompt_log,
+)
+from agent.notifications import notify
 from agent.persistence_objectstore import ObjectStoreBase
 
 logger = logging.getLogger(__name__)
@@ -56,6 +68,8 @@ Customer: {customer_name}
 {context_summary}
 
 {new_notes_section}
+
+{feedback_section}
 
 {previous_pov_section}
 
@@ -136,6 +150,8 @@ def generate_pov(
     customer_name: str,
     store: ObjectStoreBase,
     text_runner: Callable[[str, str], str],
+    *,
+    feedback: str = "",
 ) -> dict:
     """
     Generate or update a POV document.
@@ -145,6 +161,8 @@ def generate_pov(
         customer_name: Human-readable customer name.
         store:         ObjectStoreBase instance.
         text_runner:   callable(prompt: str, system_message: str) -> str.
+        feedback:      Optional SA free-text corrections to incorporate.
+                       Saved permanently and included in all future generations.
 
     Returns dict with keys:
         version (int), key (str), latest_key (str), content (str), context (dict)
@@ -157,33 +175,50 @@ def generate_pov(
     new_note_keys, new_notes_text = get_new_notes(store, context, AGENT_NAME)
     context_summary = build_context_summary(context)
 
-    # ── Previous POV ──────────────────────────────────────────────────────────
-    previous_pov = get_latest_doc(store, "pov", customer_id)
+    # ── Base document: approved first, then latest LLM-generated ─────────────
+    base_doc = get_best_base_doc(store, "pov", customer_id)
+
+    # ── Feedback history (all prior + current) ────────────────────────────────
+    prior_feedback = get_feedback_history(store, "pov", customer_id)
+    all_feedback_entries = prior_feedback + (
+        [{"feedback": feedback}] if feedback.strip() else []
+    )
 
     # ── Build prompt sections ─────────────────────────────────────────────────
-    if context_summary:
-        context_block = f"{context_summary}\n"
-    else:
-        context_block = ""
+    context_block = f"{context_summary}\n" if context_summary else ""
 
     if new_notes_text:
         new_notes_section = (
             "New meeting notes to incorporate (not yet in previous version):\n"
             f"{new_notes_text[:4000]}"
         )
-    elif not previous_pov:
+    elif not base_doc:
         new_notes_section = "(No meeting notes uploaded yet — generate a skeleton POV.)"
     else:
         new_notes_section = "(No new notes since last run — refine the existing POV if needed.)"
 
-    if previous_pov:
+    if all_feedback_entries:
+        feedback_lines = "\n".join(
+            f"  • {e['feedback']}" for e in all_feedback_entries if e.get("feedback")
+        )
+        feedback_section = (
+            "SA correction history (apply ALL of these — do not repeat previous mistakes):\n"
+            f"{feedback_lines}"
+        )
+    else:
+        feedback_section = ""
+
+    if base_doc:
         previous_pov_section = (
-            "Previous POV version (use for continuity; update and improve — do not repeat verbatim):\n"
+            "Previous POV version (use as base; update and improve — do not repeat verbatim):\n"
             "```\n"
-            + previous_pov[:3000]
+            + base_doc[:3000]
             + "\n```"
         )
-        instructions = "Update the POV to incorporate the new notes above. Keep strong sections, improve weak ones."
+        instructions = (
+            "Update the POV: incorporate the new notes, apply ALL corrections above, "
+            "keep strong sections, improve weak ones."
+        )
     else:
         previous_pov_section = ""
         instructions = "This is the first POV for this customer. Write a complete draft."
@@ -192,19 +227,33 @@ def generate_pov(
         customer_name=customer_name,
         context_summary=context_block,
         new_notes_section=new_notes_section,
+        feedback_section=feedback_section,
         previous_pov_section=previous_pov_section,
         instructions=instructions,
     )
 
     # ── Generate ──────────────────────────────────────────────────────────────
-    logger.info("Generating POV: customer_id=%s new_notes=%d", customer_id, len(new_note_keys))
+    logger.info("Generating POV: customer_id=%s new_notes=%d feedback=%r",
+                customer_id, len(new_note_keys), bool(feedback.strip()))
     content = text_runner(prompt, POV_SYSTEM_MESSAGE)
 
     # ── Persist doc ───────────────────────────────────────────────────────────
     result = save_doc(store, "pov", customer_id, content, {"customer_name": customer_name})
 
+    # ── Save prompt log ───────────────────────────────────────────────────────
+    save_prompt_log(store, "pov", customer_id, result["version"], {
+        "system_message":       POV_SYSTEM_MESSAGE,
+        "prompt":               prompt,
+        "response_length_chars": len(content),
+        "new_note_keys":        new_note_keys,
+        "feedback_provided":    feedback.strip(),
+    })
+
+    # ── Persist feedback if provided ──────────────────────────────────────────
+    if feedback.strip():
+        append_feedback(store, "pov", customer_id, feedback.strip(), result["version"])
+
     # ── Update + write context ────────────────────────────────────────────────
-    # Extract a one-line summary for the context file
     first_line = next(
         (ln.strip() for ln in content.splitlines() if ln.strip() and not ln.startswith("#")),
         "",
@@ -224,4 +273,7 @@ def generate_pov(
     result["content"] = content
     result["context"] = context
     logger.info("POV saved: version=%d key=%s", result["version"], result["key"])
+
+    notify("pov_generated", customer_id,
+           f"POV v{result['version']} generated for {customer_name}")
     return result

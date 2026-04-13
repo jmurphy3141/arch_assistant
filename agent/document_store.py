@@ -5,19 +5,28 @@ Versioned document and notes storage helpers for writing agents.
 
 Bucket layout (all paths are relative to the root bucket):
 
-  notes/{customer_id}/{note_name}        — individual meeting notes
-  notes/{customer_id}/MANIFEST.json      — list of all notes with timestamps
+  notes/{customer_id}/{note_name}            — individual meeting notes
+  notes/{customer_id}/MANIFEST.json          — list of all notes with timestamps
 
-  pov/{customer_id}/v{n}.md              — POV versions
-  pov/{customer_id}/LATEST.md            — latest POV content
-  pov/{customer_id}/MANIFEST.json        — version history
+  pov/{customer_id}/v{n}.md                  — POV versions
+  pov/{customer_id}/LATEST.md                — latest LLM-generated content
+  pov/{customer_id}/MANIFEST.json            — version history
+  pov/{customer_id}/v{n}_prompt_log.json     — LLM prompt/response log per version
+  pov/{customer_id}/feedback.json            — append-only SA feedback history
 
-  jep/{customer_id}/v{n}.md              — JEP versions
-  jep/{customer_id}/LATEST.md            — latest JEP content
-  jep/{customer_id}/MANIFEST.json        — version history
+  jep/{customer_id}/v{n}.md                  — JEP versions
+  jep/{customer_id}/LATEST.md
+  jep/{customer_id}/MANIFEST.json
+  jep/{customer_id}/v{n}_prompt_log.json
+  jep/{customer_id}/feedback.json
+  jep/{customer_id}/poc_questions.json       — Q&A from JEP kickoff
+
+  approved/{customer_id}/pov.md              — SA-uploaded approved POV (source of truth)
+  approved/{customer_id}/jep.md              — SA-uploaded approved JEP
 
 Atomicity: versioned copy is written first; LATEST.md and MANIFEST.json
 are written only after the versioned copy succeeds.
+Approved versions are NEVER overwritten by LLM generation.
 """
 from __future__ import annotations
 
@@ -203,3 +212,177 @@ def list_versions(
         return json.loads(store.get(manifest_key)).get("versions", [])
     except KeyError:
         return []
+
+
+# ── Approved versions ─────────────────────────────────────────────────────────
+
+def save_approved_doc(
+    store: ObjectStoreBase,
+    doc_type: str,
+    customer_id: str,
+    content: str,
+) -> str:
+    """
+    Save the SA-approved version of a document.
+
+    Writes to: approved/{customer_id}/{doc_type}.md
+    This file is NEVER overwritten by LLM generation — only by explicit SA upload.
+    Returns the object key.
+    """
+    key = f"approved/{customer_id}/{doc_type}.md"
+    store.put(key, content.encode("utf-8"), "text/markdown")
+    logger.info("Approved %s saved: key=%s", doc_type, key)
+    return key
+
+
+def get_approved_doc(
+    store: ObjectStoreBase,
+    doc_type: str,
+    customer_id: str,
+) -> Optional[str]:
+    """
+    Read the SA-approved version of a document.
+    Returns None if no approved version exists yet.
+    """
+    key = f"approved/{customer_id}/{doc_type}.md"
+    try:
+        return store.get(key).decode("utf-8", errors="replace")
+    except KeyError:
+        return None
+
+
+def get_best_base_doc(
+    store: ObjectStoreBase,
+    doc_type: str,
+    customer_id: str,
+) -> Optional[str]:
+    """
+    Return the best base document for the next LLM generation run.
+
+    Priority:
+      1. approved/{customer_id}/{doc_type}.md  (SA-edited ground truth)
+      2. {doc_type}/{customer_id}/LATEST.md    (last LLM-generated version)
+      3. None                                  (first run)
+    """
+    approved = get_approved_doc(store, doc_type, customer_id)
+    if approved is not None:
+        logger.debug("Using approved %s as base for customer=%s", doc_type, customer_id)
+        return approved
+    return get_latest_doc(store, doc_type, customer_id)
+
+
+# ── Feedback history ──────────────────────────────────────────────────────────
+
+def append_feedback(
+    store: ObjectStoreBase,
+    doc_type: str,
+    customer_id: str,
+    feedback_text: str,
+    resulted_in_version: Optional[int] = None,
+) -> None:
+    """
+    Append an SA feedback entry to the permanent feedback log.
+
+    Stored at: {doc_type}/{customer_id}/feedback.json
+    Format: [{"timestamp": ..., "feedback": ..., "resulted_in_version": N}, ...]
+    """
+    key = f"{doc_type}/{customer_id}/feedback.json"
+    try:
+        entries: list = json.loads(store.get(key))
+    except KeyError:
+        entries = []
+
+    entries.append({
+        "timestamp":            datetime.now(timezone.utc).isoformat(),
+        "feedback":             feedback_text,
+        "resulted_in_version":  resulted_in_version,
+    })
+    store.put(key, json.dumps(entries, indent=2).encode("utf-8"), "application/json")
+    logger.info("Feedback appended: %s customer=%s", doc_type, customer_id)
+
+
+def get_feedback_history(
+    store: ObjectStoreBase,
+    doc_type: str,
+    customer_id: str,
+) -> list[dict]:
+    """
+    Return all SA feedback entries for a document type. Empty list if none.
+    """
+    key = f"{doc_type}/{customer_id}/feedback.json"
+    try:
+        return json.loads(store.get(key))
+    except KeyError:
+        return []
+
+
+# ── Prompt logging ────────────────────────────────────────────────────────────
+
+def save_prompt_log(
+    store: ObjectStoreBase,
+    doc_type: str,
+    customer_id: str,
+    version: int,
+    log: dict,
+) -> None:
+    """
+    Save the LLM prompt and response metadata alongside a generated version.
+
+    Stored at: {doc_type}/{customer_id}/v{n}_prompt_log.json
+    Recommended log keys: timestamp, system_message, prompt, model_id,
+                          max_tokens, temperature, response_length_chars.
+    """
+    key = f"{doc_type}/{customer_id}/v{version}_prompt_log.json"
+    log.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+    store.put(key, json.dumps(log, indent=2).encode("utf-8"), "application/json")
+    logger.debug("Prompt log saved: %s", key)
+
+
+# ── JEP POC questions ─────────────────────────────────────────────────────────
+
+def save_jep_questions(
+    store: ObjectStoreBase,
+    customer_id: str,
+    questions: list[dict],
+    answers: Optional[dict] = None,
+) -> str:
+    """
+    Save the POC clarifying questions (and optionally their answers).
+
+    Stored at: jep/{customer_id}/poc_questions.json
+    Format: {"questions": [...], "answers": {...}, "timestamp": ...}
+    Returns the object key.
+    """
+    key = f"jep/{customer_id}/poc_questions.json"
+    # Merge with existing record if answers are being added separately
+    try:
+        existing = json.loads(store.get(key))
+    except KeyError:
+        existing = {}
+
+    record = {
+        **existing,
+        "questions": questions,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if answers is not None:
+        record["answers"] = answers
+
+    store.put(key, json.dumps(record, indent=2).encode("utf-8"), "application/json")
+    logger.info("JEP POC questions saved: customer=%s", customer_id)
+    return key
+
+
+def get_jep_questions(
+    store: ObjectStoreBase,
+    customer_id: str,
+) -> dict:
+    """
+    Return the stored POC questions and answers for a customer.
+    Returns {} if none exist yet.
+    """
+    key = f"jep/{customer_id}/poc_questions.json"
+    try:
+        return json.loads(store.get(key))
+    except KeyError:
+        return {}
