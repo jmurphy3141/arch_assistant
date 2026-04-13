@@ -230,6 +230,7 @@ class RefineRequest(BaseModel):
     # Stateless: echo back from the _refine_context field of the ok response
     items_json:   Optional[str] = None
     prompt:       Optional[str] = None
+    prev_spec:    Optional[str] = None  # JSON-encoded previous LayoutIntent
 
 
 class GenerateRequest(BaseModel):
@@ -492,12 +493,14 @@ async def run_pipeline(
     # Detect LayoutIntent (has "placements" key) vs legacy/hierarchical full spec.
     # Legacy FakeLLMRunner tests return a full hierarchical spec (no "placements"),
     # so the old path is preserved for backward compatibility.
+    layout_intent_spec: Optional[dict] = None  # captured for _refine_context
     if "placements" in spec:
         try:
             from agent.layout_intent import validate_layout_intent, LayoutIntentError
             from agent.intent_compiler import compile_intent_to_flat_spec
 
             _spec_ref = spec  # capture for closure
+            layout_intent_spec = spec  # save LayoutIntent before compile overwrites spec
 
             def _compile_intent():
                 intent = validate_layout_intent(_spec_ref, items)
@@ -669,10 +672,13 @@ async def run_pipeline(
     # Attach refine context so the UI can request diagram changes without
     # re-uploading the BOM.  Mirrors _clarify_context but for the "ok" path.
     if items is not None:
-        resp["_refine_context"] = {
+        refine_ctx: dict = {
             "items_json": json.dumps([dataclasses.asdict(i) for i in items]),
             "prompt":     prompt,
         }
+        if layout_intent_spec is not None:
+            refine_ctx["prev_spec"] = json.dumps(layout_intent_spec)
+        resp["_refine_context"] = refine_ctx
     return resp
 
 
@@ -1251,13 +1257,23 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
                 detail="items_json and prompt are required for /refine (echo from _refine_context).",
             )
 
+        prev_spec_section = ""
+        if req.prev_spec:
+            prev_spec_section = (
+                "\n\n═══════════════════════════════════════════════════════\n"
+                "YOUR PREVIOUS LAYOUT INTENT (the diagram that is currently shown):\n"
+                + req.prev_spec
+                + "\n"
+            )
+
         enriched_prompt = (
             base_prompt
+            + prev_spec_section
             + "\n\n═══════════════════════════════════════════════════════\n"
             + "DIAGRAM REFINEMENT REQUEST:\n"
             + req.feedback.strip()
-            + "\n\nApply the requested changes to the diagram. "
-            + "Return an updated LayoutIntent JSON.\n"
+            + "\n\nModify the LayoutIntent shown above to apply the requested changes. "
+            + "Return the COMPLETE updated LayoutIntent JSON (all placements, groups, edges). "
             + "Output ONLY valid JSON."
         )
 
@@ -1269,6 +1285,12 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
             request_id   = request_id,
             input_hash   = input_hash,
         )
+
+        # Restore original (un-enriched) prompt in _refine_context so that
+        # subsequent refinements don't accumulate stacked prompts.
+        if isinstance(result, dict) and "_refine_context" in result:
+            result["_refine_context"]["prompt"] = req.prompt
+
         return JSONResponse(status_code=200, content=result)
 
     except HTTPException:

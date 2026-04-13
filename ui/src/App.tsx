@@ -81,7 +81,7 @@ export function App() {
 
   async function handleRefine(feedback: string) {
     const ctx = result?._refine_context as {
-      items_json?: string; prompt?: string;
+      items_json?: string; prompt?: string; prev_spec?: string;
     } | undefined;
     if (!ctx?.items_json || !ctx?.prompt) {
       setError('Refine context missing — please regenerate the diagram first.');
@@ -95,6 +95,7 @@ export function App() {
         diagram_name: diagramName,
         items_json:   ctx.items_json,
         prompt:       ctx.prompt,
+        ...(ctx.prev_spec ? { prev_spec: ctx.prev_spec } : {}),
       });
       setResult(r);
       setError(null);

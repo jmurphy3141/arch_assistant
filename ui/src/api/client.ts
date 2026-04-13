@@ -88,6 +88,7 @@ export interface RefineRequest {
   // Echo back from result._refine_context
   items_json?:  string;
   prompt?:      string;
+  prev_spec?:   string;  // JSON-encoded previous LayoutIntent
 }
 
 export interface GenerateResponse {
