@@ -363,15 +363,22 @@ def _split_bom_into_sections(sheet) -> list[tuple[str, list, list]]:
             continue
 
         # ── Is this a section-label row? ─────────────────────────────────────
-        # A label row has ≤3 non-empty cells, and the first cell is short text
-        # that doesn't look like a SKU (B + digits) or a plain number.
+        # A label row has ≤2 non-empty cells, and the first cell is short text
+        # that doesn't look like a SKU or a plain number.
+        # Threshold is 2 (not 3) so that standard 3-column data rows
+        # (SKU, Description, Quantity) are never mis-classified as labels,
+        # even when the SKU doesn't match the canonical B+digits OCI pattern.
         text_cells = [str(v).strip() for v in row if v is not None and str(v).strip()]
         if text_cells:
             first = text_cells[0]
-            is_sku    = (len(first) >= 5 and first[0].upper() == "B"
-                         and first[1:].isdigit())
+            is_sku = (
+                # Standard OCI SKU: B followed by digits only (e.g. B94176)
+                (len(first) >= 5 and first[0].upper() == "B" and first[1:].isdigit())
+                # Any all-caps identifier without spaces (e.g. ZZZUNKNOWN, BFUTURE1, BBANDWIDTH)
+                or (len(first) >= 5 and " " not in first and first.upper() == first)
+            )
             is_number = first.replace(".", "").replace(",", "").isdigit()
-            if len(text_cells) <= 3 and not is_sku and not is_number and len(first) < 60:
+            if len(text_cells) <= 2 and not is_sku and not is_number and len(first) < 60:
                 next_name = first
                 continue
 
