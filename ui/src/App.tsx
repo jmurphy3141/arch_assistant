@@ -10,7 +10,7 @@ import { JepForm } from './components/JepForm';
 import { TerraformForm } from './components/TerraformForm';
 import { WafForm } from './components/WafForm';
 import { useClientId, getLastDiagramName, saveLastDiagramName } from './hooks/useClientId';
-import { apiClarify, apiRefineDiagram, type GenerateResponse, type OrchestrationResult } from './api/client';
+import { apiClarify, apiRefineDiagram, apiWaitForJob, type GenerateResponse, type OrchestrationResult } from './api/client';
 
 type Mode = 'upload' | 'generate' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
@@ -30,6 +30,7 @@ export function App() {
   const [orchestrationResult, setOrchestrationResult] = useState<OrchestrationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [clarifyLoading, setClarifyLoading] = useState(false);
+  const [clarifyElapsed, setClarifyElapsed] = useState(0);
   const [refineLoading, setRefineLoading] = useState(false);
 
   function handleDiagramNameChange(name: string) {
@@ -64,13 +65,14 @@ export function App() {
     opts?: { auto_waf?: boolean; customer_id?: string; customer_name?: string },
   ) {
     setClarifyLoading(true);
+    setClarifyElapsed(0);
     try {
       // Prefer stateless path: echo _clarify_context back so the server
       // doesn't need PENDING_CLARIFY (survives restarts, no client_id mismatch).
       const ctx = result?._clarify_context as {
         items_json?: string; prompt?: string; deployment_hints_json?: string;
       } | undefined;
-      const r = await apiClarify({
+      const pending = await apiClarify({
         answers,
         client_id:    customerId || clientId,
         diagram_name: diagramName,
@@ -79,16 +81,18 @@ export function App() {
           prompt:                ctx.prompt,
           deployment_hints_json: ctx.deployment_hints_json,
         } : {}),
-        ...(opts?.auto_waf    ? { auto_waf:      opts.auto_waf    } : {}),
-        ...(opts?.customer_id ? { customer_id:   opts.customer_id } : {}),
+        ...(opts?.auto_waf      ? { auto_waf:      opts.auto_waf      } : {}),
+        ...(opts?.customer_id   ? { customer_id:   opts.customer_id   } : {}),
         ...(opts?.customer_name ? { customer_name: opts.customer_name } : {}),
       });
+      const r = await apiWaitForJob(pending.job_id, setClarifyElapsed);
       handleResult(r);
     } catch (err: unknown) {
       const e = err as { status: number; detail: string };
       setError(`Clarify error ${e.status}: ${e.detail}`);
     } finally {
       setClarifyLoading(false);
+      setClarifyElapsed(0);
     }
   }
 
@@ -221,7 +225,7 @@ export function App() {
             />
           )}
           {result && result.status === 'need_clarification' && (
-            <ClarifyForm result={result} onSubmit={handleClarify} loading={clarifyLoading} />
+            <ClarifyForm result={result} onSubmit={handleClarify} loading={clarifyLoading} elapsedSec={clarifyElapsed} />
           )}
         </>
       )}

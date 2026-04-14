@@ -206,6 +206,34 @@ SESSION_STORE:     Dict[str, str]  = {}   # client_id → session_id (ADK path o
 PENDING_CLARIFY:   Dict[str, dict] = {}   # client_id  → {items, prompt, diagram_name}
 IDEMPOTENCY_CACHE: Dict[tuple, dict] = {} # (client_id, diagram_name, input_hash) → result
 
+# ── Async job store ────────────────────────────────────────────────────────────
+_JOB_STORE: Dict[str, dict] = {}  # job_id → {status, result, error, created_at}
+_JOB_TTL = 3600                   # seconds — jobs expire after 1 hour
+
+
+def _new_job() -> str:
+    """Create a pending job entry and return its ID."""
+    import time as _t
+    jid = str(uuid.uuid4())
+    _JOB_STORE[jid] = {"status": "pending", "result": None, "error": None, "created_at": _t.time()}
+    # Opportunistically prune expired jobs
+    cutoff = _t.time() - _JOB_TTL
+    for k in [k for k, v in list(_JOB_STORE.items()) if v["created_at"] < cutoff]:
+        del _JOB_STORE[k]
+    return jid
+
+
+def _complete_job(jid: str, result: dict) -> None:
+    if jid in _JOB_STORE:
+        _JOB_STORE[jid]["status"] = "complete"
+        _JOB_STORE[jid]["result"] = result
+
+
+def _fail_job(jid: str, detail: str) -> None:
+    if jid in _JOB_STORE:
+        _JOB_STORE[jid]["status"] = "error"
+        _JOB_STORE[jid]["error"]  = detail
+
 
 # ── Pydantic models ─────────────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
@@ -1108,230 +1136,89 @@ async def upload_bom(
 ):
     """
     Upload an Excel BOM + optional context file.
-    Returns a draw.io diagram or clarification questions.
-
-    When auto_waf=True and the diagram is generated successfully, the server
-    automatically runs the WAF ↔ Drawing quality-gate loop and returns an
-    orchestration_complete response with both diagram and WAF results.
+    Returns {"status":"pending","job_id":"..."} immediately.
+    Poll GET /api/job/{job_id} for the result.
     """
-    request_id = str(uuid.uuid4())
+    # Read file bytes NOW — UploadFile is not usable inside a background task
+    file_bytes = await file.read()
+    file_name  = file.filename or "bom.xlsx"
+    ctx_bytes: bytes = b""
+    ctx_name:  str   = ""
+    if context_file and context_file.filename:
+        ctx_bytes = await context_file.read()
+        ctx_name  = context_file.filename
 
-    try:
-        file_bytes = await file.read()
-        input_hash = compute_input_hash(
-            hashlib.sha256(file_bytes).hexdigest()
-        )
+    # Idempotency check before spawning a job (skip for auto_waf)
+    input_hash = compute_input_hash(hashlib.sha256(file_bytes).hexdigest())
+    cache_key  = (client_id, diagram_name, input_hash)
+    if not auto_waf and cache_key in IDEMPOTENCY_CACHE:
+        return JSONResponse(status_code=200, content=IDEMPOTENCY_CACHE[cache_key])
 
-        # Idempotency check (skip for auto_waf — loop must run fresh)
-        cache_key = (client_id, diagram_name, input_hash)
-        if not auto_waf and cache_key in IDEMPOTENCY_CACHE:
-            return IDEMPOTENCY_CACHE[cache_key]
+    job_id = _new_job()
 
-        # Save BOM to temp file
-        suffix = Path(file.filename).suffix or ".xlsx"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(file_bytes)
-            bom_path = tmp.name
+    async def _run() -> None:
+        request_id = str(uuid.uuid4())
+        try:
+            # Save BOM to temp file
+            suffix = Path(file_name).suffix or ".xlsx"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(file_bytes)
+                bom_path = tmp.name
 
-        # Read optional context file
-        context_text = context
-        if context_file and context_file.filename:
-            raw_ctx = await context_file.read()
-            try:
-                context_text = raw_ctx.decode("utf-8")
-            except UnicodeDecodeError:
-                context_text = raw_ctx.decode("latin-1", errors="replace")
-            logger.info("Context file: %s (%d chars)", context_file.filename, len(context_text))
-
-        items, prompt = await anyio.to_thread.run_sync(
-            functools.partial(bom_to_llm_input, bom_path, context=context_text)
-        )
-        await anyio.to_thread.run_sync(functools.partial(os.unlink, bom_path))
-        logger.info("BOM parsed: %d services | context: %d chars", len(items), len(context_text))
-
-        result = await run_pipeline(items, prompt, diagram_name, client_id,
-                                    request_id, input_hash)
-
-        if result["status"] == "ok" and not auto_waf:
-            IDEMPOTENCY_CACHE[cache_key] = result
-
-        # ── Auto WAF orchestration loop ───────────────────────────────────────
-        if auto_waf and result["status"] == "ok":
-            store = getattr(app.state, "object_store", None)
-            text_runner = getattr(app.state, "text_runner", None)
-            if store and text_runner:
-                eff_customer_id = customer_id or client_id
-                eff_deployment_hints = {}
-                refine_ctx = result.get("_refine_context") or {}
-                if refine_ctx.get("deployment_hints_json"):
-                    try:
-                        eff_deployment_hints = json.loads(refine_ctx["deployment_hints_json"])
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-
-                loop_result = await run_diagram_waf_loop(
-                    items            = items,
-                    base_prompt      = prompt,
-                    deployment_hints = eff_deployment_hints,
-                    draw_result      = result,
-                    customer_id      = eff_customer_id,
-                    customer_name    = customer_name,
-                    diagram_name     = diagram_name,
-                    client_id        = client_id,
-                    object_store     = store,
-                    text_runner      = text_runner,
-                    run_pipeline_fn  = run_pipeline,
-                )
-                waf_r = loop_result["waf_result"]
-                return JSONResponse(status_code=200, content={
-                    "status":        "orchestration_complete",
-                    "agent_version": AGENT_VERSION,
-                    "client_id":     client_id,
-                    "customer_id":   eff_customer_id,
-                    "diagram_name":  diagram_name,
-                    "request_id":    request_id,
-                    "draw_result":   loop_result["draw_result"],
-                    "waf_result": {
-                        "version":        waf_r.get("version"),
-                        "key":            waf_r.get("key"),
-                        "content":        waf_r.get("content", ""),
-                        "overall_rating": waf_r.get("overall_rating", "⚠️"),
-                    },
-                    "loop_summary": {
-                        "iterations": loop_result["iterations"],
-                        "history":    loop_result["loop_history"],
-                    },
-                    "errors": [],
-                })
-            else:
-                logger.warning("auto_waf=True but store/text_runner not configured — returning diagram only")
-
-        # ── Need clarification — store auto_waf metadata for /clarify ─────────
-        if auto_waf and result["status"] == "need_clarification":
-            if client_id in PENDING_CLARIFY:
-                PENDING_CLARIFY[client_id]["auto_waf"]      = True
-                PENDING_CLARIFY[client_id]["customer_id"]   = customer_id or client_id
-                PENDING_CLARIFY[client_id]["customer_name"] = customer_name
-
-        return JSONResponse(status_code=200, content=result)
-
-    except HTTPException:
-        raise
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=422, detail=f"LLM returned invalid JSON: {exc}")
-    except Exception as exc:
-        logger.error("Error in /upload-bom: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@app.post("/clarify")
-@app.post("/api/clarify")
-async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
-    """
-    Submit answers to clarification questions from /upload-bom or /generate.
-    Re-runs the pipeline with answers appended to the original prompt.
-
-    Stateless path (preferred for browser clients):
-      The browser echoes back items_json + prompt from the _clarify_context
-      field of the need_clarification response.  No server-side state needed.
-
-    Stateful fallback (A2A / legacy):
-      If items_json/prompt are absent, falls back to PENDING_CLARIFY lookup
-      keyed by client_id.
-    """
-    request_id = str(uuid.uuid4())
-    input_hash = compute_input_hash(req.answers or "")
-
-    try:
-        # ── Stateless path ────────────────────────────────────────────────────
-        if req.items_json and req.prompt:
-            from agent.bom_parser import ServiceItem
-            raw_items = json.loads(req.items_json)
-            items = [ServiceItem(**r) for r in raw_items]
-            base_prompt = req.prompt
-            deployment_hints: dict = {}
-            if req.deployment_hints_json:
+            # Decode context
+            context_text = context
+            if ctx_bytes:
                 try:
-                    deployment_hints = json.loads(req.deployment_hints_json)
-                except (json.JSONDecodeError, ValueError):
-                    deployment_hints = {}
-        else:
-            # ── Stateful fallback ─────────────────────────────────────────────
-            pending = PENDING_CLARIFY.get(req.client_id)
-            if not pending:
-                raise HTTPException(
-                    status_code=404,
-                    detail=(
-                        f"No pending clarification for client_id '{req.client_id}'. "
-                        "Call /upload-bom or /generate first."
-                    ),
-                )
-            items            = pending["items"]
-            base_prompt      = pending["prompt"]
-            deployment_hints = dict(pending.get("deployment_hints") or {})
+                    context_text = ctx_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    context_text = ctx_bytes.decode("latin-1", errors="replace")
+                logger.info("Context file: %s (%d chars)", ctx_name, len(context_text))
 
-        # ── Resolve auto_waf metadata (req fields override stateful pending) ──
-        pending_meta = PENDING_CLARIFY.get(req.client_id) or {}
-        eff_auto_waf      = req.auto_waf      or pending_meta.get("auto_waf", False)
-        eff_customer_id   = req.customer_id   or pending_meta.get("customer_id", "") or req.client_id
-        eff_customer_name = req.customer_name or pending_meta.get("customer_name", "")
+            items, prompt = await anyio.to_thread.run_sync(
+                functools.partial(bom_to_llm_input, bom_path, context=context_text)
+            )
+            await anyio.to_thread.run_sync(functools.partial(os.unlink, bom_path))
+            logger.info("BOM parsed: %d services | context: %d chars", len(items), len(context_text))
 
-        # ── Map regions.mode answer to multi_region_mode deployment hint ──────
-        if "multi_region_mode" not in deployment_hints:
-            ans_lower = req.answers.lower()
-            if any(w in ans_lower for w in [
-                "dr", "disaster", " ha ", "standby", "failover",
-                "duplicate", "active-passive", "passive", "replica",
-            ]):
-                deployment_hints["multi_region_mode"] = "duplicate_drha"
-            elif any(w in ans_lower for w in ["split", "different workload", "active-active"]):
-                deployment_hints["multi_region_mode"] = "split"
+            result = await run_pipeline(items, prompt, diagram_name, client_id,
+                                        request_id, input_hash)
 
-        enriched_prompt = (
-            base_prompt
-            + f"\n\nCLARIFICATION ANSWERS:\n{req.answers.strip()}\n\n"
-            + "Now produce the layout spec JSON using the answers above. "
-            + "Output ONLY valid JSON."
-        )
+            if result["status"] == "ok" and not auto_waf:
+                IDEMPOTENCY_CACHE[cache_key] = result
 
-        result = await run_pipeline(
-            items            = items,
-            prompt           = enriched_prompt,
-            diagram_name     = req.diagram_name,
-            client_id        = req.client_id,
-            request_id       = request_id,
-            input_hash       = input_hash,
-            deployment_hints = deployment_hints,
-        )
-
-        if result["status"] == "ok":
-            PENDING_CLARIFY.pop(req.client_id, None)
-
-            # ── Auto WAF orchestration loop ────────────────────────────────────
-            if eff_auto_waf:
-                store = getattr(app.state, "object_store", None)
-                text_runner = getattr(app.state, "text_runner", None)
+            # ── Auto WAF orchestration loop ───────────────────────────────────
+            if auto_waf and result["status"] == "ok":
+                store       = getattr(app.state, "object_store", None)
+                text_runner = getattr(app.state, "text_runner",  None)
                 if store and text_runner:
+                    eff_customer_id      = customer_id or client_id
+                    eff_deployment_hints: dict = {}
+                    refine_ctx = result.get("_refine_context") or {}
+                    if refine_ctx.get("deployment_hints_json"):
+                        try:
+                            eff_deployment_hints = json.loads(refine_ctx["deployment_hints_json"])
+                        except (json.JSONDecodeError, ValueError):
+                            pass
                     loop_result = await run_diagram_waf_loop(
                         items            = items,
-                        base_prompt      = base_prompt,
-                        deployment_hints = deployment_hints,
+                        base_prompt      = prompt,
+                        deployment_hints = eff_deployment_hints,
                         draw_result      = result,
                         customer_id      = eff_customer_id,
-                        customer_name    = eff_customer_name,
-                        diagram_name     = req.diagram_name,
-                        client_id        = req.client_id,
+                        customer_name    = customer_name,
+                        diagram_name     = diagram_name,
+                        client_id        = client_id,
                         object_store     = store,
                         text_runner      = text_runner,
                         run_pipeline_fn  = run_pipeline,
                     )
                     waf_r = loop_result["waf_result"]
-                    return JSONResponse(status_code=200, content={
+                    _complete_job(job_id, {
                         "status":        "orchestration_complete",
                         "agent_version": AGENT_VERSION,
-                        "client_id":     req.client_id,
+                        "client_id":     client_id,
                         "customer_id":   eff_customer_id,
-                        "diagram_name":  req.diagram_name,
+                        "diagram_name":  diagram_name,
                         "request_id":    request_id,
                         "draw_result":   loop_result["draw_result"],
                         "waf_result": {
@@ -1346,16 +1233,161 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
                         },
                         "errors": [],
                     })
+                    return
+                else:
+                    logger.warning("auto_waf=True but store/text_runner not configured — diagram only")
 
-        return JSONResponse(status_code=200, content=result)
+            # ── Need clarification — store auto_waf metadata for /clarify ─────
+            if auto_waf and result["status"] == "need_clarification":
+                if client_id in PENDING_CLARIFY:
+                    PENDING_CLARIFY[client_id]["auto_waf"]      = True
+                    PENDING_CLARIFY[client_id]["customer_id"]   = customer_id or client_id
+                    PENDING_CLARIFY[client_id]["customer_name"] = customer_name
 
-    except HTTPException:
-        raise
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=422, detail=f"LLM returned invalid JSON: {exc}")
-    except Exception as exc:
-        logger.error("Error in /clarify: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+            _complete_job(job_id, result)
+
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            _fail_job(job_id, detail)
+        except json.JSONDecodeError as exc:
+            _fail_job(job_id, f"LLM returned invalid JSON: {exc}")
+        except Exception as exc:
+            logger.error("upload-bom job %s failed: %s", job_id, exc)
+            _fail_job(job_id, str(exc))
+
+    asyncio.create_task(_run())
+    return JSONResponse(status_code=202, content={"status": "pending", "job_id": job_id})
+
+
+@app.post("/clarify")
+@app.post("/api/clarify")
+async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
+    """
+    Submit answers to clarification questions.
+    Returns {"status":"pending","job_id":"..."} immediately.
+    Poll GET /api/job/{job_id} for the result.
+    """
+    job_id = _new_job()
+
+    # Capture everything needed by the background task before returning
+    req_snapshot = req.model_copy()
+
+    async def _run() -> None:
+        request_id = str(uuid.uuid4())
+        input_hash = compute_input_hash(req_snapshot.answers or "")
+        try:
+            # ── Stateless path ────────────────────────────────────────────────
+            if req_snapshot.items_json and req_snapshot.prompt:
+                from agent.bom_parser import ServiceItem
+                raw_items = json.loads(req_snapshot.items_json)
+                items = [ServiceItem(**r) for r in raw_items]
+                base_prompt = req_snapshot.prompt
+                deployment_hints: dict = {}
+                if req_snapshot.deployment_hints_json:
+                    try:
+                        deployment_hints = json.loads(req_snapshot.deployment_hints_json)
+                    except (json.JSONDecodeError, ValueError):
+                        deployment_hints = {}
+            else:
+                # ── Stateful fallback ─────────────────────────────────────────
+                pending = PENDING_CLARIFY.get(req_snapshot.client_id)
+                if not pending:
+                    _fail_job(job_id,
+                        f"No pending clarification for client_id '{req_snapshot.client_id}'. "
+                        "Call /upload-bom or /generate first.")
+                    return
+                items            = pending["items"]
+                base_prompt      = pending["prompt"]
+                deployment_hints = dict(pending.get("deployment_hints") or {})
+
+            # ── Resolve auto_waf metadata ──────────────────────────────────────
+            pending_meta      = PENDING_CLARIFY.get(req_snapshot.client_id) or {}
+            eff_auto_waf      = req_snapshot.auto_waf      or pending_meta.get("auto_waf", False)
+            eff_customer_id   = req_snapshot.customer_id   or pending_meta.get("customer_id", "") or req_snapshot.client_id
+            eff_customer_name = req_snapshot.customer_name or pending_meta.get("customer_name", "")
+
+            # ── Map regions.mode answer to multi_region_mode hint ──────────────
+            if "multi_region_mode" not in deployment_hints:
+                ans_lower = req_snapshot.answers.lower()
+                if any(w in ans_lower for w in [
+                    "dr", "disaster", " ha ", "standby", "failover",
+                    "duplicate", "active-passive", "passive", "replica",
+                ]):
+                    deployment_hints["multi_region_mode"] = "duplicate_drha"
+                elif any(w in ans_lower for w in ["split", "different workload", "active-active"]):
+                    deployment_hints["multi_region_mode"] = "split"
+
+            enriched_prompt = (
+                base_prompt
+                + f"\n\nCLARIFICATION ANSWERS:\n{req_snapshot.answers.strip()}\n\n"
+                + "Now produce the layout spec JSON using the answers above. "
+                + "Output ONLY valid JSON."
+            )
+
+            result = await run_pipeline(
+                items            = items,
+                prompt           = enriched_prompt,
+                diagram_name     = req_snapshot.diagram_name,
+                client_id        = req_snapshot.client_id,
+                request_id       = request_id,
+                input_hash       = input_hash,
+                deployment_hints = deployment_hints,
+            )
+
+            if result["status"] == "ok":
+                PENDING_CLARIFY.pop(req_snapshot.client_id, None)
+
+                # ── Auto WAF orchestration loop ────────────────────────────────
+                if eff_auto_waf:
+                    store       = getattr(app.state, "object_store", None)
+                    text_runner = getattr(app.state, "text_runner",  None)
+                    if store and text_runner:
+                        loop_result = await run_diagram_waf_loop(
+                            items            = items,
+                            base_prompt      = base_prompt,
+                            deployment_hints = deployment_hints,
+                            draw_result      = result,
+                            customer_id      = eff_customer_id,
+                            customer_name    = eff_customer_name,
+                            diagram_name     = req_snapshot.diagram_name,
+                            client_id        = req_snapshot.client_id,
+                            object_store     = store,
+                            text_runner      = text_runner,
+                            run_pipeline_fn  = run_pipeline,
+                        )
+                        waf_r = loop_result["waf_result"]
+                        _complete_job(job_id, {
+                            "status":        "orchestration_complete",
+                            "agent_version": AGENT_VERSION,
+                            "client_id":     req_snapshot.client_id,
+                            "customer_id":   eff_customer_id,
+                            "diagram_name":  req_snapshot.diagram_name,
+                            "request_id":    request_id,
+                            "draw_result":   loop_result["draw_result"],
+                            "waf_result": {
+                                "version":        waf_r.get("version"),
+                                "key":            waf_r.get("key"),
+                                "content":        waf_r.get("content", ""),
+                                "overall_rating": waf_r.get("overall_rating", "⚠️"),
+                            },
+                            "loop_summary": {
+                                "iterations": loop_result["iterations"],
+                                "history":    loop_result["loop_history"],
+                            },
+                            "errors": [],
+                        })
+                        return
+
+            _complete_job(job_id, result)
+
+        except json.JSONDecodeError as exc:
+            _fail_job(job_id, f"LLM returned invalid JSON: {exc}")
+        except Exception as exc:
+            logger.error("clarify job %s failed: %s", job_id, exc)
+            _fail_job(job_id, str(exc))
+
+    asyncio.create_task(_run())
+    return JSONResponse(status_code=202, content={"status": "pending", "job_id": job_id})
 
 
 @app.post("/refine")
@@ -1610,6 +1642,24 @@ async def download_file(
         media_type=content_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/job/{job_id}")
+async def get_job(job_id: str, _user: dict = Depends(require_user)):
+    """
+    Poll for the result of an async job started by /api/upload-bom or /api/clarify.
+    Returns {"status":"pending",...} while the job is running,
+    or the full result dict when complete,
+    or raises HTTP 500 if the job failed.
+    """
+    job = _JOB_STORE.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+    if job["status"] == "pending":
+        return JSONResponse(status_code=200, content={"status": "pending", "job_id": job_id})
+    if job["status"] == "error":
+        raise HTTPException(status_code=500, detail=job["error"] or "Job failed")
+    return JSONResponse(status_code=200, content=job["result"])
 
 
 @app.get("/health")

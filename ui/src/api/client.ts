@@ -85,6 +85,13 @@ export interface ClarifyRequest {
   customer_name?:         string;
 }
 
+export interface JobPending {
+  status: 'pending';
+  job_id: string;
+}
+
+export type DiagramResult = GenerateResponse | OrchestrationResult;
+
 export interface OrchestrationResult {
   status:        'orchestration_complete';
   agent_version: string;
@@ -171,8 +178,8 @@ export async function apiGenerate(req: GenerateRequest): Promise<GenerateRespons
 
 export async function apiClarify(
   req: ClarifyRequest,
-): Promise<OrchestrationResult | GenerateResponse> {
-  return apiFetch<OrchestrationResult | GenerateResponse>('/clarify', {
+): Promise<JobPending> {
+  return apiFetch<JobPending>('/clarify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
@@ -189,11 +196,26 @@ export async function apiRefineDiagram(req: RefineRequest): Promise<GenerateResp
 
 export async function apiUploadBom(
   formData: FormData,
-): Promise<OrchestrationResult | GenerateResponse> {
-  return apiFetch<OrchestrationResult | GenerateResponse>('/upload-bom', {
+): Promise<JobPending> {
+  return apiFetch<JobPending>('/upload-bom', {
     method: 'POST',
     body: formData,
   });
+}
+
+/** Poll /api/job/{job_id} every intervalMs until status is no longer "pending". */
+export async function apiWaitForJob(
+  jobId: string,
+  onTick?: (elapsedSec: number) => void,
+  intervalMs = 3000,
+): Promise<DiagramResult> {
+  const start = Date.now();
+  while (true) {
+    await new Promise<void>(r => setTimeout(r, intervalMs));
+    if (onTick) onTick(Math.round((Date.now() - start) / 1000));
+    const r = await apiFetch<JobPending | DiagramResult>(`/job/${jobId}`);
+    if ((r as JobPending).status !== 'pending') return r as DiagramResult;
+  }
 }
 
 export async function apiInputsResolve(body: object): Promise<ResolveResponse> {

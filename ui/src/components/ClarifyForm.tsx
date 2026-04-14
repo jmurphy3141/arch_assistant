@@ -5,9 +5,10 @@ interface Props {
   result: GenerateResponse;
   onSubmit: (answers: string) => void;
   loading: boolean;
+  elapsedSec?: number;
 }
 
-export function ClarifyForm({ result, onSubmit, loading }: Props) {
+export function ClarifyForm({ result, onSubmit, loading, elapsedSec = 0 }: Props) {
   const [answers, setAnswers] = useState('');
 
   if (result.status !== 'need_clarification') return null;
@@ -54,7 +55,7 @@ export function ClarifyForm({ result, onSubmit, loading }: Props) {
           fontFamily: "'JetBrains Mono', monospace",
           fontSize: '0.82rem',
         }}>
-          ⏳ Generating diagram… this may take up to 90 seconds.
+          ⏳ Generating diagram…{elapsedSec > 0 ? ` (${elapsedSec}s)` : ' please wait'}
         </p>
       )}
     </div>

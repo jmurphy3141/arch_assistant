@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { apiA2AUploadBom, apiUploadBom, apiUploadToBucket, type GenerateResponse, type OrchestrationResult, type ApiError } from '../api/client';
+import { apiA2AUploadBom, apiUploadBom, apiUploadToBucket, apiWaitForJob, type GenerateResponse, type OrchestrationResult, type ApiError } from '../api/client';
 
 // ── Design tokens matching the dark OCI theme ─────────────────────────────
 const T = {
@@ -382,7 +382,6 @@ export function UploadBom({
     try {
       if (autoWaf && droppedBom) {
         // ── Direct upload path (required for auto_waf) ────────────────────
-        setUploadStatus('Generating diagram + WAF review loop (60–90 s)…');
         const context = buildContext();
         const fd = new FormData();
         fd.append('file', droppedBom);
@@ -393,7 +392,12 @@ export function UploadBom({
         fd.append('customer_id',   customerId.trim());
         fd.append('customer_name', customerName.trim());
         fd.append('auto_waf',      'true');
-        const result = await apiUploadBom(fd);
+        setUploadStatus('Submitting BOM…');
+        const pending = await apiUploadBom(fd);
+        setUploadStatus('Generating diagram + WAF review loop… (0s)');
+        const result = await apiWaitForJob(pending.job_id, (s) =>
+          setUploadStatus(`Generating diagram + WAF review loop… (${s}s)`),
+        );
         setUploadStatus('');
         onResult(result);
       } else {
