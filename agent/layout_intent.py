@@ -38,6 +38,31 @@ GROUP_LABELS = {
     "db_sub_box":  "DB Subnet",
 }
 
+# Layer name synonyms — LLMs often use natural names that map to valid layers
+_LAYER_SYNONYMS: dict[str, str] = {
+    "app":          "compute",
+    "application":  "compute",
+    "web":          "ingress",
+    "presentation": "ingress",
+    "frontend":     "ingress",
+    "lb":           "ingress",
+    "load_balancer": "ingress",
+    "db":           "data",
+    "database":     "data",
+    "storage":      "data",
+    "persistence":  "data",
+    "messaging":    "async",
+    "queue":        "async",
+    "event":        "async",
+    "streaming":    "async",
+    "management":   "async",
+    "outside":      "external",
+    "on-prem":      "external",
+    "on_prem":      "external",
+    "onprem":       "external",
+    "internet":     "external",
+}
+
 _GROUP_SLUG_RE = re.compile(r'^[a-z][a-z0-9_]*$')
 
 
@@ -203,10 +228,13 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
     for p in placements_raw:
         pid      = str(p.get("id", "")).strip()
         oci_type = str(p.get("oci_type", "")).strip()
-        layer    = str(p.get("layer", "")).strip()
+        layer    = str(p.get("layer", "")).strip().lower()
         group    = p.get("group") or None
         if group in ("none", "null"):   # LLMs sometimes emit the string "null"
             group = None
+
+        # Normalise common LLM synonyms before validation
+        layer = _LAYER_SYNONYMS.get(layer, layer)
 
         if not pid:
             raise LayoutIntentError("Each placement must have a non-empty 'id'")

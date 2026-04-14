@@ -217,8 +217,8 @@ class TestIntentCompilerLayersGroupsEdges:
 class TestLayoutIntentValidation:
     """T_IV_001 — layer validation."""
 
-    def test_rejects_unknown_layer_app(self):
-        """layer='app' is an AD-tier name, not a valid flat-spec layer."""
+    def test_normalises_layer_app_to_compute(self):
+        """layer='app' is normalised to 'compute' rather than rejected."""
         data = {
             "schema_version": "1.0",
             "deployment_hints": {},
@@ -226,19 +226,20 @@ class TestLayoutIntentValidation:
                 {"id": "compute_1", "oci_type": "compute", "layer": "app", "group": None},
             ],
         }
-        with pytest.raises(LayoutIntentError, match="Unknown layer"):
-            validate_layout_intent(data)
+        intent = validate_layout_intent(data)
+        assert intent.placements[0].layer == "compute"
 
-    def test_rejects_unknown_layer_web(self):
+    def test_normalises_layer_web_to_ingress(self):
+        """layer='web' is normalised to 'ingress' rather than rejected."""
         data = {
             "schema_version": "1.0",
             "deployment_hints": {},
             "placements": [
-                {"id": "compute_1", "oci_type": "compute", "layer": "web", "group": None},
+                {"id": "lb_1", "oci_type": "load_balancer", "layer": "web", "group": None},
             ],
         }
-        with pytest.raises(LayoutIntentError, match="Unknown layer"):
-            validate_layout_intent(data)
+        intent = validate_layout_intent(data)
+        assert intent.placements[0].layer == "ingress"
 
     def test_accepts_custom_group_slug(self):
         """Any valid slug is now accepted — the LLM may declare topology-specific groups."""
