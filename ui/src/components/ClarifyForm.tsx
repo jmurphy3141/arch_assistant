@@ -47,6 +47,16 @@ export function ClarifyForm({ result, onSubmit, loading }: Props) {
       >
         {loading ? 'Submitting…' : 'Submit Answers'}
       </button>
+      {loading && (
+        <p data-testid="clarify-loading" style={{
+          marginTop: '0.75rem',
+          color: '#e8571a',
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: '0.82rem',
+        }}>
+          ⏳ Generating diagram… this may take up to 90 seconds.
+        </p>
+      )}
     </div>
   );
 }

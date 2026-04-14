@@ -253,8 +253,8 @@ class TestLayoutIntentValidation:
         intent = validate_layout_intent(data)
         assert intent.placements[0].group == "worker_sub_box"
 
-    def test_rejects_group_slug_with_spaces(self):
-        """A group name with spaces is not a valid slug and must be rejected."""
+    def test_slugifies_group_slug_with_spaces(self):
+        """A group name with spaces is auto-slugified rather than rejected."""
         data = {
             "schema_version": "1.0",
             "deployment_hints": {},
@@ -263,8 +263,8 @@ class TestLayoutIntentValidation:
                  "group": "my invalid group"},
             ],
         }
-        with pytest.raises(LayoutIntentError, match="Invalid group slug"):
-            validate_layout_intent(data)
+        intent = validate_layout_intent(data)
+        assert intent.placements[0].group == "my_invalid_group"
 
     def test_rejects_duplicate_placement_id(self):
         data = {

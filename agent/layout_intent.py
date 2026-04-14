@@ -41,6 +41,20 @@ GROUP_LABELS = {
 _GROUP_SLUG_RE = re.compile(r'^[a-z][a-z0-9_]*$')
 
 
+def _slugify(s: str) -> str:
+    """Convert a free-text label to a valid group slug.
+
+    'Prod App Subnet' → 'prod_app_subnet'
+    """
+    s = s.lower().strip()
+    s = re.sub(r'[\s\-]+', '_', s)        # spaces/hyphens → underscores
+    s = re.sub(r'[^a-z0-9_]', '', s)      # strip other non-alnum chars
+    s = re.sub(r'_+', '_', s).strip('_')  # collapse/trim underscores
+    if s and not s[0].isalpha():
+        s = 'g_' + s
+    return s
+
+
 # ── Dataclasses ────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -136,8 +150,12 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
     groups: list[GroupDecl] = []
     for g in (data.get("groups") or []):
         gid = str(g.get("id", "")).strip()
+        if not gid:
+            continue
+        if not _GROUP_SLUG_RE.match(gid):
+            gid = _slugify(gid)
         if not gid or not _GROUP_SLUG_RE.match(gid):
-            continue  # silently skip malformed entries
+            continue  # still invalid after slugify — skip
         groups.append(GroupDecl(
             id=gid,
             label=str(g.get("label", gid.replace("_", " ").title())),
@@ -199,6 +217,8 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
                 f"Unknown layer {layer!r} for placement {pid!r}. "
                 f"Valid layers: {sorted(VALID_LAYERS)}"
             )
+        if group is not None and not _GROUP_SLUG_RE.match(group):
+            group = _slugify(group) or None
         if group is not None and not _GROUP_SLUG_RE.match(group):
             raise LayoutIntentError(
                 f"Invalid group slug {group!r} for placement {pid!r}. "
