@@ -156,39 +156,20 @@ async def run_diagram_waf_loop(
             break
 
         # ── Refine diagram based on WAF feedback ────────────────────────────────
+        # Use the original BOM prompt + WAF requirements (fresh generation).
+        # Rationale: asking the LLM to "edit" a full LayoutIntent JSON hits the
+        # max_tokens limit and produces truncated output that loses the additions.
+        # A fresh generation from base_prompt + WAF constraints is more reliable.
         feedback_prompt = _build_feedback_prompt(suggestions)
-        refine_ctx      = draw_result.get("_refine_context") or {}
-        prev_spec_json  = refine_ctx.get("prev_spec")
-
-        available_ids = ", ".join(
-            f"{getattr(i, 'id', '')} ({getattr(i, 'oci_type', '')})" for i in items
+        enriched_prompt = (
+            base_prompt
+            + "\n\n═══════════════════════════════════════════════════════\n"
+            + "ADDITIONAL ARCHITECTURE REQUIREMENTS (from WAF review):\n"
+            + feedback_prompt
+            + "\n\nIncorporate ALL requirements above into the LayoutIntent. "
+            + "Return the COMPLETE updated LayoutIntent JSON. "
+            + "Output ONLY valid JSON."
         )
-
-        if prev_spec_json:
-            enriched_prompt = (
-                "You are an OCI LayoutIntent editor.\n"
-                "Apply ONLY the requested changes to the current LayoutIntent below.\n"
-                "Do NOT regenerate from scratch. Modify only what is requested and "
-                "keep everything else identical.\n"
-                "Output ONLY valid JSON — the complete updated LayoutIntent.\n"
-                "\n═══ CURRENT LAYOUT (modify this):\n"
-                + prev_spec_json
-                + "\n\n═══ AVAILABLE SERVICE IDs (from BOM — use these exact IDs):\n"
-                + available_ids
-                + "\n\n═══ REQUESTED CHANGES (WAF recommendations):\n"
-                + feedback_prompt
-                + "\n\nReturn the COMPLETE updated LayoutIntent JSON. Output ONLY valid JSON."
-            )
-        else:
-            enriched_prompt = (
-                base_prompt
-                + "\n\n═══════════════════════════════════════════════════════\n"
-                + "DIAGRAM REFINEMENT REQUEST (WAF recommendations):\n"
-                + feedback_prompt
-                + "\n\nApply the requested changes. "
-                + "Return the COMPLETE updated LayoutIntent JSON. "
-                + "Output ONLY valid JSON."
-            )
 
         new_draw_result = await run_pipeline_fn(
             items            = items,

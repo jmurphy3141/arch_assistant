@@ -567,7 +567,9 @@ async def run_pipeline(
     page_h = spec.get("page", {}).get("height", 1169)
 
     if mr_mode == "duplicate_drha":
-        # Keep only the primary region; add a lightweight stub box for the secondary
+        # Keep only the primary region; add a lightweight stub box for the secondary.
+        # The stub is placed BELOW the primary region (not to the right — the primary
+        # region fills the full canvas width, so placing to the right goes off-screen).
         regions = spec.get("regions", [])
         secondary_label = "Duplicate DR/HA Region"
         if len(regions) >= 2:
@@ -578,8 +580,9 @@ async def run_pipeline(
             (b for b in draw_dict["boxes"] if b.get("box_type") == "_region_box"),
             None,
         )
-        stub_x = (primary_box["x"] + primary_box["w"] + 40) if primary_box else 900
-        stub_y = primary_box["y"] if primary_box else 120
+        stub_x = primary_box["x"]                            if primary_box else 144
+        stub_y = (primary_box["y"] + primary_box["h"] + 40) if primary_box else 300
+        stub_w = primary_box["w"]                            if primary_box else 600
 
         draw_dict["boxes"].append({
             "id":       "region_secondary_stub",
@@ -588,7 +591,7 @@ async def run_pipeline(
             "tier":     "",
             "x":        stub_x,
             "y":        stub_y,
-            "w":        260,
+            "w":        stub_w,
             "h":        90,
         })
 

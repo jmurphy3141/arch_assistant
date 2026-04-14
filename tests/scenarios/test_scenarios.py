@@ -103,8 +103,15 @@ class TestMultiRegion:
             f"region_secondary_stub not in boxes: {box_ids}"
         )
         stub = next(b for b in data["draw_dict"]["boxes"] if b["id"] == "region_secondary_stub")
-        assert stub["w"] == 260
+        primary = next(b for b in data["draw_dict"]["boxes"] if b.get("box_type") == "_region_box")
+        # Stub width now matches primary region width (dynamic, not fixed 260)
+        assert stub["w"] > 0
         assert stub["h"] == 90
+        # Stub must be positioned below primary (not off-screen to the right)
+        assert stub["y"] > primary["y"] + primary["h"] / 2, (
+            "stub should be below primary region, not to the right"
+        )
+        assert stub["x"] == primary["x"], "stub x should align with primary region"
 
     def test_mr_003_split_workloads_page_width(self):
         """split_workloads => render_manifest.page.width == 3308."""

@@ -447,8 +447,13 @@ def _layout_region(
     # Insert before AD/subnet boxes so it renders behind them
     all_boxes.insert(0, vcn_box)
 
-    # Region height: region top → VCN bottom + bottom padding
-    region_h = (vcn_y + vcn_h) - origin_y + REG_PAD_BOT
+    # Region height: max(VCN bottom, services column bottom) + bottom padding.
+    # Services column height must be factored in — if there are more service icons
+    # than the VCN content can accommodate, the services spill out of the region box.
+    svc_col_h = len(oci_services) * (ICON_SLOT + NODE_GAP_X) if oci_services else 0
+    svc_bottom = (vcn_y + VCN_PAD_TOP + svc_col_h) if svc_col_h else 0
+    vcn_bottom = vcn_y + vcn_h
+    region_h = max(vcn_bottom, svc_bottom) - origin_y + REG_PAD_BOT
 
     region_box = PositionedBox(
         id=region_spec["id"],
