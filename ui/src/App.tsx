@@ -10,7 +10,7 @@ import { JepForm } from './components/JepForm';
 import { TerraformForm } from './components/TerraformForm';
 import { WafForm } from './components/WafForm';
 import { useClientId, getLastDiagramName, saveLastDiagramName } from './hooks/useClientId';
-import { apiClarify, apiRefineDiagram, type GenerateResponse } from './api/client';
+import { apiClarify, apiRefineDiagram, type GenerateResponse, type OrchestrationResult } from './api/client';
 
 type Mode = 'upload' | 'generate' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
@@ -27,6 +27,7 @@ export function App() {
   const [diagramName, setDiagramName] = useState<string>(getLastDiagramName);
   const [customerId, setCustomerId] = useState<string>(getLastCustomerId);
   const [result, setResult] = useState<GenerateResponse | null>(null);
+  const [orchestrationResult, setOrchestrationResult] = useState<OrchestrationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [clarifyLoading, setClarifyLoading] = useState(false);
   const [refineLoading, setRefineLoading] = useState(false);
@@ -41,8 +42,15 @@ export function App() {
     saveLastCustomerId(id);
   }
 
-  function handleResult(r: GenerateResponse) {
-    setResult(r);
+  function handleResult(r: GenerateResponse | OrchestrationResult) {
+    if (r.status === 'orchestration_complete') {
+      const orch = r as OrchestrationResult;
+      setOrchestrationResult(orch);
+      setResult(orch.draw_result);
+    } else {
+      setOrchestrationResult(null);
+      setResult(r as GenerateResponse);
+    }
     setError(null);
   }
 
@@ -51,7 +59,10 @@ export function App() {
     setResult(null);
   }
 
-  async function handleClarify(answers: string) {
+  async function handleClarify(
+    answers: string,
+    opts?: { auto_waf?: boolean; customer_id?: string; customer_name?: string },
+  ) {
     setClarifyLoading(true);
     try {
       // Prefer stateless path: echo _clarify_context back so the server
@@ -68,9 +79,11 @@ export function App() {
           prompt:                ctx.prompt,
           deployment_hints_json: ctx.deployment_hints_json,
         } : {}),
+        ...(opts?.auto_waf    ? { auto_waf:      opts.auto_waf    } : {}),
+        ...(opts?.customer_id ? { customer_id:   opts.customer_id } : {}),
+        ...(opts?.customer_name ? { customer_name: opts.customer_name } : {}),
       });
-      setResult(r);
-      setError(null);
+      handleResult(r);
     } catch (err: unknown) {
       const e = err as { status: number; detail: string };
       setError(`Clarify error ${e.status}: ${e.detail}`);
@@ -112,6 +125,7 @@ export function App() {
     setMode(m);
     if (m === 'upload' || m === 'generate') {
       setResult(null);
+      setOrchestrationResult(null);
       setError(null);
     }
   }
@@ -201,6 +215,7 @@ export function App() {
           {result && result.status === 'ok' && (
             <ResponseDisplay
               result={result}
+              orchestrationResult={orchestrationResult ?? undefined}
               onRefine={handleRefine}
               refineLoading={refineLoading}
             />

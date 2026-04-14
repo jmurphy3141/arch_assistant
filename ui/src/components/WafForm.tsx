@@ -88,10 +88,12 @@ export function WafForm({ customerId, onCustomerIdChange }: Props) {
     <div>
       <h2 style={{ fontSize: '1.1rem', marginBottom: '0.75rem' }}>WAF Review</h2>
       <p style={{ fontSize: '0.85rem', color: '#555', marginBottom: '1rem' }}>
-        Generate an OCI Well-Architected Framework review across all six pillars:
-        Operational Excellence, Security, Reliability, Performance Efficiency,
-        Cost Optimization, and Sustainability. The agent reads the full engagement
-        context (all prior agent outputs + notes) to produce a structured review.
+        Generate an OCI Well-Architected Framework review across the five pillars
+        defined in the official OCI WAF document: Security and Compliance,
+        Reliability and Resilience, Performance and Cost Optimization,
+        Operational Efficiency, and Distributed Cloud. The agent reads the full
+        engagement context (all prior agent outputs + notes) to produce a
+        structured review.
       </p>
 
       <form onSubmit={handleGenerate}>

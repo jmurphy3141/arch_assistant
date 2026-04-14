@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { apiA2AUploadBom, apiUploadToBucket, type GenerateResponse, type ApiError } from '../api/client';
+import { apiA2AUploadBom, apiUploadBom, apiUploadToBucket, type GenerateResponse, type OrchestrationResult, type ApiError } from '../api/client';
 
 // ── Design tokens matching the dark OCI theme ─────────────────────────────
 const T = {
@@ -263,7 +263,7 @@ interface Props {
   diagramName:          string;
   onCustomerIdChange:   (id: string) => void;
   onDiagramNameChange:  (name: string) => void;
-  onResult:             (r: GenerateResponse) => void;
+  onResult:             (r: GenerateResponse | OrchestrationResult) => void;
   onError:              (msg: string) => void;
 }
 
@@ -295,6 +295,8 @@ export function UploadBom({
   const [qOpen,       setQOpen]       = useState(true);
   const [qAnswers,    setQAnswers]    = useState<Record<string, string | string[]>>({});
   const [loading,     setLoading]     = useState(false);
+  const [autoWaf,     setAutoWaf]     = useState(false);
+  const [customerName, setCustomerName] = useState('');
 
   /** Read a text file in the browser and update ctxContent state. */
   function readCtxFile(file: File) {
@@ -370,34 +372,55 @@ export function UploadBom({
       onError('Drop a BOM file or enter a BOM filename.');
       return;
     }
+    if (autoWaf && !droppedBom) {
+      onError('Auto WAF Review requires a BOM file to be dropped directly (not from bucket path only).');
+      return;
+    }
 
     setLoading(true);
     setUploadStatus('');
     try {
-      // 1. Upload dropped files to bucket (if any)
-      if (droppedBom) {
-        setUploadStatus('Uploading BOM to bucket…');
-        await apiUploadToBucket(customerId.trim(), droppedBom, bomType);
-      }
-      if (droppedCtx) {
-        setUploadStatus('Uploading context file…');
-        await apiUploadToBucket(customerId.trim(), droppedCtx, bomType);
-      }
+      if (autoWaf && droppedBom) {
+        // ── Direct upload path (required for auto_waf) ────────────────────
+        setUploadStatus('Generating diagram + WAF review loop (60–90 s)…');
+        const context = buildContext();
+        const fd = new FormData();
+        fd.append('file', droppedBom);
+        if (droppedCtx) fd.append('context_file', droppedCtx);
+        fd.append('context',       context);
+        fd.append('diagram_name',  diagramName || 'oci_architecture');
+        fd.append('client_id',     customerId.trim());
+        fd.append('customer_id',   customerId.trim());
+        fd.append('customer_name', customerName.trim());
+        fd.append('auto_waf',      'true');
+        const result = await apiUploadBom(fd);
+        setUploadStatus('');
+        onResult(result);
+      } else {
+        // ── A2A path (default — bucket-side fetch) ────────────────────────
+        if (droppedBom) {
+          setUploadStatus('Uploading BOM to bucket…');
+          await apiUploadToBucket(customerId.trim(), droppedBom, bomType);
+        }
+        if (droppedCtx) {
+          setUploadStatus('Uploading context file…');
+          await apiUploadToBucket(customerId.trim(), droppedCtx, bomType);
+        }
 
-      // 2. Generate diagram via A2A
-      setUploadStatus('Generating diagram…');
-      const bomObject = `${DEFAULT_PREFIX}/${customerId.trim()}/${droppedBom ? droppedBom.name : bomFile.trim()}`;
-      const context   = buildContext();
-      const result = await apiA2AUploadBom(
-        customerId.trim(),
-        bomObject,
-        diagramName || 'oci_architecture',
-        context || undefined,
-        DEFAULT_NAMESPACE,
-        DEFAULT_BUCKET,
-      );
-      setUploadStatus('');
-      onResult(result);
+        setUploadStatus('Generating diagram…');
+        const bomObject = `${DEFAULT_PREFIX}/${customerId.trim()}/${droppedBom ? droppedBom.name : bomFile.trim()}`;
+        const context   = buildContext();
+        const result = await apiA2AUploadBom(
+          customerId.trim(),
+          bomObject,
+          diagramName || 'oci_architecture',
+          context || undefined,
+          DEFAULT_NAMESPACE,
+          DEFAULT_BUCKET,
+        );
+        setUploadStatus('');
+        onResult(result);
+      }
     } catch (err: unknown) {
       setUploadStatus('');
       const e = err as ApiError;
@@ -443,8 +466,8 @@ export function UploadBom({
           </div>
         </div>
 
-        {/* ── BOM type toggle ────────────────────────────────────────────── */}
-        <div style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        {/* ── BOM type + Auto WAF toggles ─────────────────────────────────── */}
+        <div style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
           <span style={s.label}>BOM type</span>
           <span
             style={pillStyle(bomType === 'main')}
@@ -458,10 +481,36 @@ export function UploadBom({
           >
             POC / JEP
           </span>
-          <span style={{ fontSize: '0.65rem', color: T.label }}>
+          <span style={{ fontSize: '0.65rem', color: T.label, marginRight: '0.75rem' }}>
             POC uploads to <code style={{ color: T.accent }}>agent3/{customerId || '<customer>'}/poc/</code>
           </span>
+          <span
+            style={pillStyle(autoWaf)}
+            onClick={() => setAutoWaf(v => !v)}
+            title="Run WAF topology quality-gate loop after diagram generation"
+          >
+            {autoWaf ? '✓ Auto WAF Review' : 'Auto WAF Review'}
+          </span>
+          {autoWaf && (
+            <span style={{ fontSize: '0.65rem', color: T.gold }}>
+              requires dropped BOM file · adds ~60–90 s
+            </span>
+          )}
         </div>
+
+        {/* ── Customer Name (shown when Auto WAF enabled) ──────────────────── */}
+        {autoWaf && (
+          <div style={{ ...s.fieldWrap, marginBottom: '0.75rem' }}>
+            <label style={s.label}>Customer Name <span style={{ color: T.label }}>(for WAF document headings)</span></label>
+            <input
+              style={s.input}
+              type="text"
+              value={customerName}
+              onChange={e => setCustomerName(e.target.value)}
+              placeholder="e.g. Jane Street Capital"
+            />
+          </div>
+        )}
 
         {/* ── Drop zones ─────────────────────────────────────────────────── */}
         <div style={s.row}>
@@ -665,7 +714,11 @@ export function UploadBom({
       )}
 
       <button type="submit" style={submitBtnStyle(loading)} disabled={loading}>
-        {loading ? (uploadStatus || 'Working…') : (droppedBom ? 'Upload & Generate Diagram' : 'Generate Architecture Diagram')}
+        {loading
+          ? (uploadStatus || 'Working…')
+          : autoWaf
+            ? (droppedBom ? 'Upload, Generate & WAF Review' : 'Generate & WAF Review')
+            : (droppedBom ? 'Upload & Generate Diagram' : 'Generate Architecture Diagram')}
       </button>
     </form>
   );

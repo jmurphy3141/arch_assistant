@@ -79,6 +79,36 @@ export interface ClarifyRequest {
   items_json?:            string;
   prompt?:                string;
   deployment_hints_json?: string;
+  // Auto WAF: echo back from upload-bom if auto_waf=True
+  auto_waf?:              boolean;
+  customer_id?:           string;
+  customer_name?:         string;
+}
+
+export interface OrchestrationResult {
+  status:        'orchestration_complete';
+  agent_version: string;
+  client_id:     string;
+  customer_id:   string;
+  diagram_name:  string;
+  request_id:    string;
+  draw_result:   GenerateResponse;
+  waf_result: {
+    version:        number;
+    key:            string;
+    content:        string;
+    overall_rating: string;
+  };
+  loop_summary: {
+    iterations: number;
+    history: {
+      iteration:         number;
+      waf_rating:        string;
+      applied:           number;
+      draw_instructions: string[];
+    }[];
+  };
+  errors: string[];
 }
 
 export interface RefineRequest {
@@ -139,8 +169,10 @@ export async function apiGenerate(req: GenerateRequest): Promise<GenerateRespons
   });
 }
 
-export async function apiClarify(req: ClarifyRequest): Promise<GenerateResponse> {
-  return apiFetch<GenerateResponse>('/clarify', {
+export async function apiClarify(
+  req: ClarifyRequest,
+): Promise<OrchestrationResult | GenerateResponse> {
+  return apiFetch<OrchestrationResult | GenerateResponse>('/clarify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
@@ -155,8 +187,10 @@ export async function apiRefineDiagram(req: RefineRequest): Promise<GenerateResp
   });
 }
 
-export async function apiUploadBom(formData: FormData): Promise<GenerateResponse> {
-  return apiFetch<GenerateResponse>('/upload-bom', {
+export async function apiUploadBom(
+  formData: FormData,
+): Promise<OrchestrationResult | GenerateResponse> {
+  return apiFetch<OrchestrationResult | GenerateResponse>('/upload-bom', {
     method: 'POST',
     body: formData,
   });

@@ -96,6 +96,8 @@ from agent.document_store import (
 )
 from agent.pov_agent import generate_pov
 from agent.jep_agent import generate_jep, kickoff_jep
+from agent.waf_agent import generate_waf
+from agent.diagram_waf_orchestrator import run_diagram_waf_loop
 from agent.context_store import read_context, write_context, record_agent_run
 
 try:
@@ -220,6 +222,10 @@ class ClarifyRequest(BaseModel):
     items_json:            Optional[str] = None
     prompt:                Optional[str] = None
     deployment_hints_json: Optional[str] = None
+    # Auto WAF orchestration: echo back from upload-bom if auto_waf=True
+    auto_waf:              Optional[bool] = False
+    customer_id:           Optional[str]  = ""
+    customer_name:         Optional[str]  = ""
 
 
 class RefineRequest(BaseModel):
@@ -274,6 +280,12 @@ class JepKickoffRequest(BaseModel):
 class JepAnswersRequest(BaseModel):
     customer_id: str
     answers:     dict
+
+
+class WafRequest(BaseModel):
+    customer_id:   str
+    customer_name: str
+    feedback:      Optional[str] = None
 
 
 class A2AObjectRef(BaseModel):
@@ -1081,16 +1093,23 @@ async def upload_to_bucket(
 @app.post("/upload-bom")
 @app.post("/api/upload-bom")
 async def upload_bom(
-    file:         UploadFile = File(...),
-    context_file: UploadFile = File(None),
-    context:      str        = Form(default=""),
-    diagram_name: str        = Form(default="oci_architecture"),
-    client_id:    str        = Form(default="default"),
-    _user:        dict       = Depends(require_user),
+    file:          UploadFile = File(...),
+    context_file:  UploadFile = File(None),
+    context:       str        = Form(default=""),
+    diagram_name:  str        = Form(default="oci_architecture"),
+    client_id:     str        = Form(default="default"),
+    customer_id:   str        = Form(default=""),
+    customer_name: str        = Form(default=""),
+    auto_waf:      bool       = Form(default=False),
+    _user:         dict       = Depends(require_user),
 ):
     """
     Upload an Excel BOM + optional context file.
     Returns a draw.io diagram or clarification questions.
+
+    When auto_waf=True and the diagram is generated successfully, the server
+    automatically runs the WAF ↔ Drawing quality-gate loop and returns an
+    orchestration_complete response with both diagram and WAF results.
     """
     request_id = str(uuid.uuid4())
 
@@ -1100,9 +1119,9 @@ async def upload_bom(
             hashlib.sha256(file_bytes).hexdigest()
         )
 
-        # Idempotency check
+        # Idempotency check (skip for auto_waf — loop must run fresh)
         cache_key = (client_id, diagram_name, input_hash)
-        if cache_key in IDEMPOTENCY_CACHE:
+        if not auto_waf and cache_key in IDEMPOTENCY_CACHE:
             return IDEMPOTENCY_CACHE[cache_key]
 
         # Save BOM to temp file
@@ -1130,8 +1149,66 @@ async def upload_bom(
         result = await run_pipeline(items, prompt, diagram_name, client_id,
                                     request_id, input_hash)
 
-        if result["status"] == "ok":
+        if result["status"] == "ok" and not auto_waf:
             IDEMPOTENCY_CACHE[cache_key] = result
+
+        # ── Auto WAF orchestration loop ───────────────────────────────────────
+        if auto_waf and result["status"] == "ok":
+            store = getattr(app.state, "object_store", None)
+            text_runner = getattr(app.state, "text_runner", None)
+            if store and text_runner:
+                eff_customer_id = customer_id or client_id
+                eff_deployment_hints = {}
+                refine_ctx = result.get("_refine_context") or {}
+                if refine_ctx.get("deployment_hints_json"):
+                    try:
+                        eff_deployment_hints = json.loads(refine_ctx["deployment_hints_json"])
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+
+                loop_result = await run_diagram_waf_loop(
+                    items            = items,
+                    base_prompt      = prompt,
+                    deployment_hints = eff_deployment_hints,
+                    draw_result      = result,
+                    customer_id      = eff_customer_id,
+                    customer_name    = customer_name,
+                    diagram_name     = diagram_name,
+                    client_id        = client_id,
+                    object_store     = store,
+                    text_runner      = text_runner,
+                    run_pipeline_fn  = run_pipeline,
+                )
+                waf_r = loop_result["waf_result"]
+                return JSONResponse(status_code=200, content={
+                    "status":        "orchestration_complete",
+                    "agent_version": AGENT_VERSION,
+                    "client_id":     client_id,
+                    "customer_id":   eff_customer_id,
+                    "diagram_name":  diagram_name,
+                    "request_id":    request_id,
+                    "draw_result":   loop_result["draw_result"],
+                    "waf_result": {
+                        "version":        waf_r.get("version"),
+                        "key":            waf_r.get("key"),
+                        "content":        waf_r.get("content", ""),
+                        "overall_rating": waf_r.get("overall_rating", "⚠️"),
+                    },
+                    "loop_summary": {
+                        "iterations": loop_result["iterations"],
+                        "history":    loop_result["loop_history"],
+                    },
+                    "errors": [],
+                })
+            else:
+                logger.warning("auto_waf=True but store/text_runner not configured — returning diagram only")
+
+        # ── Need clarification — store auto_waf metadata for /clarify ─────────
+        if auto_waf and result["status"] == "need_clarification":
+            if client_id in PENDING_CLARIFY:
+                PENDING_CLARIFY[client_id]["auto_waf"]      = True
+                PENDING_CLARIFY[client_id]["customer_id"]   = customer_id or client_id
+                PENDING_CLARIFY[client_id]["customer_name"] = customer_name
 
         return JSONResponse(status_code=200, content=result)
 
@@ -1190,6 +1267,12 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
             base_prompt      = pending["prompt"]
             deployment_hints = dict(pending.get("deployment_hints") or {})
 
+        # ── Resolve auto_waf metadata (req fields override stateful pending) ──
+        pending_meta = PENDING_CLARIFY.get(req.client_id) or {}
+        eff_auto_waf      = req.auto_waf      or pending_meta.get("auto_waf", False)
+        eff_customer_id   = req.customer_id   or pending_meta.get("customer_id", "") or req.client_id
+        eff_customer_name = req.customer_name or pending_meta.get("customer_name", "")
+
         # ── Map regions.mode answer to multi_region_mode deployment hint ──────
         if "multi_region_mode" not in deployment_hints:
             ans_lower = req.answers.lower()
@@ -1220,6 +1303,46 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
 
         if result["status"] == "ok":
             PENDING_CLARIFY.pop(req.client_id, None)
+
+            # ── Auto WAF orchestration loop ────────────────────────────────────
+            if eff_auto_waf:
+                store = getattr(app.state, "object_store", None)
+                text_runner = getattr(app.state, "text_runner", None)
+                if store and text_runner:
+                    loop_result = await run_diagram_waf_loop(
+                        items            = items,
+                        base_prompt      = base_prompt,
+                        deployment_hints = deployment_hints,
+                        draw_result      = result,
+                        customer_id      = eff_customer_id,
+                        customer_name    = eff_customer_name,
+                        diagram_name     = req.diagram_name,
+                        client_id        = req.client_id,
+                        object_store     = store,
+                        text_runner      = text_runner,
+                        run_pipeline_fn  = run_pipeline,
+                    )
+                    waf_r = loop_result["waf_result"]
+                    return JSONResponse(status_code=200, content={
+                        "status":        "orchestration_complete",
+                        "agent_version": AGENT_VERSION,
+                        "client_id":     req.client_id,
+                        "customer_id":   eff_customer_id,
+                        "diagram_name":  req.diagram_name,
+                        "request_id":    request_id,
+                        "draw_result":   loop_result["draw_result"],
+                        "waf_result": {
+                            "version":        waf_r.get("version"),
+                            "key":            waf_r.get("key"),
+                            "content":        waf_r.get("content", ""),
+                            "overall_rating": waf_r.get("overall_rating", "⚠️"),
+                        },
+                        "loop_summary": {
+                            "iterations": loop_result["iterations"],
+                            "history":    loop_result["loop_history"],
+                        },
+                        "errors": [],
+                    })
 
         return JSONResponse(status_code=200, content=result)
 
@@ -2388,6 +2511,85 @@ async def jep_get_questions(customer_id: str):
         functools.partial(get_jep_questions, store, customer_id)
     )
     return {"status": "ok", "customer_id": customer_id, **data}
+
+
+# ── WAF endpoints ─────────────────────────────────────────────────────────────
+
+@app.post("/api/waf/generate")
+async def waf_generate(req: WafRequest):
+    """
+    Generate or update a Well-Architected Framework review for a customer.
+
+    Reads engagement context and all prior agent outputs (diagram, POV, etc.)
+    to produce a structured review across the five OCI WAF pillars:
+    Security and Compliance, Reliability and Resilience,
+    Performance and Cost Optimization, Operational Efficiency, Distributed Cloud.
+
+    Saves to: waf/{customer_id}/v{n}.md + LATEST.md
+    """
+    store = _require_object_store()
+
+    def _run_waf():
+        def runner(prompt, system_message=""):
+            from agent.llm_inference_client import run_inference as _ri
+            return _ri(
+                prompt,
+                endpoint=INFERENCE_ENDPOINT,
+                model_id=INFERENCE_MODEL_ID,
+                compartment_id=COMPARTMENT_ID,
+                max_tokens=WRITING_MAX_TOKENS,
+                temperature=WRITING_TEMPERATURE,
+                top_p=WRITING_TOP_P,
+                top_k=WRITING_TOP_K,
+                system_message=system_message,
+            )
+        text_runner = getattr(app.state, "text_runner", None) or runner
+        return generate_waf(
+            req.customer_id, req.customer_name, store, text_runner,
+            feedback=req.feedback or "",
+        )
+
+    try:
+        result = await anyio.to_thread.run_sync(_run_waf)
+        return {
+            "status":         "ok",
+            "agent_version":  AGENT_VERSION,
+            "customer_id":    req.customer_id,
+            "doc_type":       "waf",
+            "version":        result["version"],
+            "key":            result["key"],
+            "latest_key":     result["latest_key"],
+            "content":        result["content"],
+            "overall_rating": result["overall_rating"],
+            "errors":         [],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error in /waf/generate: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/waf/{customer_id}/latest")
+async def waf_latest(customer_id: str):
+    """Return the latest WAF review for a customer."""
+    store = _require_object_store()
+    content = await anyio.to_thread.run_sync(
+        functools.partial(get_latest_doc, store, "waf", customer_id)
+    )
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"No WAF review found for customer_id={customer_id!r}")
+    return {"status": "ok", "customer_id": customer_id, "doc_type": "waf", "content": content}
+
+
+@app.get("/api/waf/{customer_id}/versions")
+async def waf_versions(customer_id: str):
+    """List all WAF review versions for a customer."""
+    store = _require_object_store()
+    versions = await anyio.to_thread.run_sync(
+        functools.partial(list_versions, store, "waf", customer_id)
+    )
+    return {"status": "ok", "customer_id": customer_id, "doc_type": "waf", "versions": versions}
 
 
 if __name__ == "__main__":

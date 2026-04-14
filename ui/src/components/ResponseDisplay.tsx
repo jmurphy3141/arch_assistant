@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { downloadUrl } from '../api/client';
-import type { GenerateResponse } from '../api/client';
+import type { GenerateResponse, OrchestrationResult } from '../api/client';
 
 const ARTIFACT_FILES = [
   'diagram.drawio',
@@ -10,8 +10,15 @@ const ARTIFACT_FILES = [
   'node_to_resource_map.json',
 ] as const;
 
+const RATING_COLOR: Record<string, string> = {
+  '✅': '#006600',
+  '⚠️': '#885500',
+  '❌': '#cc0000',
+};
+
 interface Props {
   result: GenerateResponse;
+  orchestrationResult?: OrchestrationResult;
   onRefine?: (feedback: string) => void;
   refineLoading?: boolean;
 }
@@ -58,7 +65,7 @@ const S = {
   }),
 };
 
-export function ResponseDisplay({ result, onRefine, refineLoading }: Props) {
+export function ResponseDisplay({ result, orchestrationResult, onRefine, refineLoading }: Props) {
   const [feedback, setFeedback] = useState('');
 
   if (result.status === 'ok') {
@@ -92,6 +99,40 @@ export function ResponseDisplay({ result, onRefine, refineLoading }: Props) {
             </pre>
           </details>
         )}
+
+        {orchestrationResult && (() => {
+          const { waf_result, loop_summary } = orchestrationResult;
+          const rating = waf_result.overall_rating;
+          const ratingColor = RATING_COLOR[rating] ?? '#333';
+          const { iterations, history } = loop_summary;
+          return (
+            <details style={{ marginTop: '0.75rem', border: '1px solid #ddd', borderRadius: 4, padding: '0.5rem' }}>
+              <summary style={{ cursor: 'pointer', color: ratingColor, fontWeight: 'bold' }}>
+                WAF Review — {rating}&nbsp;
+                <span style={{ fontWeight: 'normal', fontSize: '0.8rem', color: '#555' }}>
+                  ({iterations} cycle{iterations !== 1 ? 's' : ''}, auto-generated)
+                </span>
+              </summary>
+              <div style={{ marginTop: '0.5rem' }}>
+                {history.map(row => (
+                  <div key={row.iteration} style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', borderBottom: '1px solid #eee' }}>
+                    <strong>Cycle {row.iteration}</strong>: WAF rated{' '}
+                    <span style={{ color: RATING_COLOR[row.waf_rating] ?? '#333' }}>{row.waf_rating}</span>
+                    {row.applied > 0
+                      ? ` → applied ${row.applied} suggestion${row.applied !== 1 ? 's' : ''}`
+                      : ' → no changes needed'}
+                    {row.draw_instructions?.map((instr, i) => (
+                      <div key={i} style={{ marginLeft: '1rem', color: '#666', fontStyle: 'italic' }}>• {instr}</div>
+                    ))}
+                  </div>
+                ))}
+                <p style={{ fontSize: '0.75rem', color: '#777', marginTop: '0.5rem' }}>
+                  Full review available in the WAF Review tab.
+                </p>
+              </div>
+            </details>
+          );
+        })()}
 
         <h4>Downloads</h4>
         <ul data-testid="download-list">
