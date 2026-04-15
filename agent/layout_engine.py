@@ -51,6 +51,17 @@ SVC_COL_W      = 80   # services column width (right of VCN, inside region)
 SVC_COL_MARGIN = 40   # gap between VCN right edge and services column (for flow lines)
 MULTI_REGION_GAP = 30
 
+# Multi-compartment layout constants (multi-env BOMs with per-environment compartments)
+COMP_PAD_X   = 16   # compartment box left/right inner padding
+COMP_PAD_TOP = 28   # compartment box label strip height
+COMP_PAD_BOT = 12   # compartment box bottom inner padding
+COMP_GAP     = 20   # horizontal gap between side-by-side compartments
+COMP_ROW_GAP = 20   # vertical gap between compartment rows
+OUTER_PAD_X  = 24   # outer region box left/right padding
+OUTER_PAD_TOP = 40  # outer region box top padding (label height + clearance)
+OUTER_PAD_BOT = 20  # outer region box bottom padding
+SVC_COMP_PAD  = 14  # shared services compartment inner padding
+
 # Single-region position constants
 REGION_X = PAGE_MARGIN + EXT_W + EXT_GAP          # 144
 REGION_W = PAGE_W - 2 * (PAGE_MARGIN + EXT_W + EXT_GAP)  # 1366
@@ -533,6 +544,237 @@ def _layout_region(
     return region_box, all_boxes, all_nodes, gateway_nodes
 
 
+_GW_EDGE_MAP = {
+    "drg": "left", "dynamic routing gateway": "left",
+    "internet gateway": "top",
+    "nat gateway": "top",
+    "service gateway": "right",
+}
+_TOP_GW_ORDER = {"internet gateway": 0, "nat gateway": 1}
+
+
+def _place_gateways(
+    gateways: list[dict],
+    vcn_x: float,
+    vcn_y: float,
+    vcn_w: float,
+) -> list[PositionedNode]:
+    """Place gateway icons straddling the VCN box edges."""
+    top_gws   = sorted(
+        [g for g in gateways if _GW_EDGE_MAP.get(g.get("type", "").lower(), "top") == "top"],
+        key=lambda g: _TOP_GW_ORDER.get(g.get("type", "").lower(), 99),
+    )
+    left_gws  = [g for g in gateways if _GW_EDGE_MAP.get(g.get("type", "").lower(), "top") == "left"]
+    right_gws = [g for g in gateways if _GW_EDGE_MAP.get(g.get("type", "").lower(), "top") == "right"]
+
+    result: list[PositionedNode] = []
+
+    n_top = len(top_gws)
+    if n_top > 0:
+        top_gap = (vcn_w - n_top * ICON_W) / max(n_top - 1, 1) if n_top > 1 else 0
+        for i, gw in enumerate(top_gws):
+            result.append(PositionedNode(
+                id=gw["id"], label=gw.get("label", gw["id"]),
+                oci_type=gw.get("type", "").lower(),
+                x=vcn_x + i * (ICON_W + top_gap), y=vcn_y - ICON_H // 2,
+                w=ICON_W, h=ICON_SLOT,
+            ))
+
+    for i, gw in enumerate(left_gws):
+        result.append(PositionedNode(
+            id=gw["id"], label=gw.get("label", gw["id"]),
+            oci_type=gw.get("type", "").lower(),
+            x=vcn_x - ICON_W // 2,
+            y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
+            w=ICON_W, h=ICON_SLOT,
+        ))
+
+    for i, gw in enumerate(right_gws):
+        result.append(PositionedNode(
+            id=gw["id"], label=gw.get("label", gw["id"]),
+            oci_type=gw.get("type", "").lower(),
+            x=vcn_x + vcn_w - ICON_W // 2,
+            y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
+            w=ICON_W, h=ICON_SLOT,
+        ))
+
+    return result
+
+
+def _layout_compartment(
+    comp_spec: dict,
+    origin_x: float,
+    origin_y: float,
+    comp_w: float,
+) -> tuple[PositionedBox, list[PositionedBox], list[PositionedNode], list[PositionedNode]]:
+    """
+    Layout a single environment compartment box with its VCN and subnets.
+
+    Returns (compartment_box, sub_boxes, icon_nodes, gateway_nodes).
+    """
+    subnets  = comp_spec.get("subnets", [])
+    gateways = comp_spec.get("gateways", [])
+
+    all_boxes: list[PositionedBox] = []
+    all_nodes: list[PositionedNode] = []
+
+    # VCN sits inside the compartment with padding
+    vcn_x = origin_x + COMP_PAD_X
+    vcn_y = origin_y + COMP_PAD_TOP
+    vcn_w = comp_w - 2 * COMP_PAD_X
+
+    vcn_inner_x = vcn_x + VCN_PAD_X
+    vcn_inner_y = vcn_y + VCN_PAD_TOP
+    vcn_inner_w = vcn_w - 2 * VCN_PAD_X
+
+    sub_boxes, sub_nodes, content_h = _layout_subnets_vertical(
+        subnets, vcn_inner_x, vcn_inner_y, vcn_inner_w
+    )
+    all_boxes.extend(sub_boxes)
+    all_nodes.extend(sub_nodes)
+
+    vcn_h = VCN_PAD_TOP + max(content_h, 0) + VCN_PAD_BOT
+    vcn_box = PositionedBox(
+        id=comp_spec["id"] + "_vcn",
+        label="VCN",
+        box_type="_vcn_box",
+        x=vcn_x, y=vcn_y, w=vcn_w, h=vcn_h,
+    )
+    all_boxes.insert(0, vcn_box)
+
+    comp_h = COMP_PAD_TOP + vcn_h + COMP_PAD_BOT
+    comp_box = PositionedBox(
+        id=comp_spec["id"],
+        label=comp_spec.get("label", "Compartment"),
+        box_type="_compartment_box",
+        x=origin_x, y=origin_y, w=comp_w, h=comp_h,
+    )
+
+    gateway_nodes = _place_gateways(gateways, vcn_x, vcn_y, vcn_w)
+
+    return comp_box, all_boxes, all_nodes, gateway_nodes
+
+
+def _layout_multi_compartment_region(
+    region_spec: dict,
+    origin_x: float,
+    origin_y: float,
+    region_w: float,
+) -> tuple[PositionedBox, list[PositionedBox], list[PositionedNode], list[PositionedNode]]:
+    """
+    Layout a single OCI Region box containing N environment compartments
+    (side-by-side in rows) plus an optional Shared Services compartment below.
+
+    Structure:
+      ┌─ OCI Region ────────────────────────────────────────────────┐
+      │  ┌─ Prod Comp ──┐  ┌─ Proto Comp ──┐  ┌─ Dev Comp ──┐    │
+      │  │  VCN          │  │  VCN           │  │  VCN         │    │
+      │  │  [pub sub]    │  │  [pub sub]     │  │  [pub sub]   │    │
+      │  │  [app sub]    │  │  [app sub]     │  │  [app sub]   │    │
+      │  │  [db sub]     │  │  [db sub]      │  │  [db sub]    │    │
+      │  └───────────────┘  └────────────────┘  └──────────────┘    │
+      │  ┌─ Shared Services Compartment ───────────────────────┐    │
+      │  │  [logging]  [monitoring]  [directory]  [certs]      │    │
+      │  └─────────────────────────────────────────────────────┘    │
+      └─────────────────────────────────────────────────────────────┘
+    """
+    compartments    = region_spec.get("compartments", [])
+    shared_services = region_spec.get("shared_services", [])
+
+    all_boxes: list[PositionedBox]  = []
+    all_nodes: list[PositionedNode] = []
+    all_gw:    list[PositionedNode] = []
+
+    inner_x = origin_x + OUTER_PAD_X
+    inner_y = origin_y + OUTER_PAD_TOP
+    inner_w = region_w - 2 * OUTER_PAD_X
+
+    # Grid: ≤3 comps → 1 row; 4 → 2×2; >4 → 2 columns
+    n = len(compartments)
+    if n <= 3:
+        cols = n
+    else:
+        cols = 2
+
+    if n == 0:
+        comps_bottom = inner_y
+    else:
+        col_w = (inner_w - (cols - 1) * COMP_GAP) / cols if cols > 1 else inner_w
+
+        # Pre-compute each compartment's natural height so rows can be uniform
+        def _comp_natural_h(comp: dict) -> float:
+            subnets = comp.get("subnets", [])
+            content_h = sum(_subnet_box_size(s)[1] + SUB_GAP_Y for s in subnets)
+            if subnets:
+                content_h -= SUB_GAP_Y
+            vcn_h = VCN_PAD_TOP + max(content_h, 0) + VCN_PAD_BOT
+            return COMP_PAD_TOP + vcn_h + COMP_PAD_BOT
+
+        # Compute uniform height per row (tallest compartment in the row)
+        row_heights: list[float] = []
+        for row_start in range(0, n, cols):
+            row_h = max(_comp_natural_h(compartments[j])
+                        for j in range(row_start, min(row_start + cols, n)))
+            row_heights.append(row_h)
+
+        # Place each compartment
+        for i, comp in enumerate(compartments):
+            row  = i // cols
+            col  = i % cols
+            cx   = inner_x + col * (col_w + COMP_GAP)
+            cy   = inner_y + sum(row_heights[:row]) + row * COMP_ROW_GAP
+
+            comp_box, sub_boxes, icon_nodes, gw_nodes = _layout_compartment(
+                comp, cx, cy, col_w
+            )
+            all_boxes.append(comp_box)
+            all_boxes.extend(sub_boxes)
+            all_nodes.extend(icon_nodes)
+            all_gw.extend(gw_nodes)
+
+        n_rows = (n + cols - 1) // cols
+        comps_bottom = inner_y + sum(row_heights) + (n_rows - 1) * COMP_ROW_GAP
+
+    # Shared services compartment below all environment compartments
+    if shared_services:
+        svc_comp_y = comps_bottom + COMP_ROW_GAP
+        svc_inner_y = svc_comp_y + SVC_COMP_PAD + 16  # 16 = label height
+        n_svcs = len(shared_services)
+        svc_row_w = n_svcs * ICON_W + (n_svcs - 1) * NODE_GAP_X
+        svc_x = inner_x + SVC_COMP_PAD + max(0, (inner_w - 2 * SVC_COMP_PAD - svc_row_w) / 2)
+        svc_y = svc_inner_y
+
+        for svc in shared_services:
+            all_nodes.append(PositionedNode(
+                id=svc["id"],
+                label=svc.get("label", svc["id"]),
+                oci_type=svc.get("type", ""),
+                x=svc_x, y=svc_y, w=ICON_W, h=ICON_SLOT,
+            ))
+            svc_x += ICON_W + NODE_GAP_X
+
+        svc_comp_h = 16 + 2 * SVC_COMP_PAD + ICON_SLOT
+        all_boxes.append(PositionedBox(
+            id="shared_services_comp",
+            label="Shared Services",
+            box_type="_compartment_box",
+            x=inner_x, y=svc_comp_y, w=inner_w, h=svc_comp_h,
+        ))
+        region_bottom = svc_comp_y + svc_comp_h
+    else:
+        region_bottom = comps_bottom
+
+    region_h = region_bottom - origin_y + OUTER_PAD_BOT
+    region_box = PositionedBox(
+        id=region_spec["id"],
+        label=region_spec.get("label", "OCI Region"),
+        box_type="_region_box",
+        x=origin_x, y=origin_y, w=region_w, h=region_h,
+    )
+
+    return region_box, all_boxes, all_nodes, all_gw
+
+
 LEFT_EXTERNAL_TYPES = {
     "on premises", "vpn", "fastconnect", "cpe", "dns", "users", "user"
 }
@@ -568,7 +810,16 @@ def compute_positions(layout_spec: dict | str) -> tuple[list[PositionedNode], li
     if n_regions == 0:
         return [], []
 
-    if n_regions == 1:
+    if deployment_type == "multi_compartment" and n_regions == 1:
+        # Multi-env BOM: one outer region containing N compartments
+        reg_box, sub_boxes, icon_nodes, gw_nodes = _layout_multi_compartment_region(
+            regions[0], REGION_X, REGION_Y, REGION_W
+        )
+        all_boxes.append(reg_box)
+        all_boxes.extend(sub_boxes)
+        all_nodes.extend(icon_nodes)
+        all_nodes.extend(gw_nodes)
+    elif n_regions == 1:
         # Single region: full canvas width
         reg_box, sub_boxes, icon_nodes, gw_nodes = _layout_region(
             regions[0], REGION_X, REGION_Y, REGION_W, deployment_type

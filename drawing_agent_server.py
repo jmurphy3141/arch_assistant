@@ -555,7 +555,11 @@ async def run_pipeline(
             )
 
     # ── Multi-region hints check ──────────────────────────────────────────────
+    # multi_compartment = multiple environments inside ONE region (IAM boundaries).
+    # These are NOT separate geographic regions — skip the DR/HA clarification entirely.
     mr_mode = deployment_hints.get("multi_region_mode")
+    if spec.get("deployment_type") == "multi_compartment":
+        mr_mode = None   # compartments never trigger DR/HA post-processing
     is_multi_region = (
         spec.get("deployment_type") == "multi_region"
         or len(deployment_hints.get("regions", [])) >= 2

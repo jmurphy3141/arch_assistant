@@ -218,11 +218,14 @@ def compile_intent_to_flat_spec(
     is_multi_env = len(env_names) > 1
 
     if is_multi_env:
-        deployment_type = "multi_region"
-        final_regions = _build_env_regions(
+        # Compartments are IAM isolation boundaries within ONE OCI region — not separate
+        # regions.  Produce a single outer region that contains one compartment per
+        # environment plus an optional Shared Services compartment for platform services.
+        deployment_type = "multi_compartment"
+        final_regions = [_build_compartment_region(
             env_names, subnet_placements, items_by_id,
             group_order, group_labels, gateways, oci_services,
-        )
+        )]
     else:
         if n_regions > 1:
             deployment_type = "multi_region"
@@ -256,14 +259,24 @@ def compile_intent_to_flat_spec(
         }]
 
     primary_region_id = final_regions[0]["id"] if final_regions else "region_box"
-    all_subnet_ids = {s["id"] for r in final_regions
-                      for ad in r.get("availability_domains", [])
-                      for s in ad.get("subnets", [])}
+
+    # Collect subnet IDs from both old (availability_domains) and new (compartments) structures
+    all_subnet_ids: set[str] = set()
+    for r in final_regions:
+        for ad in r.get("availability_domains", []):
+            for s in ad.get("subnets", []):
+                all_subnet_ids.add(s["id"])
+        for comp in r.get("compartments", []):
+            for s in comp.get("subnets", []):
+                all_subnet_ids.add(s["id"])
 
     # ── Edge ID set for deduplication ─────────────────────────────────────────
     all_node_ids  = {p.id  for p in intent.placements}
     all_group_ids = all_subnet_ids
-    all_ad_ids    = {a["id"] for r in final_regions for a in r.get("availability_domains", [])}
+    all_ad_ids    = (
+        {a["id"] for r in final_regions for a in r.get("availability_domains", [])}
+        | {comp["id"] for r in final_regions for comp in r.get("compartments", [])}
+    )
     all_ids = all_node_ids | all_group_ids | all_ad_ids | {primary_region_id}
 
     # ── Build edges ────────────────────────────────────────────────────────────
@@ -290,9 +303,13 @@ def compile_intent_to_flat_spec(
                 continue
             _add(e.id, e.source, e.target, e.label)
     else:
-        # Sequential chain across subnets of the FIRST (primary) region only
-        first_ad = (final_regions[0].get("availability_domains") or [{}])[0]
-        sub_ids  = [s["id"] for s in first_ad.get("subnets", [])]
+        # Sequential chain across subnets of the FIRST environment / primary region
+        if deployment_type == "multi_compartment":
+            first_comp = (final_regions[0].get("compartments") or [{}])[0]
+            sub_ids = [s["id"] for s in first_comp.get("subnets", [])]
+        else:
+            first_ad = (final_regions[0].get("availability_domains") or [{}])[0]
+            sub_ids  = [s["id"] for s in first_ad.get("subnets", [])]
         for i in range(len(sub_ids) - 1):
             _add(f"e_{sub_ids[i]}_{sub_ids[i+1]}", sub_ids[i], sub_ids[i+1], "")
 
@@ -338,7 +355,7 @@ def _tier(index: int, total: int) -> str:
     return "app"
 
 
-def _build_env_regions(
+def _build_compartment_region(
     env_names: list[str],
     subnet_placements: list,
     items_by_id: dict,
@@ -346,14 +363,14 @@ def _build_env_regions(
     group_labels: dict[str, str],
     gateways: list[dict],
     oci_services: list[dict],
-) -> list[dict]:
-    """Build one OCI region (Compartment) per environment for multi-env BOMs.
+) -> dict:
+    """Build a single OCI region containing one compartment per environment.
 
-    Each environment's workload items are placed in their own subnet groups
-    inside a dedicated region box.  Gateways and OCI managed services belong
-    to the primary (first) environment only.
+    Each environment becomes an IAM compartment (not a separate region) with its
+    own VCN and 3-tier subnets.  Gateways belong to the first compartment.
+    OCI platform services go in a Shared Services section of the outer region.
     """
-    regions: list[dict] = []
+    compartments: list[dict] = []
 
     for env_idx, env_name in enumerate(env_names):
         env_ids = {p.id for p in subnet_placements
@@ -380,7 +397,7 @@ def _build_env_regions(
             else:
                 extra_nodes.setdefault(gid, []).append(node)
 
-        # Build subnet list for this environment
+        # Build flat subnet list for this compartment
         env_subnets: list[dict] = []
         for i, gid in enumerate(group_order):
             nodes = group_nodes[gid]
@@ -400,25 +417,21 @@ def _build_env_regions(
                     "nodes": nodes,
                 })
 
-        # Use "region_box" for the first env so existing edge IDs stay valid
-        region_id = "region_box" if env_idx == 0 else f"region_{env_idx}_box"
-
-        regions.append({
-            "id":    region_id,
-            "label": f"{env_name} Compartment",
-            "regional_subnets": [],
-            "availability_domains": [{
-                "id":           f"ad_e{env_idx}_box",
-                "label":        "Availability Domain 1",
-                "fault_domains": [
-                    {"id": f"fd{j+1}_e{env_idx}_box",
-                     "label": f"Fault Domain {j+1}", "subnets": []}
-                    for j in range(3)
-                ],
-                "subnets": env_subnets,
-            }],
-            "gateways":    gateways    if env_idx == 0 else [],
-            "oci_services": oci_services if env_idx == 0 else [],
+        compartments.append({
+            "id":       f"comp_{env_idx}_box",
+            "label":    f"{env_name} Compartment",
+            "gateways": gateways if env_idx == 0 else [],
+            "subnets":  env_subnets,
         })
 
-    return regions
+    return {
+        "id":               "region_box",
+        "label":            "OCI Region",
+        "compartments":     compartments,
+        "shared_services":  oci_services,  # platform services in their own section
+        # Keep these empty so single-region fallback paths don't see stale data:
+        "regional_subnets":     [],
+        "availability_domains": [],
+        "gateways":             [],
+        "oci_services":         [],
+    }
