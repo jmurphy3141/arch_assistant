@@ -332,9 +332,26 @@ _SHARED_INFRA_TYPES = frozenset([
 def _split_bom_into_sections(sheet) -> list[tuple[str, list, list]]:
     """Split a single BOM sheet into named environment sections.
 
-    Each section starts with an optional label row (e.g. "Prod", "DR") followed
-    by a header row that contains both "sku" and "description" columns, then the
-    data rows for that environment.
+    Supports two common BOM layouts:
+
+    A. Label-then-header (each section has its own header row):
+         Production
+         SKU | Description | Quantity
+         [rows]
+         DR
+         SKU | Description | Quantity
+         [rows]
+
+    B. Single-header with inline labels (one global header, labels between rows):
+         SKU | Description | Quantity
+         [Prod rows]
+         DR
+         [DR rows]
+         Dev
+         [Dev rows]
+
+    In layout B the label row flushes the current section and the new section
+    inherits the same column headers, so no repeated header row is required.
 
     Returns: list of (section_name, col_headers, row_dicts)
     """
@@ -379,7 +396,18 @@ def _split_bom_into_sections(sheet) -> list[tuple[str, list, list]]:
             )
             is_number = first.replace(".", "").replace(",", "").isdigit()
             if len(text_cells) <= 2 and not is_sku and not is_number and len(first) < 60:
-                next_name = first
+                if cur_hdrs is not None and cur_rows:
+                    # Layout B: label mid-stream — flush current section and inherit
+                    # the same headers into the new section (no repeated header row).
+                    result.append((cur_name, cur_hdrs, cur_rows))
+                    cur_name = first
+                    cur_rows = []
+                    # Also set next_name so that if a header row does follow (Layout A
+                    # mixed with B), it picks up the correct section name.
+                    next_name = first
+                else:
+                    # Layout A: label precedes its own header row — just queue the name.
+                    next_name = first
                 continue
 
         # ── Regular data row ──────────────────────────────────────────────────
