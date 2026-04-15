@@ -1118,6 +1118,58 @@ RULES:
 5. Output ONLY valid JSON. No markdown, no prose, no code fences."""
 
 
+def _parse_all_env_tabs(
+    xlsx_path: "str | Path",
+    wb,
+    env_sheets: list[str],
+    context: str = "",
+) -> "list[ServiceItem]":
+    """
+    Parse all environment tabs and merge into one ServiceItem list.
+
+    Primary tab: items keep their section notes (section "Primary" is renamed
+    to the tab name so multi-env detection fires correctly).
+    Secondary tabs: shared infra is dropped (already in primary); remaining
+    items are re-ID'd with an env prefix and tagged with the tab name.
+
+    This gives compile_intent_to_flat_spec enough notes diversity to trigger
+    is_multi_env=True and route to _build_compartment_region.
+    """
+    import dataclasses as _dc
+
+    all_items: list[ServiceItem] = []
+    all_ids:   set[str]         = set()
+
+    for tab_idx, tab_name in enumerate(env_sheets):
+        is_primary  = (tab_idx == 0)
+        tab_items   = parse_bom(xlsx_path, context=context, sheet_name=tab_name)
+        tab_prefix  = f"{tab_name.lower()[:8].replace(' ', '_')}_"
+
+        for item in tab_items:
+            if is_primary:
+                # Rename "Primary" → actual tab name so compiler detects it
+                notes_val = tab_name if item.notes == "Primary" else item.notes
+                all_items.append(_dc.replace(item, notes=notes_val))
+                all_ids.add(item.id)
+            else:
+                # Secondary tabs: drop shared infra, baselines, on_prem duplicates
+                if item.notes in {"best practice", "injected_baseline"}:
+                    continue
+                if item.oci_type in _SHARED_INFRA_TYPES:
+                    continue
+                if item.id == "on_prem":
+                    continue
+                # Env-prefix the ID; skip if already present (same oci_type, different qty)
+                new_id = f"{tab_prefix}{item.oci_type.replace(' ', '_')}_1"
+                if new_id in all_ids:
+                    continue
+                new_label = item.label.split("\n")[0].rstrip() + f"\n({tab_name})"
+                all_items.append(_dc.replace(item, id=new_id, label=new_label, notes=tab_name))
+                all_ids.add(new_id)
+
+    return all_items
+
+
 def bom_to_llm_input(
     xlsx_path: str | Path,
     context: str = "",
@@ -1130,19 +1182,24 @@ def bom_to_llm_input(
     context: optional free-text from an uploaded requirements/notes file.
     questionnaire_text: answers to a pre-flight questionnaire, if any.
     notes_text: meeting notes or other free-text, if any.
+
+    Multi-tab BOMs (separate sheet per environment):
+      Items from ALL env sheets are merged into one list, each tagged with its
+      sheet name as `notes`.  This allows compile_intent_to_flat_spec to detect
+      is_multi_env=True and route to the compartment layout path.
     """
     import openpyxl as _openpyxl
     wb = _openpyxl.load_workbook(xlsx_path, data_only=True)
     env_sheets = _find_bom_sheets(wb)
 
-    # Parse primary environment sheet
-    items = parse_bom(xlsx_path, context=context, sheet_name=env_sheets[0])
-
-    # If multiple environment tabs found, inject a summary into context
-    full_context = context
     if len(env_sheets) > 1:
+        # Multi-tab BOM: parse all tabs and tag each item with its env name
+        items       = _parse_all_env_tabs(xlsx_path, wb, env_sheets, context=context)
         env_summary = _build_env_summary(wb, env_sheets)
         full_context = f"{env_summary}\n\n{context}".strip() if context else env_summary
+    else:
+        items        = parse_bom(xlsx_path, context=context, sheet_name=env_sheets[0])
+        full_context = context
 
     prompt = build_layout_intent_prompt(
         items,

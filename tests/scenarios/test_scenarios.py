@@ -429,11 +429,12 @@ class TestRefine:
         text_runner = FakeTextRunner(json.dumps(MINIMAL_SPEC))
         llm_runner  = FakeLLMRunner(MINIMAL_SPEC)
 
-        IDEMPOTENCY_CACHE_ref, SESSION_STORE_ref, PENDING_CLARIFY_ref = None, None, None
         from drawing_agent_server import IDEMPOTENCY_CACHE, SESSION_STORE, PENDING_CLARIFY
         IDEMPOTENCY_CACHE.clear(); SESSION_STORE.clear(); PENDING_CLARIFY.clear()
-        app.state.llm_runner  = llm_runner
-        app.state.text_runner = text_runner
+        app.state.llm_runner   = llm_runner
+        app.state.text_runner  = text_runner
+        # editor_runner = same fake so call_count/received_messages assertions still pass
+        app.state.editor_runner = text_runner
         app.state.object_store = None
         app.state.persistence_config = {}
 
@@ -472,8 +473,9 @@ class TestRefine:
         # System message must be the editor constant (never-ask-questions persona)
         assert DIAGRAM_EDIT_SYSTEM in text_runner.received_system_messages[0]
 
-        app.state.llm_runner  = None
-        app.state.text_runner = None
+        app.state.llm_runner   = None
+        app.state.text_runner  = None
+        app.state.editor_runner = None
 
     def test_refine_002_editor_returns_need_clarification_falls_back(self):
         """
@@ -488,8 +490,9 @@ class TestRefine:
         nc_response = json.dumps({"status": "need_clarification", "questions": ["What colour?"]})
         text_runner = FakeTextRunner(nc_response)
         llm_runner  = FakeLLMRunner(MINIMAL_SPEC)
-        app.state.llm_runner  = llm_runner
-        app.state.text_runner = text_runner
+        app.state.llm_runner   = llm_runner
+        app.state.text_runner  = text_runner
+        app.state.editor_runner = text_runner
         app.state.object_store = None
         app.state.persistence_config = {}
 
@@ -515,8 +518,9 @@ class TestRefine:
         # llm_runner still never called
         assert llm_runner.call_count == 0
 
-        app.state.llm_runner  = None
-        app.state.text_runner = None
+        app.state.llm_runner   = None
+        app.state.text_runner  = None
+        app.state.editor_runner = None
 
     def test_refine_003_no_prev_spec_calls_run_pipeline(self):
         """
@@ -529,8 +533,9 @@ class TestRefine:
 
         llm_runner  = FakeLLMRunner(MINIMAL_SPEC)
         text_runner = FakeTextRunner("")
-        app.state.llm_runner  = llm_runner
-        app.state.text_runner = text_runner
+        app.state.llm_runner   = llm_runner
+        app.state.text_runner  = text_runner
+        app.state.editor_runner = text_runner  # won't be called (no prev_spec)
         app.state.object_store = None
         app.state.persistence_config = {}
 
@@ -556,5 +561,6 @@ class TestRefine:
         # text_runner was NOT called
         assert text_runner.call_count == 0
 
-        app.state.llm_runner  = None
-        app.state.text_runner = None
+        app.state.llm_runner   = None
+        app.state.text_runner  = None
+        app.state.editor_runner = None

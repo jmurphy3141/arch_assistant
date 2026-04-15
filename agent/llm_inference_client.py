@@ -65,10 +65,13 @@ def run_inference(
     signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
 
     # ── Client ───────────────────────────────────────────────────────────────
+    # timeout=(connect_s, read_s): default OCI read timeout is 60s which is not
+    # enough for large prompts.  180s covers the longest observed inference calls.
     client = oci.generative_ai_inference.GenerativeAiInferenceClient(
         config={},
         signer=signer,
         service_endpoint=endpoint,
+        timeout=(10, 180),
     )
 
     # ── Request objects (canonical structure from reference snippet) ─────────

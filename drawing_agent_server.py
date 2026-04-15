@@ -807,6 +807,34 @@ def _make_text_runner() -> callable:
     return _run
 
 
+def _make_editor_runner() -> callable:
+    """
+    Build a sync editor_runner for diagram editing (/api/refine).
+
+    Same endpoint as inference_runner but:
+      - temperature=0 for deterministic JSON output
+      - max_tokens = max(INFERENCE_MAX_TOKENS, 4096) so a full LayoutIntent
+        is never truncated mid-response
+      - per-call system_message (like text_runner) so the editor persona can
+        be supplied at call time
+    """
+    _max = max(INFERENCE_MAX_TOKENS, 4096)
+
+    def _run(prompt: str, system_message: str = "") -> str:
+        return _run_inference(
+            prompt,
+            endpoint       = INFERENCE_ENDPOINT,
+            model_id       = INFERENCE_MODEL_ID,
+            compartment_id = COMPARTMENT_ID,
+            max_tokens     = _max,
+            temperature    = 0.0,
+            top_p          = INFERENCE_TOP_P,
+            top_k          = INFERENCE_TOP_K,
+            system_message = system_message,
+        )
+    return _run
+
+
 def _make_inference_runner() -> callable:
     """
     Build a sync llm_runner that calls run_inference() directly.
@@ -964,6 +992,17 @@ def _ensure_state_defaults() -> None:
                 app.state.text_runner = None
         else:
             app.state.text_runner = None
+    # Diagram editor runner — temperature=0 for deterministic JSON editing
+    if not hasattr(app.state, "editor_runner"):
+        if INFERENCE_ENABLED and _INFERENCE_AVAILABLE:
+            try:
+                app.state.editor_runner = _make_editor_runner()
+                logger.info("Editor runner ready (diagram refine)")
+            except Exception as exc:
+                logger.warning("Editor runner init failed (%s) — refine will use text_runner", exc)
+                app.state.editor_runner = None
+        else:
+            app.state.editor_runner = None
 
 
 # ── OIDC helpers ─────────────────────────────────────────────────────────────
@@ -1462,7 +1501,9 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
                 + "\n\nOutput the COMPLETE updated LayoutIntent JSON."
             )
 
-            raw_text = await call_text_llm(edit_prompt, DIAGRAM_EDIT_SYSTEM)
+            # call_diagram_editor_llm uses editor_runner (temperature=0, sufficient
+            # max_tokens) when available; falls back to text_runner for tests.
+            raw_text = await call_diagram_editor_llm(edit_prompt, DIAGRAM_EDIT_SYSTEM)
 
             try:
                 intent_data = json.loads(clean_json(raw_text))
@@ -2368,6 +2409,36 @@ async def call_text_llm(prompt: str, system_message: str = "") -> str:
             status_code=503,
             detail=(
                 "Writing agent text runner is not initialised. "
+                "Ensure inference.enabled=true in config.yaml and the server "
+                "started with valid OCI credentials, or inject "
+                "app.state.text_runner in tests."
+            ),
+        )
+    if asyncio.iscoroutinefunction(runner):
+        return await runner(prompt, system_message)
+    return await anyio.to_thread.run_sync(
+        functools.partial(runner, prompt, system_message)
+    )
+
+
+async def call_diagram_editor_llm(prompt: str, system_message: str = "") -> str:
+    """
+    Async wrapper for the diagram editor (/api/refine).
+
+    Prefers app.state.editor_runner (temperature=0, sufficient max_tokens for
+    full LayoutIntent JSON output) over app.state.text_runner (temperature=0.7,
+    writing-agent budget).  Falls back to text_runner so that tests that inject
+    only text_runner still work without extra setup.
+    """
+    runner = (
+        getattr(app.state, "editor_runner", None)
+        or getattr(app.state, "text_runner", None)
+    )
+    if runner is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Diagram editor runner is not initialised. "
                 "Ensure inference.enabled=true in config.yaml and the server "
                 "started with valid OCI credentials, or inject "
                 "app.state.text_runner in tests."

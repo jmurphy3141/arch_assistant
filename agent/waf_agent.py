@@ -74,43 +74,10 @@ WAF_ORCHESTRATION_SYSTEM_MESSAGE = (
 )
 
 # Source: https://docs.oracle.com/en/solutions/oci-best-practices/toc.htm
+# Kept for reference; orchestration mode now uses _annotate_checklist() instead.
 WAF_TOPOLOGY_CHECKLIST = """\
 OCI Well-Architected Framework — Topology Requirements
 Source: docs.oracle.com/en/solutions/oci-best-practices/
-
-Check each rule against the NODES PRESENT list.
-
-1. SECURITY AND COMPLIANCE
-   - Public-facing apps (load_balancer or api_gateway present) → waf (OCI Web Application Firewall)
-     must be present in ingress layer to guard against OWASP Top 10 threats.
-   - Private resources accessible by admins → bastion or bastion_service must be present
-     (OCI Managed Bastion replaces jump hosts; do NOT leave SSH open on public IPs).
-   - NSG (network_security_group) or security_list must be present; NSGs preferred for
-     micro-segmentation at VNIC level.
-   - database / autonomous_database / mysql must NOT appear in ingress or compute layer;
-     they must be in data or db layer (private subnet only).
-
-2. RELIABILITY AND RESILIENCE
-   - If two or more compute nodes → load_balancer required to eliminate SPOF.
-   - If deployment_type == "single_ad" and node_count >= 4 → recommend "multi_ad" deployment.
-   - If database present and no backup/dataguard/standby node → HA gap (note in narrative).
-
-3. PERFORMANCE AND COST OPTIMIZATION
-   - If node_count >= 6 and no autoscaling/instance_pool → suggest adding instance_pool.
-   - No topology draw change needed for cost; note right-sizing opportunity in narrative.
-
-4. OPERATIONAL EFFICIENCY
-   - If no monitoring / logging / observability node → add OCI Monitoring (oci_type: monitoring)
-     in a management or async layer.
-
-5. DISTRIBUTED CLOUD
-   - If deployment_type == "single_region" and DR/backup required in context →
-     note multi-region gap (no draw change needed for single-region diagrams).
-
-For each failing check produce ONE draw_instruction (max 3 total across all pillars).
-Format: imperative verb + oci_type + layer/position.
-Example: "Add a waf node (oci_type: waf) in the ingress layer before the load_balancer"
-If all checks pass → return empty suggestions [].
 """
 
 _STANDALONE_PROMPT_TEMPLATE = """\
@@ -159,22 +126,25 @@ Output format (Markdown):
 """
 
 _ORCHESTRATION_PROMPT_TEMPLATE = """\
-NODES PRESENT in diagram: {node_types}
-Deployment type: {deployment_type}
-Node count: {node_count}
-Layers: {layers}
+The checklist below has been PRE-EVALUATED in Python against the actual diagram.
+Each item is marked [✅ PASS], [❌ FAIL], or [⚠️ WARN].
+Trust these evaluations — do NOT re-evaluate them yourself.
 
-{checklist}
+{annotated_checklist}
 
-Now write a WAF review covering ONLY the failing pillars above (skip passing ones).
-Use the node list to determine which checks fail.
+YOUR TASKS:
+1. Write a brief narrative section for EACH item marked [❌ FAIL] or [⚠️ WARN].
+   Skip [✅ PASS] items entirely.
+2. For each [❌ FAIL] item that has a topology fix, emit ONE draw_instruction in the JSON block.
+   Do NOT emit draw_instructions for [✅ PASS] or [⚠️ WARN] items (warnings are narrative-only).
+3. If ALL items are [✅ PASS], write "No topology gaps found." and emit an empty suggestions list.
 
 Output format:
 
 # WAF Review — Topology Gap Analysis
 
-## Failing Pillars
-[For each failing pillar: heading + 2-3 sentences explaining the gap and recommended fix.]
+## Failing / Warning Pillars
+[For each FAIL/WARN item: heading + 2-3 sentences: what is missing and why it matters.]
 
 ---
 
@@ -182,10 +152,161 @@ Output format:
 
 <!-- WAF_REFINEMENT_SUGGESTIONS
 [
-  {{"pillar":"<pillar>","draw_instruction":"<imperative instruction>","priority":"<high|medium|low>"}}
+  {{"pillar":"<pillar>","draw_instruction":"<imperative instruction with (oci_type: X) and layer>","priority":"<high|medium|low>"}}
 ]
 -->
 """
+
+
+# ── Python checklist evaluator ─────────────────────────────────────────────────
+
+# Canonical type sets — lower-case; all aliases the LLM or orchestrator might use
+_PUBLIC_FACING   = {"load_balancer", "load balancer", "api_gateway", "api gateway",
+                    "flexible load balancer"}
+_WAF_TYPES       = {"waf", "oci_waf", "web_application_firewall",
+                    "web application firewall"}
+_BASTION_TYPES   = {"bastion", "bastion_service", "bastion service",
+                    "oci bastion", "oci_bastion"}
+_NSG_TYPES       = {"network_security_group", "nsg", "security_list", "security list",
+                    "network security group"}
+_DB_TYPES        = {"database", "autonomous_database", "mysql", "autonomous database",
+                    "oracle database", "db system", "db_system"}
+_LB_TYPES        = {"load_balancer", "load balancer", "flexible load balancer"}
+_MONITORING_TYPES= {"monitoring", "logging", "observability", "oci_monitoring",
+                    "oci monitoring", "logging analytics", "logging_analytics"}
+_POOL_TYPES      = {"autoscaling", "instance_pool", "auto scaling", "instance pool",
+                    "auto_scaling"}
+
+
+def _annotate_checklist(diagram_context: dict) -> str:
+    """
+    Evaluate every OCI WAF topology rule in Python and return a pre-annotated
+    checklist string.  The LLM receives facts, not questions — it only writes
+    narrative for items already marked FAIL.
+
+    This eliminates the hallucination problem where the LLM suggests missing
+    nodes that were already added by a prior orchestration cycle.
+    """
+    node_types   = {t.lower() for t in diagram_context.get("node_types", [])}
+    node_count   = diagram_context.get("node_count", 0)
+    depl_type    = diagram_context.get("deployment_type", "single_ad")
+
+    has_public   = bool(node_types & _PUBLIC_FACING)
+    has_waf      = bool(node_types & _WAF_TYPES)
+    has_bastion  = bool(node_types & _BASTION_TYPES)
+    has_nsg      = bool(node_types & _NSG_TYPES)
+    has_lb       = bool(node_types & _LB_TYPES)
+    has_monitor  = bool(node_types & _MONITORING_TYPES)
+    has_pool     = bool(node_types & _POOL_TYPES)
+    compute_nodes = [t for t in node_types if "compute" in t or t == "instance"]
+
+    lines = [
+        "OCI Well-Architected Framework — Pre-Evaluated Checklist",
+        f"(Node types present: {', '.join(sorted(node_types)) or '(none)'})",
+        f"(node_count={node_count}, deployment_type={depl_type})",
+        "",
+        "1. SECURITY AND COMPLIANCE",
+    ]
+
+    # WAF check
+    if has_public:
+        if has_waf:
+            lines.append("   [✅ PASS] WAF: public-facing component present AND waf node is present")
+        else:
+            lines.append(
+                "   [❌ FAIL] WAF: public-facing component present (load_balancer/api_gateway) "
+                "but NO waf node found → draw_instruction required: "
+                "Add a waf node (oci_type: waf) in the ingress layer before the load_balancer"
+            )
+    else:
+        lines.append("   [✅ PASS] WAF: no public-facing component — WAF not required")
+
+    # Bastion check
+    if has_bastion:
+        lines.append("   [✅ PASS] Bastion: OCI Managed Bastion is present")
+    else:
+        lines.append(
+            "   [⚠️ WARN] Bastion: no bastion/bastion_service found — "
+            "recommend OCI Managed Bastion for secure admin access (narrative only)"
+        )
+
+    # NSG check
+    if has_nsg:
+        lines.append("   [✅ PASS] NSG/Security List: present")
+    else:
+        lines.append(
+            "   [⚠️ WARN] NSG/Security List: not found — "
+            "recommend network_security_group for micro-segmentation (narrative only)"
+        )
+
+    lines.append("")
+    lines.append("2. RELIABILITY AND RESILIENCE")
+
+    # Load balancer check
+    if len(compute_nodes) >= 2:
+        if has_lb:
+            lines.append("   [✅ PASS] Load Balancer: multiple compute nodes present AND load_balancer found")
+        else:
+            lines.append(
+                f"   [❌ FAIL] Load Balancer: {len(compute_nodes)} compute nodes present "
+                "but NO load_balancer — SPOF risk → draw_instruction required: "
+                "Add a load_balancer node (oci_type: load_balancer) in the ingress layer"
+            )
+    else:
+        lines.append(
+            f"   [✅ PASS] Load Balancer: {len(compute_nodes)} compute node(s) — "
+            "single instance, load balancer not required"
+        )
+
+    # Single-AD with many nodes
+    if depl_type == "single_ad" and node_count >= 4:
+        lines.append(
+            f"   [⚠️ WARN] Deployment type: single_ad with {node_count} nodes — "
+            "consider multi_ad for higher availability (narrative only)"
+        )
+    else:
+        lines.append(f"   [✅ PASS] Deployment type: {depl_type} with {node_count} nodes — acceptable")
+
+    lines.append("")
+    lines.append("3. PERFORMANCE AND COST OPTIMIZATION")
+
+    if node_count >= 6:
+        if has_pool:
+            lines.append("   [✅ PASS] Instance Pool/Autoscaling: present")
+        else:
+            lines.append(
+                f"   [⚠️ WARN] Instance Pool: {node_count} nodes but no instance_pool/autoscaling "
+                "— consider adding for elasticity (narrative only)"
+            )
+    else:
+        lines.append(f"   [✅ PASS] Instance Pool: {node_count} nodes — pool not required")
+
+    lines.append("")
+    lines.append("4. OPERATIONAL EFFICIENCY")
+
+    if has_monitor:
+        lines.append("   [✅ PASS] Monitoring/Logging: present")
+    else:
+        lines.append(
+            "   [❌ FAIL] Monitoring/Logging: no monitoring/logging/observability node found → "
+            "draw_instruction required: "
+            "Add a monitoring node (oci_type: monitoring) in the async layer"
+        )
+
+    lines.append("")
+    lines.append("5. DISTRIBUTED CLOUD")
+    lines.append(
+        "   [✅ PASS] Single-region topology — multi-region DR is an engagement-level "
+        "decision, not a diagram topology change (narrative note only if relevant)"
+    )
+
+    lines.append("")
+    lines.append(
+        "REMINDER: Emit draw_instructions ONLY for items explicitly marked "
+        "[❌ FAIL] above. Do NOT suggest fixes for [✅ PASS] or [⚠️ WARN] items."
+    )
+
+    return "\n".join(lines)
 
 
 # ── Rating extraction ──────────────────────────────────────────────────────────
@@ -266,18 +387,15 @@ def generate_waf(
 
     # ── Build prompt ───────────────────────────────────────────────────────────
     if diagram_context is not None:
-        # Orchestration mode: topology gap analysis
-        node_types      = ", ".join(sorted(diagram_context.get("node_types", []))) or "(unknown)"
-        deployment_type = diagram_context.get("deployment_type", "unknown")
-        node_count      = diagram_context.get("node_count", 0)
-        layers          = ", ".join(sorted(diagram_context.get("layers", []))) or "(unknown)"
+        # Orchestration mode: topology gap analysis.
+        # The checklist is pre-evaluated in Python so the LLM receives facts
+        # (✅ PASS / ❌ FAIL) rather than having to evaluate them itself.
+        # This eliminates the hallucination where the LLM suggests nodes that
+        # were already added by a prior orchestration cycle.
+        annotated = _annotate_checklist(diagram_context)
 
         prompt = _ORCHESTRATION_PROMPT_TEMPLATE.format(
-            node_types      = node_types,
-            deployment_type = deployment_type,
-            node_count      = node_count,
-            layers          = layers,
-            checklist       = WAF_TOPOLOGY_CHECKLIST,
+            annotated_checklist = annotated,
         )
         system_msg = WAF_ORCHESTRATION_SYSTEM_MESSAGE
         mode_label = "orchestration"
