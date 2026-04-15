@@ -168,3 +168,32 @@ class FakeLLMRunner:
         if self._next_specs:
             return self._next_specs.pop(0)
         return copy.deepcopy(self._default_spec)
+
+
+class FakeTextRunner:
+    """
+    Fake text_runner for tests that exercise writing-agent and editor paths.
+
+    Returns a configurable raw string (JSON-encoded spec or narrative text) on
+    every call and tracks received prompts + system messages.
+    """
+
+    def __init__(self, response: str = ""):
+        self._default_response = response
+        self._next_responses: list[str] = []
+        self.call_count: int = 0
+        self.received_prompts: list[str] = []
+        self.received_system_messages: list[str] = []
+
+    def queue_response(self, response: str) -> "FakeTextRunner":
+        """Queue a response to be returned on the NEXT call (one-time override)."""
+        self._next_responses.append(response)
+        return self
+
+    def __call__(self, prompt: str, system_message: str = "") -> str:
+        self.call_count += 1
+        self.received_prompts.append(prompt)
+        self.received_system_messages.append(system_message)
+        if self._next_responses:
+            return self._next_responses.pop(0)
+        return self._default_response

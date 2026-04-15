@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 
 from tests.scenarios.fakes import (
     FakeLLMRunner,
+    FakeTextRunner,
     InMemoryObjectStoreFake,
     MINIMAL_SPEC,
     MULTI_REGION_SPEC,
@@ -387,3 +388,173 @@ class TestIdempotency:
         )
 
         app.state.llm_runner = None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T_REFINE — /api/refine editor path
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRefine:
+    """
+    T_REFINE_001 – editor path (prev_spec available): uses text_runner, never
+                   asks clarification questions, returns status=ok with updated diagram.
+    T_REFINE_002 – editor LLM returns need_clarification: falls back to prev_spec
+                   unchanged (no-op edit), still returns status=ok.
+    T_REFINE_003 – no prev_spec: falls back to run_pipeline with appended feedback.
+    """
+
+    def _make_refine_client(self, llm_spec=None, text_response=""):
+        """Set up TestClient with both llm_runner and text_runner."""
+        from drawing_agent_server import app, IDEMPOTENCY_CACHE, SESSION_STORE, PENDING_CLARIFY
+        IDEMPOTENCY_CACHE.clear()
+        SESSION_STORE.clear()
+        PENDING_CLARIFY.clear()
+        app.state.llm_runner  = FakeLLMRunner(llm_spec or MINIMAL_SPEC)
+        app.state.text_runner = FakeTextRunner(text_response)
+        app.state.object_store = None
+        app.state.persistence_config = {}
+        return TestClient(app, raise_server_exceptions=True)
+
+    def test_refine_001_editor_path_returns_ok(self):
+        """
+        When prev_spec is supplied the editor path must:
+          - Call text_runner (not llm_runner) with DIAGRAM_EDIT_SYSTEM
+          - Return status=ok with drawio_xml and _refine_context
+          - Not call llm_runner at all
+        """
+        import json
+        from drawing_agent_server import app, DIAGRAM_EDIT_SYSTEM
+
+        # The text_runner will echo back MINIMAL_SPEC as a JSON string
+        text_runner = FakeTextRunner(json.dumps(MINIMAL_SPEC))
+        llm_runner  = FakeLLMRunner(MINIMAL_SPEC)
+
+        IDEMPOTENCY_CACHE_ref, SESSION_STORE_ref, PENDING_CLARIFY_ref = None, None, None
+        from drawing_agent_server import IDEMPOTENCY_CACHE, SESSION_STORE, PENDING_CLARIFY
+        IDEMPOTENCY_CACHE.clear(); SESSION_STORE.clear(); PENDING_CLARIFY.clear()
+        app.state.llm_runner  = llm_runner
+        app.state.text_runner = text_runner
+        app.state.object_store = None
+        app.state.persistence_config = {}
+
+        from agent.bom_parser import ServiceItem
+        items = [ServiceItem(id="lb_1", oci_type="load balancer", label="LB", layer="ingress")]
+        items_json = json.dumps([{"id": i.id, "oci_type": i.oci_type,
+                                  "label": i.label, "layer": i.layer} for i in items])
+        prev_spec = json.dumps(MINIMAL_SPEC)
+
+        with TestClient(app, raise_server_exceptions=True) as client:
+            resp = client.post("/api/refine", json={
+                "feedback":              "Add a bastion host",
+                "client_id":             "refine001",
+                "diagram_name":          "refine_diag",
+                "items_json":            items_json,
+                "prompt":                "original BOM prompt",
+                "prev_spec":             prev_spec,
+                "deployment_hints_json": "{}",
+            })
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "ok", f"Expected ok, got: {data}"
+        assert "drawio_xml" in data
+        assert "<mxGraphModel" in data["drawio_xml"] or "mxCell" in data["drawio_xml"]
+        assert "_refine_context" in data
+        # prev_spec preserved in _refine_context for next refinement
+        assert data["_refine_context"]["prev_spec"] is not None
+        # prompt preserved unchanged (original BOM prompt, not the edit prompt)
+        assert data["_refine_context"]["prompt"] == "original BOM prompt"
+
+        # text_runner was called; llm_runner was NOT called
+        assert text_runner.call_count == 1, f"text_runner should be called once, got {text_runner.call_count}"
+        assert llm_runner.call_count  == 0, f"llm_runner must not be called in editor path, got {llm_runner.call_count}"
+
+        # System message must be the editor constant (never-ask-questions persona)
+        assert DIAGRAM_EDIT_SYSTEM in text_runner.received_system_messages[0]
+
+        app.state.llm_runner  = None
+        app.state.text_runner = None
+
+    def test_refine_002_editor_returns_need_clarification_falls_back(self):
+        """
+        When the editor LLM ignores the system message and returns need_clarification,
+        the handler should fall back to the prev_spec unchanged and still return status=ok.
+        """
+        import json
+        from drawing_agent_server import app, IDEMPOTENCY_CACHE, SESSION_STORE, PENDING_CLARIFY
+        IDEMPOTENCY_CACHE.clear(); SESSION_STORE.clear(); PENDING_CLARIFY.clear()
+
+        # Text runner returns a need_clarification response
+        nc_response = json.dumps({"status": "need_clarification", "questions": ["What colour?"]})
+        text_runner = FakeTextRunner(nc_response)
+        llm_runner  = FakeLLMRunner(MINIMAL_SPEC)
+        app.state.llm_runner  = llm_runner
+        app.state.text_runner = text_runner
+        app.state.object_store = None
+        app.state.persistence_config = {}
+
+        items_json = json.dumps([{"id": "lb_1", "oci_type": "load balancer",
+                                  "label": "LB", "layer": "ingress"}])
+        prev_spec = json.dumps(MINIMAL_SPEC)
+
+        with TestClient(app, raise_server_exceptions=True) as client:
+            resp = client.post("/api/refine", json={
+                "feedback":              "Add something",
+                "client_id":             "refine002",
+                "diagram_name":          "refine_diag",
+                "items_json":            items_json,
+                "prompt":                "original prompt",
+                "prev_spec":             prev_spec,
+                "deployment_hints_json": "{}",
+            })
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        # Must still succeed (no-op edit fallback)
+        assert data["status"] == "ok", f"Expected ok, got: {data}"
+        # llm_runner still never called
+        assert llm_runner.call_count == 0
+
+        app.state.llm_runner  = None
+        app.state.text_runner = None
+
+    def test_refine_003_no_prev_spec_calls_run_pipeline(self):
+        """
+        Without prev_spec, /api/refine falls back to run_pipeline (llm_runner called).
+        The response should still be status=ok.
+        """
+        import json
+        from drawing_agent_server import app, IDEMPOTENCY_CACHE, SESSION_STORE, PENDING_CLARIFY
+        IDEMPOTENCY_CACHE.clear(); SESSION_STORE.clear(); PENDING_CLARIFY.clear()
+
+        llm_runner  = FakeLLMRunner(MINIMAL_SPEC)
+        text_runner = FakeTextRunner("")
+        app.state.llm_runner  = llm_runner
+        app.state.text_runner = text_runner
+        app.state.object_store = None
+        app.state.persistence_config = {}
+
+        items_json = json.dumps([{"id": "lb_1", "oci_type": "load balancer",
+                                  "label": "LB", "layer": "ingress"}])
+
+        with TestClient(app, raise_server_exceptions=True) as client:
+            resp = client.post("/api/refine", json={
+                "feedback":              "Add monitoring",
+                "client_id":             "refine003",
+                "diagram_name":          "refine_diag",
+                "items_json":            items_json,
+                "prompt":                "original prompt",
+                # prev_spec intentionally omitted
+                "deployment_hints_json": "{}",
+            })
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "ok"
+        # llm_runner was called (run_pipeline path)
+        assert llm_runner.call_count == 1
+        # text_runner was NOT called
+        assert text_runner.call_count == 0
+
+        app.state.llm_runner  = None
+        app.state.text_runner = None

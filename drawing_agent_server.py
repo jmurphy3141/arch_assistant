@@ -197,6 +197,19 @@ FLEET_CFG   = _cfg.get("fleet", {})
 AGENT_VERSION  = "1.3.2"
 SCHEMA_VERSION = {"spec": "1.1", "draw_dict": "1.0"}
 
+# ── Diagram editor system message ─────────────────────────────────────────────
+# Used by /api/refine when prev_spec is available — bypasses run_pipeline so
+# the LLM is NEVER allowed to ask clarification questions on a refinement.
+DIAGRAM_EDIT_SYSTEM = (
+    "You are an OCI architecture diagram editor. "
+    "You receive a current LayoutIntent JSON document and a change request. "
+    "Modify the LayoutIntent JSON to apply ONLY the requested change. "
+    "Keep everything else identical to the input. "
+    "NEVER return need_clarification. NEVER ask questions. "
+    "If a service needs to be added, choose the most appropriate oci_type and layer. "
+    "Output ONLY the complete, valid, modified LayoutIntent JSON. No fences. No commentary."
+)
+
 # ── Session middleware (must be added before first request) ───────────────────
 app.add_middleware(SessionMiddleware, secret_key=_SESSION_SECRET, https_only=False)
 
@@ -1400,10 +1413,15 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
     """
     Refine an already-generated diagram based on free-text feedback.
 
-    The browser echoes back items_json + prompt from the _refine_context field
-    of the previous ok response.  The feedback is appended to the original prompt
-    and the pipeline is re-run — producing an updated diagram without re-uploading
-    the BOM.
+    When prev_spec is available (the normal path after any successful generation):
+      - Uses call_text_llm with DIAGRAM_EDIT_SYSTEM — an "editor, never ask questions"
+        persona — so the LLM receives ONLY the current LayoutIntent + the change
+        request and is forbidden from returning need_clarification.
+      - Parses the response as LayoutIntent JSON, validates, compiles, and
+        regenerates the draw.io XML entirely server-side.
+
+    When prev_spec is absent (legacy / test path):
+      - Falls back to run_pipeline with the BOM prompt + appended feedback.
     """
     request_id = str(uuid.uuid4())
     input_hash = compute_input_hash(req.feedback or "")
@@ -1412,8 +1430,8 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
         # ── Reconstruct items, base prompt, and deployment hints ───────────────
         if req.items_json and req.prompt:
             from agent.bom_parser import ServiceItem
-            raw = json.loads(req.items_json)
-            items       = [ServiceItem(**r) for r in raw]
+            raw   = json.loads(req.items_json)
+            items = [ServiceItem(**r) for r in raw]
             base_prompt = req.prompt
         else:
             raise HTTPException(
@@ -1421,8 +1439,6 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
                 detail="items_json and prompt are required for /refine (echo from _refine_context).",
             )
 
-        # Echo deployment_hints so multi_region_mode is preserved — without
-        # this the pipeline re-triggers the DR clarification question on every refine.
         deployment_hints: dict = {}
         if req.deployment_hints_json:
             try:
@@ -1431,30 +1447,189 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
                 deployment_hints = {}
 
         if req.prev_spec:
-            # ── Editor prompt: skip the full BOM prompt entirely ──────────────
-            # Sending the full BOM prompt causes the LLM to regenerate a fresh
-            # layout from the service list, ignoring the existing diagram.
-            # Instead give the LLM ONLY the current LayoutIntent + the change
-            # request so it has no choice but to modify the existing layout.
-            available_ids = ", ".join(
-                f"{i.id} ({i.oci_type})" for i in items
-            )
-            enriched_prompt = (
-                "You are an OCI LayoutIntent editor.\n"
-                "Apply ONLY the requested change to the current LayoutIntent below.\n"
-                "Do NOT regenerate from scratch. Modify only what is requested and "
-                "keep everything else identical.\n"
-                "Output ONLY valid JSON — the complete updated LayoutIntent.\n"
-                "\n═══ CURRENT LAYOUT (modify this):\n"
+            # ── Direct editor path — bypass run_pipeline entirely ─────────────
+            # call_text_llm uses DIAGRAM_EDIT_SYSTEM (never returns need_clarification).
+            # The LLM receives: current LayoutIntent JSON + the single change request.
+            # Available service IDs are listed so the LLM can reference existing nodes.
+            available_ids = ", ".join(f"{i.id} ({i.oci_type})" for i in items)
+            edit_prompt = (
+                "CURRENT DIAGRAM (LayoutIntent JSON — modify this):\n"
                 + req.prev_spec
-                + "\n\n═══ AVAILABLE SERVICE IDs (from BOM — use these exact IDs):\n"
+                + "\n\nAVAILABLE SERVICE IDs (from BOM — use these exact IDs for existing nodes):\n"
                 + available_ids
-                + "\n\n═══ REQUESTED CHANGE:\n"
+                + "\n\nREQUESTED CHANGE:\n"
                 + req.feedback.strip()
-                + "\n\nReturn the COMPLETE updated LayoutIntent JSON. Output ONLY valid JSON."
+                + "\n\nOutput the COMPLETE updated LayoutIntent JSON."
             )
+
+            raw_text = await call_text_llm(edit_prompt, DIAGRAM_EDIT_SYSTEM)
+
+            try:
+                intent_data = json.loads(clean_json(raw_text))
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Diagram editor returned invalid JSON: {exc}. Raw: {raw_text[:400]!r}",
+                )
+
+            # Guard: LLM ignored the system message and returned need_clarification.
+            # Treat the existing spec as the fallback — no-op edit is better than
+            # throwing an error for a user-facing refinement request.
+            if intent_data.get("status") == "need_clarification":
+                logger.warning(
+                    "/refine: editor LLM returned need_clarification despite system message — "
+                    "falling back to prev_spec unchanged"
+                )
+                intent_data = json.loads(req.prev_spec)
+
+            # ── Validate + compile LayoutIntent → flat spec ───────────────────
+            from agent.layout_intent import validate_layout_intent, LayoutIntentError
+            from agent.intent_compiler import compile_intent_to_flat_spec
+
+            layout_intent_spec = intent_data   # preserve for _refine_context
+
+            if "placements" in intent_data:
+                try:
+                    def _compile():
+                        intent = validate_layout_intent(intent_data, items)
+                        return compile_intent_to_flat_spec(intent, items)
+                    spec = await anyio.to_thread.run_sync(_compile)
+                except LayoutIntentError as exc:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Edited LayoutIntent is invalid: {exc}",
+                    )
+            else:
+                # No placements key → treat as a compiled flat spec directly
+                spec = intent_data
+
+            # ── Multi-compartment guard — same as run_pipeline ────────────────
+            mr_mode = deployment_hints.get("multi_region_mode")
+            if spec.get("deployment_type") == "multi_compartment":
+                mr_mode = None
+
+            # ── Layout engine (CPU-bound) ─────────────────────────────────────
+            items_by_id = {i.id: i for i in items}
+            draw_dict = await anyio.to_thread.run_sync(
+                functools.partial(spec_to_draw_dict, spec, items_by_id)
+            )
+
+            # ── Multi-region post-processing (duplicate DR/HA stub) ───────────
+            page_w = spec.get("page", {}).get("width", 1654)
+            page_h = spec.get("page", {}).get("height", 1169)
+            if mr_mode == "duplicate_drha":
+                regions = spec.get("regions", [])
+                secondary_label = "Duplicate DR/HA Region"
+                if len(regions) >= 2:
+                    secondary_label = f"Duplicate DR/HA Region — {regions[1].get('label', '')}"
+                primary_box = next(
+                    (b for b in draw_dict["boxes"] if b.get("box_type") == "_region_box"), None
+                )
+                stub_x = primary_box["x"]                            if primary_box else 144
+                stub_y = (primary_box["y"] + primary_box["h"] + 40) if primary_box else 300
+                stub_w = primary_box["w"]                            if primary_box else 600
+                draw_dict["boxes"].append({
+                    "id": "region_secondary_stub", "label": secondary_label,
+                    "box_type": "_region_stub", "tier": "",
+                    "x": stub_x, "y": stub_y, "w": stub_w, "h": 90,
+                })
+            elif mr_mode == "split_workloads":
+                page_w = 3308
+
+            # ── Render manifest ───────────────────────────────────────────────
+            render_manifest = {
+                "page": {"width": page_w, "height": page_h},
+                "deployment_type":   spec.get("deployment_type", "single_ad"),
+                "node_count":        len(draw_dict.get("nodes", [])),
+                "edge_count":        len(draw_dict.get("edges", [])),
+                "multi_region_mode": mr_mode,
+            }
+
+            # ── Node-to-resource map ──────────────────────────────────────────
+            node_to_resource_map: dict = {
+                n["id"]: {"oci_type": n.get("type", ""), "label": n.get("label", "")}
+                for n in draw_dict.get("nodes", [])
+            }
+            for item in items:
+                if item.id in node_to_resource_map:
+                    node_to_resource_map[item.id]["layer"] = item.layer
+                else:
+                    node_to_resource_map[item.id] = {
+                        "oci_type": item.oci_type, "label": item.label, "layer": item.layer,
+                    }
+
+            # ── Write draw.io file ────────────────────────────────────────────
+            drawio_path = OUTPUT_DIR / f"{req.diagram_name}.drawio"
+            await anyio.to_thread.run_sync(
+                functools.partial(generate_drawio, draw_dict, drawio_path)
+            )
+            drawio_xml = await anyio.to_thread.run_sync(drawio_path.read_text)
+
+            # ── Persist artifacts ─────────────────────────────────────────────
+            object_store    = getattr(app.state, "object_store", None)
+            persistence_cfg = getattr(app.state, "persistence_config", None) or {}
+            prefix          = persistence_cfg.get("prefix", "diagrams")
+            persisted_version = 0
+            if object_store is not None:
+                artifacts = {
+                    "diagram.drawio":            drawio_xml.encode("utf-8"),
+                    "spec.json":                 json.dumps(spec).encode("utf-8"),
+                    "draw_dict.json":            json.dumps(draw_dict).encode("utf-8"),
+                    "render_manifest.json":      json.dumps(render_manifest).encode("utf-8"),
+                    "node_to_resource_map.json": json.dumps(node_to_resource_map).encode("utf-8"),
+                }
+                latest = await anyio.to_thread.run_sync(
+                    functools.partial(
+                        persist_artifacts,
+                        object_store, prefix, req.client_id, req.diagram_name, artifacts,
+                    )
+                )
+                if latest:
+                    persisted_version = latest.get("version", 0)
+
+            if GIT_PUSH_ENABLED:
+                threading.Thread(
+                    target=_push_diagram_to_git,
+                    args=(drawio_xml, req.client_id, req.diagram_name, persisted_version),
+                    daemon=True,
+                ).start()
+
+            # ── Build response ────────────────────────────────────────────────
+            result: dict = {
+                "status":               "ok",
+                "agent_version":        AGENT_VERSION,
+                "schema_version":       SCHEMA_VERSION,
+                "client_id":            req.client_id,
+                "diagram_name":         req.diagram_name,
+                "request_id":           request_id,
+                "input_hash":           input_hash,
+                "output_path":          str(drawio_path),
+                "drawio_xml":           drawio_xml,
+                "spec":                 spec,
+                "draw_dict":            draw_dict,
+                "render_manifest":      render_manifest,
+                "node_to_resource_map": node_to_resource_map,
+                "download": {
+                    "url": (
+                        f"/download/diagram.drawio"
+                        f"?client_id={req.client_id}&diagram_name={req.diagram_name}"
+                    ),
+                    "object_storage_latest": (
+                        f"{prefix}/{req.client_id}/{req.diagram_name}/LATEST.json"
+                    ),
+                },
+                "errors": [],
+                "_refine_context": {
+                    "items_json":            req.items_json,
+                    "prompt":                req.prompt,   # preserve original BOM prompt
+                    "prev_spec":             json.dumps(layout_intent_spec),
+                    "deployment_hints_json": json.dumps(deployment_hints),
+                },
+            }
+            return JSONResponse(status_code=200, content=result)
+
         else:
-            # Fallback: no prev_spec, use full BOM prompt with feedback appended
+            # ── Fallback: no prev_spec — use run_pipeline with appended feedback ──
             enriched_prompt = (
                 base_prompt
                 + "\n\n═══════════════════════════════════════════════════════\n"
@@ -1465,22 +1640,22 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
                 + "Output ONLY valid JSON."
             )
 
-        result = await run_pipeline(
-            items            = items,
-            prompt           = enriched_prompt,
-            diagram_name     = req.diagram_name,
-            client_id        = req.client_id,
-            request_id       = request_id,
-            input_hash       = input_hash,
-            deployment_hints = deployment_hints,
-        )
+            result = await run_pipeline(
+                items            = items,
+                prompt           = enriched_prompt,
+                diagram_name     = req.diagram_name,
+                client_id        = req.client_id,
+                request_id       = request_id,
+                input_hash       = input_hash,
+                deployment_hints = deployment_hints,
+            )
 
-        # Restore original (un-enriched) prompt in _refine_context so that
-        # subsequent refinements don't accumulate stacked prompts.
-        if isinstance(result, dict) and "_refine_context" in result:
-            result["_refine_context"]["prompt"] = req.prompt
+            # Restore original (un-enriched) prompt so subsequent refinements
+            # don't accumulate stacked prompts.
+            if isinstance(result, dict) and "_refine_context" in result:
+                result["_refine_context"]["prompt"] = req.prompt
 
-        return JSONResponse(status_code=200, content=result)
+            return JSONResponse(status_code=200, content=result)
 
     except HTTPException:
         raise
