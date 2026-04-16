@@ -93,6 +93,8 @@ from agent.document_store import (
     get_approved_doc,
     get_jep_questions,
     save_jep_questions,
+    load_conversation_history,
+    clear_conversation_history,
 )
 from agent.pov_agent import generate_pov
 from agent.jep_agent import generate_jep, kickoff_jep
@@ -327,6 +329,39 @@ class WafRequest(BaseModel):
     customer_id:   str
     customer_name: str
     feedback:      Optional[str] = None
+
+
+# ── A2A v1.0 (Oracle Agent Spec 26.1.0) models ────────────────────────────────
+
+class A2Av1Part(BaseModel):
+    kind:     str = "text"
+    text:     str = ""
+    data:     dict = {}
+    mimeType: str = ""
+
+
+class A2Av1Message(BaseModel):
+    role:      str = "user"
+    parts:     List[A2Av1Part] = []
+    contextId: str = ""
+    messageId: str = ""
+
+
+class A2Av1JsonRpcRequest(BaseModel):
+    jsonrpc: str = "2.0"
+    id:      str = ""
+    method:  str = ""
+    params:  dict = {}
+
+
+# In-memory task store for A2A v1.0 tasks (keyed by task_id)
+A2A_TASKS: Dict[str, dict] = {}
+
+
+class OrchestratorChatRequest(BaseModel):
+    customer_id:   str
+    customer_name: str
+    message:       str
 
 
 class A2AObjectRef(BaseModel):
@@ -2138,8 +2173,272 @@ def _build_agent_card(host: str) -> dict:
 @app.get("/.well-known/agent.json")          # Google A2A spec primary URL
 @app.get("/.well-known/agent-card.json")      # legacy alias — keep for backward compat
 def agent_card():
+    """Oracle Agent Spec v26.1.0 schemaVersion 1.0 card (primary)."""
+    host = os.environ.get("AGENT_PUBLIC_HOST", "http://localhost:8000")
+    orch_cfg = _cfg.get("orchestrator", {})
+    return JSONResponse({
+        "schemaVersion": "1.0",
+        "humanReadableId": f"oracle-oci-fleet/{AGENT_ID}",
+        "name": "OCI SA Orchestrator + Drawing Agent",
+        "agentVersion": AGENT_VERSION,
+        "url": host,
+        "provider": {"name": "Oracle"},
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "authSchemes": [{"type": "none"}],
+        "skills": [
+            {
+                "id": "orchestrate_engagement",
+                "name": "Orchestrate SA Engagement",
+                "description": (
+                    "Accept a natural-language SA message and orchestrate "
+                    "notes intake, POV, diagram, WAF, or JEP generation. "
+                    "Uses contextId as customer_id for session continuity."
+                ),
+                "inputModes": ["text/plain"],
+                "outputModes": ["text/plain", "application/json"],
+            },
+            {
+                "id": "generate_diagram",
+                "name": "Generate Architecture Diagram",
+                "description": "Generate OCI draw.io diagram from BOM or resource list.",
+                "inputModes": ["text/plain", "application/json"],
+                "outputModes": ["application/json"],
+            },
+        ],
+        "fleet": {
+            "fleet_id":     FLEET_CFG.get("fleet_id", "oci-agent-fleet"),
+            "position":     FLEET_CFG.get("position", 3),
+            "total_agents": FLEET_CFG.get("total_agents", 7),
+        },
+    })
+
+
+@app.get("/.well-known/agent-card-legacy.json")
+def agent_card_legacy():
+    """Legacy schema_version 0.1 card — kept for backward compatibility."""
     host = os.environ.get("AGENT_PUBLIC_HOST", "http://localhost:8000")
     return JSONResponse(_build_agent_card(host))
+
+
+# ── A2A v1.0 (Oracle Agent Spec 26.1.0) endpoints ────────────────────────────
+
+def _make_a2a_task(context_id: str) -> dict:
+    """Create and register a new A2A v1.0 Task dict."""
+    task_id = str(uuid.uuid4())
+    task = {
+        "id":        task_id,
+        "contextId": context_id,
+        "status":    "SUBMITTED",
+        "artifacts": [],
+    }
+    A2A_TASKS[task_id] = task
+    return task
+
+
+@app.post("/message:send")
+async def a2a_message_send(request: Request):
+    """
+    A2A v1.0 /message:send — JSON-RPC 2.0 entry point.
+
+    Routes by params.skill:
+      orchestrate_engagement  → orchestrator_agent.run_turn()
+      generate_diagram        → existing drawing pipeline
+      (no skill)              → defaults to orchestrate_engagement
+    """
+    body = await request.json()
+    rpc_id  = body.get("id", "")
+    params  = body.get("params", {})
+    message = params.get("message", {})
+    context_id = message.get("contextId", "default")
+    skill      = params.get("skill", "orchestrate_engagement")
+
+    # Extract text from message parts
+    parts = message.get("parts", [])
+    user_text = " ".join(
+        p.get("text", "") for p in parts if p.get("kind", "text") == "text"
+    ).strip()
+
+    task = _make_a2a_task(context_id)
+    task["status"] = "WORKING"
+
+    try:
+        if skill == "generate_diagram":
+            # Delegate to internal drawing pipeline via the existing A2A handler
+            legacy_task = A2ATask(
+                task_id=task["id"],
+                skill="generate_diagram",
+                inputs={"resources": [], "notes": user_text},
+                client_id=context_id,
+            )
+            result = await _a2a_generate_diagram(legacy_task)
+            task["status"] = "COMPLETED"
+            drawio_key = (result.get("object_key") or result.get("drawio_key") or "")
+            task["artifacts"] = [
+                {
+                    "artifactId": "a1",
+                    "name": "reply",
+                    "parts": [{"kind": "text", "text": result.get("status", "ok")}],
+                },
+                {
+                    "artifactId": "a2",
+                    "name": "drawio_key",
+                    "parts": [{"kind": "data", "mimeType": "application/json",
+                               "data": {"key": drawio_key}}],
+                },
+            ]
+        else:
+            # orchestrate_engagement (default)
+            store = getattr(app.state, "object_store", None)
+            if store is None:
+                raise RuntimeError("Object store not initialised.")
+
+            text_runner = _make_orchestrator_text_runner()
+            orch_cfg = _cfg.get("orchestrator", {})
+            customer_name = params.get("customer_name", context_id)
+
+            from agent import orchestrator_agent
+            turn_result = await orchestrator_agent.run_turn(
+                customer_id=context_id,
+                customer_name=customer_name,
+                user_message=user_text,
+                store=store,
+                text_runner=text_runner,
+                a2a_base_url=os.environ.get("A2A_BASE_URL", "http://localhost:8080"),
+                max_tool_iterations=int(orch_cfg.get("max_tool_iterations", 5)),
+            )
+            task["status"] = "COMPLETED"
+            artifacts = [
+                {
+                    "artifactId": "a1",
+                    "name": "reply",
+                    "parts": [{"kind": "text", "text": turn_result["reply"]}],
+                }
+            ]
+            for tool_name, artifact_key in turn_result.get("artifacts", {}).items():
+                artifacts.append({
+                    "artifactId": f"artifact-{tool_name}",
+                    "name": tool_name,
+                    "parts": [{"kind": "data", "mimeType": "application/json",
+                               "data": {"key": artifact_key}}],
+                })
+            task["artifacts"] = artifacts
+
+    except Exception as exc:
+        logger.error("/message:send error context=%s skill=%s: %s", context_id, skill, exc)
+        task["status"] = "FAILED"
+        task["error"] = str(exc)
+
+    return JSONResponse({
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "result": task,
+    })
+
+
+@app.get("/tasks/{task_id}")
+async def get_task(task_id: str):
+    """Poll A2A v1.0 task status."""
+    task = A2A_TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id!r} not found.")
+    return JSONResponse({"jsonrpc": "2.0", "id": None, "result": task})
+
+
+@app.post("/tasks/{task_id}:cancel")
+async def cancel_task(task_id: str):
+    """Cancel a pending or working A2A v1.0 task."""
+    task = A2A_TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id!r} not found.")
+    if task["status"] in ("SUBMITTED", "WORKING"):
+        task["status"] = "CANCELLED"
+    return JSONResponse({"jsonrpc": "2.0", "id": None, "result": task})
+
+
+# ── /api/chat convenience endpoints ─────────────────────────────────────────
+
+def _make_orchestrator_text_runner():
+    """
+    Return a sync callable (prompt, system_msg) -> str for the orchestrator.
+    Uses the inference runner already wired to app.state.
+    """
+    runner = getattr(app.state, "llm_runner", None)
+
+    def _text_runner(prompt: str, system_msg: str) -> str:
+        if runner is None:
+            raise RuntimeError("LLM runner not initialised.")
+        # The inference runner is a (prompt, client_id) callable that returns
+        # parsed JSON or raises.  For the orchestrator we need raw text back.
+        # We use a dedicated inference call with the writing model settings.
+        if _INFERENCE_AVAILABLE and INFERENCE_ENABLED:
+            from agent.llm_inference_client import run_inference
+            _writing_cfg = _cfg.get("writing", {})
+            return run_inference(
+                prompt=prompt,
+                system_message=system_msg,
+                model_id=INFERENCE_MODEL_ID,
+                service_endpoint=INFERENCE_ENDPOINT,
+                max_tokens=int(_writing_cfg.get("max_tokens", 4000)),
+                temperature=float(_writing_cfg.get("temperature", 0.7)),
+                top_p=float(_writing_cfg.get("top_p", 0.9)),
+                top_k=int(_writing_cfg.get("top_k", 0)),
+            )
+        raise RuntimeError("Inference not enabled — cannot run orchestrator.")
+
+    return _text_runner
+
+
+@app.post("/api/chat")
+async def api_chat(req: OrchestratorChatRequest):
+    """
+    Convenience REST endpoint for the chat UI.
+    Calls the orchestrator and returns the reply + tool call metadata.
+    """
+    store = _require_object_store()
+    text_runner = _make_orchestrator_text_runner()
+    orch_cfg = _cfg.get("orchestrator", {})
+
+    from agent import orchestrator_agent
+    try:
+        result = await orchestrator_agent.run_turn(
+            customer_id=req.customer_id,
+            customer_name=req.customer_name,
+            user_message=req.message,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=os.environ.get("A2A_BASE_URL", "http://localhost:8080"),
+            max_tool_iterations=int(orch_cfg.get("max_tool_iterations", 5)),
+        )
+        return {
+            "status":         "ok",
+            "reply":          result["reply"],
+            "tool_calls":     result["tool_calls"],
+            "artifacts":      result["artifacts"],
+            "history_length": result["history_length"],
+        }
+    except Exception as exc:
+        logger.error("/api/chat error customer=%s: %s", req.customer_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/chat/{customer_id}/history")
+async def api_chat_history(customer_id: str, max_turns: int = Query(default=30, ge=1, le=200)):
+    """Return conversation history for a customer (most recent max_turns)."""
+    store = _require_object_store()
+    history = await anyio.to_thread.run_sync(
+        functools.partial(load_conversation_history, store, customer_id, max_turns)
+    )
+    return {"status": "ok", "customer_id": customer_id, "history": history}
+
+
+@app.delete("/api/chat/{customer_id}/history")
+async def api_clear_chat_history(customer_id: str):
+    """Clear conversation history for a customer."""
+    store = _require_object_store()
+    await anyio.to_thread.run_sync(
+        functools.partial(clear_conversation_history, store, customer_id)
+    )
+    return {"status": "ok", "customer_id": customer_id, "message": "History cleared."}
 
 
 # ── A2A task endpoint ────────────────────────────────────────────────────────

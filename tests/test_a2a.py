@@ -66,36 +66,48 @@ class TestAgentCard:
         assert resp.status_code == 200
 
     def test_both_urls_return_same_card(self, client):
+        # /.well-known/agent.json and /.well-known/agent-card.json both serve v1.0
         primary = client.get("/.well-known/agent.json").json()
-        legacy  = client.get("/.well-known/agent-card.json").json()
-        assert primary == legacy
+        alias   = client.get("/.well-known/agent-card.json").json()
+        assert primary == alias
+
+    def test_legacy_card_url_returns_200(self, client):
+        resp = client.get("/.well-known/agent-card-legacy.json")
+        assert resp.status_code == 200
+
+    def test_legacy_card_has_old_schema(self, client):
+        card = client.get("/.well-known/agent-card-legacy.json").json()
+        assert card["schema_version"] == "0.1"
+        assert card["agent_id"] == AGENT_ID
 
     def test_card_has_required_fields(self, client):
+        # Oracle Agent Spec v26.1.0 schemaVersion 1.0 fields
         card = client.get("/.well-known/agent.json").json()
-        assert card["agent_id"]  == AGENT_ID
-        assert card["version"]   == "1.3.2"
+        assert card["schemaVersion"] == "1.0"
+        assert "humanReadableId" in card
+        assert card["agentVersion"] == "1.3.2"
         assert "url" in card
         assert "fleet" in card
         assert "capabilities" in card
         assert "skills" in card
-        assert "health_check_url" in card
 
-    def test_card_has_all_three_skills(self, client):
-        card   = client.get("/.well-known/agent.json").json()
+    def test_card_has_orchestrate_and_diagram_skills(self, client):
+        card      = client.get("/.well-known/agent.json").json()
         skill_ids = {s["id"] for s in card["skills"]}
-        assert skill_ids == {"generate_diagram", "upload_bom", "clarify_diagram"}
+        assert "orchestrate_engagement" in skill_ids
+        assert "generate_diagram" in skill_ids
 
-    def test_card_declares_clarification_capability(self, client):
+    def test_card_declares_streaming_capability(self, client):
         card = client.get("/.well-known/agent.json").json()
-        assert card["capabilities"]["clarification_flow"] is True
+        assert card["capabilities"]["streaming"] is False
 
     def test_card_fleet_position(self, client):
         card = client.get("/.well-known/agent.json").json()
         assert card["fleet"]["position"] == 3
 
-    def test_card_a2a_url_points_to_api_prefix(self, client):
+    def test_card_has_auth_schemes(self, client):
         card = client.get("/.well-known/agent.json").json()
-        assert "/api/a2a/task" in card["url"]
+        assert card["authSchemes"][0]["type"] == "none"
 
 
 # ── 2. generate_diagram — success ────────────────────────────────────────────

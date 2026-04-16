@@ -9,10 +9,11 @@ import { PovForm } from './components/PovForm';
 import { JepForm } from './components/JepForm';
 import { TerraformForm } from './components/TerraformForm';
 import { WafForm } from './components/WafForm';
+import { ChatInterface } from './components/ChatInterface';
 import { useClientId, getLastDiagramName, saveLastDiagramName } from './hooks/useClientId';
 import { apiClarify, apiRefineDiagram, apiWaitForJob, type GenerateResponse, type OrchestrationResult } from './api/client';
 
-type Mode = 'upload' | 'generate' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
+type Mode = 'chat' | 'upload' | 'generate' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
 function getLastCustomerId(): string {
   try { return localStorage.getItem('last_customer_id') ?? ''; } catch { return ''; }
@@ -23,7 +24,7 @@ function saveLastCustomerId(id: string) {
 
 export function App() {
   const clientId = useClientId();
-  const [mode, setMode] = useState<Mode>('upload');
+  const [mode, setMode] = useState<Mode>('chat');
   const [diagramName, setDiagramName] = useState<string>(getLastDiagramName);
   const [customerId, setCustomerId] = useState<string>(getLastCustomerId);
   const [result, setResult] = useState<GenerateResponse | null>(null);
@@ -164,7 +165,9 @@ export function App() {
 
       {/* Tab bar */}
       <div style={{ marginBottom: '1.25rem', display: 'flex', gap: '0.3rem', flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: '0.62rem', color: '#454d64', marginRight: '0.2rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Diagrams:</span>
+        <span style={{ fontSize: '0.62rem', color: '#454d64', marginRight: '0.2rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Chat:</span>
+        <button style={btnStyle(mode === 'chat')} onClick={() => switchMode('chat')}>SA Assistant</button>
+        <span style={{ fontSize: '0.62rem', color: '#454d64', margin: '0 0.2rem 0 0.75rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Diagrams:</span>
         <button style={btnStyle(mode === 'upload')}   onClick={() => switchMode('upload')}>Upload BOM</button>
         <button style={btnStyle(mode === 'generate')} onClick={() => switchMode('generate')}>Generate</button>
         <span style={{ fontSize: '0.62rem', color: '#454d64', margin: '0 0.2rem 0 0.75rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Documents:</span>
@@ -174,6 +177,11 @@ export function App() {
         <button style={btnStyle(mode === 'terraform')} onClick={() => switchMode('terraform')}>Terraform</button>
         <button style={btnStyle(mode === 'waf')}       onClick={() => switchMode('waf')}>WAF Review</button>
       </div>
+
+      {/* Chat mode */}
+      {mode === 'chat' && (
+        <ChatInterface onCustomerIdChange={handleCustomerIdChange} />
+      )}
 
       {/* Diagram modes */}
       {mode === 'upload' && (

@@ -589,6 +589,70 @@ export async function apiListTerraformVersions(
 }
 
 // ---------------------------------------------------------------------------
+// Conversational orchestrator — chat
+// ---------------------------------------------------------------------------
+
+export interface ChatToolCall {
+  tool:           string;
+  args:           Record<string, unknown>;
+  result_summary: string;
+}
+
+export interface ChatMessage {
+  role:      'user' | 'assistant' | 'tool';
+  content?:  string;
+  tool?:     string;
+  result_summary?: string;
+  timestamp: string;
+  tool_call?: { tool: string; args: Record<string, unknown> };
+}
+
+export interface ChatResponse {
+  status:         string;
+  reply:          string;
+  tool_calls:     ChatToolCall[];
+  artifacts:      Record<string, string>;
+  history_length: number;
+}
+
+export interface ChatHistoryResponse {
+  status:      string;
+  customer_id: string;
+  history:     ChatMessage[];
+}
+
+export async function apiChat(
+  customerId: string,
+  customerName: string,
+  message: string,
+): Promise<ChatResponse> {
+  return apiFetch<ChatResponse>('/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_id:   customerId,
+      customer_name: customerName,
+      message,
+    }),
+  });
+}
+
+export async function apiGetChatHistory(
+  customerId: string,
+  maxTurns = 30,
+): Promise<ChatHistoryResponse> {
+  return apiFetch<ChatHistoryResponse>(
+    `/chat/${encodeURIComponent(customerId)}/history?max_turns=${maxTurns}`,
+  );
+}
+
+export async function apiClearChatHistory(customerId: string): Promise<void> {
+  await apiFetch(`/chat/${encodeURIComponent(customerId)}/history`, {
+    method: 'DELETE',
+  });
+}
+
+// ---------------------------------------------------------------------------
 // WAF review agent
 // ---------------------------------------------------------------------------
 

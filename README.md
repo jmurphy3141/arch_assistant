@@ -1,11 +1,21 @@
-# OCI Architecture Assistant (Agent 3 — v1.3.2)
+# OCI Architecture Assistant (v1.3.2)
 
-Converts an Excel Bill of Materials (BOM) into a fully-editable draw.io OCI
-architecture diagram, and generates POV and JEP documents from meeting notes.
-Correct OCI icon stencils, VCN topology, subnets, and gateways — all in one
-Python process with a dark-theme browser UI.
+A full Oracle SA engagement platform built as an OCI agent fleet. The new
+**SA Assistant chat tab** (Agent 0) provides a conversational interface that
+orchestrates all sub-agents — notes intake, POV, diagram, WAF review, JEP, and
+Terraform — in a single conversation thread per customer. Implements Oracle
+Agent Spec v26.1.0 (A2A v1.0 JSON-RPC protocol).
 
 ```
+SA chat message
+  → Agent 0 orchestrator (ReAct loop)
+      ├── save_notes       → OCI Object Storage
+      ├── generate_pov     → POV v1.md
+      ├── generate_diagram → .drawio file
+      ├── generate_waf     → WAF review
+      ├── generate_jep     → JEP v1.md
+      └── generate_terraform → .tf files
+
 BOM.xlsx  →  drag-and-drop to OCI bucket  →  A2A generate  →  .drawio download
 Notes     →  /notes/upload                →  /pov/generate  →  Markdown POV
                                           →  /jep/generate  →  Markdown JEP
@@ -185,6 +195,9 @@ pip3.11 install -r requirements.txt
 | `persistence.bucket_name` | OCI bucket name (default: `agent_assistante`) |
 | `writing.max_tokens` | Token budget for POV/JEP generation |
 | `writing.temperature` | Sampling temperature for document writing (default: 0.7) |
+| `orchestrator.max_tool_iterations` | ReAct loop max iterations (default: 5) |
+| `orchestrator.history_max_turns` | History turns loaded per prompt (default: 30) |
+| `orchestrator.telegram.enabled` | Enable Telegram notifications (default: false) |
 
 ### .env — secrets and per-deployment values
 
@@ -210,7 +223,18 @@ Leave them unset to run without authentication.
 
 ## API endpoints
 
-### Diagram (Agent 3)
+### Orchestrator — Agent 0 (A2A v1.0)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/message:send` | A2A v1.0 JSON-RPC entry point (Oracle Agent Spec 26.1.0) |
+| `GET` | `/tasks/{task_id}` | Poll A2A task status |
+| `POST` | `/tasks/{task_id}:cancel` | Cancel a pending task |
+| `POST` | `/api/chat` | Convenience REST: `{customer_id, customer_name, message}` |
+| `GET` | `/api/chat/{customer_id}/history` | Return conversation history |
+| `DELETE` | `/api/chat/{customer_id}/history` | Clear conversation history |
+
+### Diagram — Agent 3
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -220,7 +244,7 @@ Leave them unset to run without authentication.
 | `POST` | `/generate` | Generate from a JSON resource list |
 | `POST` | `/upload-to-bucket` | Upload a file to OCI Object Storage |
 | `GET` | `/download/{file}` | Download generated `.drawio` file |
-| `POST` | `/api/a2a/task` | A2A task endpoint (fleet integration) |
+| `POST` | `/api/a2a/task` | Legacy A2A task endpoint (schema_version 0.1) |
 
 ### Notes
 
@@ -229,7 +253,7 @@ Leave them unset to run without authentication.
 | `POST` | `/notes/upload` | Upload a meeting notes file for a customer |
 | `GET` | `/notes/{customer_id}` | List all notes for a customer |
 
-### POV — Point of View document (Agent 4)
+### POV — Point of View document
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -237,7 +261,7 @@ Leave them unset to run without authentication.
 | `GET` | `/pov/{customer_id}/latest` | Retrieve the latest POV |
 | `GET` | `/pov/{customer_id}/versions` | List all POV versions |
 
-### JEP — Joint Execution Plan (Agent 5)
+### JEP — Joint Execution Plan
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -252,7 +276,8 @@ Leave them unset to run without authentication.
 | `GET` | `/health` | Health check |
 | `GET` | `/config` | UI configuration (region, model info) |
 | `POST` | `/refresh-data` | Reload LLM runner without restart |
-| `GET` | `/.well-known/agent.json` | A2A agent card |
+| `GET` | `/.well-known/agent.json` | Oracle Agent Spec v26.1.0 card (schemaVersion 1.0) |
+| `GET` | `/.well-known/agent-card-legacy.json` | Legacy schema_version 0.1 card |
 | `GET` | `/mcp/tools` | MCP tool manifest |
 
 ---
@@ -358,12 +383,14 @@ pytest tests/ -v
 
 ```
 arch_assistant/
-├── drawing_agent_server.py     # FastAPI server — UI + all API endpoints
-├── config.yaml                 # Region, model, persistence, writing-agent config
+├── drawing_agent_server.py     # FastAPI server — all API endpoints incl. /message:send + /api/chat
+├── config.yaml                 # Region, model, persistence, orchestrator config
 ├── requirements.txt
 ├── Dockerfile
 │
 ├── agent/
+│   ├── orchestrator_agent.py   # Agent 0 — ReAct loop, tool dispatch, conversation history
+│   ├── notifications.py        # Event notification stub (Telegram-ready)
 │   ├── bom_parser.py           # BOM → ServiceItem list + LLM prompt
 │   ├── layout_engine.py        # Layout spec → x,y positions
 │   ├── drawio_generator.py     # Positions → draw.io XML
@@ -371,25 +398,39 @@ arch_assistant/
 │   ├── layout_intent.py        # LayoutIntent schema
 │   ├── intent_compiler.py      # LayoutIntent → flat spec
 │   ├── persistence_objectstore.py
-│   ├── pov_agent.py            # Point of View document generator (Agent 4)
-│   ├── jep_agent.py            # Joint Execution Plan generator (Agent 5)
-│   ├── bom_stub.py             # Stub BOM extractor from meeting notes
-│   ├── document_store.py       # Versioned doc storage (MANIFEST.json pattern)
-│   └── context_store.py        # Shared notes/context tracker across agents
+│   ├── pov_agent.py            # POV document generator
+│   ├── jep_agent.py            # JEP generator
+│   ├── waf_agent.py            # WAF review agent
+│   ├── terraform_agent.py      # Terraform code generator
+│   ├── bom_stub.py             # BOM extractor from meeting notes
+│   ├── document_store.py       # Versioned doc storage + conversation history
+│   └── context_store.py        # Shared engagement state across agents
 │
 ├── ui/                         # React + Vite front-end (dark OCI theme)
 │   ├── src/
-│   │   ├── App.tsx
-│   │   ├── api/client.ts       # All API calls
+│   │   ├── App.tsx             # Mode switcher; chat is the default tab
+│   │   ├── api/client.ts       # All API calls incl. apiChat, apiGetChatHistory
 │   │   └── components/
-│   │       └── UploadBom.tsx   # Main drag-and-drop + generate form
+│   │       ├── ChatInterface.tsx   # SA Assistant chat UI (Agent 0)
+│   │       ├── UploadBom.tsx
+│   │       ├── PovForm.tsx
+│   │       ├── JepForm.tsx
+│   │       ├── WafForm.tsx
+│   │       └── TerraformForm.tsx
 │   ├── dist/                   # Built output — served by FastAPI
 │   └── package.json
+│
+├── docs/
+│   ├── orchestrator.md         # Agent 0 design & implementation spec
+│   ├── spec.md                 # Agent 3 (drawing) specification
+│   ├── pipeline.md             # Full pipeline reference
+│   └── bucket_structure.md     # OCI Object Storage layout
 │
 └── tests/
     ├── test_bom_parser.py
     ├── test_layout_engine.py
     ├── test_intent_compiler.py
+    ├── test_a2a.py             # A2A v1.0 agent card + skill tests
     └── fixtures/
         └── sample_bom.xlsx
 ```
@@ -398,18 +439,20 @@ arch_assistant/
 
 ## Agent fleet
 
-This server is **Agent 3** of a 7-agent OCI fleet. Agents 4 and 5 run in the
-same process.
+All agents run in the same process. Agent 0 is the conversational entry point.
 
 | # | Agent | Status | Endpoint |
 |---|-------|--------|----------|
+| **0** | **SA Orchestrator (Agent 0)** | **live** | `/message:send`, `/api/chat` |
 | 1 | Requirements gathering | planned | — |
 | 2 | BOM sizing + pricing | planned | — |
-| **3** | **Architecture diagram** | **this server** | `/upload-bom`, `/generate`, `/api/a2a/task` |
-| **4** | **POV document** | **this server** | `/pov/generate` |
-| **5** | **JEP document** | **this server** | `/jep/generate` |
-| 6 | Terraform generation | planned | — |
-| 7 | Well-Architected Framework review | planned | — |
+| **3** | **Architecture diagram** | **live** | `/upload-bom`, `/generate`, `/api/a2a/task` |
+| **4** | **POV document** | **live** | `/pov/generate` |
+| **5** | **JEP document** | **live** | `/jep/generate` |
+| **6** | **Terraform generation** | **live** | `/terraform/generate` |
+| **7** | **WAF review** | **live** | `/waf/generate` |
+
+See `docs/orchestrator.md` for the Agent 0 design spec and A2A v1.0 protocol details.
 
 ---
 

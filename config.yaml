@@ -100,6 +100,15 @@ terraform:
 # Auth is configured entirely via environment variables (see .env.example).
 # No auth settings belong here — they contain secrets or per-deployment values.
 
+# Orchestrator (Agent 0) — conversational entry point
+orchestrator:
+  agent_id: "agent0-sa-orchestrator"
+  max_tool_iterations: 5
+  history_max_turns: 30
+  telegram:
+    enabled: false
+    bot_token: ""    # env: TELEGRAM_BOT_TOKEN
+
 # Server
 host: "0.0.0.0"
 port: 8080

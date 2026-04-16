@@ -386,3 +386,71 @@ def get_jep_questions(
         return json.loads(store.get(key))
     except KeyError:
         return {}
+
+
+# ── Conversation history (orchestrator) ──────────────────────────────────────
+
+def save_conversation_turns(
+    store: ObjectStoreBase,
+    customer_id: str,
+    new_turns: list[dict],
+) -> None:
+    """
+    Append new_turns to conversations/{customer_id}/history.json.
+    Creates the file if it doesn't exist.
+    """
+    key = f"conversations/{customer_id}/history.json"
+    try:
+        history: list = json.loads(store.get(key))
+    except KeyError:
+        history = []
+    history.extend(new_turns)
+    store.put(key, json.dumps(history, indent=2).encode("utf-8"), "application/json")
+
+
+def load_conversation_history(
+    store: ObjectStoreBase,
+    customer_id: str,
+    max_turns: int = 30,
+) -> list[dict]:
+    """
+    Return the last max_turns from conversations/{customer_id}/history.json.
+    Returns [] if no history exists.
+    """
+    key = f"conversations/{customer_id}/history.json"
+    try:
+        history: list = json.loads(store.get(key))
+        return history[-max_turns:] if max_turns else history
+    except KeyError:
+        return []
+
+
+def clear_conversation_history(
+    store: ObjectStoreBase,
+    customer_id: str,
+) -> None:
+    """Overwrite history with an empty list (effectively clears the conversation)."""
+    key = f"conversations/{customer_id}/history.json"
+    store.put(key, b"[]", "application/json")
+
+
+def save_conversation_summary(
+    store: ObjectStoreBase,
+    customer_id: str,
+    summary: str,
+) -> None:
+    """Write a rolling summary of older turns to conversations/{customer_id}/summary.txt."""
+    key = f"conversations/{customer_id}/summary.txt"
+    store.put(key, summary.encode("utf-8"), "text/plain")
+
+
+def load_conversation_summary(
+    store: ObjectStoreBase,
+    customer_id: str,
+) -> str:
+    """Return the stored rolling summary, or '' if none exists."""
+    key = f"conversations/{customer_id}/summary.txt"
+    try:
+        return store.get(key).decode("utf-8", errors="replace")
+    except KeyError:
+        return ""
