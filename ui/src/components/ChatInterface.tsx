@@ -2,13 +2,18 @@
  * ChatInterface.tsx
  * ------------------
  * Conversational orchestrator chat UI.
- * Renders a scrollable message thread with tool chips and artifact links.
+ * Renders a scrollable message thread with tool chips, artifact links,
+ * file attach, and block-aware markdown rendering.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import {
   apiChat,
   apiGetChatHistory,
   apiClearChatHistory,
+  apiUploadNote,
+  apiGetLatestPov,
+  apiGetLatestJep,
+  apiGetLatestWaf,
   type ChatMessage,
   type ChatToolCall,
 } from '../api/client';
@@ -28,6 +33,56 @@ function saveStoredCustomer(id: string, name: string) {
     localStorage.setItem('chat_customer_id',   id);
     localStorage.setItem('chat_customer_name', name);
   } catch { /* ignore */ }
+}
+
+// ── Markdown renderer ─────────────────────────────────────────────────────────
+
+/** Block-aware Markdown → HTML: headings, lists, hr, bold, inline code. */
+function mdToHtml(md: string): string {
+  const escape = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const inline = (s: string) =>
+    escape(s)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+)`/g,
+        '<code style="color:#e8571a;background:rgba(232,87,26,0.1);padding:0 2px;border-radius:2px">$1</code>');
+
+  const lines = md.split('\n');
+  const out: string[] = [];
+  let inUl = false, inOl = false;
+
+  const closeList = () => {
+    if (inUl) { out.push('</ul>'); inUl = false; }
+    if (inOl) { out.push('</ol>'); inOl = false; }
+  };
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^---+$/.test(line)) {
+      closeList();
+      out.push('<hr style="border:none;border-top:1px solid #1c2030;margin:0.5rem 0"/>');
+    } else if (/^### /.test(line)) {
+      closeList();
+      out.push(`<h3 style="margin:0.5rem 0 0.2rem;font-size:0.85rem;color:#e8571a">${inline(line.slice(4))}</h3>`);
+    } else if (/^## /.test(line)) {
+      closeList();
+      out.push(`<h2 style="margin:0.6rem 0 0.25rem;font-size:0.95rem;color:#fff">${inline(line.slice(3))}</h2>`);
+    } else if (/^[-*] /.test(line)) {
+      if (inOl) { out.push('</ol>'); inOl = false; }
+      if (!inUl) { out.push('<ul style="margin:0.2rem 0;padding-left:1.2rem">'); inUl = true; }
+      out.push(`<li style="margin:0.1rem 0">${inline(line.slice(2))}</li>`);
+    } else if (/^\d+\. /.test(line)) {
+      if (inUl) { out.push('</ul>'); inUl = false; }
+      if (!inOl) { out.push('<ol style="margin:0.2rem 0;padding-left:1.2rem">'); inOl = true; }
+      out.push(`<li style="margin:0.1rem 0">${inline(line.replace(/^\d+\. /, ''))}</li>`);
+    } else {
+      closeList();
+      out.push(line === '' ? '<br/>' : `<span>${inline(line)}</span><br/>`);
+    }
+  }
+  closeList();
+  return out.join('');
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -73,14 +128,84 @@ function ToolChip({ call }: { call: ChatToolCall }) {
   );
 }
 
+function ArtifactLink({ toolName, artifactKey, customerId }: {
+  toolName: string; artifactKey: string; customerId: string;
+}) {
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const docType =
+    toolName === 'generate_pov' ? 'pov' :
+    toolName === 'generate_jep' ? 'jep' :
+    toolName === 'generate_waf' ? 'waf' : null;
+
+  async function handleView() {
+    if (content !== null) { setContent(null); return; }
+    setLoading(true);
+    try {
+      let text = '';
+      if (docType === 'pov')      text = (await apiGetLatestPov(customerId)).content;
+      else if (docType === 'jep') text = (await apiGetLatestJep(customerId)).content;
+      else if (docType === 'waf') text = (await apiGetLatestWaf(customerId)).content;
+      setContent(text);
+    } catch { setContent('(failed to load)'); }
+    finally { setLoading(false); }
+  }
+
+  const btnStyle: React.CSSProperties = {
+    fontSize:   '0.7rem',
+    color:      '#e8571a',
+    background: 'rgba(232,87,26,0.08)',
+    border:     '1px solid rgba(232,87,26,0.25)',
+    borderRadius: 4,
+    padding:    '0.2rem 0.5rem',
+    cursor:     'pointer',
+    fontFamily: "'JetBrains Mono', monospace",
+  };
+
+  if (docType) {
+    const label = docType.toUpperCase();
+    return (
+      <div style={{ marginTop: '0.25rem' }}>
+        <button onClick={handleView} disabled={loading} style={btnStyle}>
+          {loading ? '…' : content ? `▲ Hide ${label}` : `📄 View ${label}`}
+        </button>
+        {content && (
+          <pre style={{
+            marginTop:    '0.35rem',
+            padding:      '0.6rem',
+            background:   '#0b0d14',
+            border:       '1px solid #1c2030',
+            borderRadius: 4,
+            fontSize:     '0.68rem',
+            color:        '#cdd2e0',
+            whiteSpace:   'pre-wrap',
+            wordBreak:    'break-word',
+            maxHeight:    '16rem',
+            overflowY:    'auto',
+          }}>{content}</pre>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ fontSize: '0.7rem', color: '#8b93a8', marginTop: '0.25rem' }}>
+      📎 {toolName}: <code style={{ color: '#e8571a' }}>{artifactKey}</code>
+    </div>
+  );
+}
+
 function MessageBubble({
   msg,
   toolCalls,
   artifacts,
+  customerId,
 }: {
   msg: { role: string; content?: string; timestamp: string };
   toolCalls?: ChatToolCall[];
   artifacts?: Record<string, string>;
+  customerId: string;
 }) {
   const isUser = msg.role === 'user';
   const bubbleStyle: React.CSSProperties = {
@@ -111,9 +236,9 @@ function MessageBubble({
         </div>
       )}
       {artifacts && Object.keys(artifacts).length > 0 && (
-        <div style={{ paddingLeft: '0.25rem', marginTop: '0.25rem', fontSize: '0.7rem', color: '#8b93a8' }}>
+        <div style={{ paddingLeft: '0.25rem' }}>
           {Object.entries(artifacts).map(([k, v]) => (
-            <div key={k}>📎 {k}: <code style={{ color: '#e8571a' }}>{v}</code></div>
+            <ArtifactLink key={k} toolName={k} artifactKey={v} customerId={customerId} />
           ))}
         </div>
       )}
@@ -122,15 +247,6 @@ function MessageBubble({
       </div>
     </div>
   );
-}
-
-/** Minimal Markdown → HTML (bold, inline code, line breaks). */
-function mdToHtml(md: string): string {
-  return md
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code style="color:#e8571a;background:rgba(232,87,26,0.1);padding:0 2px;border-radius:2px">$1</code>')
-    .replace(/\n/g, '<br/>');
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -149,15 +265,18 @@ interface ChatInterfaceProps {
 
 export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
   const stored = getStoredCustomer();
-  const [customerId,   setCustomerId]   = useState(stored.id);
-  const [customerName, setCustomerName] = useState(stored.name);
-  const [messages,     setMessages]     = useState<LocalMessage[]>([]);
-  const [input,        setInput]        = useState('');
-  const [loading,      setLoading]      = useState(false);
-  const [error,        setError]        = useState<string | null>(null);
+  const [customerId,    setCustomerId]    = useState(stored.id);
+  const [customerName,  setCustomerName]  = useState(stored.name);
+  const [messages,      setMessages]      = useState<LocalMessage[]>([]);
+  const [input,         setInput]         = useState('');
+  const [loading,       setLoading]       = useState(false);
+  const [error,         setError]         = useState<string | null>(null);
   const [historyLoaded, setHistoryLoaded] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef  = useRef<HTMLTextAreaElement>(null);
+  const [attachedFile,  setAttachedFile]  = useState<string | null>(null);
+  const [attachLoading, setAttachLoading] = useState(false);
+  const bottomRef   = useRef<HTMLDivElement>(null);
+  const inputRef    = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load history on mount / customer change
   useEffect(() => {
@@ -193,6 +312,26 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
     saveStoredCustomer(customerId, name);
   }
 
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !customerId.trim()) return;
+    setAttachLoading(true);
+    setError(null);
+    try {
+      await apiUploadNote(customerId, file.name, file);
+      setAttachedFile(file.name);
+      if (!input.trim()) {
+        setInput(`I've just uploaded my meeting notes (${file.name}). Please save them.`);
+      }
+    } catch (err: unknown) {
+      const ex = err as { status: number; detail: string };
+      setError(`Upload failed: ${ex.detail}`);
+    } finally {
+      setAttachLoading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
   async function sendMessage() {
     const text = input.trim();
     if (!text || loading) return;
@@ -203,6 +342,7 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
     };
     setMessages(prev => [...prev, userMsg]);
     setInput('');
+    setAttachedFile(null);
     setError(null);
     setLoading(true);
 
@@ -231,6 +371,7 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
     try {
       await apiClearChatHistory(customerId);
       setMessages([]);
+      setAttachedFile(null);
       setError(null);
     } catch (err: unknown) {
       const e = err as { status: number; detail: string };
@@ -275,28 +416,28 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
   };
 
   const btnPrimary: React.CSSProperties = {
-    background:   '#e8571a',
-    border:       'none',
-    borderRadius: 4,
-    color:        '#fff',
-    fontFamily:   "'JetBrains Mono', monospace",
-    fontSize:     '0.78rem',
-    fontWeight:   700,
-    padding:      '0.45rem 1rem',
-    cursor:       loading ? 'not-allowed' : 'pointer',
-    opacity:      loading ? 0.6 : 1,
+    background:    '#e8571a',
+    border:        'none',
+    borderRadius:  4,
+    color:         '#fff',
+    fontFamily:    "'JetBrains Mono', monospace",
+    fontSize:      '0.78rem',
+    fontWeight:    700,
+    padding:       '0.45rem 1rem',
+    cursor:        loading ? 'not-allowed' : 'pointer',
+    opacity:       loading ? 0.6 : 1,
     letterSpacing: '0.04em',
   };
 
   const btnSecondary: React.CSSProperties = {
-    background:   'transparent',
-    border:       '1px solid #1c2030',
-    borderRadius: 4,
-    color:        '#8b93a8',
-    fontFamily:   "'JetBrains Mono', monospace",
-    fontSize:     '0.72rem',
-    padding:      '0.3rem 0.7rem',
-    cursor:       'pointer',
+    background:    'transparent',
+    border:        '1px solid #1c2030',
+    borderRadius:  4,
+    color:         '#8b93a8',
+    fontFamily:    "'JetBrains Mono', monospace",
+    fontSize:      '0.72rem',
+    padding:       '0.3rem 0.7rem',
+    cursor:        'pointer',
     letterSpacing: '0.04em',
   };
 
@@ -330,13 +471,13 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
 
       {/* Message thread */}
       <div style={{
-        height:       '480px',
-        overflowY:    'auto',
-        background:   '#08090d',
-        border:       '1px solid #1c2030',
-        borderRadius: 6,
-        padding:      '1rem',
-        display:      'flex',
+        height:        '480px',
+        overflowY:     'auto',
+        background:    '#08090d',
+        border:        '1px solid #1c2030',
+        borderRadius:  6,
+        padding:       '1rem',
+        display:       'flex',
         flexDirection: 'column',
         gap:           '0.75rem',
       }}>
@@ -359,6 +500,7 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
             msg={msg}
             toolCalls={msg.toolCalls}
             artifacts={msg.artifacts}
+            customerId={customerId}
           />
         ))}
         {loading && (
@@ -384,8 +526,39 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
         </div>
       )}
 
+      {/* Attachment badge */}
+      {attachedFile && (
+        <div style={{
+          display:      'inline-flex',
+          alignItems:   'center',
+          gap:          '0.4rem',
+          background:   'rgba(232,87,26,0.08)',
+          border:       '1px solid rgba(232,87,26,0.25)',
+          borderRadius: 4,
+          padding:      '0.2rem 0.5rem',
+          fontSize:     '0.7rem',
+          color:        '#e8571a',
+          alignSelf:    'flex-start',
+          fontFamily:   "'JetBrains Mono', monospace",
+        }}>
+          📎 {attachedFile}
+          <span
+            style={{ cursor: 'pointer', opacity: 0.7 }}
+            onClick={() => setAttachedFile(null)}
+            title="Dismiss badge (file already uploaded)"
+          >✕</span>
+        </div>
+      )}
+
       {/* Input bar */}
       <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".md,.txt,.docx,.pdf"
+          style={{ display: 'none' }}
+          onChange={handleFileSelect}
+        />
         <textarea
           ref={inputRef}
           style={inputStyle}
@@ -399,6 +572,14 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
           <button style={btnPrimary} onClick={sendMessage} disabled={loading}>
             Send
           </button>
+          <button
+            style={btnSecondary}
+            onClick={() => { if (customerId.trim()) fileInputRef.current?.click(); }}
+            disabled={attachLoading || !customerId.trim()}
+            title="Attach a meeting notes file (.md, .txt, .docx, .pdf)"
+          >
+            {attachLoading ? '…' : '📎'}
+          </button>
           <button style={btnSecondary} onClick={clearHistory} title="Clear conversation history">
             Clear
           </button>
@@ -406,7 +587,7 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
       </div>
 
       <div style={{ fontSize: '0.65rem', color: '#454d64' }}>
-        Enter = send · Shift+Enter = newline · History is persisted per customer in OCI Object Storage.
+        Enter = send · Shift+Enter = newline · 📎 = attach notes file · History persisted per customer.
       </div>
     </div>
   );
