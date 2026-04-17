@@ -44,6 +44,11 @@ export function App() {
   const [chatSessionKey, setChatSessionKey] = useState(0);
   const [sidebarLoading, setSidebarLoading] = useState(false);
   const [sidebarHistoryItems, setSidebarHistoryItems] = useState<SidebarHistoryItem[]>([]);
+  const [isCompactChat, setIsCompactChat] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 1024;
+  });
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   function handleDiagramNameChange(name: string) {
     setDiagramName(name);
@@ -155,6 +160,7 @@ export function App() {
     }
     handleCustomerIdChange(nextCustomerId);
     setChatSessionKey(v => v + 1);
+    setMobileSidebarOpen(false);
   }
 
   function handleSidebarNewChat() {
@@ -166,7 +172,23 @@ export function App() {
     }
     handleCustomerIdChange('');
     setChatSessionKey(v => v + 1);
+    setMobileSidebarOpen(false);
   }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    function onResize() {
+      setIsCompactChat(window.innerWidth < 1024);
+    }
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    if (!isCompactChat) {
+      setMobileSidebarOpen(false);
+    }
+  }, [isCompactChat]);
 
   useEffect(() => {
     let active = true;
@@ -263,18 +285,42 @@ export function App() {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: '320px minmax(0, 1fr)',
+            gridTemplateColumns: isCompactChat ? '1fr' : '320px minmax(0, 1fr)',
             gap: '0.9rem',
             alignItems: 'start',
           }}
         >
-          <ChatSidebar
-            items={sidebarItems}
-            loading={sidebarLoading}
-            activeCustomerId={customerId}
-            onSelectCustomer={handleSidebarSelect}
-            onNewChat={handleSidebarNewChat}
-          />
+          {isCompactChat && (
+            <button
+              data-testid="chat-sidebar-toggle"
+              aria-controls="chat-sidebar-panel"
+              aria-expanded={mobileSidebarOpen}
+              onClick={() => setMobileSidebarOpen(v => !v)}
+              style={{
+                padding: '0.45rem 0.75rem',
+                border: '1px solid #1c2030',
+                background: '#0e1016',
+                color: '#cdd2e0',
+                borderRadius: 6,
+                cursor: 'pointer',
+                fontSize: '0.75rem',
+                fontFamily: "'JetBrains Mono', monospace",
+                width: 'fit-content',
+              }}
+            >
+              {mobileSidebarOpen ? 'Hide Conversations' : 'Show Conversations'}
+            </button>
+          )}
+          {(!isCompactChat || mobileSidebarOpen) && (
+            <ChatSidebar
+              items={sidebarItems}
+              loading={sidebarLoading}
+              activeCustomerId={customerId}
+              compact={isCompactChat}
+              onSelectCustomer={handleSidebarSelect}
+              onNewChat={handleSidebarNewChat}
+            />
+          )}
           <div style={{ minWidth: 0 }}>
             <ChatInterface key={chatSessionKey} onCustomerIdChange={handleCustomerIdChange} />
           </div>
