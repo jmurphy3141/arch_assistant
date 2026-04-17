@@ -1,7 +1,7 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 test.describe('UI Smoke Flows', () => {
-  test('chat sends message and renders artifact links without errors', async ({ page }) => {
+  async function mockHealth(page: Page) {
     await page.route('**/health', async route => {
       await route.fulfill({
         status: 200,
@@ -15,8 +15,53 @@ test.describe('UI Smoke Flows', () => {
         }),
       });
     });
+  }
+
+  async function mockChatHistoryIndex(page: Page) {
+    await page.route('**/api/chat/history**', async route => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'ok',
+          items: [
+            {
+              customer_id: 'acme',
+              customer_name: 'ACME Corp',
+              last_message_preview: 'Generate Terraform from latest architecture notes',
+              last_activity_timestamp: '2026-04-16T19:35:00Z',
+              status: 'Completed with Terraform',
+            },
+            {
+              customer_id: 'globex',
+              customer_name: 'Globex',
+              last_message_preview: 'Need clarification before Terraform generation',
+              last_activity_timestamp: '2026-04-15T15:20:00Z',
+              status: 'Terraform Needs Input',
+            },
+          ],
+          pagination: {
+            page: 1,
+            page_size: 100,
+            total: 2,
+            has_next: false,
+          },
+        }),
+      });
+    });
+  }
+
+  test('chat sends message and renders artifact links without errors', async ({ page }) => {
+    await mockHealth(page);
+    await mockChatHistoryIndex(page);
 
     await page.route('**/api/chat/**/history**', async route => {
+      const url = new URL(route.request().url());
+      const match = url.pathname.match(/\/api\/chat\/([^/]+)\/history$/);
+      if (!match) {
+        await route.fallback();
+        return;
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -80,19 +125,8 @@ test.describe('UI Smoke Flows', () => {
   });
 
   test('terraform tab generates and loads downloadable files', async ({ page }) => {
-    await page.route('**/health', async route => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          status: 'ok',
-          agent_version: '1.5.0',
-          agent: 'oci-drawing-agent',
-          pending_clarifications: [],
-          idempotency_cache_size: 0,
-        }),
-      });
-    });
+    await mockHealth(page);
+    await mockChatHistoryIndex(page);
 
     await page.route('**/api/terraform/generate', async route => {
       await route.fulfill({
@@ -172,5 +206,46 @@ test.describe('UI Smoke Flows', () => {
     await expect(page.getByRole('button', { name: 'providers.tf' })).toBeVisible();
     await page.getByRole('button', { name: 'main.tf' }).click();
     await expect(page.locator('pre').last()).toContainText('oci_core_vcn');
+  });
+
+  test('sidebar search and customer selection loads selected thread context', async ({ page }) => {
+    await mockHealth(page);
+    await mockChatHistoryIndex(page);
+
+    await page.route('**/api/chat/**/history**', async route => {
+      const url = new URL(route.request().url());
+      const match = url.pathname.match(/\/api\/chat\/([^/]+)\/history$/);
+      if (!match) {
+        await route.fallback();
+        return;
+      }
+      const customerId = decodeURIComponent(match[1]);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'ok',
+          customer_id: customerId,
+          history: [],
+        }),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.getByTestId('chat-sidebar-item-acme')).toBeVisible();
+    await expect(page.getByTestId('chat-sidebar-item-globex')).toBeVisible();
+
+    await page.getByTestId('chat-sidebar-search').fill('glob');
+    await expect(page.getByTestId('chat-sidebar-item-globex')).toBeVisible();
+    await expect(page.getByTestId('chat-sidebar-item-acme')).toHaveCount(0);
+
+    const globexHistoryResp = page.waitForResponse(
+      r => r.url().includes('/api/chat/globex/history') && r.request().method() === 'GET',
+    );
+    await page.getByTestId('chat-sidebar-item-globex').click();
+    await globexHistoryResp;
+
+    await expect(page.getByTestId('chat-customer-id')).toHaveValue('globex');
+    await expect(page.getByTestId('chat-customer-name')).toHaveValue('Globex');
   });
 });
