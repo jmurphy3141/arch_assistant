@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { HealthIndicator } from './components/HealthIndicator';
 import { UploadBom } from './components/UploadBom';
 import { GenerateForm } from './components/GenerateForm';
@@ -10,6 +10,7 @@ import { JepForm } from './components/JepForm';
 import { TerraformForm } from './components/TerraformForm';
 import { WafForm } from './components/WafForm';
 import { ChatInterface } from './components/ChatInterface';
+import { ChatSidebar, type SidebarHistoryItem } from './components/ChatSidebar';
 import { useClientId, getLastDiagramName, saveLastDiagramName } from './hooks/useClientId';
 import { apiClarify, apiRefineDiagram, apiWaitForJob, type GenerateResponse, type OrchestrationResult } from './api/client';
 
@@ -33,6 +34,7 @@ export function App() {
   const [clarifyLoading, setClarifyLoading] = useState(false);
   const [clarifyElapsed, setClarifyElapsed] = useState(0);
   const [refineLoading, setRefineLoading] = useState(false);
+  const [chatSessionKey, setChatSessionKey] = useState(0);
 
   function handleDiagramNameChange(name: string) {
     setDiagramName(name);
@@ -135,6 +137,64 @@ export function App() {
     }
   }
 
+  function handleSidebarSelect(nextCustomerId: string, nextCustomerName?: string) {
+    try {
+      localStorage.setItem('chat_customer_id', nextCustomerId);
+      localStorage.setItem('chat_customer_name', nextCustomerName ?? nextCustomerId);
+    } catch {
+      // ignore
+    }
+    handleCustomerIdChange(nextCustomerId);
+    setChatSessionKey(v => v + 1);
+  }
+
+  function handleSidebarNewChat() {
+    try {
+      localStorage.removeItem('chat_customer_id');
+      localStorage.removeItem('chat_customer_name');
+    } catch {
+      // ignore
+    }
+    handleCustomerIdChange('');
+    setChatSessionKey(v => v + 1);
+  }
+
+  const sidebarItems = useMemo<SidebarHistoryItem[]>(() => {
+    const dynamic = customerId.trim()
+      ? [{
+          customer_id: customerId,
+          customer_name: customerId.toUpperCase(),
+          last_message: 'Continue the active architecture conversation.',
+          last_timestamp: new Date().toISOString(),
+          status: 'In Progress',
+        }]
+      : [];
+    return [
+      ...dynamic,
+      {
+        customer_id: 'acme',
+        customer_name: 'ACME Corp',
+        last_message: 'Generate Terraform from latest architecture notes',
+        last_timestamp: '2026-04-16T19:35:00Z',
+        status: 'Completed with Terraform',
+      },
+      {
+        customer_id: 'globex',
+        customer_name: 'Globex',
+        last_message: 'Need clarification before Terraform generation',
+        last_timestamp: '2026-04-15T15:20:00Z',
+        status: 'Terraform Needs Input',
+      },
+      {
+        customer_id: 'initech',
+        customer_name: 'Initech',
+        last_message: 'Uploaded notes and requested POV update',
+        last_timestamp: '2026-04-14T13:10:00Z',
+        status: 'In Progress',
+      },
+    ];
+  }, [customerId]);
+
   const btnStyle = (active: boolean): React.CSSProperties => ({
     padding: '0.3rem 0.75rem',
     border: active ? '1px solid #e8571a' : '1px solid #1c2030',
@@ -180,7 +240,24 @@ export function App() {
 
       {/* Chat mode */}
       {mode === 'chat' && (
-        <ChatInterface onCustomerIdChange={handleCustomerIdChange} />
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '320px minmax(0, 1fr)',
+            gap: '0.9rem',
+            alignItems: 'start',
+          }}
+        >
+          <ChatSidebar
+            items={sidebarItems}
+            activeCustomerId={customerId}
+            onSelectCustomer={handleSidebarSelect}
+            onNewChat={handleSidebarNewChat}
+          />
+          <div style={{ minWidth: 0 }}>
+            <ChatInterface key={chatSessionKey} onCustomerIdChange={handleCustomerIdChange} />
+          </div>
+        </div>
       )}
 
       {/* Diagram modes */}
