@@ -659,6 +659,26 @@ export interface ChatHistoryResponse {
   history:     ChatMessage[];
 }
 
+export interface ChatHistoryIndexItem {
+  customer_id: string;
+  customer_name: string;
+  last_message_preview: string;
+  last_activity_timestamp: string;
+  status: string;
+}
+
+export interface ChatHistoryIndexResponse {
+  status: string;
+  trace_id?: string;
+  items: ChatHistoryIndexItem[];
+  pagination: {
+    page: number;
+    page_size: number;
+    total: number;
+    has_next: boolean;
+  };
+}
+
 export async function apiChat(
   customerId: string,
   customerName: string,
@@ -681,6 +701,16 @@ export async function apiGetChatHistory(
 ): Promise<ChatHistoryResponse> {
   return apiFetch<ChatHistoryResponse>(
     `/chat/${encodeURIComponent(customerId)}/history?max_turns=${maxTurns}`,
+  );
+}
+
+export async function apiGetChatHistoryIndex(
+  page = 1,
+  pageSize = 20,
+  search = '',
+): Promise<ChatHistoryIndexResponse> {
+  return apiFetch<ChatHistoryIndexResponse>(
+    `/chat/history?page=${page}&page_size=${pageSize}&search=${encodeURIComponent(search)}`,
   );
 }
 

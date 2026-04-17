@@ -1,0 +1,169 @@
+import React, { useMemo, useState } from 'react';
+
+export interface SidebarHistoryItem {
+  customer_id: string;
+  customer_name?: string;
+  last_message?: string;
+  last_timestamp?: string;
+  status?: string;
+}
+
+interface ChatSidebarProps {
+  items: SidebarHistoryItem[];
+  loading?: boolean;
+  activeCustomerId?: string;
+  onSelectCustomer: (customerId: string, customerName?: string) => void;
+  onNewChat?: () => void;
+}
+
+function statusColor(status?: string): string {
+  if (!status) return '#454d64';
+  if (status.toLowerCase().includes('needs input')) return '#e8b11a';
+  if (status.toLowerCase().includes('completed')) return '#25c26e';
+  return '#8b93a8';
+}
+
+export function ChatSidebar({
+  items,
+  loading = false,
+  activeCustomerId,
+  onSelectCustomer,
+  onNewChat,
+}: ChatSidebarProps) {
+  const [query, setQuery] = useState('');
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const base = [...items].sort((a, b) => {
+      const at = a.last_timestamp ? Date.parse(a.last_timestamp) : 0;
+      const bt = b.last_timestamp ? Date.parse(b.last_timestamp) : 0;
+      return bt - at;
+    });
+    if (!q) return base;
+    return base.filter(i =>
+      (i.customer_id ?? '').toLowerCase().includes(q) ||
+      (i.customer_name ?? '').toLowerCase().includes(q) ||
+      (i.last_message ?? '').toLowerCase().includes(q),
+    );
+  }, [items, query]);
+
+  return (
+    <aside
+      data-testid="chat-sidebar"
+      style={{
+        width: '320px',
+        minWidth: '320px',
+        border: '1px solid #1c2030',
+        borderRadius: 8,
+        background: '#0b0d14',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
+      <div style={{ padding: '0.75rem', borderBottom: '1px solid #1c2030' }}>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <input
+            data-testid="chat-sidebar-search"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search customers..."
+            style={{
+              flex: 1,
+              background: '#08090d',
+              border: '1px solid #1c2030',
+              borderRadius: 4,
+              color: '#cdd2e0',
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: '0.75rem',
+              padding: '0.45rem 0.6rem',
+            }}
+          />
+          <button
+            data-testid="chat-sidebar-new"
+            onClick={onNewChat}
+            style={{
+              background: '#e8571a',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 4,
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: '0.72rem',
+              padding: '0.45rem 0.6rem',
+              cursor: 'pointer',
+            }}
+          >
+            New
+          </button>
+        </div>
+      </div>
+
+      <div style={{ overflowY: 'auto', padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+        {loading && <div style={{ color: '#8b93a8', fontSize: '0.72rem' }}>Loading history...</div>}
+        {!loading && filtered.length === 0 && (
+          <div style={{ color: '#8b93a8', fontSize: '0.72rem' }}>No conversations found.</div>
+        )}
+
+        {!loading && filtered.map(item => {
+          const active = item.customer_id === activeCustomerId;
+          return (
+            <button
+              key={item.customer_id}
+              data-testid={`chat-sidebar-item-${item.customer_id}`}
+              onClick={() => onSelectCustomer(item.customer_id, item.customer_name)}
+              style={{
+                textAlign: 'left',
+                border: active ? '1px solid rgba(232,87,26,0.45)' : '1px solid #1c2030',
+                background: active ? 'rgba(232,87,26,0.08)' : '#0e1016',
+                borderRadius: 6,
+                padding: '0.55rem',
+                cursor: 'pointer',
+                color: '#cdd2e0',
+                fontFamily: "'JetBrains Mono', monospace",
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
+                <strong style={{ fontSize: '0.73rem', color: '#fff' }}>
+                  {item.customer_name || item.customer_id}
+                </strong>
+                <span style={{ fontSize: '0.65rem', color: '#6b738a' }}>
+                  {item.last_timestamp ? new Date(item.last_timestamp).toLocaleDateString() : ''}
+                </span>
+              </div>
+              <div style={{ fontSize: '0.67rem', color: '#8b93a8', marginTop: '0.2rem' }}>
+                {item.customer_id}
+              </div>
+              <div
+                style={{
+                  fontSize: '0.67rem',
+                  color: '#aeb5c8',
+                  marginTop: '0.25rem',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {item.last_message || 'No messages yet'}
+              </div>
+              {item.status && (
+                <div
+                  style={{
+                    marginTop: '0.3rem',
+                    fontSize: '0.62rem',
+                    color: statusColor(item.status),
+                    border: `1px solid ${statusColor(item.status)}55`,
+                    borderRadius: 999,
+                    padding: '0.1rem 0.45rem',
+                    width: 'fit-content',
+                  }}
+                >
+                  {item.status}
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}

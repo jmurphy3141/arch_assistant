@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { HealthIndicator } from './components/HealthIndicator';
 import { UploadBom } from './components/UploadBom';
 import { GenerateForm } from './components/GenerateForm';
@@ -10,8 +10,16 @@ import { JepForm } from './components/JepForm';
 import { TerraformForm } from './components/TerraformForm';
 import { WafForm } from './components/WafForm';
 import { ChatInterface } from './components/ChatInterface';
+import { ChatSidebar, type SidebarHistoryItem } from './components/ChatSidebar';
 import { useClientId, getLastDiagramName, saveLastDiagramName } from './hooks/useClientId';
-import { apiClarify, apiRefineDiagram, apiWaitForJob, type GenerateResponse, type OrchestrationResult } from './api/client';
+import {
+  apiClarify,
+  apiGetChatHistoryIndex,
+  apiRefineDiagram,
+  apiWaitForJob,
+  type GenerateResponse,
+  type OrchestrationResult,
+} from './api/client';
 
 type Mode = 'chat' | 'upload' | 'generate' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
@@ -33,6 +41,9 @@ export function App() {
   const [clarifyLoading, setClarifyLoading] = useState(false);
   const [clarifyElapsed, setClarifyElapsed] = useState(0);
   const [refineLoading, setRefineLoading] = useState(false);
+  const [chatSessionKey, setChatSessionKey] = useState(0);
+  const [sidebarLoading, setSidebarLoading] = useState(false);
+  const [sidebarHistoryItems, setSidebarHistoryItems] = useState<SidebarHistoryItem[]>([]);
 
   function handleDiagramNameChange(name: string) {
     setDiagramName(name);
@@ -135,6 +146,75 @@ export function App() {
     }
   }
 
+  function handleSidebarSelect(nextCustomerId: string, nextCustomerName?: string) {
+    try {
+      localStorage.setItem('chat_customer_id', nextCustomerId);
+      localStorage.setItem('chat_customer_name', nextCustomerName ?? nextCustomerId);
+    } catch {
+      // ignore
+    }
+    handleCustomerIdChange(nextCustomerId);
+    setChatSessionKey(v => v + 1);
+  }
+
+  function handleSidebarNewChat() {
+    try {
+      localStorage.removeItem('chat_customer_id');
+      localStorage.removeItem('chat_customer_name');
+    } catch {
+      // ignore
+    }
+    handleCustomerIdChange('');
+    setChatSessionKey(v => v + 1);
+  }
+
+  useEffect(() => {
+    let active = true;
+    setSidebarLoading(true);
+    apiGetChatHistoryIndex(1, 100)
+      .then(resp => {
+        if (!active) return;
+        setSidebarHistoryItems(
+          (resp.items ?? []).map(item => ({
+            customer_id: item.customer_id,
+            customer_name: item.customer_name,
+            last_message: item.last_message_preview,
+            last_timestamp: item.last_activity_timestamp,
+            status: item.status,
+          })),
+        );
+      })
+      .catch(() => {
+        if (!active) return;
+        // Keep chat usable even if aggregated history is unavailable.
+        setSidebarHistoryItems([]);
+      })
+      .finally(() => {
+        if (!active) return;
+        setSidebarLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [chatSessionKey]);
+
+  const sidebarItems = useMemo<SidebarHistoryItem[]>(() => {
+    const normalizedActive = customerId.trim();
+    if (!normalizedActive) return sidebarHistoryItems;
+    const exists = sidebarHistoryItems.some(item => item.customer_id === normalizedActive);
+    if (exists) return sidebarHistoryItems;
+    return [
+      {
+        customer_id: normalizedActive,
+        customer_name: normalizedActive,
+        last_message: 'Current customer context',
+        last_timestamp: new Date().toISOString(),
+        status: 'In Progress',
+      },
+      ...sidebarHistoryItems,
+    ];
+  }, [customerId, sidebarHistoryItems]);
+
   const btnStyle = (active: boolean): React.CSSProperties => ({
     padding: '0.3rem 0.75rem',
     border: active ? '1px solid #e8571a' : '1px solid #1c2030',
@@ -180,7 +260,25 @@ export function App() {
 
       {/* Chat mode */}
       {mode === 'chat' && (
-        <ChatInterface onCustomerIdChange={handleCustomerIdChange} />
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '320px minmax(0, 1fr)',
+            gap: '0.9rem',
+            alignItems: 'start',
+          }}
+        >
+          <ChatSidebar
+            items={sidebarItems}
+            loading={sidebarLoading}
+            activeCustomerId={customerId}
+            onSelectCustomer={handleSidebarSelect}
+            onNewChat={handleSidebarNewChat}
+          />
+          <div style={{ minWidth: 0 }}>
+            <ChatInterface key={chatSessionKey} onCustomerIdChange={handleCustomerIdChange} />
+          </div>
+        </div>
       )}
 
       {/* Diagram modes */}
