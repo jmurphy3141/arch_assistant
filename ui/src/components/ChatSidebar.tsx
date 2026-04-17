@@ -12,6 +12,7 @@ interface ChatSidebarProps {
   items: SidebarHistoryItem[];
   loading?: boolean;
   activeCustomerId?: string;
+  compact?: boolean;
   onSelectCustomer: (customerId: string, customerName?: string) => void;
   onNewChat?: () => void;
 }
@@ -27,6 +28,7 @@ export function ChatSidebar({
   items,
   loading = false,
   activeCustomerId,
+  compact = false,
   onSelectCustomer,
   onNewChat,
 }: ChatSidebarProps) {
@@ -49,10 +51,13 @@ export function ChatSidebar({
 
   return (
     <aside
+      id="chat-sidebar-panel"
+      role="navigation"
+      aria-label="Conversation history"
       data-testid="chat-sidebar"
       style={{
-        width: '320px',
-        minWidth: '320px',
+        width: compact ? '100%' : '320px',
+        minWidth: compact ? '100%' : '320px',
         border: '1px solid #1c2030',
         borderRadius: 8,
         background: '#0b0d14',
@@ -65,6 +70,7 @@ export function ChatSidebar({
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <input
             data-testid="chat-sidebar-search"
+            aria-label="Search conversations"
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder="Search customers..."
@@ -81,6 +87,7 @@ export function ChatSidebar({
           />
           <button
             data-testid="chat-sidebar-new"
+            aria-label="Start new chat"
             onClick={onNewChat}
             style={{
               background: '#e8571a',
@@ -110,6 +117,7 @@ export function ChatSidebar({
             <button
               key={item.customer_id}
               data-testid={`chat-sidebar-item-${item.customer_id}`}
+              aria-label={`Open conversation for ${item.customer_name || item.customer_id}`}
               onClick={() => onSelectCustomer(item.customer_id, item.customer_name)}
               style={{
                 textAlign: 'left',
@@ -147,6 +155,7 @@ export function ChatSidebar({
               </div>
               {item.status && (
                 <div
+                  data-testid={`chat-sidebar-status-${item.customer_id}`}
                   style={{
                     marginTop: '0.3rem',
                     fontSize: '0.62rem',

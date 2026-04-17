@@ -234,6 +234,8 @@ test.describe('UI Smoke Flows', () => {
     await page.goto('/');
     await expect(page.getByTestId('chat-sidebar-item-acme')).toBeVisible();
     await expect(page.getByTestId('chat-sidebar-item-globex')).toBeVisible();
+    await expect(page.getByTestId('chat-sidebar-status-acme')).toContainText('Completed with Terraform');
+    await expect(page.getByTestId('chat-sidebar-status-globex')).toContainText('Terraform Needs Input');
 
     await page.getByTestId('chat-sidebar-search').fill('glob');
     await expect(page.getByTestId('chat-sidebar-item-globex')).toBeVisible();
