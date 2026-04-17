@@ -37,6 +37,11 @@ class ObjectStoreBase(ABC):
         """Return True if key exists, False otherwise."""
         ...
 
+    @abstractmethod
+    def list(self, prefix: str = "") -> list[str]:
+        """Return object keys matching the provided prefix."""
+        ...
+
 
 # ── In-memory fake (used in tests + default when no OCI available) ─────────────
 
@@ -65,6 +70,11 @@ class InMemoryObjectStore(ObjectStoreBase):
 
     def head(self, key: str) -> bool:
         return key in self._store
+
+    def list(self, prefix: str = "") -> list[str]:
+        if not prefix:
+            return list(self._store.keys())
+        return [key for key in self._store.keys() if key.startswith(prefix)]
 
     # ── Test helpers ───────────────────────────────────────────────────────────
 

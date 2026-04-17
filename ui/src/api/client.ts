@@ -348,38 +348,41 @@ export interface DocResponse {
 
 export interface TerraformResponse {
   status: string;
-  agent_version: string;
+  trace_id?: string;
   customer_id: string;
-  doc_type: 'terraform';
-  version: number;
-  prefix_key: string;
-  file_count: number;
-  files: Record<string, string>;
-  latest_key: string;
-  errors: string[];
+  customer_name?: string;
+  summary?: string;
+  version?: number;
+  key?: string;
+  latest_key?: string;
+  files?: string[];
+  stages?: Record<string, unknown>[];
+  blocking_questions?: string[];
 }
 
 export interface TerraformLatestResponse {
   status: string;
+  trace_id?: string;
   customer_id: string;
-  doc_type: 'terraform';
-  version: number;
-  prefix_key: string;
-  files: Record<string, string>;
+  latest: {
+    version: number;
+    files: Record<string, string>;
+    metadata?: Record<string, unknown>;
+    timestamp?: string;
+  };
 }
 
 export interface TerraformVersionEntry {
   version: number;
-  prefix: string;
-  files: Record<string, string>;
+  key: string;
   timestamp: string;
   metadata: Record<string, unknown>;
 }
 
 export interface TerraformVersionsResponse {
   status: string;
+  trace_id?: string;
   customer_id: string;
-  doc_type: 'terraform';
   versions: TerraformVersionEntry[];
 }
 
@@ -564,11 +567,16 @@ export async function apiListJepVersions(customerId: string): Promise<DocVersion
 export async function apiGenerateTerraform(
   customerId: string,
   customerName: string,
+  prompt?: string,
 ): Promise<TerraformResponse> {
   return apiFetch<TerraformResponse>('/terraform/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ customer_id: customerId, customer_name: customerName }),
+    body: JSON.stringify({
+      customer_id: customerId,
+      customer_name: customerName,
+      ...(prompt?.trim() ? { prompt } : {}),
+    }),
   });
 }
 
@@ -588,6 +596,21 @@ export async function apiListTerraformVersions(
   );
 }
 
+export async function apiDownloadTerraformFile(
+  customerId: string,
+  filename: string,
+): Promise<string> {
+  const url = `${API_BASE}/terraform/${encodeURIComponent(customerId)}/download/${encodeURIComponent(filename)}`;
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw {
+      status: resp.status,
+      detail: await resp.text(),
+    } as ApiError;
+  }
+  return resp.text();
+}
+
 // ---------------------------------------------------------------------------
 // Conversational orchestrator — chat
 // ---------------------------------------------------------------------------
@@ -596,6 +619,19 @@ export interface ChatToolCall {
   tool:           string;
   args:           Record<string, unknown>;
   result_summary: string;
+  result_data?:   Record<string, unknown>;
+}
+
+export interface ChatArtifactDownload {
+  type: string;
+  tool: string;
+  key?: string;
+  filename?: string;
+  download_url: string;
+}
+
+export interface ChatArtifactManifest {
+  downloads: ChatArtifactDownload[];
 }
 
 export interface ChatMessage {
@@ -609,9 +645,11 @@ export interface ChatMessage {
 
 export interface ChatResponse {
   status:         string;
+  trace_id?:      string;
   reply:          string;
   tool_calls:     ChatToolCall[];
   artifacts:      Record<string, string>;
+  artifact_manifest?: ChatArtifactManifest;
   history_length: number;
 }
 

@@ -65,6 +65,10 @@ AVAILABLE TOOLS
   generate_jep     {"feedback": "<optional correction text>"}
       Draft or update the Joint Execution Plan.
 
+  generate_terraform {"prompt": "<optional constraints or module goals>"}
+      Generate Terraform via the specialist chain. If blocked, return
+      clarification questions for the SA.
+
   get_document     {"type": "pov" | "jep" | "waf"}
       Retrieve the latest generated document content.
 
@@ -87,6 +91,7 @@ async def run_turn(
     text_runner: Callable[[str, str], str],
     a2a_base_url: str = "http://localhost:8080",
     max_tool_iterations: int = 5,
+    specialist_mode: str = "legacy",
 ) -> dict:
     """
     Process one SA message and return the orchestrator response.
@@ -106,8 +111,12 @@ async def run_turn(
     summary = document_store.load_conversation_summary(store, customer_id)
 
     new_turns: list[dict] = [
-        {"role": "user", "content": user_message,
-         "timestamp": _now()}
+        {
+            "role": "user",
+            "content": user_message,
+            "timestamp": _now(),
+            "customer_name": customer_name,
+        }
     ]
     tool_calls: list[dict] = []
     artifacts:  dict       = {}
@@ -128,13 +137,14 @@ async def run_turn(
         logger.info("Orchestrator tool call: %s args=%s customer=%s",
                     tool_name, tool_args, customer_id)
 
-        result_summary, artifact_key = await _execute_tool(
+        result_summary, artifact_key, result_data = await _execute_tool(
             tool_name, tool_args,
             customer_id=customer_id,
             customer_name=customer_name,
             store=store,
             text_runner=text_runner,
             a2a_base_url=a2a_base_url,
+            specialist_mode=specialist_mode,
         )
 
         notify(f"tool:{tool_name}", customer_id, result_summary)
@@ -143,6 +153,7 @@ async def run_turn(
             "tool":           tool_name,
             "args":           tool_args,
             "result_summary": result_summary,
+            "result_data":    result_data,
         })
         if artifact_key:
             artifacts[tool_name] = artifact_key
@@ -195,27 +206,45 @@ async def _execute_tool(
     store: ObjectStoreBase,
     text_runner: Callable,
     a2a_base_url: str,
-) -> tuple[str, str]:
+    specialist_mode: str = "legacy",
+) -> tuple[str, str, dict]:
     """
     Execute a tool call and return (result_summary, artifact_key).
     artifact_key is "" when no persistent artifact was produced.
     """
+    if specialist_mode == "langgraph":
+        from agent import langgraph_specialists
+
+        adapter_result = await langgraph_specialists.execute_tool(
+            tool_name,
+            args,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+        )
+        if len(adapter_result) == 2:
+            summary, key = adapter_result
+            return summary, key, {}
+        return adapter_result
+
     if tool_name == "save_notes":
         text = args.get("text", "")
         if not text.strip():
-            return "No notes text provided.", ""
+            return "No notes text provided.", "", {}
         ts    = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         key   = await asyncio.to_thread(
             document_store.save_note,
             store, customer_id, f"note_{ts}.md",
             text.encode("utf-8"),
         )
-        return f"Notes saved. Key: {key}", key
+        return f"Notes saved. Key: {key}", key, {}
 
     if tool_name == "get_summary":
         ctx     = await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
         summary = context_store.build_context_summary(ctx)
-        return summary or "No engagement activity yet.", ""
+        return summary or "No engagement activity yet.", "", {}
 
     if tool_name == "generate_pov":
         from agent import pov_agent
@@ -226,10 +255,11 @@ async def _execute_tool(
             feedback=feedback,
         )
         key = result.get("key", "")
-        return f"POV v{result.get('version')} saved. Key: {key}", key
+        return f"POV v{result.get('version')} saved. Key: {key}", key, {}
 
     if tool_name == "generate_diagram":
-        return await _call_generate_diagram(args, customer_id, a2a_base_url)
+        s, k = await _call_generate_diagram(args, customer_id, a2a_base_url)
+        return s, k, {}
 
     if tool_name == "generate_waf":
         from agent import waf_agent
@@ -239,7 +269,7 @@ async def _execute_tool(
         )
         key    = result.get("key", "")
         rating = result.get("overall_rating", "")
-        return f"WAF review {rating} saved. Key: {key}", key
+        return f"WAF review {rating} saved. Key: {key}", key, {}
 
     if tool_name == "generate_jep":
         from agent import jep_agent
@@ -250,7 +280,15 @@ async def _execute_tool(
             feedback=feedback,
         )
         key = result.get("key", "")
-        return f"JEP v{result.get('version')} saved. Key: {key}", key
+        return f"JEP v{result.get('version')} saved. Key: {key}", key, {}
+
+    if tool_name == "generate_terraform":
+        return (
+            "Terraform generation is not yet enabled in legacy mode. "
+            "Enable orchestrator.specialists_langgraph_enabled to use the v1.5 chain.",
+            "",
+            {},
+        )
 
     if tool_name == "get_document":
         doc_type = args.get("type", "pov")
@@ -258,11 +296,11 @@ async def _execute_tool(
             document_store.get_latest_doc, store, doc_type, customer_id,
         )
         if content is None:
-            return f"No {doc_type.upper()} found for this customer.", ""
+            return f"No {doc_type.upper()} found for this customer.", "", {}
         preview = content[:500].strip()
-        return f"{doc_type.upper()} content (first 500 chars):\n{preview}", ""
+        return f"{doc_type.upper()} content (first 500 chars):\n{preview}", "", {}
 
-    return f"Unknown tool: {tool_name!r}", ""
+    return f"Unknown tool: {tool_name!r}", "", {}
 
 
 async def _call_generate_diagram(

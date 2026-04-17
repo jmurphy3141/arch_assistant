@@ -16,6 +16,7 @@ import {
   apiGetLatestWaf,
   type ChatMessage,
   type ChatToolCall,
+  type ChatArtifactManifest,
 } from '../api/client';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -196,15 +197,51 @@ function ArtifactLink({ toolName, artifactKey, customerId }: {
   );
 }
 
+function ArtifactManifestLinks({ manifest }: { manifest?: ChatArtifactManifest }) {
+  if (!manifest || !Array.isArray(manifest.downloads) || manifest.downloads.length === 0) {
+    return null;
+  }
+  return (
+    <div style={{ marginTop: '0.3rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+      {manifest.downloads.map((dl, idx) => (
+        <a
+          key={`${dl.type}-${dl.filename ?? dl.tool}-${idx}`}
+          href={dl.download_url}
+          data-testid={`artifact-link-${dl.type}-${dl.filename ?? 'artifact'}`}
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            fontSize: '0.7rem',
+            color: '#e8571a',
+            textDecoration: 'none',
+            border: '1px solid rgba(232,87,26,0.25)',
+            background: 'rgba(232,87,26,0.08)',
+            borderRadius: 4,
+            padding: '0.2rem 0.5rem',
+            width: 'fit-content',
+            fontFamily: "'JetBrains Mono', monospace",
+          }}
+        >
+          {dl.type === 'terraform'
+            ? `Download Terraform: ${dl.filename ?? 'file'}`
+            : `Download ${dl.type}: ${dl.filename ?? 'artifact'}`}
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function MessageBubble({
   msg,
   toolCalls,
   artifacts,
+  artifactManifest,
   customerId,
 }: {
   msg: { role: string; content?: string; timestamp: string };
   toolCalls?: ChatToolCall[];
   artifacts?: Record<string, string>;
+  artifactManifest?: ChatArtifactManifest;
   customerId: string;
 }) {
   const isUser = msg.role === 'user';
@@ -226,8 +263,10 @@ function MessageBubble({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignSelf: isUser ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
       <div style={bubbleStyle}>
-        {isUser ? content : (
-          <span dangerouslySetInnerHTML={{ __html: mdToHtml(content) }} />
+        {isUser ? (
+          <span data-testid="chat-user-message">{content}</span>
+        ) : (
+          <span data-testid="chat-assistant-message" dangerouslySetInnerHTML={{ __html: mdToHtml(content) }} />
         )}
       </div>
       {toolCalls && toolCalls.length > 0 && (
@@ -242,6 +281,9 @@ function MessageBubble({
           ))}
         </div>
       )}
+      <div style={{ paddingLeft: '0.25rem' }}>
+        <ArtifactManifestLinks manifest={artifactManifest} />
+      </div>
       <div style={{ fontSize: '0.6rem', color: '#454d64', marginTop: '0.15rem', alignSelf: isUser ? 'flex-end' : 'flex-start' }}>
         {new Date(msg.timestamp).toLocaleTimeString()}
       </div>
@@ -257,6 +299,7 @@ interface LocalMessage {
   timestamp: string;
   toolCalls?: ChatToolCall[];
   artifacts?: Record<string, string>;
+  artifactManifest?: ChatArtifactManifest;
 }
 
 interface ChatInterfaceProps {
@@ -291,7 +334,8 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
             content:   m.content ?? '',
             timestamp: m.timestamp,
           }));
-        setMessages(loaded);
+        // Avoid clobbering newly-sent local messages if history returns late.
+        setMessages(prev => (prev.length > 0 ? prev : loaded));
         setHistoryLoaded(true);
       })
       .catch(() => setHistoryLoaded(true));
@@ -354,6 +398,7 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
         timestamp: new Date().toISOString(),
         toolCalls: resp.tool_calls,
         artifacts: resp.artifacts,
+        artifactManifest: resp.artifact_manifest,
       };
       setMessages(prev => [...prev, assistantMsg]);
     } catch (err: unknown) {
@@ -450,6 +495,7 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
             CUSTOMER ID
           </label>
           <input
+            data-testid="chat-customer-id"
             style={fieldStyle}
             value={customerId}
             placeholder="e.g. acme001"
@@ -461,6 +507,7 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
             CUSTOMER NAME
           </label>
           <input
+            data-testid="chat-customer-name"
             style={fieldStyle}
             value={customerName}
             placeholder="e.g. ACME Corp"
@@ -500,6 +547,7 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
             msg={msg}
             toolCalls={msg.toolCalls}
             artifacts={msg.artifacts}
+            artifactManifest={msg.artifactManifest}
             customerId={customerId}
           />
         ))}
@@ -512,16 +560,18 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
       </div>
 
       {/* Error banner */}
-      {error && (
-        <div style={{
+        {error && (
+          <div style={{
           padding:      '0.6rem 0.75rem',
           background:   'rgba(232,65,90,0.08)',
           border:       '1px solid rgba(232,65,90,0.4)',
           borderRadius: 4,
           fontSize:     '0.78rem',
           color:        '#e8415a',
-          fontFamily:   "'JetBrains Mono', monospace",
-        }}>
+            fontFamily:   "'JetBrains Mono', monospace",
+          }}
+          data-testid="chat-error-banner"
+        >
           {error}
         </div>
       )}
@@ -561,6 +611,7 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
         />
         <textarea
           ref={inputRef}
+          data-testid="chat-input"
           style={inputStyle}
           value={input}
           placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
@@ -569,7 +620,7 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
           disabled={loading}
         />
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-          <button style={btnPrimary} onClick={sendMessage} disabled={loading}>
+          <button data-testid="chat-send-button" style={btnPrimary} onClick={sendMessage} disabled={loading}>
             Send
           </button>
           <button

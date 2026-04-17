@@ -28,6 +28,7 @@ v1.3.2 additions:
 """
 
 import asyncio
+import contextvars
 import dataclasses
 import functools
 import hashlib
@@ -38,6 +39,7 @@ import re
 import secrets
 import tempfile
 import threading
+import time
 import urllib.parse
 import urllib.request as _urlreq
 import uuid
@@ -55,7 +57,7 @@ try:
 except ImportError:
     pass
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
@@ -95,12 +97,18 @@ from agent.document_store import (
     save_jep_questions,
     load_conversation_history,
     clear_conversation_history,
+    list_conversation_summaries,
+    save_terraform_bundle,
+    get_latest_terraform_bundle,
+    list_terraform_versions,
+    get_terraform_file,
 )
 from agent.pov_agent import generate_pov
 from agent.jep_agent import generate_jep, kickoff_jep
 from agent.waf_agent import generate_waf
 from agent.diagram_waf_orchestrator import run_diagram_waf_loop
 from agent.context_store import read_context, write_context, record_agent_run
+from agent.runtime_config import resolve_agent_llm_config
 
 try:
     import server.services.oci_object_storage as _oci_storage
@@ -110,6 +118,7 @@ except Exception:
     _OCI_STORAGE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+_TRACE_ID_CTX: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="")
 
 
 @asynccontextmanager
@@ -119,6 +128,29 @@ async def _lifespan(application: FastAPI):
 
 
 app = FastAPI(title="OCI Drawing Agent", version="1.3.2", lifespan=_lifespan)
+
+
+@app.middleware("http")
+async def trace_id_middleware(request: Request, call_next):
+    trace_id = request.headers.get("x-trace-id") or str(uuid.uuid4())
+    token = _TRACE_ID_CTX.set(trace_id)
+    request.state.trace_id = trace_id
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    finally:
+        _TRACE_ID_CTX.reset(token)
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    response.headers["x-trace-id"] = trace_id
+    logger.info(
+        "http_request method=%s path=%s status=%s trace_id=%s duration_ms=%d",
+        request.method,
+        request.url.path,
+        response.status_code,
+        trace_id,
+        elapsed_ms,
+    )
+    return response
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 _cfg_path = Path(__file__).parent / "config.yaml"
@@ -218,6 +250,10 @@ app.add_middleware(SessionMiddleware, secret_key=_SESSION_SECRET, https_only=Fal
 # ── Global mutable state ───────────────────────────────────────────────────────
 _oci_agent: Optional[Any] = None          # real OCI Agent, set in startup
 SESSION_STORE:     Dict[str, str]  = {}   # client_id → session_id (ADK path only; unused on inference path)
+
+
+def _current_trace_id() -> str:
+    return _TRACE_ID_CTX.get() or ""
 PENDING_CLARIFY:   Dict[str, dict] = {}   # client_id  → {items, prompt, diagram_name}
 IDEMPOTENCY_CACHE: Dict[tuple, dict] = {} # (client_id, diagram_name, input_hash) → result
 
@@ -329,6 +365,12 @@ class WafRequest(BaseModel):
     customer_id:   str
     customer_name: str
     feedback:      Optional[str] = None
+
+
+class TerraformGenerateRequest(BaseModel):
+    customer_id: str
+    customer_name: str
+    prompt: Optional[str] = ""
 
 
 # ── A2A v1.0 (Oracle Agent Spec 26.1.0) models ────────────────────────────────
@@ -2372,20 +2414,141 @@ def _make_orchestrator_text_runner():
         # We use a dedicated inference call with the writing model settings.
         if _INFERENCE_AVAILABLE and INFERENCE_ENABLED:
             from agent.llm_inference_client import run_inference
-            _writing_cfg = _cfg.get("writing", {})
+            llm_cfg = resolve_agent_llm_config(_cfg, "orchestrator")
             return run_inference(
                 prompt=prompt,
                 system_message=system_msg,
-                model_id=INFERENCE_MODEL_ID,
-                service_endpoint=INFERENCE_ENDPOINT,
-                max_tokens=int(_writing_cfg.get("max_tokens", 4000)),
-                temperature=float(_writing_cfg.get("temperature", 0.7)),
-                top_p=float(_writing_cfg.get("top_p", 0.9)),
-                top_k=int(_writing_cfg.get("top_k", 0)),
+                model_id=llm_cfg.get("model_id", INFERENCE_MODEL_ID),
+                endpoint=llm_cfg.get("service_endpoint", INFERENCE_ENDPOINT),
+                compartment_id=COMPARTMENT_ID,
+                max_tokens=int(llm_cfg.get("max_tokens", 4000)),
+                temperature=float(llm_cfg.get("temperature", 0.7)),
+                top_p=float(llm_cfg.get("top_p", 0.9)),
+                top_k=int(llm_cfg.get("top_k", 0)),
             )
         raise RuntimeError("Inference not enabled — cannot run orchestrator.")
 
     return _text_runner
+
+
+def _make_terraform_text_runner():
+    """
+    Return a sync callable (prompt, system_msg) -> str for Terraform stages.
+    """
+    def _text_runner(prompt: str, system_msg: str) -> str:
+        if _INFERENCE_AVAILABLE and INFERENCE_ENABLED:
+            from agent.llm_inference_client import run_inference
+            llm_cfg = resolve_agent_llm_config(_cfg, "terraform")
+            return run_inference(
+                prompt=prompt,
+                system_message=system_msg,
+                model_id=llm_cfg.get("model_id", TERRAFORM_MODEL_ID),
+                endpoint=llm_cfg.get("service_endpoint", INFERENCE_ENDPOINT),
+                compartment_id=COMPARTMENT_ID,
+                max_tokens=int(llm_cfg.get("max_tokens", TERRAFORM_MAX_TOKENS)),
+                temperature=float(llm_cfg.get("temperature", TERRAFORM_TEMPERATURE)),
+                top_p=float(llm_cfg.get("top_p", TERRAFORM_TOP_P)),
+                top_k=int(llm_cfg.get("top_k", TERRAFORM_TOP_K)),
+            )
+        raise RuntimeError("Inference not enabled - cannot run Terraform graph.")
+
+    return _text_runner
+
+
+async def _run_orchestrator_turn(
+    *,
+    req: OrchestratorChatRequest,
+    store,
+    text_runner,
+    orch_cfg: dict,
+) -> dict:
+    """
+    Run one orchestrator turn via legacy or LangGraph-compatible adapter.
+    """
+    max_tool_iterations = int(orch_cfg.get("max_tool_iterations", 5))
+    a2a_base_url = os.environ.get("A2A_BASE_URL", "http://localhost:8080")
+    specialist_mode = "langgraph" if bool(
+        orch_cfg.get("specialists_langgraph_enabled", False)
+    ) else "legacy"
+
+    if bool(orch_cfg.get("langgraph_enabled", False)):
+        from agent import langgraph_orchestrator
+
+        return await langgraph_orchestrator.run_turn(
+            customer_id=req.customer_id,
+            customer_name=req.customer_name,
+            user_message=req.message,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            max_tool_iterations=max_tool_iterations,
+            specialist_mode=specialist_mode,
+        )
+
+    from agent import orchestrator_agent
+
+    return await orchestrator_agent.run_turn(
+        customer_id=req.customer_id,
+        customer_name=req.customer_name,
+        user_message=req.message,
+        store=store,
+        text_runner=text_runner,
+        a2a_base_url=a2a_base_url,
+        max_tool_iterations=max_tool_iterations,
+        specialist_mode=specialist_mode,
+    )
+
+
+def _chunk_reply_text(text: str, chunk_size: int = 48) -> list[str]:
+    if not text:
+        return []
+    chunks: list[str] = []
+    current = ""
+    for token in text.split():
+        candidate = f"{current} {token}".strip()
+        if current and len(candidate) > chunk_size:
+            chunks.append(current)
+            current = token
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _build_artifact_manifest(customer_id: str, result: dict) -> dict:
+    """
+    Build UI-friendly artifact metadata from orchestrator result.
+    """
+    manifest: dict[str, list[dict]] = {"downloads": []}
+    artifacts = result.get("artifacts", {}) or {}
+    for tool_name, artifact_key in artifacts.items():
+        if tool_name == "generate_diagram":
+            manifest["downloads"].append(
+                {
+                    "type": "diagram",
+                    "tool": tool_name,
+                    "key": artifact_key,
+                    "download_url": "/api/download/diagram.drawio",
+                }
+            )
+
+    for tool_call in result.get("tool_calls", []) or []:
+        if tool_call.get("tool") != "generate_terraform":
+            continue
+        result_data = tool_call.get("result_data", {}) or {}
+        bundle = result_data.get("bundle")
+        if bundle and isinstance(bundle.get("files"), dict):
+            for filename in sorted(bundle["files"].keys()):
+                manifest["downloads"].append(
+                    {
+                        "type": "terraform",
+                        "tool": "generate_terraform",
+                        "filename": filename,
+                        "download_url": f"/api/terraform/{customer_id}/download/{filename}",
+                    }
+                )
+    return manifest
 
 
 @app.post("/api/chat")
@@ -2398,27 +2561,190 @@ async def api_chat(req: OrchestratorChatRequest):
     text_runner = _make_orchestrator_text_runner()
     orch_cfg = _cfg.get("orchestrator", {})
 
-    from agent import orchestrator_agent
     try:
-        result = await orchestrator_agent.run_turn(
-            customer_id=req.customer_id,
-            customer_name=req.customer_name,
-            user_message=req.message,
+        result = await _run_orchestrator_turn(
+            req=req,
             store=store,
             text_runner=text_runner,
-            a2a_base_url=os.environ.get("A2A_BASE_URL", "http://localhost:8080"),
-            max_tool_iterations=int(orch_cfg.get("max_tool_iterations", 5)),
+            orch_cfg=orch_cfg,
         )
+        artifact_manifest = _build_artifact_manifest(req.customer_id, result)
         return {
             "status":         "ok",
+            "trace_id":       _current_trace_id(),
             "reply":          result["reply"],
             "tool_calls":     result["tool_calls"],
             "artifacts":      result["artifacts"],
+            "artifact_manifest": artifact_manifest,
             "history_length": result["history_length"],
         }
     except Exception as exc:
-        logger.error("/api/chat error customer=%s: %s", req.customer_id, exc)
+        logger.error(
+            "/api/chat error customer=%s trace_id=%s: %s",
+            req.customer_id,
+            _current_trace_id(),
+            exc,
+        )
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/chat/stream")
+async def api_chat_stream(
+    req: OrchestratorChatRequest,
+    mode: str = Query(default="sse", pattern="^(sse|chunked)$"),
+):
+    """
+    Streaming chat endpoint for v1.5 UI.
+    Modes:
+      - sse: text/event-stream
+      - chunked: NDJSON (application/x-ndjson)
+    """
+    store = _require_object_store()
+    text_runner = _make_orchestrator_text_runner()
+    orch_cfg = _cfg.get("orchestrator", {})
+    trace_id = _current_trace_id()
+
+    async def _sse_events():
+        started = {
+            "trace_id": trace_id,
+            "customer_id": req.customer_id,
+            "event_type": "status",
+            "status": "started",
+        }
+        yield f"event: status\ndata: {json.dumps(started)}\n\n"
+        try:
+            result = await _run_orchestrator_turn(
+                req=req,
+                store=store,
+                text_runner=text_runner,
+                orch_cfg=orch_cfg,
+            )
+            for tool_call in result.get("tool_calls", []):
+                if (
+                    tool_call.get("tool") == "generate_terraform"
+                    and isinstance(tool_call.get("result_data"), dict)
+                ):
+                    for stage in tool_call.get("result_data", {}).get("stages", []):
+                        stage_payload = {
+                            "trace_id": trace_id,
+                            "customer_id": req.customer_id,
+                            "event_type": "terraform_stage",
+                            "stage": stage,
+                        }
+                        yield f"event: terraform_stage\ndata: {json.dumps(stage_payload)}\n\n"
+                payload = {
+                    "trace_id": trace_id,
+                    "customer_id": req.customer_id,
+                    "event_type": "tool",
+                    "tool_call": tool_call,
+                }
+                yield f"event: tool\ndata: {json.dumps(payload)}\n\n"
+            for chunk in _chunk_reply_text(result.get("reply", "")):
+                payload = {
+                    "trace_id": trace_id,
+                    "customer_id": req.customer_id,
+                    "event_type": "token",
+                    "delta": chunk,
+                }
+                yield f"event: token\ndata: {json.dumps(payload)}\n\n"
+            completed = {
+                "trace_id": trace_id,
+                "customer_id": req.customer_id,
+                "event_type": "completion",
+                "reply": result.get("reply", ""),
+                "tool_calls": result.get("tool_calls", []),
+                "artifacts": result.get("artifacts", {}),
+                "artifact_manifest": _build_artifact_manifest(req.customer_id, result),
+                "history_length": result.get("history_length", 0),
+            }
+            yield f"event: completion\ndata: {json.dumps(completed)}\n\n"
+        except Exception as exc:
+            logger.error(
+                "/api/chat/stream error customer=%s trace_id=%s: %s",
+                req.customer_id,
+                trace_id,
+                exc,
+            )
+            error_payload = {
+                "trace_id": trace_id,
+                "customer_id": req.customer_id,
+                "event_type": "error",
+                "error": str(exc),
+            }
+            yield f"event: error\ndata: {json.dumps(error_payload)}\n\n"
+
+    async def _ndjson_events():
+        started = {
+            "trace_id": trace_id,
+            "customer_id": req.customer_id,
+            "event_type": "status",
+            "status": "started",
+        }
+        yield json.dumps(started) + "\n"
+        try:
+            result = await _run_orchestrator_turn(
+                req=req,
+                store=store,
+                text_runner=text_runner,
+                orch_cfg=orch_cfg,
+            )
+            for tool_call in result.get("tool_calls", []):
+                if (
+                    tool_call.get("tool") == "generate_terraform"
+                    and isinstance(tool_call.get("result_data"), dict)
+                ):
+                    for stage in tool_call.get("result_data", {}).get("stages", []):
+                        stage_payload = {
+                            "trace_id": trace_id,
+                            "customer_id": req.customer_id,
+                            "event_type": "terraform_stage",
+                            "stage": stage,
+                        }
+                        yield json.dumps(stage_payload) + "\n"
+                payload = {
+                    "trace_id": trace_id,
+                    "customer_id": req.customer_id,
+                    "event_type": "tool",
+                    "tool_call": tool_call,
+                }
+                yield json.dumps(payload) + "\n"
+            for chunk in _chunk_reply_text(result.get("reply", "")):
+                payload = {
+                    "trace_id": trace_id,
+                    "customer_id": req.customer_id,
+                    "event_type": "token",
+                    "delta": chunk,
+                }
+                yield json.dumps(payload) + "\n"
+            completed = {
+                "trace_id": trace_id,
+                "customer_id": req.customer_id,
+                "event_type": "completion",
+                "reply": result.get("reply", ""),
+                "tool_calls": result.get("tool_calls", []),
+                "artifacts": result.get("artifacts", {}),
+                "artifact_manifest": _build_artifact_manifest(req.customer_id, result),
+                "history_length": result.get("history_length", 0),
+            }
+            yield json.dumps(completed) + "\n"
+        except Exception as exc:
+            logger.error(
+                "/api/chat/stream error customer=%s trace_id=%s: %s",
+                req.customer_id,
+                trace_id,
+                exc,
+            )
+            error_payload = {
+                "trace_id": trace_id,
+                "customer_id": req.customer_id,
+                "event_type": "error",
+                "error": str(exc),
+            }
+            yield json.dumps(error_payload) + "\n"
+
+    if mode == "chunked":
+        return StreamingResponse(_ndjson_events(), media_type="application/x-ndjson")
+    return StreamingResponse(_sse_events(), media_type="text/event-stream")
 
 
 @app.get("/api/chat/{customer_id}/history")
@@ -2428,7 +2754,40 @@ async def api_chat_history(customer_id: str, max_turns: int = Query(default=30, 
     history = await anyio.to_thread.run_sync(
         functools.partial(load_conversation_history, store, customer_id, max_turns)
     )
-    return {"status": "ok", "customer_id": customer_id, "history": history}
+    return {
+        "status": "ok",
+        "trace_id": _current_trace_id(),
+        "customer_id": customer_id,
+        "history": history,
+    }
+
+
+@app.get("/api/chat/history")
+async def api_chat_history_index(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    search: str = Query(default=""),
+):
+    """
+    Return aggregated conversation history across customers.
+    Used by the v1.5 sidebar list.
+    """
+    store = _require_object_store()
+    result = await anyio.to_thread.run_sync(
+        functools.partial(
+            list_conversation_summaries,
+            store,
+            page=page,
+            page_size=page_size,
+            search=search,
+        )
+    )
+    return {
+        "status": "ok",
+        "trace_id": _current_trace_id(),
+        "items": result["items"],
+        "pagination": result["pagination"],
+    }
 
 
 @app.delete("/api/chat/{customer_id}/history")
@@ -2438,7 +2797,12 @@ async def api_clear_chat_history(customer_id: str):
     await anyio.to_thread.run_sync(
         functools.partial(clear_conversation_history, store, customer_id)
     )
-    return {"status": "ok", "customer_id": customer_id, "message": "History cleared."}
+    return {
+        "status": "ok",
+        "trace_id": _current_trace_id(),
+        "customer_id": customer_id,
+        "message": "History cleared.",
+    }
 
 
 # ── A2A task endpoint ────────────────────────────────────────────────────────
@@ -3192,6 +3556,110 @@ async def waf_versions(customer_id: str):
         functools.partial(list_versions, store, "waf", customer_id)
     )
     return {"status": "ok", "customer_id": customer_id, "doc_type": "waf", "versions": versions}
+
+
+# ── Terraform endpoints ────────────────────────────────────────────────────────
+
+@app.post("/api/terraform/generate")
+async def terraform_generate(req: TerraformGenerateRequest):
+    """
+    Generate Terraform bundle using the v1.5 graph chain and persist files.
+    """
+    store = _require_object_store()
+    text_runner = _make_terraform_text_runner()
+    from agent.graphs import terraform_graph
+
+    try:
+        summary, _artifact_key, result_data = await terraform_graph.run(
+            args={"prompt": req.prompt or ""},
+            skill_root=Path(__file__).parent / "gstack_skills",
+            text_runner=text_runner,
+        )
+        if not result_data.get("ok"):
+            return {
+                "status": "need_clarification",
+                "trace_id": _current_trace_id(),
+                "customer_id": req.customer_id,
+                "customer_name": req.customer_name,
+                "summary": summary,
+                "blocking_questions": result_data.get("blocking_questions", []),
+                "stages": result_data.get("stages", []),
+            }
+
+        files = result_data.get("files", {})
+        persisted = await anyio.to_thread.run_sync(
+            functools.partial(
+                save_terraform_bundle,
+                store,
+                req.customer_id,
+                files,
+                {
+                    "customer_name": req.customer_name,
+                    "summary": summary[:500],
+                    "trace_id": _current_trace_id(),
+                },
+            )
+        )
+        return {
+            "status": "ok",
+            "trace_id": _current_trace_id(),
+            "customer_id": req.customer_id,
+            "customer_name": req.customer_name,
+            "summary": summary,
+            "version": persisted["version"],
+            "key": persisted["key"],
+            "latest_key": persisted["latest_key"],
+            "files": sorted(list(persisted["files"].keys())),
+            "stages": result_data.get("stages", []),
+        }
+    except Exception as exc:
+        logger.error("Error in /api/terraform/generate: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/terraform/{customer_id}/latest")
+async def terraform_latest(customer_id: str):
+    store = _require_object_store()
+    latest = await anyio.to_thread.run_sync(
+        functools.partial(get_latest_terraform_bundle, store, customer_id)
+    )
+    if not latest:
+        raise HTTPException(status_code=404, detail=f"No Terraform bundle for customer_id={customer_id!r}")
+    return {
+        "status": "ok",
+        "trace_id": _current_trace_id(),
+        "customer_id": customer_id,
+        "latest": latest,
+    }
+
+
+@app.get("/api/terraform/{customer_id}/versions")
+async def terraform_versions(customer_id: str):
+    store = _require_object_store()
+    versions = await anyio.to_thread.run_sync(
+        functools.partial(list_terraform_versions, store, customer_id)
+    )
+    return {
+        "status": "ok",
+        "trace_id": _current_trace_id(),
+        "customer_id": customer_id,
+        "versions": versions,
+    }
+
+
+@app.get("/api/terraform/{customer_id}/download/{filename}")
+async def terraform_download(customer_id: str, filename: str):
+    store = _require_object_store()
+    content = await anyio.to_thread.run_sync(
+        functools.partial(get_terraform_file, store, customer_id, filename)
+    )
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"Terraform file {filename!r} not found for customer {customer_id!r}")
+    return Response(
+        content=content,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 if __name__ == "__main__":

@@ -97,6 +97,35 @@ terraform:
     - "oracle-quickstart/oci-hpc"          # HPC cluster patterns on OCI bare metal
     - "ncusato/kove-terraform-oci"
 
+# v1.5.0 runtime model/reliability policy (additive, backward compatible)
+llm_defaults:
+  service_endpoint: "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+  model_id: "ocid1.generativeaimodel.oc1.us-chicago-1.amaaaaaask7dceyadd6ow2hxfppx7dmwmok4pon2jtsw2m2wiwoplexjrqaq"
+  max_tokens: 4000
+  temperature: 0.2
+  top_p: 0.9
+  top_k: 0
+  timeout_seconds: 120
+  retries: 2
+
+agents:
+  orchestrator:
+    model_id: ""   # optional override; can use a stronger reasoning model
+    timeout_seconds: 180
+    retries: 1
+  diagram:
+    model_id: ""
+  pov:
+    model_id: ""
+  jep:
+    model_id: ""
+  waf:
+    model_id: ""
+  terraform:
+    model_id: ""   # set to Grok Code capable model when available
+    timeout_seconds: 240
+    retries: 1
+
 # Auth is configured entirely via environment variables (see .env.example).
 # No auth settings belong here — they contain secrets or per-deployment values.
 
@@ -105,6 +134,8 @@ orchestrator:
   agent_id: "agent0-sa-orchestrator"
   max_tool_iterations: 5
   history_max_turns: 30
+  langgraph_enabled: false
+  specialists_langgraph_enabled: false
   telegram:
     enabled: false
     bot_token: ""    # env: TELEGRAM_BOT_TOKEN

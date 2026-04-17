@@ -135,6 +135,24 @@ class OciObjectStore(ObjectStoreBase):
                 return False
             raise
 
+    def list(self, prefix: str = "") -> list[str]:
+        """Return object names under prefix, transparently handling pagination."""
+        start = None
+        keys: list[str] = []
+        while True:
+            response = self._client.list_objects(
+                namespace_name=self._namespace,
+                bucket_name=self._bucket_name,
+                prefix=prefix or None,
+                start=start,
+            )
+            data = response.data
+            keys.extend([obj.name for obj in data.objects])
+            if not data.next_start_with:
+                break
+            start = data.next_start_with
+        return keys
+
     # ── Repr ─────────────────────────────────────────────────────────────────
 
     def __repr__(self) -> str:

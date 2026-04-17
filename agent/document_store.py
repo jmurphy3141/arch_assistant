@@ -454,3 +454,191 @@ def load_conversation_summary(
         return store.get(key).decode("utf-8", errors="replace")
     except KeyError:
         return ""
+
+
+# ── Terraform bundles ──────────────────────────────────────────────────────────
+
+def save_terraform_bundle(
+    store: ObjectStoreBase,
+    customer_id: str,
+    files: dict[str, str],
+    metadata: Optional[dict] = None,
+) -> dict:
+    """
+    Save a versioned Terraform bundle.
+
+    Writes:
+      terraform/{customer_id}/v{n}/{filename}
+      terraform/{customer_id}/v{n}/manifest.json
+      terraform/{customer_id}/LATEST.json
+      terraform/{customer_id}/MANIFEST.json
+    """
+    version = _get_next_version(store, "terraform", customer_id)
+    base = f"terraform/{customer_id}/v{version}"
+    file_keys: dict[str, str] = {}
+
+    for filename, content in files.items():
+        key = f"{base}/{filename}"
+        store.put(key, content.encode("utf-8"), "text/plain")
+        file_keys[filename] = key
+
+    manifest_doc = {
+        "version": version,
+        "files": file_keys,
+        "metadata": metadata or {},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    version_manifest_key = f"{base}/manifest.json"
+    store.put(
+        version_manifest_key,
+        json.dumps(manifest_doc, indent=2).encode("utf-8"),
+        "application/json",
+    )
+
+    latest_key = f"terraform/{customer_id}/LATEST.json"
+    store.put(
+        latest_key,
+        json.dumps(manifest_doc, indent=2).encode("utf-8"),
+        "application/json",
+    )
+
+    manifest_key = f"terraform/{customer_id}/MANIFEST.json"
+    try:
+        root_manifest = json.loads(store.get(manifest_key))
+    except KeyError:
+        root_manifest = {"versions": []}
+    root_manifest["versions"].append(
+        {
+            "version": version,
+            "key": version_manifest_key,
+            "timestamp": manifest_doc["timestamp"],
+            "metadata": metadata or {},
+        }
+    )
+    store.put(
+        manifest_key,
+        json.dumps(root_manifest, indent=2).encode("utf-8"),
+        "application/json",
+    )
+
+    return {
+        "version": version,
+        "key": version_manifest_key,
+        "latest_key": latest_key,
+        "files": file_keys,
+    }
+
+
+def get_latest_terraform_bundle(store: ObjectStoreBase, customer_id: str) -> Optional[dict]:
+    key = f"terraform/{customer_id}/LATEST.json"
+    try:
+        return json.loads(store.get(key))
+    except KeyError:
+        return None
+
+
+def list_terraform_versions(store: ObjectStoreBase, customer_id: str) -> list[dict]:
+    return list_versions(store, "terraform", customer_id)
+
+
+def get_terraform_file(store: ObjectStoreBase, customer_id: str, filename: str) -> Optional[bytes]:
+    latest = get_latest_terraform_bundle(store, customer_id)
+    if not latest:
+        return None
+    key = latest.get("files", {}).get(filename)
+    if not key:
+        return None
+    try:
+        return store.get(key)
+    except KeyError:
+        return None
+
+
+def list_conversation_customers(store: ObjectStoreBase) -> list[str]:
+    """
+    Return sorted customer_ids that have persisted conversation history.
+    """
+    keys = store.list("conversations/")
+    customer_ids: set[str] = set()
+    for key in keys:
+        if not key.endswith("/history.json"):
+            continue
+        # conversations/{customer_id}/history.json
+        parts = key.split("/")
+        if len(parts) >= 3 and parts[0] == "conversations":
+            customer_ids.add(parts[1])
+    return sorted(customer_ids)
+
+
+def list_conversation_summaries(
+    store: ObjectStoreBase,
+    *,
+    search: str = "",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """
+    Return paginated conversation summaries across customers.
+    """
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+
+    search_lc = search.strip().lower()
+    summaries: list[dict] = []
+
+    for customer_id in list_conversation_customers(store):
+        history = load_conversation_history(store, customer_id, max_turns=0)
+        if not history:
+            continue
+
+        last_turn = history[-1]
+        last_ts = last_turn.get("timestamp", "")
+        customer_name = ""
+        last_preview = ""
+        status = "In Progress"
+
+        for turn in reversed(history):
+            if not customer_name and turn.get("role") == "user":
+                customer_name = turn.get("customer_name", "") or ""
+            if not last_preview and turn.get("content"):
+                text = str(turn.get("content", "")).strip()
+                if text:
+                    last_preview = text.replace("\n", " ")[:160]
+            if turn.get("tool") == "generate_terraform":
+                summary = str(turn.get("result_summary", "")).lower()
+                if "blocked" in summary or "clarification" in summary:
+                    status = "Terraform Needs Input"
+                else:
+                    status = "Completed with Terraform"
+            if customer_name and last_preview and status != "In Progress":
+                break
+
+        haystack = f"{customer_id} {customer_name} {last_preview}".lower()
+        if search_lc and search_lc not in haystack:
+            continue
+
+        summaries.append(
+            {
+                "customer_id": customer_id,
+                "customer_name": customer_name or customer_id,
+                "last_message_preview": last_preview,
+                "last_activity_timestamp": last_ts,
+                "status": status,
+            }
+        )
+
+    summaries.sort(key=lambda item: item.get("last_activity_timestamp", ""), reverse=True)
+    total = len(summaries)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return {
+        "items": summaries[start:end],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_next": end < total,
+        },
+    }
