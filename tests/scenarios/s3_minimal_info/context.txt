@@ -1,0 +1,37 @@
+CAPITAL MARKETS ARCHITECTURE QUESTIONNAIRE — SCENARIO 3: MINIMAL INFORMATION
+=============================================================================
+
+SECTION 1: ENVIRONMENT OVERVIEW
+---------------------------------
+Application Name: Calypso Trading Platform
+Workload: Capital markets trading system
+
+SECTION 2: APPLICATION TIER
+-----------------------------
+[NOT PROVIDED]
+
+SECTION 3: DATABASE LAYER
+--------------------------
+[NOT PROVIDED]
+
+SECTION 4: STORAGE
+------------------
+[NOT PROVIDED]
+
+SECTION 5: DATA & ANALYTICS
+-----------------------------
+[NOT PROVIDED]
+
+SECTION 6: NETWORKING
+----------------------
+We connect to our on-premises offices. We need internet access for our users.
+
+SECTION 7: DISASTER RECOVERY
+------------------------------
+We need it to be highly available.
+
+ADDITIONAL NOTES:
+-----------------
+We are a capital markets firm. We run a trading platform. We need it to be
+highly available and secure on Oracle Cloud Infrastructure. Please suggest
+an appropriate architecture.

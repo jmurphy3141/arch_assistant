@@ -1,0 +1,64 @@
+CAPITAL MARKETS ARCHITECTURE QUESTIONNAIRE — SCENARIO 1: FULL INFORMATION
+==========================================================================
+
+SECTION 1: ENVIRONMENT OVERVIEW
+---------------------------------
+Application Name: Calypso T360 (Capital Markets Risk & Trading Platform)
+Environment: Production
+Workload Classification: Mission-critical financial trading system
+Current Platform: On-premises (Cisco UCS, Oracle Exadata) at Chicago data centre
+Migration Target: Oracle Cloud Infrastructure (OCI) — us-phoenix-1
+Regulatory: SOX, FINRA, MiFID II; data must remain in US regions
+
+SECTION 2: APPLICATION TIER
+-----------------------------
+Framework: Java EE / Oracle WebLogic 14c
+Instances: 8 x VM.Standard3.Flex (16 OCPU, 256 GB RAM) per Availability Domain
+Deployment: Active-active across 2 Availability Domains in us-phoenix-1
+Sessions: ~2,000 concurrent traders; peak 5,000 during market open/close
+Inter-AD traffic: < 5 ms latency required between ADs
+Internet-facing: Yes — external counterparty portal (HTTPS/443)
+Internal connectivity: Yes — FastConnect to Chicago trading desks and London office
+
+SECTION 3: DATABASE LAYER
+--------------------------
+Engine: Oracle Database 19c Enterprise Edition — Real Application Clusters (RAC)
+Primary: AD1 — 2-node RAC, Exadata X9M config, 32 OCPU, 512 GB RAM, 50 TB NVMe
+Standby: AD2 — Data Guard synchronous replication (zero RPO), auto failover < 2 min
+Backup: OCI Object Storage — daily RMAN full + hourly incrementals
+RTO: < 2 minutes (automatic Data Guard failover)
+RPO: 0 (synchronous redo log shipping)
+
+SECTION 4: STORAGE
+------------------
+Block Storage: 50 TB per AD (Ultra High Performance, NVMe-backed)
+Object Storage: 10 TB (market data archive, RMAN backups)
+File Storage: 2 TB (shared config, audit logs)
+
+SECTION 5: DATA & ANALYTICS
+-----------------------------
+Market data feed: Bloomberg B-PIPE via FastConnect
+Real-time stream: OCI Streaming (Kafka-compatible) — 500k msgs/sec at peak
+Analytics: Oracle Analytics Cloud (OAC) — end-of-day risk reports
+Monitoring: OCI Application Performance Monitoring + OCI Logging Analytics (SIEM)
+
+SECTION 6: NETWORKING
+----------------------
+Connectivity: FastConnect 10 Gbps × 2 (redundant) — Chicago trading desk
+Secondary: FastConnect 2 Gbps — London office
+Internet: HTTPS/443 only — external counterparty portal and regulatory reporting
+On-premises: 3 office locations (Chicago, London, New York)
+VPN fallback: Site-to-site IPSec VPN as backup to FastConnect
+Load Balancing: OCI Load Balancer (public) + Network Load Balancer (private)
+WAF: OCI WAF on public-facing endpoints
+Bastion: Required for admin/ops access (no direct SSH from internet)
+Firewall: OCI Network Firewall on ingress path
+
+SECTION 7: DISASTER RECOVERY
+------------------------------
+Strategy: Multi-AD active-active (primary) + multi-region warm standby (future)
+HA Mode: 2 Availability Domains — synchronous replication
+Failover: Automatic (Data Guard + OCI Traffic Management DNS failover)
+RTO Target: < 2 minutes
+RPO Target: 0 (zero data loss)
+DR Drill Frequency: Quarterly

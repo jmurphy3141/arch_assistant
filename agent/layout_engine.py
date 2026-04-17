@@ -1,0 +1,1337 @@
+"""
+agent/layout_engine.py
+-----------------------
+Converts LLM layout spec JSON → deterministic x,y positions for every node.
+
+New spec format (hierarchical, top-to-bottom):
+  deployment_type: "single_ad" | "multi_ad" | "multi_region"
+  regions[] → availability_domains[] → fault_domains[] → subnets[] → nodes[]
+  regions[] → regional_subnets[]      (drawn above AD boxes inside region)
+  regions[] → gateways[]              (IGW top, DRG left, NAT/SGW right)
+  regions[] → oci_services[]          (right side outside region)
+  external[]                          (left side outside region + top)
+  edges[]
+
+Rules (deterministic, no creativity):
+  - Direction: top → bottom (TB)
+  - Regional subnets at top inside region, AD boxes below
+  - Nodes in horizontal rows inside each subnet
+  - All positions are ABSOLUTE (page coordinates)
+  - Page: Landscape A3 1654×1169
+"""
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
+
+# ── Canvas constants ───────────────────────────────────────────────────────────
+PAGE_W, PAGE_H = 1654, 1169
+PAGE_MARGIN = 30
+EXT_W    = 90    # external element column width
+EXT_GAP  = 24    # gap between external column and region box
+EXT_TOP_H = 90   # strip above region for internet/admin elements
+
+ICON_W, ICON_H = 48, 48
+LABEL_H  = 20
+ICON_SLOT = ICON_H + LABEL_H + 8   # 76px vertical per icon including label
+NODE_GAP_X = 14
+
+SUB_PAD_X = 14; SUB_PAD_TOP = 32; SUB_PAD_BOT = 10; SUB_GAP_Y = 24  # 24px gap for cleaner edge routing
+MIN_SUBNET_W = 200   # minimum subnet box width — prevents single-icon subnets from being too narrow
+FD_PAD_X  = 12; FD_PAD_TOP  = 32; FD_PAD_BOT  = 12; FD_GAP_X  = 12
+AD_PAD_X  = 14; AD_PAD_TOP  = 36; AD_PAD_BOT  = 14; AD_GAP_X  = 20
+REG_PAD_X = 70; REG_PAD_TOP = 40; REG_PAD_BOT = 30; REG_SUB_GAP_Y = 14  # wide lateral margins for edge routing
+VCN_PAD_X   = 14   # VCN box inner left/right padding
+VCN_PAD_TOP = 32   # VCN box label strip height
+VCN_PAD_BOT = 14   # VCN box bottom padding
+SVC_COL_W      = 80   # services column width (right of VCN, inside region)
+SVC_COL_MARGIN = 40   # gap between VCN right edge and services column (for flow lines)
+MULTI_REGION_GAP = 30
+
+# Multi-compartment layout constants (multi-env BOMs with per-environment compartments)
+COMP_PAD_X   = 16   # compartment box left/right inner padding
+COMP_PAD_TOP = 28   # compartment box label strip height
+COMP_PAD_BOT = 12   # compartment box bottom inner padding
+COMP_GAP     = 20   # horizontal gap between side-by-side compartments
+COMP_ROW_GAP = 20   # vertical gap between compartment rows
+OUTER_PAD_X  = 24   # outer region box left/right padding
+OUTER_PAD_TOP = 40  # outer region box top padding (label height + clearance)
+OUTER_PAD_BOT = 20  # outer region box bottom padding
+SVC_COMP_PAD  = 14  # shared services compartment inner padding
+
+# Single-region position constants
+REGION_X = PAGE_MARGIN + EXT_W + EXT_GAP          # 144
+REGION_W = PAGE_W - 2 * (PAGE_MARGIN + EXT_W + EXT_GAP)  # 1366
+REGION_Y = PAGE_MARGIN + EXT_TOP_H                # 120
+
+
+@dataclass
+class PositionedBox:
+    id: str
+    label: str
+    box_type: str   # _region_box | _ad_box | _fd_box | _subnet_box
+    tier: str = ""  # for subnet: ingress | web | app | db
+    x: float = 0
+    y: float = 0
+    w: float = 0
+    h: float = 0
+
+
+@dataclass
+class PositionedNode:
+    id: str
+    label: str
+    oci_type: str
+    x: float = 0
+    y: float = 0
+    w: float = ICON_W
+    h: float = ICON_SLOT
+
+
+def _subnet_content_size(subnet_spec: dict) -> tuple[float, float]:
+    """Return (w, h) of the content area for one subnet (nodes in a single row)."""
+    nodes = subnet_spec.get("nodes", [])
+    n = max(len(nodes), 1)
+    content_w = n * ICON_W + (n - 1) * NODE_GAP_X
+    content_h = ICON_SLOT
+    return content_w, content_h
+
+
+def _subnet_box_size(subnet_spec: dict) -> tuple[float, float]:
+    """Return (w, h) of the subnet box including padding, respecting MIN_SUBNET_W."""
+    cw, ch = _subnet_content_size(subnet_spec)
+    return max(cw + 2 * SUB_PAD_X, MIN_SUBNET_W), ch + SUB_PAD_TOP + SUB_PAD_BOT
+
+
+def _place_subnet_nodes(
+    subnet_spec: dict,
+    box_x: float,
+    box_y: float,
+    actual_box_w: float | None = None,
+) -> list[PositionedNode]:
+    """Place nodes in a horizontal row centred inside the subnet box.
+
+    actual_box_w: the rendered box width (may differ from natural content width
+    when the box is stretched to fill the full available column).
+    """
+    nodes_spec = subnet_spec.get("nodes", [])
+    if not nodes_spec:
+        return []
+
+    n = len(nodes_spec)
+    total_w = n * ICON_W + (n - 1) * NODE_GAP_X
+    box_w = actual_box_w if actual_box_w is not None else _subnet_box_size(subnet_spec)[0]
+    start_x = box_x + (box_w - total_w) / 2
+    node_y = box_y + SUB_PAD_TOP
+
+    result = []
+    for i, nd in enumerate(nodes_spec):
+        result.append(PositionedNode(
+            id=nd["id"],
+            label=nd.get("label", nd["id"]),
+            oci_type=nd.get("type", ""),
+            x=start_x + i * (ICON_W + NODE_GAP_X),
+            y=node_y,
+            w=ICON_W,
+            h=ICON_SLOT,
+        ))
+    return result
+
+
+def _layout_subnets_vertical(
+    subnets: list[dict],
+    origin_x: float,
+    origin_y: float,
+    available_w: float,
+) -> tuple[list[PositionedBox], list[PositionedNode], float]:
+    """
+    Stack subnet boxes vertically. Each box fills the full available_w (matching
+    the OCI reference layout where subnets are full-width rows). Icons are centred
+    inside each subnet box.
+    Returns (boxes, nodes, total_height_used).
+    """
+    boxes: list[PositionedBox] = []
+    nodes: list[PositionedNode] = []
+    cur_y = origin_y
+
+    for sub in subnets:
+        _, sub_h = _subnet_box_size(sub)
+        # Subnets fill the full available width (OCI reference style)
+        sub_w = available_w
+        sub_x = origin_x
+
+        tier = sub.get("tier", "app")
+        boxes.append(PositionedBox(
+            id=sub["id"],
+            label=sub.get("label", sub["id"]),
+            box_type="_subnet_box",
+            tier=tier,
+            x=sub_x,
+            y=cur_y,
+            w=sub_w,
+            h=sub_h,
+        ))
+        nodes.extend(_place_subnet_nodes(sub, sub_x, cur_y, actual_box_w=sub_w))
+        cur_y += sub_h + SUB_GAP_Y
+
+    total_h = cur_y - origin_y - SUB_GAP_Y if subnets else 0
+    return boxes, nodes, total_h
+
+
+def _layout_subnets_horizontal(
+    subnets: list[dict],
+    origin_x: float,
+    origin_y: float,
+    available_w: float,
+) -> tuple[list[PositionedBox], list[PositionedNode], float]:
+    """
+    Place subnet boxes side by side horizontally (for regional subnets).
+    Each box uses its natural (content-based) width; the row is centred in available_w.
+    Returns (boxes, nodes, max_height_used).
+    """
+    boxes: list[PositionedBox] = []
+    nodes: list[PositionedNode] = []
+    if not subnets:
+        return boxes, nodes, 0
+
+    n = len(subnets)
+    widths = [_subnet_box_size(sub)[0] for sub in subnets]
+    total_natural_w = sum(widths) + (n - 1) * SUB_GAP_Y
+
+    # Centre row; if natural widths exceed available_w scale down proportionally
+    if total_natural_w > available_w:
+        scale = available_w / total_natural_w
+        widths = [w * scale for w in widths]
+        total_natural_w = available_w
+
+    start_x = origin_x + (available_w - total_natural_w) / 2
+    max_h = 0
+    cur_x = start_x
+
+    for sub, sub_w in zip(subnets, widths):
+        _, sub_h = _subnet_box_size(sub)
+        tier = sub.get("tier", "ingress")
+
+        boxes.append(PositionedBox(
+            id=sub["id"],
+            label=sub.get("label", sub["id"]),
+            box_type="_subnet_box",
+            tier=tier,
+            x=cur_x,
+            y=origin_y,
+            w=sub_w,
+            h=sub_h,
+        ))
+        nodes.extend(_place_subnet_nodes(sub, cur_x, origin_y))
+        max_h = max(max_h, sub_h)
+        cur_x += sub_w + SUB_GAP_Y
+
+    return boxes, nodes, max_h
+
+
+def _layout_fd(
+    fd_spec: dict,
+    origin_x: float,
+    origin_y: float,
+    available_w: float,
+) -> tuple[PositionedBox, list[PositionedBox], list[PositionedNode]]:
+    """Layout a single Fault Domain box with its subnets stacked vertically."""
+    subnets = fd_spec.get("subnets", [])
+    inner_x = origin_x + FD_PAD_X
+    inner_y = origin_y + FD_PAD_TOP
+    inner_w = available_w - 2 * FD_PAD_X
+
+    sub_boxes, sub_nodes, content_h = _layout_subnets_vertical(subnets, inner_x, inner_y, inner_w)
+
+    fd_h = FD_PAD_TOP + content_h + FD_PAD_BOT
+    fd_box = PositionedBox(
+        id=fd_spec["id"],
+        label=fd_spec.get("label", fd_spec["id"]),
+        box_type="_fd_box",
+        x=origin_x,
+        y=origin_y,
+        w=available_w,
+        h=fd_h,
+    )
+    return fd_box, sub_boxes, sub_nodes
+
+
+def _layout_ad_single(
+    ad_spec: dict,
+    origin_x: float,
+    origin_y: float,
+    available_w: float,
+) -> tuple[PositionedBox, list[PositionedBox], list[PositionedNode]]:
+    """
+    Layout an AD for single_ad mode.
+
+    FD boxes are tall vertical columns (matching reference v8 style).
+    AD-level subnets are full-width horizontal rows that visually cross all FD
+    columns — they start just below the FD label strip and are drawn on top of
+    the FD boxes in the flat XML (later in document order = on top visually).
+    """
+    fault_domains = ad_spec.get("fault_domains", [])
+    ad_subnets    = ad_spec.get("subnets", [])
+
+    all_boxes: list[PositionedBox] = []
+    all_nodes: list[PositionedNode] = []
+
+    inner_x = origin_x + AD_PAD_X
+    inner_w = available_w - 2 * AD_PAD_X
+    fd_origin_y = origin_y + AD_PAD_TOP
+
+    # Subnets start just below the FD label strip (FD_PAD_TOP = label area height)
+    sub_start_y = fd_origin_y + (FD_PAD_TOP if fault_domains else 0)
+
+    # Compute subnet positions first — needed to calculate FD column height
+    sub_boxes: list[PositionedBox] = []
+    sub_nodes: list[PositionedNode] = []
+    subs_h = 0
+    if ad_subnets:
+        sub_boxes, sub_nodes, subs_h = _layout_subnets_vertical(
+            ad_subnets, inner_x, sub_start_y, inner_w
+        )
+
+    # FD boxes: tall vertical columns sized to cover all subnets
+    if fault_domains:
+        n_fds = len(fault_domains)
+        fd_w = (inner_w - (n_fds - 1) * FD_GAP_X) / n_fds
+        fd_h = FD_PAD_TOP + (subs_h if subs_h > 0 else FD_PAD_BOT * 2)
+
+        for i, fd in enumerate(fault_domains):
+            fd_x = inner_x + i * (fd_w + FD_GAP_X)
+            fd_box = PositionedBox(
+                id=fd["id"],
+                label=fd.get("label", fd["id"]),
+                box_type="_fd_box",
+                x=fd_x,
+                y=fd_origin_y,
+                w=fd_w,
+                h=fd_h,
+            )
+            all_boxes.append(fd_box)
+
+    # Subnets drawn after FD boxes so they render on top in flat XML
+    all_boxes.extend(sub_boxes)
+    all_nodes.extend(sub_nodes)
+
+    cur_y = sub_start_y + subs_h + SUB_GAP_Y
+    ad_h = cur_y - origin_y + AD_PAD_BOT
+    ad_box = PositionedBox(
+        id=ad_spec["id"],
+        label=ad_spec.get("label", ad_spec["id"]),
+        box_type="_ad_box",
+        x=origin_x,
+        y=origin_y,
+        w=available_w,
+        h=ad_h,
+    )
+    return ad_box, all_boxes, all_nodes
+
+
+def _layout_ad_multi(
+    ad_spec: dict,
+    origin_x: float,
+    origin_y: float,
+    available_w: float,
+) -> tuple[PositionedBox, list[PositionedBox], list[PositionedNode]]:
+    """
+    Layout an AD for multi_ad / multi_region mode: subnets stacked vertically, no FDs.
+    """
+    subnets = ad_spec.get("subnets", [])
+    all_boxes: list[PositionedBox] = []
+    all_nodes: list[PositionedNode] = []
+
+    inner_x = origin_x + AD_PAD_X
+    inner_y = origin_y + AD_PAD_TOP
+    inner_w = available_w - 2 * AD_PAD_X
+
+    sub_boxes, sub_nodes, content_h = _layout_subnets_vertical(subnets, inner_x, inner_y, inner_w)
+    all_boxes.extend(sub_boxes)
+    all_nodes.extend(sub_nodes)
+
+    ad_h = AD_PAD_TOP + content_h + AD_PAD_BOT
+    ad_box = PositionedBox(
+        id=ad_spec["id"],
+        label=ad_spec.get("label", ad_spec["id"]),
+        box_type="_ad_box",
+        x=origin_x,
+        y=origin_y,
+        w=available_w,
+        h=ad_h,
+    )
+    return ad_box, all_boxes, all_nodes
+
+
+def _layout_region(
+    region_spec: dict,
+    origin_x: float,
+    origin_y: float,
+    region_w: float,
+    deployment_type: str,
+) -> tuple[PositionedBox, list[PositionedBox], list[PositionedNode], list[PositionedNode]]:
+    """
+    Layout a region box with all its contents.
+
+    Structure (left-to-right inside region):
+      ┌─ Region box ──────────────────────────────────────────────────────┐
+      │  [gateways straddle VCN top edge — REG_PAD_TOP gives clearance]  │
+      │  ┌─ VCN box ─────────────────────────┐  [SVC_COL_MARGIN gap]    │
+      │  │  regional subnets (horizontal)    │  [OCI services column]   │
+      │  │  AD boxes (side by side)          │  (inside region,         │
+      │  └───────────────────────────────────┘   outside VCN)           │
+      └───────────────────────────────────────────────────────────────────┘
+
+    Returns (region_box, all_sub_boxes, all_icon_nodes, gateway_nodes).
+    """
+    regional_subnets = region_spec.get("regional_subnets", [])
+    ads              = region_spec.get("availability_domains", [])
+    gateways         = region_spec.get("gateways", [])
+    oci_services     = region_spec.get("oci_services", [])
+
+    all_boxes: list[PositionedBox] = []
+    all_nodes: list[PositionedNode] = []
+
+    has_services = bool(oci_services)
+
+    # ── VCN box geometry ──────────────────────────────────────────────────────
+    # VCN left edge sits REG_PAD_X inside the region.
+    # VCN top edge sits REG_PAD_TOP below the region top — gateways straddle this Y.
+    vcn_x = origin_x + REG_PAD_X
+    vcn_y = origin_y + REG_PAD_TOP
+
+    # Shrink VCN width to leave a services column + routing margin on the right
+    svc_reserve = (SVC_COL_MARGIN + SVC_COL_W) if has_services else 0
+    vcn_w = region_w - 2 * REG_PAD_X - svc_reserve
+
+    vcn_inner_x = vcn_x + VCN_PAD_X
+    vcn_inner_y = vcn_y + VCN_PAD_TOP
+    vcn_inner_w = vcn_w - 2 * VCN_PAD_X
+
+    cur_y = vcn_inner_y
+
+    # 1. Regional subnets — side by side horizontally inside VCN
+    if regional_subnets:
+        rsub_boxes, rsub_nodes, rsub_h = _layout_subnets_horizontal(
+            regional_subnets, vcn_inner_x, cur_y, vcn_inner_w
+        )
+        all_boxes.extend(rsub_boxes)
+        all_nodes.extend(rsub_nodes)
+        cur_y += rsub_h + REG_SUB_GAP_Y
+
+    # 2. AD boxes — side by side horizontally inside VCN
+    if ads:
+        n_ads = len(ads)
+        ad_w = (vcn_inner_w - (n_ads - 1) * AD_GAP_X) / n_ads
+        max_ad_h = 0
+
+        for i, ad in enumerate(ads):
+            ad_x = vcn_inner_x + i * (ad_w + AD_GAP_X)
+            if deployment_type == "single_ad":
+                ad_box, sub_boxes, sub_nodes = _layout_ad_single(ad, ad_x, cur_y, ad_w)
+            else:
+                ad_box, sub_boxes, sub_nodes = _layout_ad_multi(ad, ad_x, cur_y, ad_w)
+
+            all_boxes.append(ad_box)
+            all_boxes.extend(sub_boxes)
+            all_nodes.extend(sub_nodes)
+            max_ad_h = max(max_ad_h, ad_box.h)
+
+        cur_y += max_ad_h + REG_SUB_GAP_Y
+
+    # VCN height wraps its content
+    content_h = cur_y - vcn_inner_y
+    vcn_h = VCN_PAD_TOP + max(content_h - REG_SUB_GAP_Y, 0) + VCN_PAD_BOT
+
+    vcn_box = PositionedBox(
+        id=region_spec["id"] + "_vcn",
+        label="VCN",
+        box_type="_vcn_box",
+        x=vcn_x,
+        y=vcn_y,
+        w=vcn_w,
+        h=vcn_h,
+    )
+    # Insert before AD/subnet boxes so it renders behind them
+    all_boxes.insert(0, vcn_box)
+
+    # Region height: max(VCN bottom, services column bottom) + bottom padding.
+    # Services column height must be factored in — if there are more service icons
+    # than the VCN content can accommodate, the services spill out of the region box.
+    svc_col_h = len(oci_services) * (ICON_SLOT + NODE_GAP_X) if oci_services else 0
+    svc_bottom = (vcn_y + VCN_PAD_TOP + svc_col_h) if svc_col_h else 0
+    vcn_bottom = vcn_y + vcn_h
+    region_h = max(vcn_bottom, svc_bottom) - origin_y + REG_PAD_BOT
+
+    region_box = PositionedBox(
+        id=region_spec["id"],
+        label=region_spec.get("label", region_spec["id"]),
+        box_type="_region_box",
+        x=origin_x,
+        y=origin_y,
+        w=region_w,
+        h=region_h,
+    )
+
+    # 3. Gateway nodes — placed by their natural OCI edge:
+    #   DRG          → straddles VCN LEFT edge  (on-prem/FastConnect from left)
+    #   IGW, NAT     → straddle VCN TOP edge    (internet traffic from above)
+    #   SGW          → straddles VCN RIGHT edge (OCI services to the right)
+    _GW_EDGE = {
+        "drg": "left", "dynamic routing gateway": "left",
+        "internet gateway": "top",
+        "nat gateway": "top",
+        "service gateway": "right",
+    }
+    _TOP_ORDER  = {"internet gateway": 0, "nat gateway": 1}
+    gateway_nodes: list[PositionedNode] = []
+
+    top_gws   = [g for g in gateways if _GW_EDGE.get(g.get("type","").lower(),"top") == "top"]
+    left_gws  = [g for g in gateways if _GW_EDGE.get(g.get("type","").lower(),"top") == "left"]
+    right_gws = [g for g in gateways if _GW_EDGE.get(g.get("type","").lower(),"top") == "right"]
+    top_gws   = sorted(top_gws, key=lambda g: _TOP_ORDER.get(g.get("type","").lower(), 99))
+
+    # Top gateways: spread across VCN top edge
+    n_top = len(top_gws)
+    if n_top > 0:
+        top_gap = (vcn_w - n_top * ICON_W) / max(n_top - 1, 1) if n_top > 1 else 0
+        top_gy  = vcn_y - ICON_H // 2
+        for i, gw in enumerate(top_gws):
+            gateway_nodes.append(PositionedNode(
+                id=gw["id"], label=gw.get("label", gw["id"]),
+                oci_type=gw.get("type", "").lower(),
+                x=vcn_x + i * (ICON_W + top_gap), y=top_gy, w=ICON_W, h=ICON_SLOT,
+            ))
+
+    # Left gateways: straddle VCN left edge, stacked vertically near top
+    for i, gw in enumerate(left_gws):
+        gateway_nodes.append(PositionedNode(
+            id=gw["id"], label=gw.get("label", gw["id"]),
+            oci_type=gw.get("type", "").lower(),
+            x=vcn_x - ICON_W // 2,
+            y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
+            w=ICON_W, h=ICON_SLOT,
+        ))
+
+    # Right gateways: straddle VCN right edge, stacked vertically near top
+    for i, gw in enumerate(right_gws):
+        gateway_nodes.append(PositionedNode(
+            id=gw["id"], label=gw.get("label", gw["id"]),
+            oci_type=gw.get("type", "").lower(),
+            x=vcn_x + vcn_w - ICON_W // 2,
+            y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
+            w=ICON_W, h=ICON_SLOT,
+        ))
+
+    # 4. OCI services — right of VCN, inside region, SVC_COL_MARGIN gap for flow lines
+    svc_x = vcn_x + vcn_w + SVC_COL_MARGIN
+    svc_y = vcn_y + VCN_PAD_TOP   # align with VCN content top
+    for svc in oci_services:
+        all_nodes.append(PositionedNode(
+            id=svc["id"],
+            label=svc.get("label", svc["id"]),
+            oci_type=svc.get("type", ""),
+            x=svc_x,
+            y=svc_y,
+            w=ICON_W,
+            h=ICON_SLOT,
+        ))
+        svc_y += ICON_SLOT + NODE_GAP_X
+
+    return region_box, all_boxes, all_nodes, gateway_nodes
+
+
+_GW_EDGE_MAP = {
+    "drg": "left", "dynamic routing gateway": "left",
+    "internet gateway": "top",
+    "nat gateway": "top",
+    "service gateway": "right",
+}
+_TOP_GW_ORDER = {"internet gateway": 0, "nat gateway": 1}
+
+
+def _place_gateways(
+    gateways: list[dict],
+    vcn_x: float,
+    vcn_y: float,
+    vcn_w: float,
+) -> list[PositionedNode]:
+    """Place gateway icons straddling the VCN box edges."""
+    top_gws   = sorted(
+        [g for g in gateways if _GW_EDGE_MAP.get(g.get("type", "").lower(), "top") == "top"],
+        key=lambda g: _TOP_GW_ORDER.get(g.get("type", "").lower(), 99),
+    )
+    left_gws  = [g for g in gateways if _GW_EDGE_MAP.get(g.get("type", "").lower(), "top") == "left"]
+    right_gws = [g for g in gateways if _GW_EDGE_MAP.get(g.get("type", "").lower(), "top") == "right"]
+
+    result: list[PositionedNode] = []
+
+    n_top = len(top_gws)
+    if n_top > 0:
+        top_gap = (vcn_w - n_top * ICON_W) / max(n_top - 1, 1) if n_top > 1 else 0
+        for i, gw in enumerate(top_gws):
+            result.append(PositionedNode(
+                id=gw["id"], label=gw.get("label", gw["id"]),
+                oci_type=gw.get("type", "").lower(),
+                x=vcn_x + i * (ICON_W + top_gap), y=vcn_y - ICON_H // 2,
+                w=ICON_W, h=ICON_SLOT,
+            ))
+
+    for i, gw in enumerate(left_gws):
+        result.append(PositionedNode(
+            id=gw["id"], label=gw.get("label", gw["id"]),
+            oci_type=gw.get("type", "").lower(),
+            x=vcn_x - ICON_W // 2,
+            y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
+            w=ICON_W, h=ICON_SLOT,
+        ))
+
+    for i, gw in enumerate(right_gws):
+        result.append(PositionedNode(
+            id=gw["id"], label=gw.get("label", gw["id"]),
+            oci_type=gw.get("type", "").lower(),
+            x=vcn_x + vcn_w - ICON_W // 2,
+            y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
+            w=ICON_W, h=ICON_SLOT,
+        ))
+
+    return result
+
+
+def _layout_compartment(
+    comp_spec: dict,
+    origin_x: float,
+    origin_y: float,
+    comp_w: float,
+) -> tuple[PositionedBox, list[PositionedBox], list[PositionedNode], list[PositionedNode]]:
+    """
+    Layout a single environment compartment box with its VCN and subnets.
+
+    Returns (compartment_box, sub_boxes, icon_nodes, gateway_nodes).
+    """
+    subnets  = comp_spec.get("subnets", [])
+    gateways = comp_spec.get("gateways", [])
+
+    all_boxes: list[PositionedBox] = []
+    all_nodes: list[PositionedNode] = []
+
+    # VCN sits inside the compartment with padding
+    vcn_x = origin_x + COMP_PAD_X
+    vcn_y = origin_y + COMP_PAD_TOP
+    vcn_w = comp_w - 2 * COMP_PAD_X
+
+    vcn_inner_x = vcn_x + VCN_PAD_X
+    vcn_inner_y = vcn_y + VCN_PAD_TOP
+    vcn_inner_w = vcn_w - 2 * VCN_PAD_X
+
+    sub_boxes, sub_nodes, content_h = _layout_subnets_vertical(
+        subnets, vcn_inner_x, vcn_inner_y, vcn_inner_w
+    )
+    all_boxes.extend(sub_boxes)
+    all_nodes.extend(sub_nodes)
+
+    vcn_h = VCN_PAD_TOP + max(content_h, 0) + VCN_PAD_BOT
+    vcn_box = PositionedBox(
+        id=comp_spec["id"] + "_vcn",
+        label="VCN",
+        box_type="_vcn_box",
+        x=vcn_x, y=vcn_y, w=vcn_w, h=vcn_h,
+    )
+    all_boxes.insert(0, vcn_box)
+
+    comp_h = COMP_PAD_TOP + vcn_h + COMP_PAD_BOT
+    comp_box = PositionedBox(
+        id=comp_spec["id"],
+        label=comp_spec.get("label", "Compartment"),
+        box_type="_compartment_box",
+        x=origin_x, y=origin_y, w=comp_w, h=comp_h,
+    )
+
+    gateway_nodes = _place_gateways(gateways, vcn_x, vcn_y, vcn_w)
+
+    return comp_box, all_boxes, all_nodes, gateway_nodes
+
+
+def _layout_multi_compartment_region(
+    region_spec: dict,
+    origin_x: float,
+    origin_y: float,
+    region_w: float,
+) -> tuple[PositionedBox, list[PositionedBox], list[PositionedNode], list[PositionedNode]]:
+    """
+    Layout a single OCI Region box containing N environment compartments
+    (side-by-side in rows) plus an optional Shared Services compartment below.
+
+    Structure:
+      ┌─ OCI Region ────────────────────────────────────────────────┐
+      │  ┌─ Prod Comp ──┐  ┌─ Proto Comp ──┐  ┌─ Dev Comp ──┐    │
+      │  │  VCN          │  │  VCN           │  │  VCN         │    │
+      │  │  [pub sub]    │  │  [pub sub]     │  │  [pub sub]   │    │
+      │  │  [app sub]    │  │  [app sub]     │  │  [app sub]   │    │
+      │  │  [db sub]     │  │  [db sub]      │  │  [db sub]    │    │
+      │  └───────────────┘  └────────────────┘  └──────────────┘    │
+      │  ┌─ Shared Services Compartment ───────────────────────┐    │
+      │  │  [logging]  [monitoring]  [directory]  [certs]      │    │
+      │  └─────────────────────────────────────────────────────┘    │
+      └─────────────────────────────────────────────────────────────┘
+    """
+    compartments    = region_spec.get("compartments", [])
+    shared_services = region_spec.get("shared_services", [])
+
+    all_boxes: list[PositionedBox]  = []
+    all_nodes: list[PositionedNode] = []
+    all_gw:    list[PositionedNode] = []
+
+    inner_x = origin_x + OUTER_PAD_X
+    inner_y = origin_y + OUTER_PAD_TOP
+    inner_w = region_w - 2 * OUTER_PAD_X
+
+    # Grid: ≤3 comps → 1 row; 4 → 2×2; >4 → 2 columns
+    n = len(compartments)
+    if n <= 3:
+        cols = n
+    else:
+        cols = 2
+
+    if n == 0:
+        comps_bottom = inner_y
+    else:
+        col_w = (inner_w - (cols - 1) * COMP_GAP) / cols if cols > 1 else inner_w
+
+        # Pre-compute each compartment's natural height so rows can be uniform
+        def _comp_natural_h(comp: dict) -> float:
+            subnets = comp.get("subnets", [])
+            content_h = sum(_subnet_box_size(s)[1] + SUB_GAP_Y for s in subnets)
+            if subnets:
+                content_h -= SUB_GAP_Y
+            vcn_h = VCN_PAD_TOP + max(content_h, 0) + VCN_PAD_BOT
+            return COMP_PAD_TOP + vcn_h + COMP_PAD_BOT
+
+        # Compute uniform height per row (tallest compartment in the row)
+        row_heights: list[float] = []
+        for row_start in range(0, n, cols):
+            row_h = max(_comp_natural_h(compartments[j])
+                        for j in range(row_start, min(row_start + cols, n)))
+            row_heights.append(row_h)
+
+        # Place each compartment
+        for i, comp in enumerate(compartments):
+            row  = i // cols
+            col  = i % cols
+            cx   = inner_x + col * (col_w + COMP_GAP)
+            cy   = inner_y + sum(row_heights[:row]) + row * COMP_ROW_GAP
+
+            comp_box, sub_boxes, icon_nodes, gw_nodes = _layout_compartment(
+                comp, cx, cy, col_w
+            )
+            all_boxes.append(comp_box)
+            all_boxes.extend(sub_boxes)
+            all_nodes.extend(icon_nodes)
+            all_gw.extend(gw_nodes)
+
+        n_rows = (n + cols - 1) // cols
+        comps_bottom = inner_y + sum(row_heights) + (n_rows - 1) * COMP_ROW_GAP
+
+    # Shared services compartment below all environment compartments
+    if shared_services:
+        svc_comp_y = comps_bottom + COMP_ROW_GAP
+        svc_inner_y = svc_comp_y + SVC_COMP_PAD + 16  # 16 = label height
+        n_svcs = len(shared_services)
+        svc_row_w = n_svcs * ICON_W + (n_svcs - 1) * NODE_GAP_X
+        svc_x = inner_x + SVC_COMP_PAD + max(0, (inner_w - 2 * SVC_COMP_PAD - svc_row_w) / 2)
+        svc_y = svc_inner_y
+
+        for svc in shared_services:
+            all_nodes.append(PositionedNode(
+                id=svc["id"],
+                label=svc.get("label", svc["id"]),
+                oci_type=svc.get("type", ""),
+                x=svc_x, y=svc_y, w=ICON_W, h=ICON_SLOT,
+            ))
+            svc_x += ICON_W + NODE_GAP_X
+
+        svc_comp_h = 16 + 2 * SVC_COMP_PAD + ICON_SLOT
+        all_boxes.append(PositionedBox(
+            id="shared_services_comp",
+            label="Shared Services",
+            box_type="_compartment_box",
+            x=inner_x, y=svc_comp_y, w=inner_w, h=svc_comp_h,
+        ))
+        region_bottom = svc_comp_y + svc_comp_h
+    else:
+        region_bottom = comps_bottom
+
+    region_h = region_bottom - origin_y + OUTER_PAD_BOT
+    region_box = PositionedBox(
+        id=region_spec["id"],
+        label=region_spec.get("label", "OCI Region"),
+        box_type="_region_box",
+        x=origin_x, y=origin_y, w=region_w, h=region_h,
+    )
+
+    return region_box, all_boxes, all_nodes, all_gw
+
+
+LEFT_EXTERNAL_TYPES = {
+    "on premises", "vpn", "fastconnect", "cpe", "dns", "users", "user"
+}
+TOP_EXTERNAL_TYPES = {
+    "internet", "public internet", "admins", "admin", "workstation", "browser"
+}
+
+
+def compute_positions(layout_spec: dict | str) -> tuple[list[PositionedNode], list[PositionedBox]]:
+    """
+    Convert layout spec JSON → absolute positions.
+    Returns (nodes, boxes) both in page coordinates.
+
+    Supports both new hierarchical format (regions/ADs/FDs/subnets) and
+    falls back gracefully to old flat format for backward compatibility.
+    """
+    if isinstance(layout_spec, str):
+        layout_spec = json.loads(layout_spec)
+
+    # Detect old flat format (has "layers" key)
+    if "layers" in layout_spec and "regions" not in layout_spec:
+        return _compute_positions_legacy(layout_spec)
+
+    deployment_type = layout_spec.get("deployment_type", "single_ad")
+    regions         = layout_spec.get("regions", [])
+    external        = layout_spec.get("external", [])
+
+    all_boxes: list[PositionedBox] = []
+    all_nodes: list[PositionedNode] = []
+
+    # ── Place regions ──────────────────────────────────────────────────────────
+    n_regions = len(regions)
+    if n_regions == 0:
+        return [], []
+
+    if deployment_type == "multi_compartment" and n_regions == 1:
+        # Multi-env BOM: one outer region containing N compartments
+        reg_box, sub_boxes, icon_nodes, gw_nodes = _layout_multi_compartment_region(
+            regions[0], REGION_X, REGION_Y, REGION_W
+        )
+        all_boxes.append(reg_box)
+        all_boxes.extend(sub_boxes)
+        all_nodes.extend(icon_nodes)
+        all_nodes.extend(gw_nodes)
+    elif n_regions == 1:
+        # Single region: full canvas width
+        reg_box, sub_boxes, icon_nodes, gw_nodes = _layout_region(
+            regions[0], REGION_X, REGION_Y, REGION_W, deployment_type
+        )
+        all_boxes.append(reg_box)
+        all_boxes.extend(sub_boxes)
+        all_nodes.extend(icon_nodes)
+        all_nodes.extend(gw_nodes)
+    else:
+        # N regions: 2-column grid, tracking each column's running height
+        MULTI_COL_GAP = MULTI_REGION_GAP
+        MULTI_ROW_GAP = 40
+        cols   = min(n_regions, 2)
+        col_w  = (REGION_W - (cols - 1) * MULTI_COL_GAP) / cols
+        col_ys = [float(REGION_Y)] * cols   # current Y top for each column
+
+        for i, region_spec in enumerate(regions):
+            col = i % cols
+            rx  = REGION_X + col * (col_w + MULTI_COL_GAP)
+            ry  = col_ys[col]
+            reg_box, sub_boxes, icon_nodes, gw_nodes = _layout_region(
+                region_spec, rx, ry, col_w, deployment_type
+            )
+            col_ys[col] = ry + reg_box.h + MULTI_ROW_GAP
+            all_boxes.append(reg_box)
+            all_boxes.extend(sub_boxes)
+            all_nodes.extend(icon_nodes)
+            all_nodes.extend(gw_nodes)
+
+    # ── Place external elements ────────────────────────────────────────────────
+    left_ext = [e for e in external if e.get("type", "").lower() in LEFT_EXTERNAL_TYPES]
+    top_ext  = [e for e in external if e.get("type", "").lower() in TOP_EXTERNAL_TYPES]
+    other_ext = [
+        e for e in external
+        if e.get("type", "").lower() not in LEFT_EXTERNAL_TYPES
+        and e.get("type", "").lower() not in TOP_EXTERNAL_TYPES
+    ]
+    # Anything unclassified goes left
+    left_ext.extend(other_ext)
+
+    left_x = PAGE_MARGIN
+    left_y = REGION_Y + REG_PAD_TOP
+    for ext in left_ext:
+        all_nodes.append(PositionedNode(
+            id=ext["id"],
+            label=ext.get("label", ext["id"]),
+            oci_type=ext.get("type", ""),
+            x=left_x,
+            y=left_y,
+            w=ICON_W,
+            h=ICON_SLOT,
+        ))
+        left_y += ICON_SLOT + NODE_GAP_X
+
+    if top_ext:
+        # Find the IGW position (if placed) so "internet" aligns above it
+        igw_node = next(
+            (n for n in all_nodes if n.oci_type in ("internet gateway",)),
+            None,
+        )
+        igw_x = igw_node.x if igw_node else REGION_X + (REGION_W - ICON_W) / 2
+
+        top_y = PAGE_MARGIN
+        # Separate "internet/public internet" from other top elements
+        internet_nodes = [e for e in top_ext if e.get("type", "").lower() in ("internet", "public internet")]
+        other_top      = [e for e in top_ext if e not in internet_nodes]
+
+        for ext in internet_nodes:
+            all_nodes.append(PositionedNode(
+                id=ext["id"],
+                label=ext.get("label", ext["id"]),
+                oci_type=ext.get("type", ""),
+                x=igw_x,          # align with IGW
+                y=top_y,
+                w=ICON_W,
+                h=ICON_SLOT,
+            ))
+
+        if other_top:
+            n_top = len(other_top)
+            total_top_w = n_top * ICON_W + (n_top - 1) * NODE_GAP_X
+            top_start_x = REGION_X + (REGION_W - total_top_w) / 2
+            for j, ext in enumerate(other_top):
+                all_nodes.append(PositionedNode(
+                    id=ext["id"],
+                    label=ext.get("label", ext["id"]),
+                    oci_type=ext.get("type", ""),
+                    x=top_start_x + j * (ICON_W + NODE_GAP_X),
+                    y=top_y,
+                    w=ICON_W,
+                    h=ICON_SLOT,
+                ))
+
+    return all_nodes, all_boxes
+
+
+def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], list[PositionedBox]]:
+    """
+    Backward-compatible layout for old flat spec format (has 'layers' key).
+
+    Groups are rendered as full-width horizontal rows stacked vertically inside
+    the VCN box.  Non-grouped nodes are placed as follows:
+      - external layer → left column
+      - gateway types (IGW, NAT, DRG, SGW) → on VCN box edges
+      - anything else → row below the last group
+    """
+    layers: dict = layout_spec.get("layers", {})
+    groups_spec: list = layout_spec.get("groups", [])
+
+    node_to_group: dict[str, str] = {}
+    for g in groups_spec:
+        for nid in g.get("nodes", []):
+            node_to_group[nid] = g["id"]
+
+    LAYER_ORDER = ["external", "ingress", "compute", "async", "data"]
+
+    # Flatten all nodes with their layer annotated
+    all_nodes_flat: list[dict] = []
+    for layer_name in LAYER_ORDER:
+        for n in layers.get(layer_name, []):
+            all_nodes_flat.append({**n, "_layer": layer_name})
+
+    GATEWAY_TYPES = frozenset([
+        "internet gateway", "nat gateway", "service gateway",
+        "drg", "dynamic routing gateway",
+    ])
+
+    # Layout constants
+    PAGE_MARGIN_L  = 50
+    VCN_X          = 360   # aligns synthesised VCN box to x≈340 (matches reference v8 x=342)
+    VCN_TOTAL_W    = 900   # VCN width ≈ 940px after padding; subnets ≈ 860px (v8: 812px)
+    VCN_Y_START    = PAGE_MARGIN_L + EXT_TOP_H          # 120
+    VCN_TOP_PAD    = 60    # breathing room above first group row
+
+    ROW_PAD_X      = 20   # group row inset from VCN edges
+    ROW_INNER_W    = VCN_TOTAL_W - 2 * ROW_PAD_X
+    ROW_PAD_TOP    = 32   # room for the group label
+    ROW_PAD_BOT    = 12
+    ROW_H          = ROW_PAD_TOP + ICON_SLOT + ROW_PAD_BOT   # ≈ 120 px
+    ROW_GAP_Y      = 12
+
+    NODE_GAP_Y_L   = 24   # used only for external column spacing
+
+    positioned: list[PositionedNode] = []
+    group_boxes:  list[PositionedBox] = []
+    placed_ids:   set[str] = set()   # tracks every node placed so far — no duplicates
+
+    # 1. Groups → full-width horizontal rows stacked top-to-bottom
+    cur_row_y = VCN_Y_START + VCN_TOP_PAD
+
+    for g in groups_spec:
+        gid     = g["id"]
+        members = [n for n in all_nodes_flat
+                   if node_to_group.get(n["id"]) == gid]
+        if not members:
+            continue
+
+        row_x = VCN_X + ROW_PAD_X
+        row_y = cur_row_y
+        row_w = ROW_INNER_W
+        row_h = ROW_H
+
+        n_members    = len(members)
+        content_w    = n_members * ICON_W + max(n_members - 1, 0) * NODE_GAP_X
+        node_start_x = row_x + (row_w - content_w) / 2
+        node_y       = row_y + ROW_PAD_TOP
+
+        for i, n in enumerate(members):
+            if n["id"] in placed_ids:
+                continue
+            positioned.append(PositionedNode(
+                id=n["id"],
+                label=n.get("label", n["id"]),
+                oci_type=n.get("type", ""),
+                x=node_start_x + i * (ICON_W + NODE_GAP_X),
+                y=node_y,
+                w=ICON_W,
+                h=ICON_SLOT,
+            ))
+            placed_ids.add(n["id"])
+
+        group_boxes.append(PositionedBox(
+            id=gid,
+            label=g.get("label", gid.replace("_", " ").title()),
+            box_type="_subnet_box",
+            x=row_x,
+            y=row_y,
+            w=row_w,
+            h=row_h,
+        ))
+        cur_row_y += row_h + ROW_GAP_Y
+
+    # 2. Synthesise VCN box wrapping all group rows
+    VCN_PAD = 40
+    if group_boxes and not any(b.id == "vcn_box" for b in group_boxes):
+        bx  = min(b.x for b in group_boxes) - VCN_PAD
+        by  = min(b.y for b in group_boxes) - VCN_PAD
+        bx2 = max(b.x + b.w for b in group_boxes) + VCN_PAD
+        by2 = max(b.y + b.h for b in group_boxes) + VCN_PAD
+        vcn_box = PositionedBox(
+            id="vcn_box", label="VCN",
+            box_type="_region_box",
+            x=bx, y=by, w=bx2 - bx, h=by2 - by,
+        )
+        group_boxes = [vcn_box] + group_boxes
+
+    # 3. Gateway nodes → on VCN box edges
+    vcn = group_boxes[0] if group_boxes else None
+    gw_nodes = [n for n in all_nodes_flat
+                if n.get("type", "").lower() in GATEWAY_TYPES
+                and n["id"] not in placed_ids]
+    nat_y_placed: float | None = None
+
+    for gw in gw_nodes:
+        gtype = gw.get("type", "").lower()
+        if vcn:
+            if gtype == "internet gateway":
+                gx = vcn.x + vcn.w / 2 - ICON_W / 2
+                gy = vcn.y - ICON_H / 2
+            elif gtype in ("drg", "dynamic routing gateway"):
+                gx = vcn.x - ICON_W / 2
+                gy = vcn.y + vcn.h * 0.4
+            elif gtype == "nat gateway":
+                gx = vcn.x + vcn.w - ICON_W / 2
+                gy = vcn.y + vcn.h * 0.3
+                nat_y_placed = gy
+            elif gtype == "service gateway":
+                gx = vcn.x + vcn.w - ICON_W / 2
+                ref_y = nat_y_placed if nat_y_placed is not None else vcn.y + vcn.h * 0.3
+                gy = ref_y + ICON_SLOT + 20
+            else:
+                gx = vcn.x + vcn.w / 2 - ICON_W / 2
+                gy = vcn.y - ICON_H / 2
+        else:
+            gx = PAGE_MARGIN_L
+            gy = PAGE_MARGIN_L + VCN_TOP_PAD
+
+        positioned.append(PositionedNode(
+            id=gw["id"],
+            label=gw.get("label", gw["id"]),
+            oci_type=gtype,
+            x=gx,
+            y=gy,
+            w=ICON_W,
+            h=ICON_SLOT,
+        ))
+        placed_ids.add(gw["id"])
+
+    # 4. External nodes → left column (placed after gateways so gateway-typed
+    #    external nodes like IGW don't get double-placed)
+    ext_nodes = [n for n in all_nodes_flat
+                 if n["_layer"] == "external" and n["id"] not in placed_ids]
+    ext_x = PAGE_MARGIN_L
+    ext_y = VCN_Y_START + VCN_TOP_PAD
+    for n in ext_nodes:
+        positioned.append(PositionedNode(
+            id=n["id"],
+            label=n.get("label", n["id"]),
+            oci_type=n.get("type", ""),
+            x=ext_x,
+            y=ext_y,
+            w=ICON_W,
+            h=ICON_SLOT,
+        ))
+        ext_y += ICON_SLOT + NODE_GAP_Y_L
+        placed_ids.add(n["id"])
+
+    # 5. Any remaining nodes → row below groups
+    remaining = [n for n in all_nodes_flat if n["id"] not in placed_ids]
+    rem_x = VCN_X + ROW_PAD_X
+    rem_y = cur_row_y + ROW_GAP_Y
+    for n in remaining:
+        positioned.append(PositionedNode(
+            id=n["id"],
+            label=n.get("label", n["id"]),
+            oci_type=n.get("type", ""),
+            x=rem_x,
+            y=rem_y,
+            w=ICON_W,
+            h=ICON_SLOT,
+        ))
+        rem_x += ICON_W + NODE_GAP_X
+        placed_ids.add(n["id"])
+
+    return positioned, group_boxes
+
+
+def _smart_edge_points(
+    src: PositionedNode, tgt: PositionedNode,
+) -> tuple[float, float, float, float]:
+    """
+    Return (exitX, exitY, entryX, entryY) based on the relative position of
+    source and target node centres.  Keeps flow lines in the routing gutters
+    (side margins, inter-subnet gaps) rather than routing through boxes.
+
+    Priority: horizontal wins when |dx| >= |dy| (avoids most subnet crossings
+    since subnets are full-width horizontal bands).
+    """
+    src_cx = src.x + src.w / 2
+    src_cy = src.y + src.h / 2
+    tgt_cx = tgt.x + tgt.w / 2
+    tgt_cy = tgt.y + tgt.h / 2
+    dx = tgt_cx - src_cx
+    dy = tgt_cy - src_cy
+
+    if abs(dx) >= abs(dy):
+        if dx >= 0:
+            return 1.0, 0.5, 0.0, 0.5   # exit right → enter left
+        else:
+            return 0.0, 0.5, 1.0, 0.5   # exit left  → enter right
+    else:
+        if dy >= 0:
+            return 0.5, 1.0, 0.5, 0.0   # exit bottom → enter top
+        else:
+            return 0.5, 0.0, 0.5, 1.0   # exit top    → enter bottom
+
+
+def spec_to_draw_dict(
+    layout_spec: dict | str,
+    items_by_id: dict[str, object],
+) -> dict:
+    """
+    Convert layout spec + ServiceItems → a dict that drawio_generator.py accepts.
+    Returns {"nodes": [...], "boxes": [...], "edges": [...]}.
+
+    boxes contains PositionedBox entries (region/AD/FD/subnet boxes).
+    nodes contains icon nodes only (no group boxes mixed in).
+
+    Injects fixed edges for standard OCI connectivity patterns.
+    """
+    if isinstance(layout_spec, str):
+        layout_spec = json.loads(layout_spec)
+
+    is_legacy = "layers" in layout_spec and "regions" not in layout_spec
+
+    nodes_out, boxes_out = compute_positions(layout_spec)
+    edges_spec = layout_spec.get("edges", [])
+
+    # ── Build index structures ─────────────────────────────────────────────────
+    node_by_id = {n.id: n for n in nodes_out}
+    box_by_id  = {b.id: b for b in boxes_out}
+
+    # Collect all node/box IDs to check what exists
+    all_ids = set(node_by_id.keys()) | set(box_by_id.keys())
+
+    # Container box IDs — never valid edge endpoints
+    container_ids = set(box_by_id.keys())
+
+    # Collect LLM-provided edge source/target pairs to avoid duplicates
+    existing_pairs: set[tuple[str, str]] = set()
+    for e in edges_spec:
+        existing_pairs.add((e.get("source", ""), e.get("target", "")))
+
+    draw_edges = []
+
+    # Copy spec edges, dropping any that target container boxes
+    for e in edges_spec:
+        src, tgt = e.get("source", ""), e.get("target", "")
+        if src in container_ids or tgt in container_ids:
+            continue   # silently drop — container boxes are not connectable
+        draw_edges.append({
+            "id":     e.get("id", f"e_{e.get('source','')}_{e.get('target','')}"),
+            "source": e.get("source", ""),
+            "target": e.get("target", ""),
+            "label":  e.get("label", ""),
+            "exitX":  e.get("exitX", 0.5),
+            "exitY":  e.get("exitY", 1.0),
+            "entryX": e.get("entryX", 0.5),
+            "entryY": e.get("entryY", 0.0),
+        })
+
+    deployment_type = layout_spec.get("deployment_type", "single_ad")
+
+    # ── Find key node/box IDs for fixed edge injection ─────────────────────────
+    def _find_first(id_hints: list[str]) -> str | None:
+        for hint in id_hints:
+            if hint in all_ids:
+                return hint
+        return None
+
+    def _find_by_oci_type(oci_type: str) -> str | None:
+        for n in nodes_out:
+            if n.oci_type == oci_type:
+                return n.id
+        return None
+
+    def _find_subnet_by_tier(tier: str) -> str | None:
+        for b in boxes_out:
+            if b.box_type == "_subnet_box" and b.tier == tier:
+                return b.id
+        return None
+
+    def _add_edge(src: str | None, tgt: str | None, label: str,
+                  ex=0.5, ey=1.0, nx=0.5, ny=0.0):
+        if src and tgt and (src, tgt) not in existing_pairs:
+            if src in all_ids and tgt in all_ids:
+                draw_edges.append({
+                    "id":     f"e_{src}_{tgt}",
+                    "source": src,
+                    "target": tgt,
+                    "label":  label,
+                    "exitX":  ex, "exitY":  ey,
+                    "entryX": nx, "entryY": ny,
+                })
+                existing_pairs.add((src, tgt))
+
+    # Fixed topology edges
+    drg_id    = _find_by_oci_type("drg")
+    igw_id    = _find_by_oci_type("internet gateway")
+    nat_id    = _find_by_oci_type("nat gateway")
+    sgw_id    = _find_by_oci_type("service gateway")
+
+    web_sub   = _find_subnet_by_tier("web")
+    app_sub   = _find_subnet_by_tier("app")
+    db_sub    = _find_subnet_by_tier("db")
+
+    # Find ingress subnets — prefer explicit tier names, fall back to positional
+    pub_ingress  = (_find_subnet_by_tier("public_ingress")
+                    or _find_subnet_by_tier("ingress"))
+    priv_ingress = (_find_subnet_by_tier("private_ingress")
+                    or _find_subnet_by_tier("ingress"))
+    # If only generic "ingress" subnets exist, use positional logic:
+    # first subnet = private (DRG side), last = public (internet side)
+    if pub_ingress == priv_ingress:
+        generic_ingress = [b for b in boxes_out
+                           if b.box_type == "_subnet_box" and b.tier == "ingress"]
+        if len(generic_ingress) >= 2:
+            priv_ingress = generic_ingress[0].id
+            pub_ingress  = generic_ingress[-1].id
+
+    oci_svc_node = None
+    for region_spec in layout_spec.get("regions", []):
+        svcs = region_spec.get("oci_services", [])
+        if svcs:
+            oci_svc_node = svcs[0]["id"]
+            break
+
+    ext_internet = next(
+        (e["id"] for e in layout_spec.get("external", [])
+         if e.get("type", "").lower() in {"internet", "public internet"}),
+        None
+    )
+
+    # Fixed topology edges — tier fallbacks only.
+    #
+    # Gateway positions (DRG on left, IGW/NAT on top, SGW on right) already
+    # convey connectivity visually.  No explicit gateway→subnet lines needed.
+    #
+    # Tier fallbacks (pub→web, web→app, app→db) are injected ONLY when the
+    # spec provides zero edges — acts as a last-resort visual guide for diagrams
+    # where the LLM returned an empty edge list.
+    spec_sources = {e.get("source", "") for e in edges_spec}
+
+    if not edges_spec:
+        _add_edge(pub_ingress, web_sub, "HTTP", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
+        _add_edge(web_sub, app_sub, "HTTP", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
+        _add_edge(app_sub, db_sub, "Data Access", ex=0.5, ey=1.0, nx=0.5, ny=0.0)
+
+    # Legacy-only: on_prem → vcn_box with deterministic edge id
+    if is_legacy and "on_prem" in all_ids and "vcn_box" in all_ids:
+        if ("on_prem", "vcn_box") not in existing_pairs:
+            draw_edges.append({
+                "id":     "e_on_prem_to_vcn",
+                "source": "on_prem",
+                "target": "vcn_box",
+                "label":  "",
+                "exitX":  1.0, "exitY":  0.5,
+                "entryX": 0.0, "entryY": 0.5,
+            })
+            existing_pairs.add(("on_prem", "vcn_box"))
+
+    # ── Smart edge routing ────────────────────────────────────────────────────
+    # Override exit/entry connection points on every edge based on the relative
+    # position of source and target nodes.  This keeps lines in the routing
+    # gutters (side margins, inter-subnet gaps) and prevents them from cutting
+    # through container boxes.
+    for edge in draw_edges:
+        src_node = node_by_id.get(edge["source"])
+        tgt_node = node_by_id.get(edge["target"])
+        if src_node and tgt_node:
+            ex, ey, nx, ny = _smart_edge_points(src_node, tgt_node)
+            edge["exitX"]  = ex
+            edge["exitY"]  = ey
+            edge["entryX"] = nx
+            edge["entryY"] = ny
+
+    # Convert PositionedBox/Node to serialisable dicts
+    draw_nodes = [
+        {
+            "id":      n.id,
+            "type":    n.oci_type,
+            "label":   n.label,
+            "x":       n.x,
+            "y":       n.y,
+            "w":       n.w,
+            "h":       n.h,
+        }
+        for n in nodes_out
+    ]
+
+    draw_boxes = [
+        {
+            "id":       b.id,
+            "label":    b.label,
+            "box_type": b.box_type,
+            "tier":     b.tier,
+            "x":        b.x,
+            "y":        b.y,
+            "w":        b.w,
+            "h":        b.h,
+        }
+        for b in boxes_out
+    ]
+
+    return {"nodes": draw_nodes, "boxes": draw_boxes, "edges": draw_edges}

@@ -1,0 +1,17 @@
+__pycache__/
+output*.drawio
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+*.log
+/tmp/
+.pytest_cache/
+.venv/
+venv/
+
+node_modules/
+ui/dist/
+ui/test-results/
+ui/playwright-report/

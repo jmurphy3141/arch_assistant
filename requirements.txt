@@ -1,0 +1,13 @@
+# Python 3.11+ required (OCI ADK uses X | Y union syntax, Python 3.10+ minimum)
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.0.0
+python-multipart>=0.0.9
+openpyxl>=3.1.0
+pyyaml>=6.0
+
+itsdangerous>=2.1.2          # SessionMiddleware cookie signing
+python-dotenv>=1.0.0         # Load .env in development (optional in production)
+
+# OCI SDK with ADK (Agent Development Kit)
+oci[adk]==2.165.1

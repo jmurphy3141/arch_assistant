@@ -1,0 +1,36 @@
+Customer wants to deploy an HPC cluster on OCI OKE with RDMA networking for
+tightly-coupled MPI workloads.
+
+Architecture components:
+- Bastion host: VM.Standard.E4.Flex shape, 1 OCPU 4GB RAM, used as SSH jump host (public subnet)
+- Operator VM: VM.Standard.E4.Flex shape, used for Kubernetes API access with K9s (private subnet)
+- HPC Nodes: 3x BM.Optimized3.36 bare metal instances (36 Intel Xeon 6354 cores,
+  3.84-TB NVMe SSD, 100-Gbps RDMA network) in a cluster-network node pool (worker subnet)
+- OCI File Storage Service (FSS): NFS mount exposed as Kubernetes PersistentVolume (storage subnet)
+- Block Volume: Boot volumes for all compute instances (50 GB each)
+- Object Storage: Datasets, job output, and container images
+- IAM: Dynamic groups and instance principal policies for node access
+
+OKE cluster requirements:
+- cluster_type = "enhanced" (required for RDMA)
+- cni_type = "flannel" (required for RDMA — do not use VCN-native CNI)
+- kubernetes_version = "v1.29.1"
+- cluster_name = "oke-rdma-cluster"
+
+Reference Terraform: https://github.com/dezma/oci-hpc-oke
+Uses oracle-terraform-modules/oke/oci v5.1.5 module.
+
+HPC node pool config:
+- cloud_init_content with OFED driver setup
+- rdma_authentication_enabled = true
+- rdma_auto_config_enabled = true
+- 250 GB boot volume
+
+Network layout:
+- VCN "hpc" with dedicated subnets:
+  * bastion-pub    (public)  — bastion host + Internet Gateway
+  * operator-prv   (private) — operator VM + OKE control plane
+  * worker-prv     (private) — HPC bare metal nodes (RDMA cluster network)
+  * storage-sub    (private) — FSS NFS mount target
+- FSS security list: permits NFS TCP/UDP 2048-2050 and portmapper 111
+- No public IP on HPC nodes; all access via bastion → operator → kubectl

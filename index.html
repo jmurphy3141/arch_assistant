@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OCI Architecture Diagram Generator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#08090d;--surface:#0e1016;--card:#12151d;
+  --border:#1c2030;--border2:#242840;
+  --accent:#e8571a;--accent-glow:rgba(232,87,26,0.18);
+  --gold:#f0a500;--green:#2ecc8a;--red:#e8415a;
+  --text:#cdd2e0;--muted:#454d64;--dim:#2a3048;
+  --font-mono:'JetBrains Mono',monospace;--font-display:'Syne',sans-serif;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-mono);font-size:14px;line-height:1.6;overflow:hidden}
+.shell{display:grid;grid-template-columns:260px 1fr;height:100vh}
+/* ── Sidebar ── */
+.sidebar{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.sidebar-head{padding:24px 20px 16px;border-bottom:1px solid var(--border)}
+.logo{font-family:var(--font-display);font-size:1.5rem;font-weight:800;color:#fff;letter-spacing:-0.04em;line-height:1;margin-bottom:4px}
+.logo span{color:var(--accent)}
+.logo-sub{font-size:0.6rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--muted)}
+.sidebar-section{padding:14px 20px;border-bottom:1px solid var(--border)}
+.sidebar-label{font-size:0.6rem;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.status-dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.status-dot.ok{background:var(--green);box-shadow:0 0 6px var(--green)}
+.status-dot.err{background:var(--red)}
+.status-text{font-size:0.72rem;color:var(--text)}
+.mono-small{font-size:0.65rem;color:var(--muted);word-break:break-all;line-height:1.4;margin-top:4px}
+.steps{display:flex;flex-direction:column;gap:4px}
+.step-item{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:5px;font-size:0.7rem;font-weight:600;letter-spacing:0.05em;color:var(--muted);border:1px solid transparent;transition:all 0.25s}
+.step-item .num{width:20px;height:20px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.6rem;font-weight:700;background:var(--border);color:var(--muted);flex-shrink:0}
+.step-item.active{color:var(--accent);border-color:rgba(232,87,26,0.3);background:var(--accent-glow)}
+.step-item.active .num{background:var(--accent);color:#fff}
+.step-item.done{color:var(--green);border-color:rgba(46,204,138,0.2)}
+.step-item.done .num{background:var(--green);color:#0a0c10}
+.presets{display:flex;flex-direction:column;gap:6px;flex:1;overflow-y:auto;padding:14px 20px}
+.preset-btn{background:transparent;border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:5px;font-family:var(--font-mono);font-size:0.7rem;cursor:pointer;text-align:left;line-height:1.4;transition:all 0.18s}
+.preset-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-glow)}
+.preset-title{font-weight:700;display:block;margin-bottom:2px}
+.preset-desc{color:var(--muted);font-size:0.62rem}
+.presets::-webkit-scrollbar{width:3px}
+.presets::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.sidebar-footer{padding:14px 20px;border-top:1px solid var(--border);margin-top:auto}
+.reset-btn{width:100%;background:transparent;border:1px solid var(--border);color:var(--muted);padding:8px;border-radius:5px;font-family:var(--font-mono);font-size:0.72rem;font-weight:600;cursor:pointer;letter-spacing:0.05em;transition:all 0.18s}
+.reset-btn:hover{border-color:var(--red);color:var(--red)}
+/* ── Main ── */
+.main{display:flex;flex-direction:column;overflow:hidden;position:relative}
+.topbar{padding:18px 28px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;background:var(--surface)}
+.topbar-title{font-family:var(--font-display);font-size:1.1rem;font-weight:800;color:#fff;letter-spacing:-0.02em}
+.topbar-sub{font-size:0.62rem;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-top:2px}
+.topbar-meta{display:flex;align-items:center;gap:12px}
+.ver-pill{font-size:0.62rem;color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:4px;padding:3px 8px}
+/* ── Chat ── */
+.chat-wrap{flex:1;overflow-y:auto;padding:20px 28px;display:flex;flex-direction:column;gap:14px;scroll-behavior:smooth}
+.chat-wrap::-webkit-scrollbar{width:4px}
+.chat-wrap::-webkit-scrollbar-track{background:transparent}
+.chat-wrap::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.empty-state{margin:auto;text-align:center;opacity:0.35;padding:40px}
+.empty-icon{font-size:3rem;margin-bottom:12px;display:block}
+.empty-title{font-family:var(--font-display);font-size:1rem;font-weight:700;color:var(--text);margin-bottom:6px}
+.empty-desc{font-size:0.72rem;color:var(--muted);line-height:1.7}
+/* ── Messages ── */
+.msg{display:flex;gap:10px;align-items:flex-start;animation:fadeUp 0.22s ease}
+.msg.user{flex-direction:row-reverse}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.avatar{width:30px;height:30px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:700}
+.avatar.ai{background:var(--accent);color:#fff}
+.avatar.user{background:var(--dim);color:var(--text)}
+.bubble{max-width:72%;padding:10px 14px;border-radius:8px;font-size:0.78rem;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+.bubble.ai{background:var(--card);border:1px solid var(--border);border-top-left-radius:2px}
+.bubble.user{background:var(--surface);border:1px solid var(--border2);border-top-right-radius:2px;text-align:right}
+.bubble.ai.question{border-color:rgba(232,87,26,0.4);background:rgba(232,87,26,0.04)}
+.bubble.ai.success{border-color:rgba(46,204,138,0.4);background:rgba(46,204,138,0.04)}
+.bubble.ai.info{border-color:rgba(240,165,0,0.3);background:rgba(240,165,0,0.04)}
+.badge{display:inline-block;font-size:0.58rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;padding:2px 7px;border-radius:3px;margin-bottom:6px}
+.badge.q{background:var(--accent);color:#fff}
+.badge.done{background:var(--green);color:#060a08}
+.badge.info{background:var(--gold);color:#0a0700}
+.badge.ans{background:var(--dim);color:var(--text)}
+.typing{display:flex;gap:5px;align-items:center;padding:12px 14px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--muted);animation:bounce 1.2s infinite}
+.dot:nth-child(2){animation-delay:0.2s}
+.dot:nth-child(3){animation-delay:0.4s}
+@keyframes bounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-6px)}}
+/* ── Upload area ── */
+.upload-area{padding:14px 28px 18px;border-top:1px solid var(--border);background:var(--surface);flex-shrink:0}
+.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.drop-zone{border:1.5px dashed var(--border2);border-radius:8px;padding:18px 14px;text-align:center;cursor:pointer;transition:all 0.2s;position:relative;background:var(--card)}
+.drop-zone:hover,.drop-zone.drag-over{border-color:var(--accent);background:var(--accent-glow)}
+.drop-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.drop-icon{font-size:1.4rem;display:block;margin-bottom:4px}
+.drop-label{font-size:0.72rem;font-weight:600;color:var(--text);display:block}
+.drop-hint{font-size:0.62rem;color:var(--muted);display:block;margin-top:2px}
+.drop-zone.has-file .drop-label{color:var(--green)}
+.drop-zone.has-file{border-color:rgba(46,204,138,0.4);background:rgba(46,204,138,0.04)}
+.field-row{display:flex;gap:10px;align-items:flex-end}
+.field-group{flex:1;display:flex;flex-direction:column;gap:4px}
+.field-label{font-size:0.6rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted)}
+.field-input{background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font-mono);font-size:0.78rem;padding:8px 10px;outline:none;transition:border-color 0.18s}
+.field-input:focus{border-color:var(--accent)}
+.field-input::placeholder{color:var(--muted)}
+.context-box{width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font-mono);font-size:0.76rem;padding:8px 10px;resize:none;min-height:44px;max-height:100px;line-height:1.5;outline:none;transition:border-color 0.18s}
+.context-box:focus{border-color:var(--accent)}
+.context-box::placeholder{color:var(--muted)}
+.upload-row{display:flex;gap:10px;align-items:center;margin-top:8px}
+.gen-btn{background:var(--accent);border:none;color:#fff;padding:10px 20px;border-radius:7px;font-family:var(--font-mono);font-size:0.8rem;font-weight:700;cursor:pointer;letter-spacing:0.04em;transition:all 0.18s;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.gen-btn:hover{background:#ff6a2a}
+.gen-btn:disabled{background:var(--dim);cursor:not-allowed}
+.upload-hint{font-size:0.62rem;color:var(--muted);flex:1}
+/* ── Clarify input ── */
+.clarify-area{padding:14px 28px 18px;border-top:1px solid var(--border);background:var(--surface);flex-shrink:0;display:none}
+.input-row{display:flex;gap:10px;align-items:flex-end}
+.input-box{flex:1;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--text);font-family:var(--font-mono);font-size:0.8rem;padding:10px 14px;resize:none;min-height:52px;max-height:160px;line-height:1.6;outline:none;transition:border-color 0.18s}
+.input-box:focus{border-color:var(--accent)}
+.input-box::placeholder{color:var(--muted)}
+.send-btn{background:var(--accent);border:none;color:#fff;width:44px;height:44px;border-radius:7px;font-size:1.1rem;cursor:pointer;flex-shrink:0;transition:all 0.18s;display:flex;align-items:center;justify-content:center}
+.send-btn:hover{background:#ff6a2a;transform:scale(1.04)}
+.send-btn:disabled{background:var(--dim);cursor:not-allowed;transform:none}
+.input-hint-row{font-size:0.62rem;color:var(--muted);margin-top:6px}
+/* ── Download card ── */
+.download-card{margin:0 28px 18px;background:var(--card);border:1px solid rgba(46,204,138,0.35);border-radius:8px;padding:16px 20px;display:none}
+.download-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.download-title{font-family:var(--font-display);font-size:0.95rem;font-weight:700;color:var(--green)}
+.download-meta{font-size:0.65rem;color:var(--muted)}
+.download-actions{display:flex;gap:10px}
+.act-btn{flex:1;padding:10px;border-radius:6px;font-family:var(--font-mono);font-size:0.75rem;font-weight:700;letter-spacing:0.05em;cursor:pointer;transition:all 0.18s}
+.act-btn.primary{background:var(--green);border:none;color:#060a08}
+.act-btn.primary:hover{background:#3de0a0}
+.act-btn.secondary{background:transparent;border:1px solid var(--border);color:var(--text)}
+.act-btn.secondary:hover{border-color:var(--text)}
+/* ── Model selector ── */
+.model-select{width:100%;background:var(--card);border:1px solid var(--border);border-radius:5px;color:var(--text);font-family:var(--font-mono);font-size:0.72rem;padding:6px 8px;cursor:pointer;outline:none}
+.model-select:focus{border-color:var(--accent)}
+.model-select option{background:var(--card)}
+/* ── Notification ── */
+.notif{position:fixed;bottom:24px;right:24px;background:var(--card);border:1px solid var(--green);color:var(--green);padding:10px 16px;border-radius:7px;font-size:0.75rem;font-weight:600;opacity:0;transform:translateY(8px);transition:all 0.25s;pointer-events:none;z-index:99}
+.notif.show{opacity:1;transform:translateY(0)}
+.notif.err{border-color:var(--red);color:var(--red)}
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <div class="logo">OCI <span>ARCH</span></div>
+      <div class="logo-sub">Diagram Generator · Agent 3</div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Connection</div>
+      <div class="status-text"><span class="status-dot ok" id="connDot"></span><span id="connText">Instance Principal</span></div>
+      <div class="mono-small" id="regionText">us-chicago-1</div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Model</div>
+      <select class="model-select" id="modelSelect" title="OCI GenAI model">
+        <option value="">Loading…</option>
+      </select>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Progress</div>
+      <div class="steps" id="steps">
+        <div class="step-item active" id="step-0"><div class="num">1</div>Upload BOM</div>
+        <div class="step-item"        id="step-1"><div class="num">2</div>Clarify</div>
+        <div class="step-item"        id="step-2"><div class="num">3</div>Generate</div>
+        <div class="step-item"        id="step-3"><div class="num">4</div>Download</div>
+      </div>
+    </div>
+
+    <div class="sidebar-label" style="padding:14px 20px 6px;font-size:0.6rem;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted)">Example Architectures</div>
+    <div class="presets" id="presets">
+      <button class="preset-btn" onclick="loadPreset(0)">
+        <span class="preset-title">↳ 3-Tier Web App</span>
+        <span class="preset-desc">Load balancer, compute, MySQL — standard public/app/db subnets</span>
+      </button>
+      <button class="preset-btn" onclick="loadPreset(1)">
+        <span class="preset-title">↳ HPC on OKE</span>
+        <span class="preset-desc">BM.Optimized3.36 RDMA nodes, OKE enhanced cluster, FSS NFS mount</span>
+      </button>
+      <button class="preset-btn" onclick="loadPreset(2)">
+        <span class="preset-title">↳ Cloud Native</span>
+        <span class="preset-desc">OKE, Functions, API Gateway, PostgreSQL, streaming</span>
+      </button>
+      <button class="preset-btn" onclick="loadPreset(3)">
+        <span class="preset-title">↳ Data Platform</span>
+        <span class="preset-desc">ADW, Object Storage, Data Flow, Oracle Analytics</span>
+      </button>
+      <button class="preset-btn" onclick="loadPreset(4)">
+        <span class="preset-title">↳ DR / Multi-Region</span>
+        <span class="preset-desc">Active-passive HA across two OCI regions with DRG and FastConnect</span>
+      </button>
+    </div>
+
+    <div class="sidebar-footer">
+      <button class="reset-btn" onclick="resetSession()">↺ &nbsp; Reset Session</button>
+    </div>
+  </aside>
+
+  <!-- ── Main ── -->
+  <div class="main">
+    <!-- Topbar -->
+    <div class="topbar">
+      <div>
+        <div class="topbar-title">Architecture Diagram Generator</div>
+        <div class="topbar-sub">Oracle Cloud Infrastructure · draw.io output</div>
+      </div>
+      <div class="topbar-meta">
+        <span class="ver-pill" id="verPill">v—</span>
+      </div>
+    </div>
+
+    <!-- Chat / log area -->
+    <div class="chat-wrap" id="chat">
+      <div class="empty-state" id="emptyState">
+        <span class="empty-icon">🗺️</span>
+        <div class="empty-title">OCI Architecture Diagram Agent</div>
+        <div class="empty-desc">
+          Upload your Bill of Materials (.xlsx) and I'll generate a<br>
+          fully-editable draw.io architecture diagram — correct OCI icons,<br>
+          VCN topology, subnets, and gateways included.
+        </div>
+      </div>
+    </div>
+
+    <!-- Download card (shown after success) -->
+    <div class="download-card" id="downloadCard">
+      <div class="download-head">
+        <div>
+          <div class="download-title">✓ Diagram Ready</div>
+          <div class="download-meta" id="downloadMeta">—</div>
+        </div>
+      </div>
+      <div class="download-actions">
+        <button class="act-btn primary" id="downloadBtn" onclick="downloadDiagram()">⬇ Download .drawio</button>
+        <button class="act-btn secondary" onclick="resetSession()">＋ New Diagram</button>
+      </div>
+    </div>
+
+    <!-- Clarify input (shown when questions are pending) -->
+    <div class="clarify-area" id="clarifyArea">
+      <div class="input-row">
+        <textarea
+          class="input-box" id="answerBox"
+          placeholder="Answer the questions above, then press Ctrl+Enter…"
+          rows="2"
+          onkeydown="handleClarifyKey(event)"
+          oninput="autoResize(this)"
+        ></textarea>
+        <button class="send-btn" id="sendBtn" onclick="submitAnswers()" title="Submit answers (Ctrl+Enter)">▶</button>
+      </div>
+      <div class="input-hint-row">Ctrl+Enter to submit · Shift+Enter for new line</div>
+    </div>
+
+    <!-- Upload area (primary input) -->
+    <div class="upload-area" id="uploadArea">
+      <div class="upload-grid">
+        <!-- BOM file drop -->
+        <div class="drop-zone" id="bomDrop" ondragover="onDrag(event,'bomDrop')" ondragleave="offDrag('bomDrop')" ondrop="onDrop(event,'bom')">
+          <input type="file" id="bomFile" accept=".xlsx,.xls" onchange="onFileChange('bom',this)">
+          <span class="drop-icon">📊</span>
+          <span class="drop-label" id="bomLabel">Drop BOM.xlsx here</span>
+          <span class="drop-hint">or click to browse · .xlsx required</span>
+        </div>
+        <!-- Context file drop (optional) -->
+        <div class="drop-zone" id="ctxDrop" ondragover="onDrag(event,'ctxDrop')" ondragleave="offDrag('ctxDrop')" ondrop="onDrop(event,'ctx')">
+          <input type="file" id="ctxFile" accept=".txt,.md,.pdf" onchange="onFileChange('ctx',this)">
+          <span class="drop-icon">📋</span>
+          <span class="drop-label" id="ctxLabel">Requirements file</span>
+          <span class="drop-hint">optional · .txt / .md · context for LLM</span>
+        </div>
+      </div>
+      <!-- Diagram name + context text -->
+      <div class="field-row" style="margin-bottom:8px">
+        <div class="field-group" style="max-width:220px">
+          <label class="field-label" for="diagramName">Diagram name</label>
+          <input class="field-input" id="diagramName" type="text" placeholder="my-architecture" spellcheck="false">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="contextText">Context / notes (optional)</label>
+          <textarea class="context-box" id="contextText" placeholder="e.g. 6 regions, active-passive HA, 3 ADs…" rows="1" oninput="autoResize(this)"></textarea>
+        </div>
+      </div>
+      <div class="upload-row">
+        <button class="gen-btn" id="genBtn" onclick="uploadBOM()">▶ Generate Diagram</button>
+        <span class="upload-hint" id="uploadHint">Upload a BOM to get started</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="notif" id="notif"></div>
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+let clientId       = 'ui-' + Math.random().toString(36).slice(2, 10);
+let diagramName    = '';
+let downloadUrl    = '';
+let phase          = 'upload'; // upload | clarifying | done
+let clarifyContext = null;     // echoed back to /clarify for stateless flow
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+loadConfig();
+
+function handle401(res) {
+  if (res.status === 401) { window.location.href = '/login'; return true; }
+  return false;
+}
+
+async function loadConfig() {
+  try {
+    const res = await fetch('/config');
+    if (handle401(res)) return;
+    if (!res.ok) throw new Error();
+    const cfg = await res.json();
+    document.getElementById('regionText').textContent = cfg.region || 'us-chicago-1';
+    document.getElementById('verPill').textContent    = 'v' + (cfg.agent_version || '—');
+
+    const sel = document.getElementById('modelSelect');
+    sel.innerHTML = '';
+    const models = cfg.models && cfg.models.length ? cfg.models : [{id: cfg.default_model_id || '', name: 'OCI GenAI'}];
+    models.forEach(m => {
+      if (!m.id) return;
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.name || m.id;
+      sel.appendChild(opt);
+    });
+    if (!sel.options.length) sel.innerHTML = '<option value="">Default model</option>';
+  } catch {
+    document.getElementById('modelSelect').innerHTML = '<option value="">Default model</option>';
+  }
+}
+
+// ── Steps ────────────────────────────────────────────────────────────────────
+function setStep(idx) {
+  ['step-0','step-1','step-2','step-3'].forEach((id, i) => {
+    const el = document.getElementById(id);
+    el.className = 'step-item ' + (i < idx ? 'done' : i === idx ? 'active' : '');
+  });
+}
+
+// ── File handling ────────────────────────────────────────────────────────────
+function onDrag(e, zoneId) {
+  e.preventDefault();
+  document.getElementById(zoneId).classList.add('drag-over');
+}
+function offDrag(zoneId) {
+  document.getElementById(zoneId).classList.remove('drag-over');
+}
+function onDrop(e, type) {
+  e.preventDefault();
+  const zoneId = type === 'bom' ? 'bomDrop' : 'ctxDrop';
+  offDrag(zoneId);
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  const inputId = type === 'bom' ? 'bomFile' : 'ctxFile';
+  // Assign to the file input via DataTransfer
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  document.getElementById(inputId).files = dt.files;
+  onFileChange(type, document.getElementById(inputId));
+}
+function onFileChange(type, input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (type === 'bom') {
+    document.getElementById('bomLabel').textContent = file.name;
+    document.getElementById('bomDrop').classList.add('has-file');
+    // Auto-fill diagram name from filename if blank
+    const nameInput = document.getElementById('diagramName');
+    if (!nameInput.value.trim()) {
+      nameInput.value = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+    }
+    document.getElementById('uploadHint').textContent = 'BOM loaded — add context or generate now';
+  } else {
+    document.getElementById('ctxLabel').textContent = file.name;
+    document.getElementById('ctxDrop').classList.add('has-file');
+  }
+}
+
+// ── Upload & generate ────────────────────────────────────────────────────────
+async function uploadBOM() {
+  const bomInput = document.getElementById('bomFile');
+  if (!bomInput.files.length) {
+    showNotif('Please select a BOM.xlsx file first', true);
+    return;
+  }
+
+  const dName = (document.getElementById('diagramName').value.trim() || 'diagram').replace(/\s+/g, '-');
+  diagramName  = dName;
+
+  const formData = new FormData();
+  formData.append('file',         bomInput.files[0]);
+  formData.append('diagram_name', diagramName);
+  formData.append('client_id',    clientId);
+
+  const ctxFile = document.getElementById('ctxFile').files[0];
+  if (ctxFile) formData.append('context_file', ctxFile);
+
+  const ctxText = document.getElementById('contextText').value.trim();
+  if (ctxText) formData.append('context', ctxText);
+
+  setBusy(true);
+  hideUploadArea();
+  appendMsg('user', `Uploading ${bomInput.files[0].name}${ctxText ? '\nContext: ' + ctxText : ''}`, 'normal');
+  showTyping();
+  setStep(2);
+
+  try {
+    const res = await fetch('/upload-bom', { method: 'POST', body: formData });
+    removeTyping();
+
+    if (handle401(res)) return;
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    handleResponse(data);
+
+  } catch (err) {
+    removeTyping();
+    appendMsg('assistant', 'Error: ' + err.message, 'question');
+    showUploadArea();
+    showNotif(err.message, true);
+  }
+
+  setBusy(false);
+}
+
+// ── Handle server response (both /upload-bom and /clarify) ───────────────────
+function handleResponse(data) {
+  if (data.status === 'need_clarification') {
+    clarifyContext = data._clarify_context || null;  // store for stateless /clarify
+    const qs = (data.questions || []).map((q, i) => `${i+1}. ${q.question || q}`).join('\n\n');
+    appendMsg('assistant', qs || 'I need a few more details before I can generate the diagram.', 'question');
+    phase = 'clarifying';
+    setStep(1);
+    showClarifyArea();
+  } else if (data.status === 'ok') {
+    const url = data.download && data.download.url ? data.download.url : null;
+    downloadUrl = url || '';
+    const nodeCount = data.render_manifest ? data.render_manifest.node_count : '?';
+    appendMsg('assistant',
+      `Diagram generated — ${nodeCount} elements.\n` +
+      (data.assumptions && data.assumptions.length
+        ? 'Assumptions:\n' + data.assumptions.map(a => `• ${a.statement || a}`).join('\n')
+        : ''),
+      'success'
+    );
+    phase = 'done';
+    setStep(3);
+    showDownloadCard(data);
+    hideClarifyArea();
+  } else {
+    appendMsg('assistant', JSON.stringify(data, null, 2), 'info');
+    showUploadArea();
+  }
+}
+
+// ── Submit clarification answers ─────────────────────────────────────────────
+async function submitAnswers() {
+  const box = document.getElementById('answerBox');
+  const answers = box.value.trim();
+  if (!answers) return;
+
+  box.value = '';
+  autoResize(box);
+  setBusy(true);
+
+  appendMsg('user', answers, 'normal');
+  showTyping();
+  setStep(2);
+
+  try {
+    const body = { client_id: clientId, answers, diagram_name: diagramName };
+    if (clarifyContext) {
+      body.items_json = clarifyContext.items_json;
+      body.prompt     = clarifyContext.prompt;
+    }
+    const res = await fetch('/clarify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    removeTyping();
+
+    if (handle401(res)) return;
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    handleResponse(data);
+
+  } catch (err) {
+    removeTyping();
+    appendMsg('assistant', 'Error: ' + err.message, 'question');
+    showNotif(err.message, true);
+  }
+
+  setBusy(false);
+}
+
+// ── Download ─────────────────────────────────────────────────────────────────
+function downloadDiagram() {
+  if (!downloadUrl) { showNotif('No download URL available', true); return; }
+  const a = document.createElement('a');
+  a.href  = downloadUrl;
+  a.download = (diagramName || 'diagram') + '.drawio';
+  a.click();
+  showNotif('Downloading ' + a.download + ' ✓');
+}
+
+// ── UI helpers ───────────────────────────────────────────────────────────────
+function appendMsg(role, content, type) {
+  const chat = document.getElementById('chat');
+  const empty = document.getElementById('emptyState');
+  if (empty) empty.remove();
+
+  const wrap   = document.createElement('div');
+  wrap.className = `msg ${role}`;
+
+  const avatar = document.createElement('div');
+  avatar.className = `avatar ${role === 'user' ? 'user' : 'ai'}`;
+  avatar.textContent = role === 'user' ? 'YOU' : 'AI';
+
+  const bubble = document.createElement('div');
+  bubble.className = `bubble ${role === 'user' ? 'user' : 'ai'} ${type || ''}`;
+
+  if (type === 'question') {
+    bubble.innerHTML = `<span class="badge q">⚡ Needs Info</span><br>${escHtml(content)}`;
+  } else if (type === 'success') {
+    bubble.innerHTML = `<span class="badge done">✓ Complete</span><br>${escHtml(content)}`;
+  } else if (type === 'info') {
+    bubble.innerHTML = `<span class="badge info">ℹ Info</span><br>${escHtml(content)}`;
+  } else if (role === 'user') {
+    bubble.innerHTML = `<span class="badge ans">You</span><br>${escHtml(content)}`;
+  } else {
+    bubble.textContent = content;
+  }
+
+  wrap.appendChild(avatar);
+  wrap.appendChild(bubble);
+  chat.appendChild(wrap);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function showTyping() {
+  const chat = document.getElementById('chat');
+  const el   = document.createElement('div');
+  el.className = 'msg'; el.id = 'typing';
+  el.innerHTML = `<div class="avatar ai">AI</div><div class="bubble ai"><div class="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div>`;
+  chat.appendChild(el);
+  chat.scrollTop = chat.scrollHeight;
+}
+function removeTyping() {
+  const el = document.getElementById('typing');
+  if (el) el.remove();
+}
+
+function showDownloadCard(data) {
+  const card = document.getElementById('downloadCard');
+  const meta = document.getElementById('downloadMeta');
+  const nodes = data.render_manifest ? data.render_manifest.node_count : '?';
+  meta.textContent = `${diagramName}.drawio · ${nodes} elements`;
+  card.style.display = 'block';
+}
+function hideUploadArea()  { document.getElementById('uploadArea').style.display   = 'none'; }
+function showUploadArea()  { document.getElementById('uploadArea').style.display   = ''; }
+function showClarifyArea() { document.getElementById('clarifyArea').style.display  = ''; document.getElementById('answerBox').focus(); }
+function hideClarifyArea() { document.getElementById('clarifyArea').style.display  = 'none'; }
+function setBusy(v) {
+  document.getElementById('genBtn').disabled  = v;
+  document.getElementById('sendBtn') && (document.getElementById('sendBtn').disabled = v);
+}
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+}
+function handleClarifyKey(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); submitAnswers(); }
+}
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function showNotif(msg, isErr) {
+  const el = document.getElementById('notif');
+  el.textContent = msg;
+  el.className = 'notif show' + (isErr ? ' err' : '');
+  setTimeout(() => el.className = 'notif', 2800);
+}
+
+// ── Presets (context hints — user still needs to provide the BOM file) ───────
+const PRESET_CONTEXTS = [
+  '3-tier web application — public subnet with load balancer, app subnet with compute, DB subnet with MySQL',
+  'HPC on OKE — BM.Optimized3.36 RDMA nodes, OKE enhanced cluster with Flannel CNI, FSS NFS shared storage',
+  'Cloud native — OKE cluster, Functions, API Gateway, PostgreSQL Autonomous, OCI Streaming',
+  'Data platform — Autonomous Data Warehouse, Object Storage data lake, Data Flow, Oracle Analytics Cloud',
+  'Multi-region DR — active-passive across 2 OCI regions, DRG mesh, FastConnect on-prem connectivity'
+];
+function loadPreset(i) {
+  document.getElementById('contextText').value = PRESET_CONTEXTS[i];
+  autoResize(document.getElementById('contextText'));
+  document.getElementById('uploadHint').textContent = 'Context loaded — upload your BOM.xlsx to generate';
+  showNotif('Context preset loaded — upload your BOM.xlsx to proceed');
+}
+
+// ── Reset ────────────────────────────────────────────────────────────────────
+function resetSession() {
+  clientId    = 'ui-' + Math.random().toString(36).slice(2, 10);
+  diagramName = '';
+  downloadUrl = '';
+  phase       = 'upload';
+  setStep(0);
+
+  document.getElementById('chat').innerHTML = `
+    <div class="empty-state" id="emptyState">
+      <span class="empty-icon">🗺️</span>
+      <div class="empty-title">OCI Architecture Diagram Agent</div>
+      <div class="empty-desc">Upload your Bill of Materials (.xlsx) and I'll generate a<br>fully-editable draw.io architecture diagram — correct OCI icons,<br>VCN topology, subnets, and gateways included.</div>
+    </div>`;
+
+  document.getElementById('downloadCard').style.display  = 'none';
+  document.getElementById('clarifyArea').style.display   = 'none';
+  document.getElementById('uploadArea').style.display    = '';
+  document.getElementById('bomFile').value               = '';
+  document.getElementById('ctxFile').value               = '';
+  document.getElementById('bomLabel').textContent        = 'Drop BOM.xlsx here';
+  document.getElementById('ctxLabel').textContent        = 'Requirements file';
+  document.getElementById('bomDrop').classList.remove('has-file');
+  document.getElementById('ctxDrop').classList.remove('has-file');
+  document.getElementById('diagramName').value           = '';
+  document.getElementById('contextText').value           = '';
+  document.getElementById('answerBox').value             = '';
+  document.getElementById('uploadHint').textContent      = 'Upload a BOM to get started';
+  document.getElementById('genBtn').disabled             = false;
+  clarifyContext = null;
+}
+</script>
+</body>
+</html>
