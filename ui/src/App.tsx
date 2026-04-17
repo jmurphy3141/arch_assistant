@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { HealthIndicator } from './components/HealthIndicator';
 import { UploadBom } from './components/UploadBom';
 import { GenerateForm } from './components/GenerateForm';
@@ -12,7 +12,14 @@ import { WafForm } from './components/WafForm';
 import { ChatInterface } from './components/ChatInterface';
 import { ChatSidebar, type SidebarHistoryItem } from './components/ChatSidebar';
 import { useClientId, getLastDiagramName, saveLastDiagramName } from './hooks/useClientId';
-import { apiClarify, apiRefineDiagram, apiWaitForJob, type GenerateResponse, type OrchestrationResult } from './api/client';
+import {
+  apiClarify,
+  apiGetChatHistoryIndex,
+  apiRefineDiagram,
+  apiWaitForJob,
+  type GenerateResponse,
+  type OrchestrationResult,
+} from './api/client';
 
 type Mode = 'chat' | 'upload' | 'generate' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
@@ -35,6 +42,8 @@ export function App() {
   const [clarifyElapsed, setClarifyElapsed] = useState(0);
   const [refineLoading, setRefineLoading] = useState(false);
   const [chatSessionKey, setChatSessionKey] = useState(0);
+  const [sidebarLoading, setSidebarLoading] = useState(false);
+  const [sidebarHistoryItems, setSidebarHistoryItems] = useState<SidebarHistoryItem[]>([]);
 
   function handleDiagramNameChange(name: string) {
     setDiagramName(name);
@@ -159,41 +168,52 @@ export function App() {
     setChatSessionKey(v => v + 1);
   }
 
+  useEffect(() => {
+    let active = true;
+    setSidebarLoading(true);
+    apiGetChatHistoryIndex(1, 100)
+      .then(resp => {
+        if (!active) return;
+        setSidebarHistoryItems(
+          (resp.items ?? []).map(item => ({
+            customer_id: item.customer_id,
+            customer_name: item.customer_name,
+            last_message: item.last_message_preview,
+            last_timestamp: item.last_activity_timestamp,
+            status: item.status,
+          })),
+        );
+      })
+      .catch(() => {
+        if (!active) return;
+        // Keep chat usable even if aggregated history is unavailable.
+        setSidebarHistoryItems([]);
+      })
+      .finally(() => {
+        if (!active) return;
+        setSidebarLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [chatSessionKey]);
+
   const sidebarItems = useMemo<SidebarHistoryItem[]>(() => {
-    const dynamic = customerId.trim()
-      ? [{
-          customer_id: customerId,
-          customer_name: customerId.toUpperCase(),
-          last_message: 'Continue the active architecture conversation.',
-          last_timestamp: new Date().toISOString(),
-          status: 'In Progress',
-        }]
-      : [];
+    const normalizedActive = customerId.trim();
+    if (!normalizedActive) return sidebarHistoryItems;
+    const exists = sidebarHistoryItems.some(item => item.customer_id === normalizedActive);
+    if (exists) return sidebarHistoryItems;
     return [
-      ...dynamic,
       {
-        customer_id: 'acme',
-        customer_name: 'ACME Corp',
-        last_message: 'Generate Terraform from latest architecture notes',
-        last_timestamp: '2026-04-16T19:35:00Z',
-        status: 'Completed with Terraform',
-      },
-      {
-        customer_id: 'globex',
-        customer_name: 'Globex',
-        last_message: 'Need clarification before Terraform generation',
-        last_timestamp: '2026-04-15T15:20:00Z',
-        status: 'Terraform Needs Input',
-      },
-      {
-        customer_id: 'initech',
-        customer_name: 'Initech',
-        last_message: 'Uploaded notes and requested POV update',
-        last_timestamp: '2026-04-14T13:10:00Z',
+        customer_id: normalizedActive,
+        customer_name: normalizedActive,
+        last_message: 'Current customer context',
+        last_timestamp: new Date().toISOString(),
         status: 'In Progress',
       },
+      ...sidebarHistoryItems,
     ];
-  }, [customerId]);
+  }, [customerId, sidebarHistoryItems]);
 
   const btnStyle = (active: boolean): React.CSSProperties => ({
     padding: '0.3rem 0.75rem',
@@ -250,6 +270,7 @@ export function App() {
         >
           <ChatSidebar
             items={sidebarItems}
+            loading={sidebarLoading}
             activeCustomerId={customerId}
             onSelectCustomer={handleSidebarSelect}
             onNewChat={handleSidebarNewChat}
