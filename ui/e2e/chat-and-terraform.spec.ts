@@ -73,17 +73,28 @@ test.describe('UI Smoke Flows', () => {
       });
     });
 
-    await page.route('**/api/chat', async route => {
+    await page.route('**/api/chat/stream**', async route => {
       if (route.request().method() !== 'POST') {
         await route.fallback();
         return;
       }
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          status: 'ok',
+      const events = [
+        {
           trace_id: 'trace-e2e',
+          customer_id: 'acme',
+          event_type: 'status',
+          status: 'started',
+        },
+        {
+          trace_id: 'trace-e2e',
+          customer_id: 'acme',
+          event_type: 'token',
+          delta: 'Terraform artifacts are ready.',
+        },
+        {
+          trace_id: 'trace-e2e',
+          customer_id: 'acme',
+          event_type: 'completion',
           reply: 'Terraform artifacts are ready.',
           tool_calls: [],
           artifacts: {},
@@ -103,7 +114,12 @@ test.describe('UI Smoke Flows', () => {
             ],
           },
           history_length: 2,
-        }),
+        },
+      ];
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/x-ndjson',
+        body: `${events.map(e => JSON.stringify(e)).join('\n')}\n`,
       });
     });
 
@@ -122,7 +138,7 @@ test.describe('UI Smoke Flows', () => {
     await page.getByTestId('chat-customer-name').fill('ACME Corp');
     await historyResp;
     await page.getByTestId('chat-input').fill('Generate terraform');
-    const chatResp = page.waitForResponse(r => r.url().includes('/api/chat') && r.request().method() === 'POST');
+    const chatResp = page.waitForResponse(r => r.url().includes('/api/chat/stream') && r.request().method() === 'POST');
     await page.getByTestId('chat-send-button').click();
     await chatResp;
 

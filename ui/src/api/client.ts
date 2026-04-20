@@ -653,6 +653,22 @@ export interface ChatResponse {
   history_length: number;
 }
 
+export interface ChatStreamEvent {
+  trace_id?: string;
+  customer_id?: string;
+  event_type: 'status' | 'tool' | 'token' | 'terraform_stage' | 'completion' | 'error';
+  status?: string;
+  delta?: string;
+  tool_call?: ChatToolCall;
+  stage?: Record<string, unknown>;
+  error?: string;
+  reply?: string;
+  tool_calls?: ChatToolCall[];
+  artifacts?: Record<string, string>;
+  artifact_manifest?: ChatArtifactManifest;
+  history_length?: number;
+}
+
 export interface ChatHistoryResponse {
   status:      string;
   customer_id: string;
@@ -693,6 +709,97 @@ export async function apiChat(
       message,
     }),
   });
+}
+
+export interface ChatStreamHandlers {
+  onEvent?: (event: ChatStreamEvent) => void;
+  onToken?: (delta: string) => void;
+  onTool?: (toolCall: ChatToolCall) => void;
+}
+
+export async function apiChatStream(
+  customerId: string,
+  customerName: string,
+  message: string,
+  handlers: ChatStreamHandlers = {},
+): Promise<ChatResponse> {
+  const url = `${API_BASE}/chat/stream?mode=chunked`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_id: customerId,
+      customer_name: customerName,
+      message,
+    }),
+  });
+
+  if (!resp.ok) {
+    let detail = await resp.text();
+    try {
+      const body = JSON.parse(detail);
+      detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body);
+    } catch {
+      // keep raw text
+    }
+    throw { status: resp.status, detail } as ApiError;
+  }
+
+  if (!resp.body) {
+    throw { status: 500, detail: 'Streaming response body is empty.' } as ApiError;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let completion: ChatResponse | null = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      let event: ChatStreamEvent;
+      try {
+        event = JSON.parse(trimmed) as ChatStreamEvent;
+      } catch {
+        continue;
+      }
+
+      handlers.onEvent?.(event);
+
+      if (event.event_type === 'token' && typeof event.delta === 'string') {
+        handlers.onToken?.(event.delta);
+      }
+      if (event.event_type === 'tool' && event.tool_call) {
+        handlers.onTool?.(event.tool_call);
+      }
+      if (event.event_type === 'completion') {
+        completion = {
+          status: 'ok',
+          trace_id: event.trace_id,
+          reply: event.reply ?? '',
+          tool_calls: event.tool_calls ?? [],
+          artifacts: event.artifacts ?? {},
+          artifact_manifest: event.artifact_manifest,
+          history_length: event.history_length ?? 0,
+        };
+      }
+      if (event.event_type === 'error') {
+        throw { status: 500, detail: event.error ?? 'Streaming error.' } as ApiError;
+      }
+    }
+  }
+
+  if (completion) return completion;
+  throw { status: 500, detail: 'Streaming completed without completion event.' } as ApiError;
 }
 
 export async function apiGetChatHistory(
