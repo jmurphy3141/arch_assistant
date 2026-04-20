@@ -15,6 +15,7 @@ import {
   apiGetLatestJep,
   apiGetLatestWaf,
   type ChatMessage,
+  type ChatArtifactDownload,
   type ChatToolCall,
   type ChatArtifactManifest,
 } from '../api/client';
@@ -304,9 +305,22 @@ interface LocalMessage {
 
 interface ChatInterfaceProps {
   onCustomerIdChange?: (id: string) => void;
+  onArtifactsChange?: (downloads: ChatArtifactDownload[]) => void;
 }
 
-export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
+function latestManifestDownloads(messages: LocalMessage[]): ChatArtifactDownload[] {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant') continue;
+    const downloads = msg.artifactManifest?.downloads;
+    if (Array.isArray(downloads) && downloads.length > 0) {
+      return downloads;
+    }
+  }
+  return [];
+}
+
+export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInterfaceProps) {
   const stored = getStoredCustomer();
   const [customerId,    setCustomerId]    = useState(stored.id);
   const [customerName,  setCustomerName]  = useState(stored.name);
@@ -345,6 +359,10 @@ export function ChatInterface({ onCustomerIdChange }: ChatInterfaceProps) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
+
+  useEffect(() => {
+    onArtifactsChange?.(latestManifestDownloads(messages));
+  }, [messages, onArtifactsChange]);
 
   function handleCustomerIdChange(id: string) {
     setCustomerId(id);

@@ -107,6 +107,14 @@ test.describe('UI Smoke Flows', () => {
       });
     });
 
+    await page.route('**/api/terraform/acme/download/main.tf', async route => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/plain',
+        body: 'resource "oci_core_vcn" "main" {}',
+      });
+    });
+
     await page.goto('/');
 
     const historyResp = page.waitForResponse(r => r.url().includes('/api/chat/acme/history') && r.request().method() === 'GET');
@@ -121,6 +129,9 @@ test.describe('UI Smoke Flows', () => {
     await expect(page.getByTestId('chat-assistant-message').last()).toContainText('Terraform artifacts are ready.');
     await expect(page.getByTestId('artifact-link-terraform-main.tf')).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId('artifact-link-diagram-artifact')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('artifact-preview-panel')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('artifact-preview-item-0')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('artifact-preview-download-link')).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId('chat-error-banner')).toHaveCount(0);
   });
 

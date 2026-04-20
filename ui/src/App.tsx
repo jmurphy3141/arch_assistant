@@ -11,12 +11,14 @@ import { TerraformForm } from './components/TerraformForm';
 import { WafForm } from './components/WafForm';
 import { ChatInterface } from './components/ChatInterface';
 import { ChatSidebar, type SidebarHistoryItem } from './components/ChatSidebar';
+import { ArtifactPreviewPanel } from './components/ArtifactPreviewPanel';
 import { useClientId, getLastDiagramName, saveLastDiagramName } from './hooks/useClientId';
 import {
   apiClarify,
   apiGetChatHistoryIndex,
   apiRefineDiagram,
   apiWaitForJob,
+  type ChatArtifactDownload,
   type GenerateResponse,
   type OrchestrationResult,
 } from './api/client';
@@ -49,6 +51,7 @@ export function App() {
     return window.innerWidth < 1024;
   });
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [chatArtifacts, setChatArtifacts] = useState<ChatArtifactDownload[]>([]);
 
   function handleDiagramNameChange(name: string) {
     setDiagramName(name);
@@ -161,6 +164,7 @@ export function App() {
     handleCustomerIdChange(nextCustomerId);
     setChatSessionKey(v => v + 1);
     setMobileSidebarOpen(false);
+    setChatArtifacts([]);
   }
 
   function handleSidebarNewChat() {
@@ -173,6 +177,7 @@ export function App() {
     handleCustomerIdChange('');
     setChatSessionKey(v => v + 1);
     setMobileSidebarOpen(false);
+    setChatArtifacts([]);
   }
 
   useEffect(() => {
@@ -285,7 +290,7 @@ export function App() {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: isCompactChat ? '1fr' : '320px minmax(0, 1fr)',
+            gridTemplateColumns: isCompactChat ? '1fr' : '320px minmax(0, 1fr) 300px',
             gap: '0.9rem',
             alignItems: 'start',
           }}
@@ -322,8 +327,15 @@ export function App() {
             />
           )}
           <div style={{ minWidth: 0 }}>
-            <ChatInterface key={chatSessionKey} onCustomerIdChange={handleCustomerIdChange} />
+            <ChatInterface
+              key={chatSessionKey}
+              onCustomerIdChange={handleCustomerIdChange}
+              onArtifactsChange={setChatArtifacts}
+            />
           </div>
+          {(!isCompactChat || chatArtifacts.length > 0) && (
+            <ArtifactPreviewPanel artifacts={chatArtifacts} compact={isCompactChat} />
+          )}
         </div>
       )}
 
