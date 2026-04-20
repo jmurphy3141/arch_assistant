@@ -1,7 +1,7 @@
 # OCI Architecture Assistant
 ## Current Requirements + Delivery Status (v1.5 Program Snapshot)
 
-- Date: April 19, 2026
+- Date: April 20, 2026
 - Snapshot owner: Implementation working thread
 - Baseline spec: v1.5.0 overhaul
 - Source branches merged to `main`: PR #1, PR #2, PR #3
@@ -61,7 +61,7 @@
 ### Phase 4 (Current Active Work)
 - Branch: `codex/v1-5-phase4-artifacts-and-streaming`
 - Current slice: artifact preview panel integration into chat mode.
-- Local in-progress files at snapshot:
+- Phase 4 scope files:
   - `ui/src/App.tsx`
   - `ui/src/components/ChatInterface.tsx`
   - `ui/src/components/ArtifactPreviewPanel.tsx` (new)
@@ -72,7 +72,7 @@
 Before Phase 4 PR:
 
 1. `npm.cmd run e2e` passes with artifact-panel assertions.
-2. `npm run build` passes.
+2. `npm.cmd run build` passes.
 3. Branch is clean (no `ui/node_modules` noise).
 4. PR description includes:
    - scope of artifact panel behavior,
