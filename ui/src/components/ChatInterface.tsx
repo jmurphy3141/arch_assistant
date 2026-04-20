@@ -8,6 +8,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   apiChat,
+  apiChatStream,
   apiGetChatHistory,
   apiClearChatHistory,
   apiUploadNote,
@@ -331,6 +332,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [attachedFile,  setAttachedFile]  = useState<string | null>(null);
   const [attachLoading, setAttachLoading] = useState(false);
+  const [streamingReply, setStreamingReply] = useState('');
   const bottomRef   = useRef<HTMLDivElement>(null);
   const inputRef    = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -407,9 +409,18 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
     setAttachedFile(null);
     setError(null);
     setLoading(true);
+    setStreamingReply('');
 
     try {
-      const resp = await apiChat(customerId, customerName || customerId, text);
+      let resp;
+      try {
+        resp = await apiChatStream(customerId, customerName || customerId, text, {
+          onToken: delta => setStreamingReply(prev => prev + delta),
+        });
+      } catch {
+        // Fallback for environments where stream endpoint is unavailable.
+        resp = await apiChat(customerId, customerName || customerId, text);
+      }
       const assistantMsg: LocalMessage = {
         role:      'assistant',
         content:   resp.reply,
@@ -419,6 +430,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
         artifactManifest: resp.artifact_manifest,
       };
       setMessages(prev => [...prev, assistantMsg]);
+      setStreamingReply('');
     } catch (err: unknown) {
       const e = err as { status: number; detail: string };
       setError(`Error ${e.status}: ${e.detail}`);
@@ -569,9 +581,30 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
             customerId={customerId}
           />
         ))}
+        {streamingReply && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignSelf: 'flex-start', maxWidth: '80%' }}>
+            <div
+              data-testid="chat-streaming-message"
+              style={{
+                maxWidth: '80%',
+                alignSelf: 'flex-start',
+                background: '#0e1016',
+                border: '1px solid #1c2030',
+                borderRadius: 6,
+                padding: '0.6rem 0.85rem',
+                fontSize: '0.8rem',
+                color: '#cdd2e0',
+                fontFamily: "'JetBrains Mono', monospace",
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+              dangerouslySetInnerHTML={{ __html: mdToHtml(streamingReply) }}
+            />
+          </div>
+        )}
         {loading && (
           <div style={{ color: '#8b93a8', fontSize: '0.75rem', alignSelf: 'flex-start' }}>
-            ⏳ thinking…
+            Streaming response...
           </div>
         )}
         <div ref={bottomRef} />
@@ -661,3 +694,4 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
     </div>
   );
 }
+
