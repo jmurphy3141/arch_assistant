@@ -91,6 +91,11 @@ Version 1.5.0 is a phased major rebuild with:
 ## Testing and Release Gates
 
 - Reorganized unit/integration/e2e tests.
+- Standardized pytest execution taxonomy:
+  - `unit`, `integration`, `system`, `e2e`, `prompt_static`, `prompt_judge`, `live`
+- Deterministic PR gate must run:
+  - `unit + integration + system + e2e + prompt_static`
+- Judge-based prompt recursion (`prompt_judge`) and `live` suites remain nightly/manual opt-in.
 - Playwright required before merge.
 - Existing API compatibility smoke checks must pass.
 - Update version to `v1.5.0`.
