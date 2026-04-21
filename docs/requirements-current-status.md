@@ -21,8 +21,12 @@
 ## 2) Functional Requirements Status
 
 ### 2.1 Backend Orchestration + APIs
-- `DONE`: LangGraph scaffolding for orchestrator/specialists.
+- `DONE`: LangGraph orchestrator/specialist routing is active with legacy-safe fallback.
 - `DONE`: Terraform staged chain + blocking-question behavior.
+- `DONE`: SKILL.md-driven orchestrator pre/post validation across diagram/POV/JEP/WAF/Terraform/summary_document paths (fail-closed).
+- `DONE`: Orchestrator SKILL.md governance layer across all six paths (`diagram`, `pov`, `jep`, `waf`, `terraform`, `summary_document`).
+- `DONE`: Orchestrator preflight/postflight validation with authoritative block + pushback behavior.
+- `DONE`: Fail-closed enforcement for missing/unreadable/malformed required orchestrator skill files.
 - `DONE`: Trace ID propagation and structured response trace fields.
 - `DONE`: Aggregated history endpoint for sidebar (`/api/chat/history`).
 - `DONE`: Chat streaming endpoint modes (`sse` and `chunked`).
@@ -47,7 +51,9 @@
 - `DONE`: Deterministic PR gate command (`./scripts/test_pr_gate.sh`) for merge-blocking lanes.
 - `DONE`: Nightly/manual prompt-quality lane command (`./scripts/test_nightly_prompt.sh`) with opt-in `prompt_judge` and optional `live`.
 - `DONE`: Recursive static prompt-quality suite (`prompt_static`) across orchestrator, diagram, POV, JEP, Terraform, and WAF paths.
-- `DONE`: Recursive judge scaffold suite (`prompt_judge`) with scorecard/failure artifact output.
+- `DONE`: Recursive judge suite (`prompt_judge`) with scorecard/failure artifact output and pushback-quality coverage for blocked outcomes.
+- `DONE`: Live LLM scenario suite (`tests/test_llm_live.py`) migrated to configured OCI inference path (Anthropic dependency removed).
+- `DONE`: Live server suite (`tests/test_server_live.py`) now pre-validates `AGENT_BASE_URL` reachability and skip-gates invalid hosts.
 - `DONE`: API-level deterministic system flow test for notes -> orchestrator -> specialists -> persisted history.
 
 ## 3) Delivery Timeline by Phase
@@ -80,10 +86,10 @@ Current merge gate policy:
 
 ## 5) Immediate Next Work Items (Ordered)
 
-1. Expand prompt-judge from heuristic scaffold to LLM-judge integration for nightly/manual lanes.
+1. Tune prompt-judge scoring thresholds and scenario corpus for pushback-quality regressions.
 2. Add deeper mocked UI e2e coverage for artifact preview and streaming edge cases.
 3. Continue streaming UX polish (token/typing partial render behavior).
-4. Keep requirements/status snapshots synchronized with each merged slice.
+4. Stabilize live LLM scenario acceptance bands against valid topology variance while preserving architecture quality checks.
 
 ---
 

@@ -31,6 +31,13 @@ def test_prompt_judge_recursive_scorecards() -> None:
 
     scenario_prompts = {
         "orchestrator": orchestrator_agent.ORCHESTRATOR_SYSTEM_MSG,
+        "orchestrator_pushback": (
+            "Blocked outcome response template:\n"
+            "I need meeting notes context before generating this document.\n\n"
+            "Reasons:\n- Required notes context is missing for document generation.\n\n"
+            "Next steps:\n- Call save_notes with the latest customer notes.\n"
+            "- Call get_summary and retry this generation.\n"
+        ),
         "diagram": bom_parser.build_llm_prompt(
             [bom_parser.ServiceItem(id="compute_1", oci_type="compute", label="Compute", layer="compute")],
             context="financial services workload",
@@ -43,6 +50,7 @@ def test_prompt_judge_recursive_scorecards() -> None:
 
     dependency_map = {
         "orchestrator": ["diagram", "pov", "jep", "waf", "terraform"],
+        "orchestrator_pushback": ["orchestrator"],
         "jep": ["diagram"],
         "waf": ["diagram"],
         "terraform": ["orchestrator"],

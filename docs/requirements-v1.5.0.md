@@ -30,6 +30,9 @@ Version 1.5.0 is a phased major rebuild with:
 - `.drawio` preview: rendered preferred, XML fallback.
 - Specialist agents are independent graphs.
 - Orchestrator routes aggressively in parallel where safe.
+- Orchestrator enforces path-specific expert skills for all six paths (`diagram`, `pov`, `jep`, `waf`, `terraform`, `summary_document`) using repo `SKILL.md` files.
+- Orchestrator runs fail-closed preflight and postflight validation before and after specialist/tool execution.
+- Block-and-pushback outcomes from orchestrator skill validation are authoritative (no advisory bypass mode in v1).
 - Terraform gstack chain blocks completion on failed stage and asks questions.
 - gstack skills are static files vendored in repo.
 - Per-agent model endpoints/config are defined in config.
