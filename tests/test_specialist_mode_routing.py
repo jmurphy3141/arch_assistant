@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from drawing_agent_server import _run_orchestrator_turn, OrchestratorChatRequest
 from agent.persistence_objectstore import InMemoryObjectStore
@@ -170,3 +171,51 @@ def test_langgraph_orchestrator_module_falls_back_when_langgraph_unavailable(mon
 
     assert result["reply"] == "legacy-path"
     assert captured["specialist_mode"] == "langgraph"
+
+
+def test_orchestrator_parallel_plan_detects_pov_and_jep_only():
+    plan = orchestrator_agent._parallel_plan_for_message(
+        "Please generate POV and JEP for this customer."
+    )
+    assert [p["tool"] for p in plan] == ["generate_pov", "generate_jep"]
+
+    blocked_plan = orchestrator_agent._parallel_plan_for_message(
+        "Generate POV, JEP, and terraform."
+    )
+    assert blocked_plan == []
+
+
+def test_orchestrator_runs_pov_jep_in_parallel(monkeypatch):
+    calls = []
+
+    async def _fake_execute_tool(tool_name, args, **kwargs):
+        _ = (args, kwargs)
+        calls.append(tool_name)
+        await asyncio.sleep(0.05)
+        return (f"{tool_name}-ok", f"{tool_name}-key", {})
+
+    def _text_runner(prompt: str, system_message: str) -> str:
+        _ = (prompt, system_message)
+        return "Done."
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    start = time.perf_counter()
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="Please generate POV and JEP for this customer.",
+            store=InMemoryObjectStore(),
+            text_runner=_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=2,
+            specialist_mode="langgraph",
+        )
+    )
+    elapsed = time.perf_counter() - start
+
+    assert sorted(calls) == ["generate_jep", "generate_pov"]
+    # Parallel execution should complete much closer to one sleep interval.
+    assert elapsed < 0.16
+    assert len(result["tool_calls"]) == 2
