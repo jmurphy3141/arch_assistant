@@ -1,7 +1,7 @@
 """
 tests/scenarios/test_scenarios.py
 ----------------------------------
-Agent 3 v1.3.2 scenario tests.  No real OCI calls.
+Agent 3 v1.5.0 scenario tests.  No real OCI calls.
 
 T_MR_001 – multi-region without multi_region_mode → need_clarification (regions.mode)
 T_MR_002 – duplicate_drha → region_secondary_stub box (w=260, h=90)

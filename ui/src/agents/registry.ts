@@ -24,7 +24,7 @@ export interface AgentDefinition {
 const DRAWING_AGENT: AgentDefinition = {
   id: 'drawing-agent',
   name: 'OCI Drawing Agent',
-  version: '1.3.2',
+  version: '1.5.0',
   description:
     'Generates OCI architecture draw.io diagrams from a Bill of Materials (BOM) Excel file.',
   endpoints: {

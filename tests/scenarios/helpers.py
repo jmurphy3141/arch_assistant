@@ -46,9 +46,9 @@ def compute_input_hash_for_generate(
 # ── Assertion helpers ──────────────────────────────────────────────────────────
 
 def assert_ok_envelope(data: dict) -> None:
-    """Assert that a response has all required v1.3.2 OK fields."""
+    """Assert that a response has all required v1.5.0 OK fields."""
     assert data["status"] == "ok", f"Expected status=ok, got: {data.get('status')}"
-    assert data["agent_version"] == "1.3.2"
+    assert data["agent_version"] == "1.5.0"
     assert isinstance(data["schema_version"], dict)
     assert "request_id" in data and data["request_id"]
     assert "input_hash" in data and data["input_hash"]
@@ -64,9 +64,9 @@ def assert_ok_envelope(data: dict) -> None:
 
 
 def assert_clarify_envelope(data: dict) -> None:
-    """Assert that a response has all required v1.3.2 need_clarification fields."""
+    """Assert that a response has all required v1.5.0 need_clarification fields."""
     assert data["status"] == "need_clarification"
-    assert data["agent_version"] == "1.3.2"
+    assert data["agent_version"] == "1.5.0"
     assert "request_id" in data
     assert "input_hash" in data
     assert isinstance(data["questions"], list)

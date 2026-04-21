@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.5.0] - Unreleased
+## [1.5.0] - 2026-04-21
 
 ### Added
 - LangGraph-compatible orchestrator and specialist adapter scaffolding with safe fallback behavior.
@@ -24,6 +24,7 @@
   - `Completed with Terraform`
   - `Terraform Needs Input`
 - Terraform UI uses backend bundle metadata and file download API for source rendering.
+- Orchestrator now runs explicit combined POV+JEP requests in parallel when no conflicting tool intent is present.
 
 ### Testing
 - Backend smoke/integration set expanded for:
@@ -32,4 +33,3 @@
   - terraform graph behavior
   - terraform API endpoints
 - UI build validated with Vite.
-

@@ -13,7 +13,7 @@ const BASE = '/api';
 
 export const HEALTH_RESPONSE = {
   status: 'ok',
-  agent_version: '1.3.2',
+  agent_version: '1.5.0',
   agent: 'oci-drawing-agent',
   pending_clarifications: [],
   idempotency_cache_size: 0,
@@ -21,7 +21,7 @@ export const HEALTH_RESPONSE = {
 
 export const GENERATE_OK_RESPONSE = {
   status: 'ok',
-  agent_version: '1.3.2',
+  agent_version: '1.5.0',
   request_id: 'aabbccdd-0000-0000-0000-112233445566',
   input_hash: 'a'.repeat(64),
   client_id: 'test-client',
@@ -36,7 +36,7 @@ export const GENERATE_OK_RESPONSE = {
 
 export const CLARIFY_RESPONSE = {
   status: 'need_clarification',
-  agent_version: '1.3.2',
+  agent_version: '1.5.0',
   request_id: 'clarify-req-id',
   input_hash: 'b'.repeat(64),
   client_id: 'test-client',
@@ -74,7 +74,7 @@ const DOC_CONTENT = '# Test Document\n\n## Section One\n\nSome **bold** content 
 
 export const POV_GENERATE_RESPONSE = {
   status: 'ok',
-  agent_version: '1.3.2',
+  agent_version: '1.5.0',
   customer_id: 'test_customer',
   doc_type: 'pov',
   version: 1,
@@ -118,7 +118,7 @@ export const TERRAFORM_FILES = {
 
 export const TERRAFORM_GENERATE_RESPONSE = {
   status: 'ok',
-  agent_version: '1.3.2',
+  agent_version: '1.5.0',
   customer_id: 'test_customer',
   doc_type: 'terraform',
   version: 1,
@@ -177,7 +177,7 @@ export const WAF_CONTENT = [
 
 export const WAF_GENERATE_RESPONSE = {
   status: 'ok',
-  agent_version: '1.3.2',
+  agent_version: '1.5.0',
   customer_id: 'test_customer',
   doc_type: 'waf',
   version: 1,

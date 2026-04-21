@@ -2,7 +2,7 @@
 """
 server/app/main.py
 ------------------
-OCI Drawing Agent — FastAPI Server (v1.3.2)
+OCI Drawing Agent — FastAPI Server (v1.5.0)
 
 Serves under /api/* prefix to match OCI LB path routing.
 Legacy /* aliases included for backwards compatibility.
@@ -65,7 +65,7 @@ import server.services.oci_object_storage as _oci_storage
 
 logger = logging.getLogger(__name__)
 
-AGENT_VERSION = "1.3.2"
+AGENT_VERSION = "1.5.0"
 SCHEMA_VERSION = {"spec": "1.1", "draw_dict": "1.0"}
 
 # ---------------------------------------------------------------------------

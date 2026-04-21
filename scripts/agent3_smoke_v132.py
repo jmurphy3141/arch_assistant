@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OCI Drawing Agent v1.3.2 — end-to-end smoke test.
+OCI Drawing Agent v1.5.0 — end-to-end smoke test.
 
 Usage
 -----
@@ -27,7 +27,7 @@ from typing import Optional, Union
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-AGENT_VERSION = "1.3.2"
+AGENT_VERSION = "1.5.0"
 
 REQUIRED_ENVELOPE_FIELDS = [
     "status",
@@ -147,7 +147,7 @@ def call_generate(host: str, payload: dict, evidence_dir: Path,
 
 
 def check_generate_envelope(data: dict) -> bool:
-    """Validate v1.3.2 envelope fields on a /generate response."""
+    """Validate v1.5.0 envelope fields on a /generate response."""
     ok = True
     ok &= _check("status=ok", data.get("status") == "ok",
                  f"got {data.get('status')!r}")
@@ -228,7 +228,7 @@ def _print_summary(data: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Agent 3 v1.3.2 end-to-end smoke test"
+        description="Agent 3 v1.5.0 end-to-end smoke test"
     )
     parser.add_argument("--host", default="http://localhost:8080",
                         help="Base URL of the running service (default: http://localhost:8080)")

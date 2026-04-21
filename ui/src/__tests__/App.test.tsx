@@ -204,7 +204,7 @@ describe('C4: Health indicator', () => {
     renderApp();
 
     await waitFor(() => {
-      expect(screen.getByTestId('health-indicator')).toHaveTextContent('1.3.2');
+      expect(screen.getByTestId('health-indicator')).toHaveTextContent('1.5.0');
     });
   });
 

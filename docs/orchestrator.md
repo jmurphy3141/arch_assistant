@@ -83,7 +83,7 @@ Served at `/.well-known/agent.json` and `/.well-known/agent-card.json`:
   "schemaVersion":   "1.0",
   "humanReadableId": "oracle-oci-fleet/agent0-sa-orchestrator",
   "name":            "OCI SA Orchestrator + Drawing Agent",
-  "agentVersion":    "1.3.2",
+  "agentVersion":    "1.5.0",
   "url":             "https://<host>",
   "provider":        {"name": "Oracle"},
   "capabilities":    {"streaming": false, "pushNotifications": false},
