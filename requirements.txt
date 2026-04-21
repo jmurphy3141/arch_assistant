@@ -5,6 +5,7 @@ pydantic>=2.0.0
 python-multipart>=0.0.9
 openpyxl>=3.1.0
 pyyaml>=6.0
+langgraph>=0.2.30
 
 itsdangerous>=2.1.2          # SessionMiddleware cookie signing
 python-dotenv>=1.0.0         # Load .env in development (optional in production)

@@ -136,3 +136,37 @@ def test_run_orchestrator_turn_falls_back_to_legacy_on_langgraph_error(monkeypat
 
     assert result["reply"] == "legacy-fallback-ok"
     assert captured["specialist_mode"] == "legacy"
+
+
+def test_langgraph_orchestrator_module_falls_back_when_langgraph_unavailable(monkeypatch):
+    import agent.langgraph_orchestrator as langgraph_orchestrator
+
+    captured = {}
+
+    async def _fake_legacy_run_turn(**kwargs):
+        captured.update(kwargs)
+        return {
+            "reply": "legacy-path",
+            "tool_calls": [],
+            "artifacts": {},
+            "history_length": 1,
+        }
+
+    monkeypatch.setattr(langgraph_orchestrator, "_HAS_LANGGRAPH", False)
+    monkeypatch.setattr(orchestrator_agent, "run_turn", _fake_legacy_run_turn)
+
+    result = asyncio.run(
+        langgraph_orchestrator.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="hi",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=5,
+            specialist_mode="langgraph",
+        )
+    )
+
+    assert result["reply"] == "legacy-path"
+    assert captured["specialist_mode"] == "langgraph"

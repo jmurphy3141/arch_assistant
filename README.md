@@ -169,6 +169,28 @@ sudo firewall-cmd --add-service=https --permanent
 sudo firewall-cmd --reload
 ```
 
+### Toggle Public Web Access (Keep Local Testing)
+
+Use the helper script to close external web access when you are not testing,
+without stopping backend services.
+
+```bash
+# Show current exposure in firewalld public zone
+sudo ./scripts/toggle-public-web.sh status
+
+# Close public web ingress (removes HTTPS/HTTP services and direct app ports)
+sudo ./scripts/toggle-public-web.sh close
+
+# Re-open public web ingress for browser testing (HTTPS on 443)
+sudo ./scripts/toggle-public-web.sh open
+```
+
+Notes:
+- `close` does not stop `uvicorn` or nginx. On-box checks like
+  `curl http://127.0.0.1:8080/health` continue to work.
+- `open` enables only HTTPS (`443`) by default, assuming nginx reverse proxy
+  forwards to backend `127.0.0.1:8080`.
+
 ---
 
 ## Install dependencies
