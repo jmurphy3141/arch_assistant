@@ -78,3 +78,57 @@ def test_terraform_graph_blocks_on_non_json_stage_output():
     assert "returned non-JSON output" in summary
     assert artifact_key == ""
     assert result_data["ok"] is False
+
+
+def test_terraform_graph_repairs_invalid_oci_fields_in_final_output():
+    def fake_text_runner(prompt: str, _system_message: str) -> str:
+        if "STAGE: plan-eng-review" in prompt:
+            return json.dumps({"ok": True, "output": "plan output", "questions": []})
+        if "STAGE: review" in prompt:
+            return json.dumps({"ok": True, "output": "review output", "questions": []})
+        if "STAGE: cso" in prompt:
+            return json.dumps({"ok": True, "output": "cso output", "questions": []})
+        if "STAGE: qa" in prompt:
+            return json.dumps(
+                {
+                    "ok": True,
+                    "output": """
+resource "oci_core_subnet" "bad" {
+  dns_label                         = "acmedemopublicsubnet"
+  prohibit_internet_ingress         = false
+  prohibit_public_ip_on_vnic_option = "NONE"
+}
+""",
+                    "questions": [],
+                }
+            )
+        # Repair pass
+        return json.dumps(
+            {
+                "files": {
+                    "main.tf": """
+resource "oci_core_subnet" "good" {
+  dns_label                  = "acmedemo01"
+  prohibit_public_ip_on_vnic = false
+}
+"""
+                }
+            }
+        )
+
+    skill_root = Path(__file__).resolve().parents[1] / "gstack_skills"
+    summary, artifact_key, result_data = asyncio.run(
+        terraform_graph.run(
+            args={"prompt": "Build Terraform"},
+            skill_root=skill_root,
+            text_runner=fake_text_runner,
+        )
+    )
+
+    assert "Terraform generation completed via stages:" in summary
+    assert artifact_key == ""
+    assert result_data["ok"] is True
+    assert "files" in result_data
+    assert "main.tf" in result_data["files"]
+    assert "prohibit_internet_ingress" not in result_data["files"]["main.tf"]
+    assert "prohibit_public_ip_on_vnic_option" not in result_data["files"]["main.tf"]

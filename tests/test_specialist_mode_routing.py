@@ -94,3 +94,45 @@ def test_generate_terraform_langgraph_mode_returns_blocking_questions():
     assert "Clarifications required" in result[0]
     assert isinstance(result[2], dict)
     assert "stages" in result[2]
+
+
+def test_run_orchestrator_turn_falls_back_to_legacy_on_langgraph_error(monkeypatch):
+    import agent.langgraph_orchestrator as langgraph_orchestrator
+
+    async def _broken_langgraph(**_kwargs):
+        raise RuntimeError("langgraph failed")
+
+    captured = {}
+
+    async def _fake_legacy_run_turn(**kwargs):
+        captured.update(kwargs)
+        return {
+            "reply": "legacy-fallback-ok",
+            "tool_calls": [],
+            "artifacts": {},
+            "history_length": 1,
+        }
+
+    monkeypatch.setattr(langgraph_orchestrator, "run_turn", _broken_langgraph)
+    monkeypatch.setattr(orchestrator_agent, "run_turn", _fake_legacy_run_turn)
+
+    req = OrchestratorChatRequest(
+        customer_id="acme",
+        customer_name="ACME Corp",
+        message="hello",
+    )
+    result = asyncio.run(
+        _run_orchestrator_turn(
+            req=req,
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            orch_cfg={
+                "max_tool_iterations": 5,
+                "langgraph_enabled": True,
+                "specialists_langgraph_enabled": True,
+            },
+        )
+    )
+
+    assert result["reply"] == "legacy-fallback-ok"
+    assert captured["specialist_mode"] == "legacy"

@@ -12,6 +12,7 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Callable
+from urllib.parse import quote
 
 from agent.persistence_objectstore import ObjectStoreBase
 import agent.context_store as context_store
@@ -114,11 +115,18 @@ async def execute_tool(
                 },
             )
             result_data["bundle"] = persisted
+            download_lines = []
+            for name in sorted((persisted.get("files") or {}).keys()):
+                download_lines.append(
+                    f"- /api/terraform/{customer_id}/download/{quote(name)}"
+                )
             summary = (
                 summary
                 + "\n\nTerraform bundle saved:"
                 + f"\n- version: {persisted['version']}"
                 + f"\n- key: {persisted['key']}"
+                + "\n- downloads:\n"
+                + ("\n".join(download_lines) if download_lines else "- (none)")
             )
         return summary, key, result_data
 

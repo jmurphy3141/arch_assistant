@@ -134,8 +134,8 @@ orchestrator:
   agent_id: "agent0-sa-orchestrator"
   max_tool_iterations: 5
   history_max_turns: 30
-  langgraph_enabled: false
-  specialists_langgraph_enabled: false
+  langgraph_enabled: true
+  specialists_langgraph_enabled: true
   telegram:
     enabled: false
     bot_token: ""    # env: TELEGRAM_BOT_TOKEN

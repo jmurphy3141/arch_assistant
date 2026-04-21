@@ -97,6 +97,89 @@ def _extract_terraform_files(text: str) -> dict[str, str]:
     return {"main.tf": text.strip() + "\n"}
 
 
+def _collect_terraform_issues(files: dict[str, str]) -> list[str]:
+    issues: list[str] = []
+    for filename, content in files.items():
+        if not filename.endswith(".tf"):
+            issues.append(f"{filename}: expected a .tf file.")
+        if "```" in content:
+            issues.append(f"{filename}: contains markdown fences.")
+        if "To use this Terraform configuration" in content:
+            issues.append(f"{filename}: contains prose/instructions, not pure Terraform.")
+        if "prohibit_internet_ingress" in content:
+            issues.append(f"{filename}: uses invalid subnet arg `prohibit_internet_ingress`.")
+        if "prohibit_public_ip_on_vnic_option" in content:
+            issues.append(f"{filename}: uses invalid subnet arg `prohibit_public_ip_on_vnic_option`.")
+        for label in re.findall(r'dns_label\s*=\s*"([a-z0-9]+)"', content, flags=re.IGNORECASE):
+            if len(label) > 15:
+                issues.append(f"{filename}: dns_label `{label}` exceeds OCI max length 15.")
+    if not files:
+        issues.append("No Terraform files were produced.")
+    return issues
+
+
+def _parse_files_json(raw: str) -> dict[str, str] | None:
+    cleaned = _strip_fences(raw)
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("files"), dict):
+        return None
+    files = {
+        str(name): str(body).rstrip() + "\n"
+        for name, body in parsed["files"].items()
+        if str(name).strip()
+    }
+    return files or None
+
+
+def _repair_terraform_files(
+    *,
+    text_runner: Callable[[str, str], str],
+    original_output: str,
+    files: dict[str, str],
+    issues: list[str],
+    prompt: str,
+) -> dict[str, str] | None:
+    repair_prompt = f"""\
+You are validating OCI Terraform output for correctness and file formatting.
+Return ONLY JSON with this exact shape:
+{{
+  "files": {{
+    "providers.tf": "<hcl>",
+    "main.tf": "<hcl>",
+    "variables.tf": "<hcl>",
+    "outputs.tf": "<hcl>"
+  }}
+}}
+
+Requirements:
+- Remove prose/explanations entirely.
+- Keep only runnable Terraform HCL.
+- Fix invalid OCI attributes.
+- Ensure dns_label values are <= 15 characters.
+- Keep provider `oracle/oci` and required_version constraints.
+
+User request:
+{prompt}
+
+Detected issues:
+{chr(10).join(f"- {issue}" for issue in issues)}
+
+Original model output:
+{original_output}
+
+Current extracted files:
+{json.dumps(files, indent=2)}
+"""
+    repaired_raw = text_runner(
+        repair_prompt,
+        "You are an OCI Terraform code validator and formatter. Return only strict JSON.",
+    )
+    return _parse_files_json(repaired_raw)
+
+
 async def run(
     *,
     args: dict,
@@ -133,12 +216,51 @@ async def run(
         stages = " -> ".join(stage.stage for stage in result.stages)
         final_excerpt = (result.final_output or "").strip()
         files = _extract_terraform_files(result.final_output or "")
+        issues = _collect_terraform_issues(files)
+        for _ in range(2):
+            if not issues:
+                break
+            repaired = _repair_terraform_files(
+                text_runner=text_runner,
+                original_output=result.final_output or "",
+                files=files,
+                issues=issues,
+                prompt=prompt,
+            )
+            if not repaired:
+                break
+            files = repaired
+            issues = _collect_terraform_issues(files)
+
+        if issues:
+            result_data["ok"] = False
+            result_data["blocking_questions"] = [
+                "Terraform output failed validation. Please regenerate with stricter OCI provider correctness.",
+                *issues,
+            ]
+            result_data["stages"].append(
+                {
+                    "stage": "validation",
+                    "ok": False,
+                    "questions": issues,
+                    "output_preview": "Terraform validation failed.",
+                }
+            )
+            failed = "\n".join(f"- {issue}" for issue in issues)
+            return (
+                "Terraform generation failed validation. Clarifications/corrections required:\n"
+                f"{failed}",
+                "",
+                result_data,
+            )
+
         result_data["files"] = files
         if len(final_excerpt) > 3000:
             final_excerpt = final_excerpt[:3000] + "\n...[truncated]"
         summary = (
             f"Terraform generation completed via stages: {stages}\n\n"
-            f"{final_excerpt or '(No Terraform output text returned.)'}"
+            + f"Generated files: {', '.join(sorted(files.keys()))}\n\n"
+            + f"{final_excerpt or '(No Terraform output text returned.)'}"
         )
         return summary, "", result_data
 
