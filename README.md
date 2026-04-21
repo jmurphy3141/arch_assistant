@@ -221,6 +221,47 @@ pip3.11 install -r requirements.txt
 | `orchestrator.history_max_turns` | History turns loaded per prompt (default: 30) |
 | `orchestrator.telegram.enabled` | Enable Telegram notifications (default: false) |
 
+### G-Stack Skills and Critic Layer
+
+Agent 0 now injects domain skill guidance into specialist calls before dispatch:
+
+- `generate_pov` -> `gstack_skills/oci_customer_pov_writer/SKILL.md`
+- `generate_terraform` -> `gstack_skills/terraform_for_oci/SKILL.md`
+
+The orchestrator also runs a bounded critic/refine pass for specialist outputs:
+
+1. Specialist generates initial output.
+2. Critic evaluates pass/fail and returns actionable feedback.
+3. On fail, orchestrator retries once with critic feedback injected.
+
+Skill frontmatter can request model routing per specialist call:
+
+```yaml
+---
+model_profile: terraform
+---
+```
+
+`model_profile` maps to `config.yaml -> agents.<profile>` and falls back to
+default inference settings when not configured.
+
+```mermaid
+flowchart LR
+  SA[SA Request] --> A0[Agent 0 Orchestrator]
+  A0 --> SI[Skill Injection]
+  SI --> SP[Specialist Agent Call]
+  SP --> CR[Critic Review]
+  CR -->|pass| OUT[Return Artifact/Reply]
+  CR -->|fail + feedback| RF[Refine Retry]
+  RF --> SP
+```
+
+This behavior is implemented in:
+
+- `agent/skill_loader.py`
+- `agent/critic_agent.py`
+- `agent/orchestrator_agent.py`
+
 ### .env — secrets and per-deployment values
 
 Copy `.env.example` to `.env` and fill in the values. On OCI Compute set these

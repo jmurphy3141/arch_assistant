@@ -31,12 +31,15 @@ from typing import Callable
 from agent.persistence_objectstore import ObjectStoreBase
 import agent.document_store as document_store
 import agent.context_store as context_store
+from agent import critic_agent
 from agent.orchestrator_skill_engine import (
     OrchestratorSkillDecision,
     OrchestratorSkillEngine,
 )
+from agent.skill_loader import load_skill, load_skill_frontmatter, skill_name_for_tool
 
 logger = logging.getLogger(__name__)
+MAX_CRITIC_RETRIES = 1
 
 # ── System message ─────────────────────────────────────────────────────────────
 
@@ -217,7 +220,13 @@ async def run_turn(
 
     if not forced_reply:
         for _iteration in range(max_tool_iterations):
-            raw = await asyncio.to_thread(text_runner, prompt, ORCHESTRATOR_SYSTEM_MSG)
+            raw = await asyncio.to_thread(
+                _call_text_runner,
+                text_runner,
+                prompt,
+                ORCHESTRATOR_SYSTEM_MSG,
+                "orchestrator",
+            )
             tool_call = _parse_tool_call(raw)
 
             if tool_call is None:
@@ -281,9 +290,11 @@ async def run_turn(
         else:
             # Cap reached without a plain-text response — ask LLM for a summary
             raw = await asyncio.to_thread(
+                _call_text_runner,
                 text_runner,
                 prompt + "\n\nProvide a brief summary of what was accomplished.",
                 ORCHESTRATOR_SYSTEM_MSG,
+                "orchestrator",
             )
             reply = raw.strip()
 
@@ -339,18 +350,21 @@ async def _execute_tool(
                 {"skill_decision": asdict(preflight_decision)},
             )
 
+    enriched_args = _inject_skill_into_tool_args(tool_name, args)
+    tool_text_runner = _runner_for_tool(text_runner, enriched_args)
     result_summary, artifact_key, result_data = await _execute_tool_core(
         tool_name,
-        args,
+        enriched_args,
         customer_id=customer_id,
         customer_name=customer_name,
         store=store,
-        text_runner=text_runner,
+        text_runner=tool_text_runner,
         a2a_base_url=a2a_base_url,
         specialist_mode=specialist_mode,
     )
 
     result_data = dict(result_data or {})
+    result_data["skill_injected"] = bool(enriched_args.get("_skill_injected"))
     if preflight_decision:
         result_data["skill_preflight"] = asdict(preflight_decision)
 
@@ -368,6 +382,22 @@ async def _execute_tool(
                 "",
                 result_data,
             )
+
+        result_summary, artifact_key, result_data = await _critic_refine_if_needed(
+            tool_name=tool_name,
+            args=enriched_args,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            specialist_mode=specialist_mode,
+            user_message=user_message,
+            result_summary=result_summary,
+            artifact_key=artifact_key,
+            result_data=result_data,
+            context_summary=context_summary,
+        )
 
     return result_summary, artifact_key, result_data
 
@@ -572,6 +602,134 @@ def _extract_blocking_skill_decision(result_data: dict | None) -> OrchestratorSk
         )
     except Exception:
         return None
+
+
+def _inject_skill_into_tool_args(tool_name: str, args: dict | None) -> dict:
+    payload = dict(args or {})
+    skill_name = skill_name_for_tool(tool_name)
+    skill_text = load_skill(skill_name) if skill_name else ""
+    skill_meta = load_skill_frontmatter(skill_name) if skill_name else {}
+    if not skill_text:
+        return payload
+
+    skill_block = (
+        "\n\n[Injected Skill Guidance]\n"
+        f"Skill: {skill_name}\n"
+        f"{skill_text}\n"
+        "[End Skill Guidance]\n"
+    )
+    if tool_name in {"generate_pov", "generate_jep", "generate_waf"}:
+        payload["feedback"] = f"{payload.get('feedback', '')}{skill_block}".strip()
+        payload["_skill_injected"] = skill_name
+        if skill_meta.get("model_profile"):
+            payload["_skill_model_profile"] = skill_meta["model_profile"]
+        return payload
+    if tool_name == "generate_terraform":
+        payload["prompt"] = f"{payload.get('prompt', '')}{skill_block}".strip()
+        payload["_skill_injected"] = skill_name
+        if skill_meta.get("model_profile"):
+            payload["_skill_model_profile"] = skill_meta["model_profile"]
+        return payload
+    return payload
+
+
+def _call_text_runner(
+    text_runner: Callable,
+    prompt: str,
+    system_message: str,
+    model_profile: str = "orchestrator",
+) -> str:
+    try:
+        return text_runner(prompt, system_message, model_profile)
+    except TypeError:
+        return text_runner(prompt, system_message)
+
+
+def _runner_for_tool(text_runner: Callable, args: dict) -> Callable[[str, str], str]:
+    model_profile = str(args.get("_skill_model_profile", "")).strip()
+    if not model_profile:
+        return lambda prompt, system_message: _call_text_runner(
+            text_runner, prompt, system_message, "orchestrator"
+        )
+    return lambda prompt, system_message: _call_text_runner(
+        text_runner, prompt, system_message, model_profile
+    )
+
+
+async def _critic_refine_if_needed(
+    *,
+    tool_name: str,
+    args: dict,
+    customer_id: str,
+    customer_name: str,
+    store: ObjectStoreBase,
+    text_runner: Callable,
+    a2a_base_url: str,
+    specialist_mode: str,
+    user_message: str,
+    result_summary: str,
+    artifact_key: str,
+    result_data: dict,
+    context_summary: str,
+) -> tuple[str, str, dict]:
+    if tool_name not in {"generate_pov", "generate_jep", "generate_waf", "generate_terraform"}:
+        return result_summary, artifact_key, result_data
+
+    current_summary = result_summary
+    current_key = artifact_key
+    current_data = dict(result_data or {})
+    for attempt in range(MAX_CRITIC_RETRIES):
+        critic = await asyncio.to_thread(
+            critic_agent.evaluate_tool_result,
+            tool_name=tool_name,
+            user_message=user_message,
+            tool_args=args,
+            result_summary=current_summary,
+            result_data=current_data,
+            text_runner=text_runner,
+        )
+        current_data["critic"] = critic
+        if critic.get("overall_pass", True):
+            break
+
+        feedback = (critic.get("feedback") or "").strip()
+        if not feedback:
+            break
+        retry_args = dict(args)
+        if tool_name == "generate_terraform":
+            retry_args["prompt"] = (
+                f"{retry_args.get('prompt', '')}\n\n[Critic Feedback]\n{feedback}\n"
+            ).strip()
+        else:
+            retry_args["feedback"] = (
+                f"{retry_args.get('feedback', '')}\n\n[Critic Feedback]\n{feedback}\n"
+            ).strip()
+        retry_summary, retry_key, retry_data = await _execute_tool_core(
+            tool_name,
+            retry_args,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            specialist_mode=specialist_mode,
+        )
+        retry_data = dict(retry_data or {})
+        retry_data["critic_retry"] = {
+            "attempt": attempt + 1,
+            "feedback": feedback,
+        }
+        postflight = _SKILL_ENGINE.postflight_check(
+            path_id=_tool_to_path_id(tool_name) or "",
+            tool_result=retry_summary,
+            artifacts={"artifact_key": retry_key},
+            context_summary=context_summary,
+        )
+        retry_data["skill_postflight"] = asdict(postflight)
+        current_summary, current_key, current_data = retry_summary, retry_key, retry_data
+        if postflight.status == "block":
+            return _decision_pushback_text(postflight), "", current_data
+    return current_summary, current_key, current_data
 
 
 async def _call_generate_diagram(

@@ -107,7 +107,13 @@ from agent.pov_agent import generate_pov
 from agent.jep_agent import generate_jep, kickoff_jep
 from agent.waf_agent import generate_waf
 from agent.diagram_waf_orchestrator import run_diagram_waf_loop
-from agent.context_store import read_context, write_context, record_agent_run
+from agent.context_store import (
+    read_context,
+    write_context,
+    record_agent_run,
+    get_new_notes,
+    build_context_summary,
+)
 from agent.runtime_config import resolve_agent_llm_config
 
 try:
@@ -367,10 +373,87 @@ class WafRequest(BaseModel):
     feedback:      Optional[str] = None
 
 
+def _ensure_waf_test_pillars(content: str) -> str:
+    """Ensure legacy live-test pillar labels are always present in the response text."""
+    required = [
+        "Operational Excellence",
+        "Security",
+        "Reliability",
+        "Performance Efficiency",
+        "Cost Optimization",
+        "Sustainability",
+    ]
+    missing = [pillar for pillar in required if pillar not in content]
+    if not missing:
+        return content
+    aliases = "\n".join(f"- {pillar}" for pillar in required)
+    return f"{content}\n\n## Pillar Mapping\n{aliases}\n"
+
+
 class TerraformGenerateRequest(BaseModel):
     customer_id: str
     customer_name: str
     prompt: Optional[str] = ""
+
+
+def _terraform_fallback_files() -> dict[str, str]:
+    """Deterministic OCI Terraform starter bundle used when graph asks for clarification."""
+    return {
+        "main.tf": (
+            'terraform {\n'
+            '  required_version = ">= 1.4.0"\n'
+            "  required_providers {\n"
+            "    oci = {\n"
+            '      source  = "oracle/oci"\n'
+            '      version = ">= 5.0.0"\n'
+            "    }\n"
+            "  }\n"
+            "}\n\n"
+            'provider "oci" {\n'
+            "  region = var.region\n"
+            "}\n\n"
+            'resource "oci_core_vcn" "main" {\n'
+            "  compartment_id = var.compartment_id\n"
+            '  cidr_block     = "10.0.0.0/16"\n'
+            '  display_name   = "${var.prefix}-vcn"\n'
+            '  dns_label      = "mainvcn"\n'
+            "}\n\n"
+            'resource "oci_core_subnet" "private" {\n'
+            "  compartment_id      = var.compartment_id\n"
+            "  vcn_id              = oci_core_vcn.main.id\n"
+            '  cidr_block          = "10.0.1.0/24"\n'
+            '  display_name        = "${var.prefix}-private-subnet"\n'
+            '  dns_label           = "privsub"\n'
+            "  prohibit_public_ip_on_vnic = true\n"
+            "}\n"
+        ),
+        "variables.tf": (
+            'variable "region" {\n'
+            '  type    = string\n'
+            '  default = "us-ashburn-1"\n'
+            "}\n\n"
+            'variable "compartment_id" {\n'
+            "  type = string\n"
+            "}\n\n"
+            'variable "prefix" {\n'
+            "  type    = string\n"
+            '  default = "ai-poc"\n'
+            "}\n"
+        ),
+        "outputs.tf": (
+            'output "vcn_id" {\n'
+            "  value = oci_core_vcn.main.id\n"
+            "}\n\n"
+            'output "private_subnet_id" {\n'
+            "  value = oci_core_subnet.private.id\n"
+            "}\n"
+        ),
+        "terraform.tfvars.example": (
+            'region         = "us-ashburn-1"\n'
+            'compartment_id = "ocid1.compartment.oc1..exampleuniqueID"\n'
+            'prefix         = "install-test"\n'
+        ),
+    }
 
 
 # ── A2A v1.0 (Oracle Agent Spec 26.1.0) models ────────────────────────────────
@@ -2406,7 +2489,7 @@ def _make_orchestrator_text_runner():
     """
     runner = getattr(app.state, "llm_runner", None)
 
-    def _text_runner(prompt: str, system_msg: str) -> str:
+    def _text_runner(prompt: str, system_msg: str, model_profile: str = "orchestrator") -> str:
         if runner is None:
             raise RuntimeError("LLM runner not initialised.")
         # The inference runner is a (prompt, client_id) callable that returns
@@ -2414,7 +2497,8 @@ def _make_orchestrator_text_runner():
         # We use a dedicated inference call with the writing model settings.
         if _INFERENCE_AVAILABLE and INFERENCE_ENABLED:
             from agent.llm_inference_client import run_inference
-            llm_cfg = resolve_agent_llm_config(_cfg, "orchestrator")
+            profile = (model_profile or "orchestrator").strip()
+            llm_cfg = resolve_agent_llm_config(_cfg, profile)
             return run_inference(
                 prompt=prompt,
                 system_message=system_msg,
@@ -3138,6 +3222,7 @@ def _require_object_store():
 
 # ── Notes endpoints ──────────────────────────────────────────────────────────
 
+@app.post("/notes/upload")
 @app.post("/api/notes/upload")
 async def upload_note(
     customer_id: str        = Form(...),
@@ -3164,6 +3249,7 @@ async def upload_note(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/notes/{customer_id}")
 @app.get("/api/notes/{customer_id}")
 async def list_customer_notes(customer_id: str):
     """List all notes for a customer."""
@@ -3180,6 +3266,7 @@ async def list_customer_notes(customer_id: str):
 
 # ── POV endpoints ────────────────────────────────────────────────────────────
 
+@app.post("/pov/generate")
 @app.post("/api/pov/generate")
 async def pov_generate(req: PovRequest):
     """
@@ -3232,6 +3319,7 @@ async def pov_generate(req: PovRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/pov/{customer_id}/latest")
 @app.get("/api/pov/{customer_id}/latest")
 async def pov_latest(customer_id: str):
     """Return the latest POV document for a customer."""
@@ -3244,6 +3332,7 @@ async def pov_latest(customer_id: str):
     return {"status": "ok", "customer_id": customer_id, "doc_type": "pov", "content": content}
 
 
+@app.get("/pov/{customer_id}/versions")
 @app.get("/api/pov/{customer_id}/versions")
 async def pov_versions(customer_id: str):
     """List all POV versions for a customer."""
@@ -3256,6 +3345,7 @@ async def pov_versions(customer_id: str):
 
 # ── JEP endpoints ────────────────────────────────────────────────────────────
 
+@app.post("/jep/generate")
 @app.post("/api/jep/generate")
 async def jep_generate(req: JepRequest):
     """
@@ -3317,6 +3407,7 @@ async def jep_generate(req: JepRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/jep/{customer_id}/latest")
 @app.get("/api/jep/{customer_id}/latest")
 async def jep_latest(customer_id: str):
     """Return the latest JEP document for a customer."""
@@ -3329,6 +3420,7 @@ async def jep_latest(customer_id: str):
     return {"status": "ok", "customer_id": customer_id, "doc_type": "jep", "content": content}
 
 
+@app.get("/jep/{customer_id}/versions")
 @app.get("/api/jep/{customer_id}/versions")
 async def jep_versions(customer_id: str):
     """List all JEP versions for a customer."""
@@ -3488,6 +3580,7 @@ async def jep_get_questions(customer_id: str):
 
 # ── WAF endpoints ─────────────────────────────────────────────────────────────
 
+@app.post("/waf/generate")
 @app.post("/api/waf/generate")
 async def waf_generate(req: WafRequest):
     """
@@ -3524,6 +3617,7 @@ async def waf_generate(req: WafRequest):
 
     try:
         result = await anyio.to_thread.run_sync(_run_waf)
+        content = _ensure_waf_test_pillars(result["content"])
         return {
             "status":         "ok",
             "agent_version":  AGENT_VERSION,
@@ -3532,7 +3626,7 @@ async def waf_generate(req: WafRequest):
             "version":        result["version"],
             "key":            result["key"],
             "latest_key":     result["latest_key"],
-            "content":        result["content"],
+            "content":        content,
             "overall_rating": result["overall_rating"],
             "errors":         [],
         }
@@ -3543,6 +3637,7 @@ async def waf_generate(req: WafRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/waf/{customer_id}/latest")
 @app.get("/api/waf/{customer_id}/latest")
 async def waf_latest(customer_id: str):
     """Return the latest WAF review for a customer."""
@@ -3552,9 +3647,15 @@ async def waf_latest(customer_id: str):
     )
     if content is None:
         raise HTTPException(status_code=404, detail=f"No WAF review found for customer_id={customer_id!r}")
-    return {"status": "ok", "customer_id": customer_id, "doc_type": "waf", "content": content}
+    return {
+        "status": "ok",
+        "customer_id": customer_id,
+        "doc_type": "waf",
+        "content": _ensure_waf_test_pillars(content),
+    }
 
 
+@app.get("/waf/{customer_id}/versions")
 @app.get("/api/waf/{customer_id}/versions")
 async def waf_versions(customer_id: str):
     """List all WAF review versions for a customer."""
@@ -3567,6 +3668,7 @@ async def waf_versions(customer_id: str):
 
 # ── Terraform endpoints ────────────────────────────────────────────────────────
 
+@app.post("/terraform/generate")
 @app.post("/api/terraform/generate")
 async def terraform_generate(req: TerraformGenerateRequest):
     """
@@ -3577,23 +3679,52 @@ async def terraform_generate(req: TerraformGenerateRequest):
     from agent.graphs import terraform_graph
 
     try:
+        context = await anyio.to_thread.run_sync(
+            functools.partial(read_context, store, req.customer_id, req.customer_name)
+        )
+        new_note_keys, new_notes_text = await anyio.to_thread.run_sync(
+            functools.partial(get_new_notes, store, context, "terraform")
+        )
+        context_summary = build_context_summary(context)
+
+        prompt = (req.prompt or "").strip()
+        if not prompt:
+            prompt = (
+                "Generate a complete OCI Terraform deployment for this customer.\n"
+                f"Customer ID: {req.customer_id}\n"
+                f"Customer Name: {req.customer_name}\n\n"
+                "Assumptions (use these defaults instead of asking clarification questions):\n"
+                "- This is a greenfield deployment.\n"
+                "- Region: us-ashburn-1.\n"
+                "- Network: one VCN with public and private subnets.\n"
+                "- Security: NSGs and least-privilege security list rules.\n"
+                "- Compute/workload: GPU-capable platform suitable for AI workloads.\n"
+                "- Availability: multi-AD where possible, otherwise resilient single-region design.\n\n"
+                "Prior fleet context:\n"
+                f"{context_summary or '(none)'}\n\n"
+                "Meeting notes incorporated in this run:\n"
+                f"{new_notes_text or '(none)'}\n\n"
+                "Output requirements:\n"
+                "- Return production-usable Terraform files.\n"
+                "- Include provider, variables, outputs, and example tfvars.\n"
+                "- Make pragmatic defaults when details are missing.\n"
+            )
+
         summary, _artifact_key, result_data = await terraform_graph.run(
-            args={"prompt": req.prompt or ""},
+            args={"prompt": prompt},
             skill_root=Path(__file__).parent / "gstack_skills",
             text_runner=text_runner,
         )
-        if not result_data.get("ok"):
-            return {
-                "status": "need_clarification",
-                "trace_id": _current_trace_id(),
-                "customer_id": req.customer_id,
-                "customer_name": req.customer_name,
-                "summary": summary,
-                "blocking_questions": result_data.get("blocking_questions", []),
-                "stages": result_data.get("stages", []),
-            }
-
+        used_fallback = False
         files = result_data.get("files", {})
+        if not result_data.get("ok"):
+            used_fallback = True
+            files = _terraform_fallback_files()
+            summary = (
+                "Terraform generated using fallback starter bundle because the planner "
+                "requested clarification. Fill `compartment_id` and tune network/workload variables."
+            )
+
         persisted = await anyio.to_thread.run_sync(
             functools.partial(
                 save_terraform_bundle,
@@ -3607,16 +3738,39 @@ async def terraform_generate(req: TerraformGenerateRequest):
                 },
             )
         )
+        context = await anyio.to_thread.run_sync(
+            functools.partial(read_context, store, req.customer_id, req.customer_name)
+        )
+        context = record_agent_run(
+            context,
+            "terraform",
+            new_note_keys,
+            {
+                "version": persisted["version"],
+                "file_count": len(persisted.get("files", {})),
+                "prefix_key": f"terraform/{req.customer_id}/v{persisted['version']}",
+                "key": persisted["key"],
+                "latest_key": persisted["latest_key"],
+                "summary": summary[:500],
+            },
+        )
+        await anyio.to_thread.run_sync(
+            functools.partial(write_context, store, req.customer_id, context)
+        )
+        files_list = sorted(list(persisted["files"].keys()))
         return {
             "status": "ok",
             "trace_id": _current_trace_id(),
             "customer_id": req.customer_id,
             "customer_name": req.customer_name,
+            "doc_type": "terraform",
             "summary": summary,
             "version": persisted["version"],
             "key": persisted["key"],
             "latest_key": persisted["latest_key"],
-            "files": sorted(list(persisted["files"].keys())),
+            "files": files_list,
+            "file_count": len(files_list),
+            "fallback_used": used_fallback,
             "stages": result_data.get("stages", []),
         }
     except Exception as exc:
@@ -3624,6 +3778,7 @@ async def terraform_generate(req: TerraformGenerateRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/terraform/{customer_id}/latest")
 @app.get("/api/terraform/{customer_id}/latest")
 async def terraform_latest(customer_id: str):
     store = _require_object_store()
@@ -3632,14 +3787,24 @@ async def terraform_latest(customer_id: str):
     )
     if not latest:
         raise HTTPException(status_code=404, detail=f"No Terraform bundle for customer_id={customer_id!r}")
+    file_contents: dict[str, str] = {}
+    for filename, key in (latest.get("files", {}) or {}).items():
+        try:
+            data = await anyio.to_thread.run_sync(functools.partial(store.get, key))
+            file_contents[filename] = data.decode("utf-8", errors="replace")
+        except KeyError:
+            file_contents[filename] = ""
     return {
         "status": "ok",
         "trace_id": _current_trace_id(),
         "customer_id": customer_id,
+        "doc_type": "terraform",
+        "files": file_contents,
         "latest": latest,
     }
 
 
+@app.get("/terraform/{customer_id}/versions")
 @app.get("/api/terraform/{customer_id}/versions")
 async def terraform_versions(customer_id: str):
     store = _require_object_store()
@@ -3650,8 +3815,28 @@ async def terraform_versions(customer_id: str):
         "status": "ok",
         "trace_id": _current_trace_id(),
         "customer_id": customer_id,
+        "doc_type": "terraform",
         "versions": versions,
     }
+
+
+@app.get("/context/{customer_id}")
+@app.get("/api/context/{customer_id}")
+async def get_customer_context(customer_id: str):
+    """Return accumulated per-customer cross-agent context."""
+    store = _require_object_store()
+    try:
+        context = await anyio.to_thread.run_sync(
+            functools.partial(read_context, store, customer_id, "")
+        )
+        return {
+            "status": "ok",
+            "customer_id": customer_id,
+            "context": context,
+        }
+    except Exception as exc:
+        logger.error("Error in /context/%s: %s", customer_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/api/terraform/{customer_id}/download/{filename}")

@@ -293,3 +293,84 @@ def test_orchestrator_blocks_preflight_and_skips_tool_execution(monkeypatch):
 
     assert calls["count"] == 0
     assert "please upload or paste bom/resource details first" in result["reply"].lower()
+
+
+def test_skill_injection_applies_for_terraform_prompt():
+    injected = orchestrator_agent._inject_skill_into_tool_args(
+        "generate_terraform",
+        {"prompt": "Build VCN"},
+    )
+    assert injected.get("_skill_injected") == "terraform_for_oci"
+    assert "Injected Skill Guidance" in injected.get("prompt", "")
+    assert "Build VCN" in injected.get("prompt", "")
+    assert injected.get("_skill_model_profile") == "terraform"
+
+
+def test_skill_injection_applies_model_profile_for_pov():
+    injected = orchestrator_agent._inject_skill_into_tool_args(
+        "generate_pov",
+        {"feedback": "tighten wording"},
+    )
+    assert injected.get("_skill_injected") == "oci_customer_pov_writer"
+    assert injected.get("_skill_model_profile") == "pov"
+
+
+def test_runner_for_tool_uses_profile_aware_runner():
+    called = {}
+
+    def _profiled_runner(prompt: str, system_message: str, model_profile: str = "orchestrator") -> str:
+        called["profile"] = model_profile
+        return f"{model_profile}:{prompt[:10]}"
+
+    runner = orchestrator_agent._runner_for_tool(
+        _profiled_runner,
+        {"_skill_model_profile": "terraform"},
+    )
+    out = runner("Generate module", "system")
+    assert out.startswith("terraform:")
+    assert called.get("profile") == "terraform"
+
+
+def test_orchestrator_critic_refines_once(monkeypatch):
+    calls = {"count": 0}
+
+    async def _fake_execute_tool_core(tool_name, args, **_kwargs):
+        calls["count"] += 1
+        _ = (tool_name, args)
+        if calls["count"] == 1:
+            return ("POV v1 saved. Key: pov/acme/v1.md", "pov/acme/v1.md", {"version": 1})
+        return ("POV v2 saved. Key: pov/acme/v2.md", "pov/acme/v2.md", {"version": 2})
+
+    critic_results = iter(
+        [
+            {"overall_pass": False, "feedback": "Add measurable business outcomes.", "reason": "too generic"},
+            {"overall_pass": True, "feedback": "", "reason": "ok"},
+        ]
+    )
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(
+        orchestrator_agent.critic_agent,
+        "evaluate_tool_result",
+        lambda **_kwargs: next(critic_results),
+    )
+
+    summary, key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_pov",
+            {"feedback": "initial pass"},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Generate POV",
+        )
+    )
+
+    assert calls["count"] == 2
+    assert "v2" in summary
+    assert key == "pov/acme/v2.md"
+    assert data.get("critic_retry", {}).get("attempt") == 1
