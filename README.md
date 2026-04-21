@@ -402,6 +402,9 @@ agent_assistante/
 # Nightly/manual prompt quality lane (adds prompt_judge; live remains opt-in)
 ./scripts/test_nightly_prompt.sh -v
 
+# Local/manual fallback when LLM judge infra is unavailable (skips prompt_judge instead of failing)
+PROMPT_JUDGE_STRICT=0 ./scripts/test_nightly_prompt.sh -v
+
 # Optional: include live lane in nightly/manual
 RUN_LIVE_TESTS=1 ./scripts/test_nightly_prompt.sh -v
 ```

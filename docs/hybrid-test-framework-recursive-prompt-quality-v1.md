@@ -142,6 +142,12 @@ Recommended command:
 ./scripts/test_nightly_prompt.sh -v
 ```
 
+If running manually without available LLM judge infrastructure, allow skip fallback:
+
+```bash
+PROMPT_JUDGE_STRICT=0 ./scripts/test_nightly_prompt.sh -v
+```
+
 With live suites:
 
 ```bash
