@@ -406,7 +406,13 @@ agent_assistante/
 PROMPT_JUDGE_STRICT=0 ./scripts/test_nightly_prompt.sh -v
 
 # Optional: include live lane in nightly/manual
-RUN_LIVE_TESTS=1 ./scripts/test_nightly_prompt.sh -v
+RUN_LIVE_TESTS=1 RUN_LIVE_LLM_TESTS=1 ./scripts/test_nightly_prompt.sh -v
+
+# Run configured live LLM scenario tests directly (OCI inference, no Anthropic dependency)
+RUN_LIVE_LLM_TESTS=1 pytest tests/test_llm_live.py -v -s
+
+# Run live server smoke/integration tests (requires reachable server base URL)
+AGENT_BASE_URL=http://127.0.0.1:8080 pytest tests/test_server_live.py -v -s
 ```
 
 Test strategy reference:

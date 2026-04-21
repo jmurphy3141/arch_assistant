@@ -56,6 +56,8 @@ def test_recursive_prompt_static_contracts_cover_core_paths() -> None:
 
     rows.append(_row("orchestrator", "orchestrator", "rules", "cross_agent_dependency", "Before generating a POV or JEP, call get_summary" in orch_msg, "POV/JEP depends on summary context"))
     rows.append(_row("orchestrator", "orchestrator", "rules", "cross_agent_dependency", "Before generating a diagram" in orch_msg and "BOM" in orch_msg, "Diagram depends on BOM availability"))
+    rows.append(_row("orchestrator", "orchestrator", "rules", "skill_pre_post_enforcement", "before and after every path tool call" in orch_msg and "expert skill validation" in orch_msg, "orchestrator requires pre/post path validation"))
+    rows.append(_row("orchestrator", "orchestrator", "rules", "skill_block_enforcement", "Enforce block outcomes from the skill layer" in orch_msg, "orchestrator blocks completion on skill failures"))
 
     build_prompt_src = inspect.getsource(orchestrator_agent._build_prompt)
     rows.append(_row("orchestrator", "orchestrator", "prompt_builder", "required_context_fields", "Prior conversation summary" in build_prompt_src and "SA:" in build_prompt_src and "ASSISTANT:" in build_prompt_src, "prompt builder injects summary/history/latest message"))
@@ -86,6 +88,22 @@ def test_recursive_prompt_static_contracts_cover_core_paths() -> None:
         skill_path = skill_root / stage / "SKILL.md"
         content = skill_path.read_text(encoding="utf-8")
         rows.append(_row("terraform", "terraform", stage, "required_sections", len(content.strip()) > 50 and "#" in content, f"skill present: {skill_path}"))
+
+    orch_skill_root = Path(__file__).resolve().parents[1] / "agent" / "orchestrator_skills"
+    required_orch_paths = ["diagram", "pov", "jep", "waf", "terraform", "summary_document"]
+    required_sections = [
+        "## Intent",
+        "## Preconditions",
+        "## Input Validation Rules",
+        "## Expected Output Contract",
+        "## Pushback Rules",
+        "## Escalation Questions Template",
+        "## Retry Guidance",
+    ]
+    for path_id in required_orch_paths:
+        skill_path = orch_skill_root / path_id / "SKILL.md"
+        content = skill_path.read_text(encoding="utf-8")
+        rows.append(_row(path_id, "orchestrator_skill", "skill_file", "required_sections", all(s in content for s in required_sections), f"orchestrator skill contract present: {skill_path}"))
 
     report_path = write_report(rows, "prompt_static_report.json")
     rows.append(_row("prompt_static", "framework", "artifact", "report_written", report_path.exists(), f"static report artifact: {report_path}"))

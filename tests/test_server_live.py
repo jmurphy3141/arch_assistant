@@ -55,7 +55,9 @@ import datetime
 import json
 import logging
 import os
+import socket
 import sys
+from urllib.parse import urlparse
 from typing import Optional
 
 import pytest
@@ -64,20 +66,41 @@ logger = logging.getLogger(__name__)
 
 # ── Opt-in gate ───────────────────────────────────────────────────────────────
 
-_BASE_URL    = os.environ.get("AGENT_BASE_URL", "").rstrip("/")
-_SKIP_LLM    = os.environ.get("SKIP_LLM_TESTS", "0") == "1"
-_RUN_LIVE    = bool(_BASE_URL)
+_BASE_URL = os.environ.get("AGENT_BASE_URL", "").rstrip("/")
+_SKIP_LLM = os.environ.get("SKIP_LLM_TESTS", "0") == "1"
+
+
+def _validate_base_url(base_url: str) -> tuple[bool, str]:
+    if not base_url:
+        return False, "Set AGENT_BASE_URL=http://<host>:<port> to run live server tests"
+
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False, f"AGENT_BASE_URL is invalid: {base_url!r}"
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        socket.getaddrinfo(parsed.hostname, port)
+    except socket.gaierror:
+        return False, (
+            f"AGENT_BASE_URL host cannot be resolved: {parsed.hostname!r}. "
+            "Use a resolvable host or IP (for local run: http://127.0.0.1:8080)."
+        )
+    return True, ""
+
+
+_RUN_LIVE, _RUN_LIVE_REASON = _validate_base_url(_BASE_URL)
 
 pytestmark = pytest.mark.live
 
 requires_server = pytest.mark.skipif(
     not _RUN_LIVE,
-    reason="Set AGENT_BASE_URL=http://<host>:<port> to run live server tests",
+    reason=_RUN_LIVE_REASON,
 )
 requires_llm = pytest.mark.skipif(
     not _RUN_LIVE or _SKIP_LLM,
     reason=(
-        "Set AGENT_BASE_URL and unset SKIP_LLM_TESTS=1 to run tests that call the LLM"
+        f"{_RUN_LIVE_REASON or 'Set AGENT_BASE_URL'}; unset SKIP_LLM_TESTS=1 to run tests that call the LLM"
     ),
 )
 

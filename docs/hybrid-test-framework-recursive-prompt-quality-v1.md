@@ -151,8 +151,14 @@ PROMPT_JUDGE_STRICT=0 ./scripts/test_nightly_prompt.sh -v
 With live suites:
 
 ```bash
-RUN_LIVE_TESTS=1 ./scripts/test_nightly_prompt.sh -v
+RUN_LIVE_TESTS=1 RUN_LIVE_LLM_TESTS=1 ./scripts/test_nightly_prompt.sh -v
 ```
+
+Live gating notes:
+
+- `tests/test_llm_live.py` uses configured OCI inference and requires `RUN_LIVE_LLM_TESTS=1`.
+- `tests/test_server_live.py` requires `AGENT_BASE_URL=http://<host>:<port>` to be reachable.
+- `SKIP_LLM_TESTS=1` disables LLM-heavy portions of `test_server_live.py`.
 
 ## Acceptance Scenarios (v1)
 

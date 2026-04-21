@@ -23,11 +23,16 @@ def test_execute_tool_routes_to_langgraph_specialists(monkeypatch):
     import agent.langgraph_specialists as langgraph_specialists
 
     monkeypatch.setattr(langgraph_specialists, "execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        orchestrator_agent,
+        "_build_context_summary_for_skills",
+        lambda *_args, **_kwargs: "notes captured for customer",
+    )
 
     result = asyncio.run(
         orchestrator_agent._execute_tool(
-            "generate_pov",
-            {},
+            "generate_diagram",
+            {"bom_text": "VCN + LB"},
             customer_id="acme",
             customer_name="ACME Corp",
             store=InMemoryObjectStore(),
@@ -38,7 +43,10 @@ def test_execute_tool_routes_to_langgraph_specialists(monkeypatch):
     )
 
     assert called["count"] == 1
-    assert result == ("adapter-result", "artifact-key", {})
+    assert result[0] == "adapter-result"
+    assert result[1] == "artifact-key"
+    assert result[2].get("skill_preflight", {}).get("status") == "allow"
+    assert result[2].get("skill_postflight", {}).get("status") == "allow"
 
 
 def test_run_orchestrator_turn_passes_specialist_mode(monkeypatch):
@@ -199,6 +207,11 @@ def test_orchestrator_runs_pov_jep_in_parallel(monkeypatch):
         return "Done."
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        orchestrator_agent,
+        "_build_context_summary_for_skills",
+        lambda *_args, **_kwargs: "notes captured for customer",
+    )
 
     start = time.perf_counter()
     result = asyncio.run(
@@ -219,3 +232,64 @@ def test_orchestrator_runs_pov_jep_in_parallel(monkeypatch):
     # Parallel execution should complete much closer to one sleep interval.
     assert elapsed < 0.16
     assert len(result["tool_calls"]) == 2
+
+
+def test_orchestrator_blocks_completion_when_postflight_fails(monkeypatch):
+    calls = {"count": 0}
+
+    async def _fake_execute_tool_core(*_args, **_kwargs):
+        calls["count"] += 1
+        return ("POV generated", "pov/acme/v1.md", {})
+
+    def _text_runner(_prompt: str, _system_message: str) -> str:
+        return '{"tool": "generate_pov", "args": {}}'
+
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="Please draft POV",
+            store=InMemoryObjectStore(),
+            text_runner=_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert calls["count"] == 1
+    assert "could not verify a persisted document artifact" in result["reply"].lower()
+    assert result["artifacts"] == {}
+
+
+def test_orchestrator_blocks_preflight_and_skips_tool_execution(monkeypatch):
+    calls = {"count": 0}
+
+    async def _fake_execute_tool_core(*_args, **_kwargs):
+        calls["count"] += 1
+        return ("unexpected", "", {})
+
+    def _text_runner(_prompt: str, _system_message: str) -> str:
+        return '{"tool": "generate_diagram", "args": {}}'
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "")
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="Generate diagram now",
+            store=InMemoryObjectStore(),
+            text_runner=_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert calls["count"] == 0
+    assert "please upload or paste bom/resource details first" in result["reply"].lower()

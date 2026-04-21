@@ -28,6 +28,7 @@ except Exception:
 
 
 class OrchestratorState(TypedDict, total=False):
+    user_message: str
     prompt: str
     reply: str
     done: bool
@@ -62,6 +63,7 @@ async def _run_turn_via_langgraph(
     ]
 
     initial_state: OrchestratorState = {
+        "user_message": user_message,
         "prompt": legacy_orchestrator._build_prompt(history, summary, user_message),
         "reply": "",
         "done": False,
@@ -130,6 +132,7 @@ async def _run_turn_via_langgraph(
             text_runner=text_runner,
             a2a_base_url=a2a_base_url,
             specialist_mode=specialist_mode,
+            user_message=str(state.get("user_message", "")),
         )
 
         tool_calls = list(state.get("tool_calls", []))

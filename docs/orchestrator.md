@@ -134,13 +134,18 @@ SA (browser chat tab or Telegram — future)
                       ├── Plain text → done; return Task{COMPLETED}
                       │
                       └── {"tool": "...", "args": {...}} detected:
+                              ├── preflight_check(path_id, user_message, context_summary, current_state)
+                              │      (loaded from agent/orchestrator_skills/*/SKILL.md; fail-closed)
                               ├── save_notes       → document_store.save_note()
                               ├── get_summary      → context_store.build_context_summary()
                               ├── generate_pov     → pov_agent.generate_pov() [in-process]
                               ├── generate_diagram → POST /message:send (A2A self-call via httpx)
                               ├── generate_waf     → waf_agent.generate_waf() [in-process]
                               ├── generate_jep     → jep_agent.generate_jep() [in-process]
+                              ├── generate_terraform → LangGraph specialist chain (when enabled)
                               └── get_document     → document_store.get_latest_doc()
+                              └── postflight_check(path_id, tool_result, artifacts, context_summary)
+                                     block => pushback + retry guidance, no success finalization
                       │
                       ▼
               Persist history → return {reply, tool_calls, artifacts}
@@ -167,6 +172,10 @@ OCI GenAI has no native function-calling. The orchestrator uses a prompt-based p
 3. Scan for `{"tool":` JSON via regex → execute → append result → loop (max 5)
 4. No tool call found → return plain text reply
 
+Every path tool (`diagram`, `pov`, `jep`, `waf`, `terraform`, `summary_document`) is
+validated via SKILL.md-driven preflight and postflight checks. Missing or malformed
+skill files fail closed.
+
 ---
 
 ## Available Tools
@@ -179,6 +188,7 @@ OCI GenAI has no native function-calling. The orchestrator uses a prompt-based p
 | `generate_diagram` | `{"bom_text": "..."}` | Generate architecture diagram via A2A self-call |
 | `generate_waf` | `{}` | Run WAF review against the latest diagram |
 | `generate_jep` | `{"feedback": "..."}` | Draft or update the JEP |
+| `generate_terraform` | `{"prompt": "..."}` | Generate Terraform or return blocking clarification questions |
 | `get_document` | `{"type": "pov"\|"jep"\|"waf"}` | Retrieve latest document content |
 
 ---

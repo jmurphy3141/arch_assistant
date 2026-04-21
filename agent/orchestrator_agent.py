@@ -24,12 +24,17 @@ import asyncio
 import json
 import logging
 import re
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Callable
 
 from agent.persistence_objectstore import ObjectStoreBase
 import agent.document_store as document_store
 import agent.context_store as context_store
+from agent.orchestrator_skill_engine import (
+    OrchestratorSkillDecision,
+    OrchestratorSkillEngine,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +82,13 @@ RULES
 - Before generating a POV or JEP, call get_summary to confirm notes exist.
 - Before generating a diagram without an uploaded BOM, ask the SA to provide one.
 - Never fabricate document content — always call the appropriate tool.
+- Run path-specific expert skill validation before and after every path tool call.
+- Enforce block outcomes from the skill layer with pushback and retry guidance.
 - Respond in Markdown when not calling a tool.  Be concise.
 """
+
+_SKILL_ENGINE = OrchestratorSkillEngine()
+
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
@@ -119,10 +129,11 @@ async def run_turn(
         }
     ]
     tool_calls: list[dict] = []
-    artifacts:  dict       = {}
+    artifacts: dict = {}
 
     prompt = _build_prompt(history, summary, user_message)
-    reply  = ""
+    reply = ""
+    forced_reply = ""
 
     # Safe parallel fast-path:
     # When the SA explicitly asks for both POV and JEP in one request, these
@@ -134,108 +145,158 @@ async def run_turn(
             [t["tool"] for t in parallel_tools],
             customer_id,
         )
-        parallel_results = await asyncio.gather(
-            *[
-                _execute_tool(
-                    tool["tool"],
-                    tool.get("args", {}),
-                    customer_id=customer_id,
-                    customer_name=customer_name,
-                    store=store,
-                    text_runner=text_runner,
-                    a2a_base_url=a2a_base_url,
-                    specialist_mode=specialist_mode,
+
+        for tool in parallel_tools:
+            context_summary = await asyncio.to_thread(
+                _build_context_summary_for_skills, store, customer_id, customer_name
+            )
+            decision = _skill_preflight_for_tool(
+                tool_name=tool["tool"],
+                args=tool.get("args", {}),
+                user_message=user_message,
+                context_summary=context_summary,
+            )
+            if decision and decision.status == "block":
+                forced_reply = _decision_pushback_text(decision)
+                tool_calls.append(
+                    {
+                        "tool": tool["tool"],
+                        "args": tool.get("args", {}),
+                        "result_summary": forced_reply,
+                        "result_data": {"skill_decision": asdict(decision)},
+                    }
                 )
-                for tool in parallel_tools
-            ]
-        )
-        for tool, (result_summary, artifact_key, result_data) in zip(parallel_tools, parallel_results):
-            tool_name = tool["tool"]
-            tool_args = tool.get("args", {})
+                break
+
+        if not forced_reply:
+            parallel_results = await asyncio.gather(
+                *[
+                    _execute_tool(
+                        tool["tool"],
+                        tool.get("args", {}),
+                        customer_id=customer_id,
+                        customer_name=customer_name,
+                        store=store,
+                        text_runner=text_runner,
+                        a2a_base_url=a2a_base_url,
+                        specialist_mode=specialist_mode,
+                        user_message=user_message,
+                    )
+                    for tool in parallel_tools
+                ]
+            )
+            for tool, (result_summary, artifact_key, result_data) in zip(parallel_tools, parallel_results):
+                tool_name = tool["tool"]
+                tool_args = tool.get("args", {})
+                notify(f"tool:{tool_name}", customer_id, result_summary)
+                tool_calls.append(
+                    {
+                        "tool": tool_name,
+                        "args": tool_args,
+                        "result_summary": result_summary,
+                        "result_data": result_data,
+                    }
+                )
+                if artifact_key:
+                    artifacts[tool_name] = artifact_key
+                new_turns.append(
+                    {
+                        "role": "tool",
+                        "tool": tool_name,
+                        "result_summary": result_summary,
+                        "timestamp": _now(),
+                    }
+                )
+                prompt = _append_tool_result(prompt, tool_name, result_summary)
+
+                decision = _extract_blocking_skill_decision(result_data)
+                if decision:
+                    forced_reply = _decision_pushback_text(decision)
+                    artifacts.pop(tool_name, None)
+                    break
+
+    if not forced_reply:
+        for _iteration in range(max_tool_iterations):
+            raw = await asyncio.to_thread(text_runner, prompt, ORCHESTRATOR_SYSTEM_MSG)
+            tool_call = _parse_tool_call(raw)
+
+            if tool_call is None:
+                reply = raw.strip()
+                break
+
+            tool_name = tool_call.get("tool", "")
+            tool_args = tool_call.get("args", {})
+            logger.info("Orchestrator tool call: %s args=%s customer=%s", tool_name, tool_args, customer_id)
+
+            result_summary, artifact_key, result_data = await _execute_tool(
+                tool_name,
+                tool_args,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                store=store,
+                text_runner=text_runner,
+                a2a_base_url=a2a_base_url,
+                specialist_mode=specialist_mode,
+                user_message=user_message,
+            )
+
             notify(f"tool:{tool_name}", customer_id, result_summary)
-            tool_calls.append({
-                "tool":           tool_name,
-                "args":           tool_args,
-                "result_summary": result_summary,
-                "result_data":    result_data,
-            })
+
+            tool_calls.append(
+                {
+                    "tool": tool_name,
+                    "args": tool_args,
+                    "result_summary": result_summary,
+                    "result_data": result_data,
+                }
+            )
             if artifact_key:
                 artifacts[tool_name] = artifact_key
-            new_turns.append({
-                "role":           "tool",
-                "tool":           tool_name,
+
+            tool_turn = {
+                "role": "tool",
+                "tool": tool_name,
                 "result_summary": result_summary,
-                "timestamp":      _now(),
-            })
+                "timestamp": _now(),
+            }
+            new_turns.append(
+                {
+                    "role": "assistant",
+                    "content": raw.strip(),
+                    "timestamp": _now(),
+                    "tool_call": tool_call,
+                }
+            )
+            new_turns.append(tool_turn)
+
+            decision = _extract_blocking_skill_decision(result_data)
+            if decision:
+                forced_reply = _decision_pushback_text(decision)
+                artifacts.pop(tool_name, None)
+                break
+
+            # Feed tool result back into next prompt
             prompt = _append_tool_result(prompt, tool_name, result_summary)
 
-    for _iteration in range(max_tool_iterations):
-        raw = await asyncio.to_thread(text_runner, prompt, ORCHESTRATOR_SYSTEM_MSG)
-        tool_call = _parse_tool_call(raw)
-
-        if tool_call is None:
+        else:
+            # Cap reached without a plain-text response — ask LLM for a summary
+            raw = await asyncio.to_thread(
+                text_runner,
+                prompt + "\n\nProvide a brief summary of what was accomplished.",
+                ORCHESTRATOR_SYSTEM_MSG,
+            )
             reply = raw.strip()
-            break
 
-        tool_name = tool_call.get("tool", "")
-        tool_args = tool_call.get("args", {})
-        logger.info("Orchestrator tool call: %s args=%s customer=%s",
-                    tool_name, tool_args, customer_id)
-
-        result_summary, artifact_key, result_data = await _execute_tool(
-            tool_name, tool_args,
-            customer_id=customer_id,
-            customer_name=customer_name,
-            store=store,
-            text_runner=text_runner,
-            a2a_base_url=a2a_base_url,
-            specialist_mode=specialist_mode,
-        )
-
-        notify(f"tool:{tool_name}", customer_id, result_summary)
-
-        tool_calls.append({
-            "tool":           tool_name,
-            "args":           tool_args,
-            "result_summary": result_summary,
-            "result_data":    result_data,
-        })
-        if artifact_key:
-            artifacts[tool_name] = artifact_key
-
-        tool_turn = {
-            "role":           "tool",
-            "tool":           tool_name,
-            "result_summary": result_summary,
-            "timestamp":      _now(),
-        }
-        new_turns.append({
-            "role":      "assistant",
-            "content":   raw.strip(),
-            "timestamp": _now(),
-            "tool_call": tool_call,
-        })
-        new_turns.append(tool_turn)
-
-        # Feed tool result back into next prompt
-        prompt = _append_tool_result(prompt, tool_name, result_summary)
-
-    else:
-        # Cap reached without a plain-text response — ask LLM for a summary
-        raw = await asyncio.to_thread(
-            text_runner,
-            prompt + "\n\nProvide a brief summary of what was accomplished.",
-            ORCHESTRATOR_SYSTEM_MSG,
-        )
-        reply = raw.strip()
+    if forced_reply:
+        reply = forced_reply
 
     new_turns.append({"role": "assistant", "content": reply, "timestamp": _now()})
     document_store.save_conversation_turns(store, customer_id, new_turns)
 
     return {
-        "reply":          reply,
-        "tool_calls":     tool_calls,
-        "artifacts":      artifacts,
+        "reply": reply,
+        "tool_calls": tool_calls,
+        "artifacts": artifacts,
         "history_length": len(history) + len(new_turns),
     }
 
@@ -252,11 +313,76 @@ async def _execute_tool(
     text_runner: Callable,
     a2a_base_url: str,
     specialist_mode: str = "legacy",
+    user_message: str = "",
 ) -> tuple[str, str, dict]:
     """
     Execute a tool call and return (result_summary, artifact_key).
     artifact_key is "" when no persistent artifact was produced.
     """
+    path_id = _tool_to_path_id(tool_name)
+    context_summary = ""
+    preflight_decision = None
+    if path_id:
+        context_summary = await asyncio.to_thread(
+            _build_context_summary_for_skills, store, customer_id, customer_name
+        )
+        preflight_decision = _skill_preflight_for_tool(
+            tool_name=tool_name,
+            args=args,
+            user_message=user_message,
+            context_summary=context_summary,
+        )
+        if preflight_decision and preflight_decision.status == "block":
+            return (
+                _decision_pushback_text(preflight_decision),
+                "",
+                {"skill_decision": asdict(preflight_decision)},
+            )
+
+    result_summary, artifact_key, result_data = await _execute_tool_core(
+        tool_name,
+        args,
+        customer_id=customer_id,
+        customer_name=customer_name,
+        store=store,
+        text_runner=text_runner,
+        a2a_base_url=a2a_base_url,
+        specialist_mode=specialist_mode,
+    )
+
+    result_data = dict(result_data or {})
+    if preflight_decision:
+        result_data["skill_preflight"] = asdict(preflight_decision)
+
+    if path_id:
+        postflight_decision = _SKILL_ENGINE.postflight_check(
+            path_id=path_id,
+            tool_result=result_summary,
+            artifacts={"artifact_key": artifact_key},
+            context_summary=context_summary,
+        )
+        result_data["skill_postflight"] = asdict(postflight_decision)
+        if postflight_decision.status == "block":
+            return (
+                _decision_pushback_text(postflight_decision),
+                "",
+                result_data,
+            )
+
+    return result_summary, artifact_key, result_data
+
+
+async def _execute_tool_core(
+    tool_name: str,
+    args: dict,
+    *,
+    customer_id: str,
+    customer_name: str,
+    store: ObjectStoreBase,
+    text_runner: Callable,
+    a2a_base_url: str,
+    specialist_mode: str,
+) -> tuple[str, str, dict]:
     if specialist_mode == "langgraph":
         from agent import langgraph_specialists
 
@@ -278,25 +404,31 @@ async def _execute_tool(
         text = args.get("text", "")
         if not text.strip():
             return "No notes text provided.", "", {}
-        ts    = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        key   = await asyncio.to_thread(
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        key = await asyncio.to_thread(
             document_store.save_note,
-            store, customer_id, f"note_{ts}.md",
+            store,
+            customer_id,
+            f"note_{ts}.md",
             text.encode("utf-8"),
         )
         return f"Notes saved. Key: {key}", key, {}
 
     if tool_name == "get_summary":
-        ctx     = await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
+        ctx = await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
         summary = context_store.build_context_summary(ctx)
         return summary or "No engagement activity yet.", "", {}
 
     if tool_name == "generate_pov":
         from agent import pov_agent
+
         feedback = args.get("feedback", "")
-        result   = await asyncio.to_thread(
+        result = await asyncio.to_thread(
             pov_agent.generate_pov,
-            customer_id, customer_name, store, text_runner,
+            customer_id,
+            customer_name,
+            store,
+            text_runner,
             feedback=feedback,
         )
         key = result.get("key", "")
@@ -308,20 +440,28 @@ async def _execute_tool(
 
     if tool_name == "generate_waf":
         from agent import waf_agent
+
         result = await asyncio.to_thread(
             waf_agent.generate_waf,
-            customer_id, customer_name, store, text_runner,
+            customer_id,
+            customer_name,
+            store,
+            text_runner,
         )
-        key    = result.get("key", "")
+        key = result.get("key", "")
         rating = result.get("overall_rating", "")
         return f"WAF review {rating} saved. Key: {key}", key, {}
 
     if tool_name == "generate_jep":
         from agent import jep_agent
+
         feedback = args.get("feedback", "")
-        result   = await asyncio.to_thread(
+        result = await asyncio.to_thread(
             jep_agent.generate_jep,
-            customer_id, customer_name, store, text_runner,
+            customer_id,
+            customer_name,
+            store,
+            text_runner,
             feedback=feedback,
         )
         key = result.get("key", "")
@@ -337,8 +477,11 @@ async def _execute_tool(
 
     if tool_name == "get_document":
         doc_type = args.get("type", "pov")
-        content  = await asyncio.to_thread(
-            document_store.get_latest_doc, store, doc_type, customer_id,
+        content = await asyncio.to_thread(
+            document_store.get_latest_doc,
+            store,
+            doc_type,
+            customer_id,
         )
         if content is None:
             return f"No {doc_type.upper()} found for this customer.", "", {}
@@ -346,6 +489,89 @@ async def _execute_tool(
         return f"{doc_type.upper()} content (first 500 chars):\n{preview}", "", {}
 
     return f"Unknown tool: {tool_name!r}", "", {}
+
+
+def _tool_to_path_id(tool_name: str) -> str | None:
+    if tool_name == "generate_diagram":
+        return "diagram"
+    if tool_name == "generate_pov":
+        return "pov"
+    if tool_name == "generate_jep":
+        return "jep"
+    if tool_name == "generate_waf":
+        return "waf"
+    if tool_name == "generate_terraform":
+        return "terraform"
+    if tool_name in {"get_summary", "get_document"}:
+        return "summary_document"
+    return None
+
+
+def _build_context_summary_for_skills(
+    store: ObjectStoreBase,
+    customer_id: str,
+    customer_name: str,
+) -> str:
+    try:
+        ctx = context_store.read_context(store, customer_id, customer_name)
+        return context_store.build_context_summary(ctx)
+    except Exception as exc:
+        logger.warning("Failed to build context summary for skill checks: %s", exc)
+        return ""
+
+
+def _skill_preflight_for_tool(
+    *,
+    tool_name: str,
+    args: dict,
+    user_message: str,
+    context_summary: str,
+) -> OrchestratorSkillDecision | None:
+    path_id = _tool_to_path_id(tool_name)
+    if not path_id:
+        return None
+    return _SKILL_ENGINE.preflight_check(
+        path_id=path_id,
+        user_message=user_message,
+        context_summary=context_summary,
+        current_state={"tool": tool_name, "args": args},
+    )
+
+
+def _decision_pushback_text(decision: OrchestratorSkillDecision) -> str:
+    lines = [decision.pushback_message.strip() or "This request is blocked by expert skill validation."]
+    if decision.reasons:
+        lines.append("")
+        lines.append("Reasons:")
+        for reason in decision.reasons:
+            lines.append(f"- {reason}")
+    if decision.retry_instructions:
+        lines.append("")
+        lines.append("Next steps:")
+        for step in decision.retry_instructions:
+            lines.append(f"- {step}")
+    return "\n".join(lines).strip()
+
+
+def _extract_blocking_skill_decision(result_data: dict | None) -> OrchestratorSkillDecision | None:
+    if not isinstance(result_data, dict):
+        return None
+    candidate = result_data.get("skill_decision") or result_data.get("skill_postflight")
+    if not isinstance(candidate, dict):
+        return None
+    if candidate.get("status") != "block":
+        return None
+    try:
+        return OrchestratorSkillDecision(
+            path_id=str(candidate.get("path_id", "")),
+            phase=str(candidate.get("phase", "")),
+            status="block",
+            reasons=list(candidate.get("reasons", [])),
+            pushback_message=str(candidate.get("pushback_message", "")),
+            retry_instructions=list(candidate.get("retry_instructions", [])),
+        )
+    except Exception:
+        return None
 
 
 async def _call_generate_diagram(
@@ -364,12 +590,12 @@ async def _call_generate_diagram(
 
     payload = {
         "jsonrpc": "2.0",
-        "id":      f"orch-{_now()}",
-        "method":  "message/send",
+        "id": f"orch-{_now()}",
+        "method": "message/send",
         "params": {
             "message": {
-                "role":      "user",
-                "parts":     [{"kind": "text", "text": message_text}],
+                "role": "user",
+                "parts": [{"kind": "text", "text": message_text}],
                 "contextId": customer_id,
             },
             "skill": "generate_diagram",
@@ -456,6 +682,15 @@ _TOOL_RE = re.compile(r'\{\s*"tool"\s*:.+?\}', re.DOTALL)
 
 
 def _parse_tool_call(text: str) -> dict | None:
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict) and "tool" in parsed:
+                return parsed
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+
     m = _TOOL_RE.search(text)
     if not m:
         return None
