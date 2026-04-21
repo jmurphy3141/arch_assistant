@@ -396,8 +396,27 @@ agent_assistante/
 ## Run tests locally
 
 ```bash
-pytest tests/ -v
+# Fast deterministic PR gate (unit + integration + system + e2e + prompt_static)
+./scripts/test_pr_gate.sh -v
+
+# Nightly/manual prompt quality lane (adds prompt_judge; live remains opt-in)
+./scripts/test_nightly_prompt.sh -v
+
+# Optional: include live lane in nightly/manual
+RUN_LIVE_TESTS=1 ./scripts/test_nightly_prompt.sh -v
 ```
+
+Test strategy reference:
+- `docs/hybrid-test-framework-recursive-prompt-quality-v1.md`
+
+Marker taxonomy:
+- `unit`
+- `integration`
+- `system`
+- `e2e`
+- `prompt_static`
+- `prompt_judge` (opt-in)
+- `live` (opt-in)
 
 ---
 
@@ -444,6 +463,7 @@ arch_assistant/
 │
 ├── docs/
 │   ├── orchestrator.md         # Agent 0 design & implementation spec
+│   ├── hybrid-test-framework-recursive-prompt-quality-v1.md  # test framework + prompt quality plan
 │   ├── spec.md                 # Agent 3 (drawing) specification
 │   ├── pipeline.md             # Full pipeline reference
 │   └── bucket_structure.md     # OCI Object Storage layout

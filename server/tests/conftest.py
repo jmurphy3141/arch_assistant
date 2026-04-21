@@ -59,3 +59,12 @@ def client(fake_runner):
         yield c
     app.state.llm_runner = None
     app.state.object_store = None
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    _ = config
+    for item in items:
+        marker_names = {m.name for m in item.iter_markers()}
+        if marker_names & {"unit", "integration", "system", "e2e", "prompt_static", "prompt_judge", "live"}:
+            continue
+        item.add_marker(pytest.mark.system)
