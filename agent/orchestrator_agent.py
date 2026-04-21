@@ -124,6 +124,51 @@ async def run_turn(
     prompt = _build_prompt(history, summary, user_message)
     reply  = ""
 
+    # Safe parallel fast-path:
+    # When the SA explicitly asks for both POV and JEP in one request, these
+    # document generations are independent and can run concurrently.
+    parallel_tools = _parallel_plan_for_message(user_message)
+    if parallel_tools:
+        logger.info(
+            "Orchestrator parallel tool plan: tools=%s customer=%s",
+            [t["tool"] for t in parallel_tools],
+            customer_id,
+        )
+        parallel_results = await asyncio.gather(
+            *[
+                _execute_tool(
+                    tool["tool"],
+                    tool.get("args", {}),
+                    customer_id=customer_id,
+                    customer_name=customer_name,
+                    store=store,
+                    text_runner=text_runner,
+                    a2a_base_url=a2a_base_url,
+                    specialist_mode=specialist_mode,
+                )
+                for tool in parallel_tools
+            ]
+        )
+        for tool, (result_summary, artifact_key, result_data) in zip(parallel_tools, parallel_results):
+            tool_name = tool["tool"]
+            tool_args = tool.get("args", {})
+            notify(f"tool:{tool_name}", customer_id, result_summary)
+            tool_calls.append({
+                "tool":           tool_name,
+                "args":           tool_args,
+                "result_summary": result_summary,
+                "result_data":    result_data,
+            })
+            if artifact_key:
+                artifacts[tool_name] = artifact_key
+            new_turns.append({
+                "role":           "tool",
+                "tool":           tool_name,
+                "result_summary": result_summary,
+                "timestamp":      _now(),
+            })
+            prompt = _append_tool_result(prompt, tool_name, result_summary)
+
     for _iteration in range(max_tool_iterations):
         raw = await asyncio.to_thread(text_runner, prompt, ORCHESTRATOR_SYSTEM_MSG)
         tool_call = _parse_tool_call(raw)
@@ -386,6 +431,23 @@ def _append_tool_result(prompt: str, tool_name: str, result_summary: str) -> str
     return prompt.rstrip("ASSISTANT:").rstrip() + (
         f"\n\n[Tool result: {tool_name}] {result_summary}\n\nASSISTANT:"
     )
+
+
+def _parallel_plan_for_message(user_message: str) -> list[dict]:
+    """
+    Plan safe concurrent tool calls from explicit SA intent.
+    """
+    msg = user_message.lower()
+    wants_pov = "pov" in msg or "point of view" in msg
+    wants_jep = "jep" in msg or "joint execution plan" in msg
+    if not (wants_pov and wants_jep):
+        return []
+    if any(term in msg for term in ("terraform", "diagram", "waf", "bom")):
+        return []
+    return [
+        {"tool": "generate_pov", "args": {}},
+        {"tool": "generate_jep", "args": {}},
+    ]
 
 
 # ── Tool call parser ──────────────────────────────────────────────────────────

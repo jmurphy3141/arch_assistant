@@ -459,7 +459,7 @@ class TestHealth:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["agent_version"] == "1.3.2"
+        assert data["agent_version"] == "1.5.0"
 
     def test_legacy_health(self, client: TestClient):
         resp = client.get("/health")

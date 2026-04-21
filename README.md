@@ -1,4 +1,4 @@
-# OCI Architecture Assistant (v1.3.2)
+# OCI Architecture Assistant (v1.5.0)
 
 A full Oracle SA engagement platform built as an OCI agent fleet. The new
 **SA Assistant chat tab** (Agent 0) provides a conversational interface that

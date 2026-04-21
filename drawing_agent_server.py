@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OCI Drawing Agent - FastAPI Server  (v1.3.2)
+OCI Drawing Agent - FastAPI Server  (v1.5.0)
 Pipeline: BOM.xlsx + optional context file
   → bom_parser.py   (rule-based service extraction + LLM prompt)
   → OCI GenAI       (layout compiler → layout spec JSON or clarification questions)
@@ -17,7 +17,7 @@ Endpoints:
   GET  /.well-known/agent-card.json
   GET  /mcp/tools
 
-v1.3.2 additions:
+v1.5.0 additions:
   - request_id (UUIDv4) and input_hash (sha256) on all responses
   - app.state.llm_runner injection seam (tests override; startup sets real OCI runner)
   - app.state.object_store injection seam (default None = no persistence)
@@ -127,7 +127,7 @@ async def _lifespan(application: FastAPI):
     yield
 
 
-app = FastAPI(title="OCI Drawing Agent", version="1.3.2", lifespan=_lifespan)
+app = FastAPI(title="OCI Drawing Agent", version="1.5.0", lifespan=_lifespan)
 
 
 @app.middleware("http")
@@ -228,7 +228,7 @@ AUTH_ENABLED = all([OIDC_CLIENT_ID, OIDC_CLIENT_SECRET,
 AGENT_ID    = _cfg.get("agent_id", "agent3-oci-drawing")
 FLEET_CFG   = _cfg.get("fleet", {})
 
-AGENT_VERSION  = "1.3.2"
+AGENT_VERSION  = "1.5.0"
 SCHEMA_VERSION = {"spec": "1.1", "draw_dict": "1.0"}
 
 # ── Diagram editor system message ─────────────────────────────────────────────
@@ -592,7 +592,7 @@ async def run_pipeline(
 ) -> dict:
     """
     Call LLM → layout engine → drawio generator.
-    Returns a full v1.3.2 result dict (status ok or need_clarification).
+    Returns a full v1.5.0 result dict (status ok or need_clarification).
     Persists artifacts if app.state.object_store is set.
 
     Async design:
