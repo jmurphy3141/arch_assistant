@@ -60,6 +60,7 @@ Version 1.5.0 is a phased major rebuild with:
   - `event_type`
   - completion/error metadata
 - Add aggregated history endpoint with pagination and search.
+- For browser deployments in restricted networks, support HTTPS termination on `443` via reverse proxy/LB forwarding to backend app port `8080`.
 
 ## Config Requirements
 

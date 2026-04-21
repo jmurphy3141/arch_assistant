@@ -2472,18 +2472,25 @@ async def _run_orchestrator_turn(
     ) else "legacy"
 
     if bool(orch_cfg.get("langgraph_enabled", False)):
-        from agent import langgraph_orchestrator
+        try:
+            from agent import langgraph_orchestrator
 
-        return await langgraph_orchestrator.run_turn(
-            customer_id=req.customer_id,
-            customer_name=req.customer_name,
-            user_message=req.message,
-            store=store,
-            text_runner=text_runner,
-            a2a_base_url=a2a_base_url,
-            max_tool_iterations=max_tool_iterations,
-            specialist_mode=specialist_mode,
-        )
+            return await langgraph_orchestrator.run_turn(
+                customer_id=req.customer_id,
+                customer_name=req.customer_name,
+                user_message=req.message,
+                store=store,
+                text_runner=text_runner,
+                a2a_base_url=a2a_base_url,
+                max_tool_iterations=max_tool_iterations,
+                specialist_mode=specialist_mode,
+            )
+        except Exception as exc:
+            logger.warning(
+                "LangGraph orchestrator path failed; falling back to legacy orchestrator. error=%s",
+                exc,
+            )
+            specialist_mode = "legacy"
 
     from agent import orchestrator_agent
 

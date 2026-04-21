@@ -119,7 +119,8 @@ test.describe('UI Smoke Flows', () => {
       await route.fulfill({
         status: 200,
         contentType: 'application/x-ndjson',
-        body: `${events.map(e => JSON.stringify(e)).join('\n')}\n`,
+        // Intentionally omit trailing newline to exercise robust NDJSON parsing.
+        body: events.map(e => JSON.stringify(e)).join('\n'),
       });
     });
 
@@ -147,6 +148,12 @@ test.describe('UI Smoke Flows', () => {
     await expect(page.getByTestId('artifact-link-diagram-artifact')).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId('artifact-preview-panel')).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId('artifact-preview-item-0')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('artifact-preview-text')).toContainText('oci_core_vcn', { timeout: 10000 });
+    await page.getByTestId('artifact-preview-item-1').click();
+    await expect(page.getByTestId('artifact-preview-download-link')).toHaveAttribute(
+      'href',
+      /\/api\/download\/diagram\.drawio$/,
+    );
     await expect(page.getByTestId('artifact-preview-download-link')).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId('chat-error-banner')).toHaveCount(0);
   });

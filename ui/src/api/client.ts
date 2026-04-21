@@ -754,49 +754,58 @@ export async function apiChatStream(
   let buffer = '';
   let completion: ChatResponse | null = null;
 
+  const handleEvent = (event: ChatStreamEvent) => {
+    handlers.onEvent?.(event);
+
+    if (event.event_type === 'token' && typeof event.delta === 'string') {
+      handlers.onToken?.(event.delta);
+    }
+    if (event.event_type === 'tool' && event.tool_call) {
+      handlers.onTool?.(event.tool_call);
+    }
+    if (event.event_type === 'completion') {
+      completion = {
+        status: 'ok',
+        trace_id: event.trace_id,
+        reply: event.reply ?? '',
+        tool_calls: event.tool_calls ?? [],
+        artifacts: event.artifacts ?? {},
+        artifact_manifest: event.artifact_manifest,
+        history_length: event.history_length ?? 0,
+      };
+    }
+    if (event.event_type === 'error') {
+      throw { status: 500, detail: event.error ?? 'Streaming error.' } as ApiError;
+    }
+  };
+
+  const parseLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      handleEvent(JSON.parse(trimmed) as ChatStreamEvent);
+    } catch (err) {
+      if ((err as { status?: number }).status) throw err;
+    }
+  };
+
   while (true) {
     const { value, done } = await reader.read();
-    if (done) break;
+    if (done) {
+      buffer += decoder.decode();
+      break;
+    }
 
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split('\n');
     buffer = lines.pop() ?? '';
 
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      let event: ChatStreamEvent;
-      try {
-        event = JSON.parse(trimmed) as ChatStreamEvent;
-      } catch {
-        continue;
-      }
-
-      handlers.onEvent?.(event);
-
-      if (event.event_type === 'token' && typeof event.delta === 'string') {
-        handlers.onToken?.(event.delta);
-      }
-      if (event.event_type === 'tool' && event.tool_call) {
-        handlers.onTool?.(event.tool_call);
-      }
-      if (event.event_type === 'completion') {
-        completion = {
-          status: 'ok',
-          trace_id: event.trace_id,
-          reply: event.reply ?? '',
-          tool_calls: event.tool_calls ?? [],
-          artifacts: event.artifacts ?? {},
-          artifact_manifest: event.artifact_manifest,
-          history_length: event.history_length ?? 0,
-        };
-      }
-      if (event.event_type === 'error') {
-        throw { status: 500, detail: event.error ?? 'Streaming error.' } as ApiError;
-      }
+      parseLine(line);
     }
   }
+
+  parseLine(buffer);
 
   if (completion) return completion;
   throw { status: 500, detail: 'Streaming completed without completion event.' } as ApiError;

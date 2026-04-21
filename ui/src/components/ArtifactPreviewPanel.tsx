@@ -30,24 +30,50 @@ export function ArtifactPreviewPanel({ artifacts, compact = false }: ArtifactPre
       setPreviewText('');
       return;
     }
+    const existing = selectedUrl
+      ? normalized.find(item => item.download_url === selectedUrl)
+      : undefined;
+    if (existing) {
+      setSelectedLabel(titleForArtifact(existing));
+      return;
+    }
     const first = normalized[0];
     setSelectedUrl(first.download_url);
     setSelectedLabel(titleForArtifact(first));
-  }, [normalized]);
+  }, [normalized, selectedUrl]);
 
   useEffect(() => {
     if (!selectedUrl) return;
+    let active = true;
+    let parsedPath = '';
+    try {
+      parsedPath = new URL(selectedUrl, window.location.origin).pathname.toLowerCase();
+    } catch {
+      parsedPath = selectedUrl.toLowerCase();
+    }
     // Best effort inline preview: terraform/text-like artifacts.
-    if (!selectedUrl.endsWith('.tf') && !selectedUrl.endsWith('.md') && !selectedUrl.endsWith('.txt')) {
+    if (!parsedPath.endsWith('.tf') && !parsedPath.endsWith('.md') && !parsedPath.endsWith('.txt')) {
       setPreviewText('');
       return;
     }
     setPreviewLoading(true);
     fetch(selectedUrl)
       .then(resp => (resp.ok ? resp.text() : Promise.resolve('(preview unavailable)')))
-      .then(text => setPreviewText(text))
-      .catch(() => setPreviewText('(preview unavailable)'))
-      .finally(() => setPreviewLoading(false));
+      .then(text => {
+        if (!active) return;
+        setPreviewText(text);
+      })
+      .catch(() => {
+        if (!active) return;
+        setPreviewText('(preview unavailable)');
+      })
+      .finally(() => {
+        if (!active) return;
+        setPreviewLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [selectedUrl]);
 
   return (

@@ -16,6 +16,7 @@
 5. Playwright required before merge for UI changes.
 6. OIDC remains optional.
 7. Continue dark OCI chat-first UX direction.
+8. Browser-accessed deployments behind restricted ingress must terminate HTTPS on `:443` via reverse proxy/LB and forward to app backend on `:8080`.
 
 ## 2) Functional Requirements Status
 

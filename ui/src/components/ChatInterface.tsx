@@ -412,10 +412,14 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
     setStreamingReply('');
 
     try {
+      let streamed = '';
       let resp;
       try {
         resp = await apiChatStream(customerId, customerName || customerId, text, {
-          onToken: delta => setStreamingReply(prev => prev + delta),
+          onToken: delta => {
+            streamed += delta;
+            setStreamingReply(prev => prev + delta);
+          },
         });
       } catch {
         // Fallback for environments where stream endpoint is unavailable.
@@ -423,7 +427,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
       }
       const assistantMsg: LocalMessage = {
         role:      'assistant',
-        content:   resp.reply,
+        content:   resp.reply || streamed,
         timestamp: new Date().toISOString(),
         toolCalls: resp.tool_calls,
         artifacts: resp.artifacts,
@@ -434,6 +438,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
     } catch (err: unknown) {
       const e = err as { status: number; detail: string };
       setError(`Error ${e.status}: ${e.detail}`);
+      setStreamingReply('');
     } finally {
       setLoading(false);
       inputRef.current?.focus();
@@ -694,4 +699,3 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
     </div>
   );
 }
-
