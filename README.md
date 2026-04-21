@@ -473,7 +473,7 @@ Marker taxonomy:
 ## Repository structure
 
 ```
-arch_assistant/
+drawing-agent/
 ├── drawing_agent_server.py     # FastAPI server — all API endpoints incl. /message:send + /api/chat
 ├── config.yaml                 # Region, model, persistence, orchestrator config
 ├── requirements.txt
@@ -481,6 +481,8 @@ arch_assistant/
 │
 ├── agent/
 │   ├── orchestrator_agent.py   # Agent 0 — ReAct loop, tool dispatch, conversation history
+│   ├── skill_loader.py         # Lightweight gstack skill loader + frontmatter parser
+│   ├── critic_agent.py         # Critic pass/fail evaluator used for refine retries
 │   ├── notifications.py        # Event notification stub (Telegram-ready)
 │   ├── bom_parser.py           # BOM → ServiceItem list + LLM prompt
 │   ├── layout_engine.py        # Layout spec → x,y positions
@@ -492,10 +494,16 @@ arch_assistant/
 │   ├── pov_agent.py            # POV document generator
 │   ├── jep_agent.py            # JEP generator
 │   ├── waf_agent.py            # WAF review agent
-│   ├── terraform_agent.py      # Terraform code generator
+│   ├── graphs/terraform_graph.py  # Terraform generation chain entrypoint
 │   ├── bom_stub.py             # BOM extractor from meeting notes
 │   ├── document_store.py       # Versioned doc storage + conversation history
 │   └── context_store.py        # Shared engagement state across agents
+│
+├── gstack_skills/
+│   ├── terraform_for_oci/
+│   │   └── SKILL.md            # Terraform domain skill (model_profile: terraform)
+│   └── oci_customer_pov_writer/
+│       └── SKILL.md            # POV writing skill (model_profile: pov)
 │
 ├── ui/                         # React + Vite front-end (dark OCI theme)
 │   ├── src/
@@ -526,6 +534,10 @@ arch_assistant/
     └── fixtures/
         └── sample_bom.xlsx
 ```
+
+Where skills are used:
+- Agent 0 injects `gstack_skills/*/SKILL.md` in `agent/orchestrator_agent.py` via `agent/skill_loader.py`.
+- Skill frontmatter `model_profile` routes model selection through `drawing_agent_server.py` (`_make_orchestrator_text_runner`).
 
 ---
 
