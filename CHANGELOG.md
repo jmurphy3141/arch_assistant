@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.7.0] - 2026-04-22
+
+### Added
+- v1.7 BOM service module (`agent/bom_service.py`) with manual refresh-first caches for pricing, compute shapes, and service catalog context.
+- BOM REST API surface:
+  - `GET /api/bom/config`
+  - `GET /api/bom/health`
+  - `POST /api/bom/chat`
+  - `POST /api/bom/generate-xlsx`
+  - `POST /api/bom/refresh-data`
+- BOM validation + repair loop enforcing:
+  - unknown SKU rejection
+  - non-positive price rejection
+  - non-GPU compute split rule
+  - max 3 repair attempts
+- BOM XLSX generation with editable line-item columns and formulas.
+- Orchestrator `generate_bom` tool execution in legacy and LangGraph specialist paths.
+- Orchestrator fail-closed skill coverage for `bom` path and dynamic skill injection via `gstack_skills/oci_bom_expert`.
+- Native React `BOM` tab with advisory/clarify/final flow, editable BOM table, JSON download, XLSX export, and admin refresh action.
+
+### Changed
+- Tool trace construction now preserves specialist-provided trace metadata (including BOM trace) in `tool_calls[].result_data.trace`.
+- OIDC session user payload now retains `groups` so admin-gated endpoints can enforce global group policy.
+
+### Testing
+- Added BOM unit tests (`tests/test_bom_service.py`) for validation and repair behavior.
+- Added BOM API integration tests (`tests/test_bom_api.py`) for readiness, refresh, chat, and XLSX flows.
+- Added UI BOM tab test coverage in `ui/src/__tests__/App.test.tsx`.
+
 ## [1.5.0] - 2026-04-21
 
 ### Added

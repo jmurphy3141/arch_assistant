@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 REQUIRED_PATHS = (
     "diagram",
+    "bom",
     "pov",
     "jep",
     "waf",
@@ -163,6 +164,22 @@ class OrchestratorSkillEngine:
                     ],
                 )
 
+        if path_id == "bom":
+            bom_prompt = str(args.get("prompt", "")).strip()
+            if not bom_prompt and "bom" not in msg and "bill of materials" not in msg:
+                return self._block(
+                    path_id=path_id,
+                    phase="preflight",
+                    reasons=["BOM request is underspecified or absent."],
+                    pushback_message=(
+                        "I can generate BOMs, but I need workload sizing details first."
+                    ),
+                    retry_instructions=[
+                        "Provide workload requirements (OCPU/memory/storage/network).",
+                        "Retry generate_bom with clear sizing constraints.",
+                    ],
+                )
+
         if path_id in {"pov", "jep"}:
             no_context = "no engagement activity yet" in ctx
             has_notes_hint = any(token in ctx for token in ("note", "notes"))
@@ -208,6 +225,28 @@ class OrchestratorSkillEngine:
                     retry_instructions=[
                         "Provide target OCI services and module boundaries.",
                         "Include environment and security constraints.",
+                    ],
+                )
+            has_diagram_context = any(
+                token in ctx
+                for token in (
+                    "diagram",
+                    "drawio",
+                    "layout",
+                    "architecture",
+                )
+            )
+            if not has_diagram_context:
+                return self._block(
+                    path_id=path_id,
+                    phase="preflight",
+                    reasons=["Terraform generation requires an existing architecture definition/diagram context."],
+                    pushback_message=(
+                        "Terraform generation is gated until an architecture diagram/definition exists."
+                    ),
+                    retry_instructions=[
+                        "Generate or provide the architecture diagram first.",
+                        "Then retry generate_terraform with module constraints.",
                     ],
                 )
 
@@ -307,6 +346,18 @@ class OrchestratorSkillEngine:
                 pushback_message="That document is not available yet for this customer.",
                 retry_instructions=["Generate the document first, then request get_document again."],
             )
+
+        if path_id == "bom":
+            if "final bom prepared" not in summary and "clarification" not in summary and "not ready" not in summary:
+                return self._block(
+                    path_id=path_id,
+                    phase="postflight",
+                    reasons=["BOM result did not match expected completion or clarify contract."],
+                    pushback_message="The BOM specialist result was not in the expected format.",
+                    retry_instructions=[
+                        "Retry generate_bom with explicit BOM intent and sizing details.",
+                    ],
+                )
 
         _ = context_summary  # reserved for richer semantic checks
         return self._allow(path_id, "postflight")

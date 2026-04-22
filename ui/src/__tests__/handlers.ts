@@ -132,10 +132,17 @@ export const TERRAFORM_GENERATE_RESPONSE = {
 export const TERRAFORM_LATEST_RESPONSE = {
   status: 'ok',
   customer_id: 'test_customer',
-  doc_type: 'terraform',
-  version: 1,
-  prefix_key: 'terraform/test_customer/v1',
-  files: TERRAFORM_FILES,
+  latest: {
+    version: 1,
+    files: {
+      'main.tf': 'terraform/test_customer/v1/main.tf',
+      'variables.tf': 'terraform/test_customer/v1/variables.tf',
+      'outputs.tf': 'terraform/test_customer/v1/outputs.tf',
+      'terraform.tfvars.example': 'terraform/test_customer/v1/terraform.tfvars.example',
+    },
+    metadata: {},
+    timestamp: '2024-01-01T00:00:00Z',
+  },
 };
 
 export const TERRAFORM_VERSIONS_RESPONSE = {
@@ -210,11 +217,18 @@ export const WAF_VERSIONS_RESPONSE = {
 
 export const handlers = [
   // Diagram agent
+  http.get('/health', () => HttpResponse.json(HEALTH_RESPONSE)),
   http.get(`${BASE}/health`, () => HttpResponse.json(HEALTH_RESPONSE)),
   http.post(`${BASE}/generate`, () => HttpResponse.json(GENERATE_OK_RESPONSE)),
-  http.post(`${BASE}/clarify`, () => HttpResponse.json({ ...GENERATE_OK_RESPONSE, status: 'ok' })),
-  http.post(`${BASE}/upload-bom`, () => HttpResponse.json(GENERATE_OK_RESPONSE)),
+  http.post(`${BASE}/clarify`, () => HttpResponse.json({ status: 'pending', job_id: 'job-clarify-1' })),
+  http.post(`${BASE}/upload-bom`, () => HttpResponse.json({ status: 'pending', job_id: 'job-upload-1' })),
+  http.get(`${BASE}/job/:jobId`, () => HttpResponse.json(GENERATE_OK_RESPONSE)),
   http.post(`${BASE}/inputs/resolve`, () => HttpResponse.json({ status: 'ok', resolved: {}, errors: {} })),
+  http.get(`${BASE}/bom/health`, () => HttpResponse.json({ ready: false, source: 'none', refreshed_at: null, pricing_sku_count: 0, trace_id: 'trace-bom-health' })),
+  http.get(`${BASE}/bom/config`, () => HttpResponse.json({ status: 'ok', default_model_id: 'test-bom-model', cache: { ready: false, source: 'none', refreshed_at: null, pricing_sku_count: 0 }, allowed_types: ['normal', 'question', 'final'] })),
+  http.post(`${BASE}/bom/chat`, () => HttpResponse.json({ type: 'normal', reply: 'BOM data is not ready. Run /api/bom/refresh-data, then retry.', trace_id: 'trace-bom-chat' })),
+  http.post(`${BASE}/bom/refresh-data`, () => HttpResponse.json({ ready: true, source: 'fallback', pricing_sku_count: 9, latency_ms: 12, refreshed_at: 1710000000, trace_id: 'trace-bom-refresh' })),
+  http.post(`${BASE}/bom/generate-xlsx`, () => new HttpResponse('xlsx-bytes', { status: 200, headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } })),
 
   // Notes
   http.post(`${BASE}/notes/upload`, () => HttpResponse.json(NOTE_UPLOAD_RESPONSE)),
@@ -234,6 +248,17 @@ export const handlers = [
   http.post(`${BASE}/terraform/generate`, () => HttpResponse.json(TERRAFORM_GENERATE_RESPONSE)),
   http.get(`${BASE}/terraform/:customerId/latest`, () => HttpResponse.json(TERRAFORM_LATEST_RESPONSE)),
   http.get(`${BASE}/terraform/:customerId/versions`, () => HttpResponse.json(TERRAFORM_VERSIONS_RESPONSE)),
+  http.get(`${BASE}/terraform/:customerId/download/:filename`, ({ params }) => {
+    const filename = String(params.filename ?? '');
+    const content = TERRAFORM_FILES[filename as keyof typeof TERRAFORM_FILES];
+    if (!content) {
+      return new HttpResponse('Not found', { status: 404 });
+    }
+    return new HttpResponse(content, {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+  }),
 
   // WAF
   http.post(`${BASE}/waf/generate`, () => HttpResponse.json(WAF_GENERATE_RESPONSE)),

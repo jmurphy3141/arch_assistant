@@ -7,6 +7,43 @@
 - Source branches merged to `main`: all active v1.5 slices merged
 - Current working branch: `main`
 
+## v1.6.0 Execution Addendum (April 22, 2026)
+
+Implementation started for v1.6.0 dynamic skilling and bounded critic/refine.
+
+Locked decisions captured from planning:
+- Critic/refine scope: docs + WAF + Terraform (`generate_pov`, `generate_jep`, `generate_waf`, `generate_terraform`).
+- Skill architecture: keep both systems layered.
+  - `agent/orchestrator_skills/*`: fail-closed guardrails.
+  - `gstack_skills/*`: dynamic prompt guidance and model routing.
+- Merge quality gate: no regressions + prompt-judge score lift.
+- Dynamic skilling scope: full specialist path coverage.
+- Tool-level tracing surface: `tool_calls[].result_data` + structured logs.
+
+Active checklist file for continuity across sessions:
+- `docs/v1.6-implementation-checklist.md`
+
+## v1.7.0 BOM Integration Addendum (April 22, 2026)
+
+Implementation completed for additive BOM integration with shared backend service, REST API contract, orchestrator path, and native UI tab.
+
+Delivered v1.7 BOM surfaces:
+- `GET /api/bom/config`
+- `GET /api/bom/health`
+- `POST /api/bom/chat`
+- `POST /api/bom/generate-xlsx`
+- `POST /api/bom/refresh-data`
+
+Delivered platform integration:
+- Shared `agent/bom_service.py` with manual refresh-first cache semantics.
+- Orchestrator tool path `generate_bom` in legacy + LangGraph specialist execution.
+- Orchestrator skill pack coverage extended with fail-closed `bom` path.
+- Dynamic BOM skill injection via `gstack_skills/oci_bom_expert`.
+- Native React BOM tab for advisory/clarify/final flows with editable table + JSON/XLSX export.
+
+Active checklist file:
+- `docs/v1.7-implementation-checklist.md`
+
 ## 1) Locked Requirements (Still In Effect)
 
 1. Build in phases, not big-bang.

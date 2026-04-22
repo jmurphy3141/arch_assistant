@@ -1,28 +1,35 @@
 # Orchestrator Skill: Diagram
 
 ## Intent
-Enforce that diagram generation only runs with sufficient BOM/resource input and that the result is verifiable.
+Generate or update OCI architecture diagrams with explicit topology intent, while preventing unsupported or input-empty diagram calls.
 
 ## Preconditions
 - Customer context is identified.
-- Diagram request includes `bom_text` or explicit BOM upload context.
+- Diagram request includes either:
+  - BOM/resource context (`bom_text`), or
+  - Explicit architecture update/change details.
 
 ## Input Validation Rules
-- Block when no BOM/resource details are present in tool args or request context.
-- Require actionable OCI resource intent, not empty placeholders.
+- Block when no architecture intent is present.
+- Block when request is purely ambiguous (for example: "make a diagram" with no workload/network context).
+- Allow iterative updates when change intent is explicit.
 
 ## Expected Output Contract
-- Result summary states diagram generation started or completed.
-- Completed result should include a persisted artifact key when available.
+- Result must indicate accepted diagram progression:
+  - started (async accepted), or
+  - completed (artifact key available).
+- Summary must not claim completion without verifiable signal.
 
 ## Pushback Rules
-- If preconditions fail, block and ask for BOM/resource details.
-- If output contract fails, block completion and request retry with explicit inputs.
+- If preconditions fail, ask for concrete OCI resource and connectivity intent.
+- If output cannot be verified, block completion and request retry with explicit topology inputs.
 
 ## Escalation Questions Template
-- Which OCI resources and connectivity should appear in the diagram?
-- Do you have BOM content to upload or paste as `bom_text`?
+- Which OCI services and traffic paths must be represented?
+- Which components are internet-facing vs private?
+- Any HA/DR target (single AD, multi-AD, multi-region)?
 
 ## Retry Guidance
-- Provide BOM/resource details and rerun `generate_diagram`.
-- If async execution starts, poll completion before reporting success.
+- Provide BOM/resource context and retry `generate_diagram`.
+- For update requests, include only the specific change deltas to apply.
+- If async, poll completion before announcing final success.
