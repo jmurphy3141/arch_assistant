@@ -214,6 +214,41 @@ def list_versions(
         return []
 
 
+def merge_latest_doc_metadata(
+    store: ObjectStoreBase,
+    doc_type: str,
+    customer_id: str,
+    metadata: Optional[dict] = None,
+) -> bool:
+    """
+    Merge metadata into the latest version entry in {doc_type}/{customer_id}/MANIFEST.json.
+    Returns True when a merge was applied, False otherwise.
+    """
+    if not metadata:
+        return False
+    manifest_key = f"{doc_type}/{customer_id}/MANIFEST.json"
+    try:
+        manifest = json.loads(store.get(manifest_key))
+    except KeyError:
+        return False
+    versions = manifest.get("versions", [])
+    if not versions:
+        return False
+    latest = versions[-1]
+    existing = latest.get("metadata", {})
+    if not isinstance(existing, dict):
+        existing = {}
+    merged = dict(existing)
+    merged.update(metadata)
+    latest["metadata"] = merged
+    store.put(
+        manifest_key,
+        json.dumps(manifest, indent=2).encode("utf-8"),
+        "application/json",
+    )
+    return True
+
+
 # ── Approved versions ─────────────────────────────────────────────────────────
 
 def save_approved_doc(
@@ -552,6 +587,63 @@ def get_terraform_file(store: ObjectStoreBase, customer_id: str, filename: str) 
         return store.get(key)
     except KeyError:
         return None
+
+
+def merge_latest_terraform_metadata(
+    store: ObjectStoreBase,
+    customer_id: str,
+    metadata: Optional[dict] = None,
+) -> bool:
+    """
+    Merge metadata into latest Terraform records:
+      - terraform/{customer_id}/LATEST.json
+      - terraform/{customer_id}/MANIFEST.json latest version entry
+    Returns True when at least one merge succeeded.
+    """
+    if not metadata:
+        return False
+    merged_any = False
+
+    latest_key = f"terraform/{customer_id}/LATEST.json"
+    try:
+        latest = json.loads(store.get(latest_key))
+        latest_meta = latest.get("metadata", {})
+        if not isinstance(latest_meta, dict):
+            latest_meta = {}
+        new_meta = dict(latest_meta)
+        new_meta.update(metadata)
+        latest["metadata"] = new_meta
+        store.put(
+            latest_key,
+            json.dumps(latest, indent=2).encode("utf-8"),
+            "application/json",
+        )
+        merged_any = True
+    except KeyError:
+        pass
+
+    manifest_key = f"terraform/{customer_id}/MANIFEST.json"
+    try:
+        manifest = json.loads(store.get(manifest_key))
+        versions = manifest.get("versions", [])
+        if versions:
+            latest_version = versions[-1]
+            existing = latest_version.get("metadata", {})
+            if not isinstance(existing, dict):
+                existing = {}
+            updated = dict(existing)
+            updated.update(metadata)
+            latest_version["metadata"] = updated
+            store.put(
+                manifest_key,
+                json.dumps(manifest, indent=2).encode("utf-8"),
+                "application/json",
+            )
+            merged_any = True
+    except KeyError:
+        pass
+
+    return merged_any
 
 
 def list_conversation_customers(store: ObjectStoreBase) -> list[str]:

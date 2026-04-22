@@ -138,11 +138,14 @@ SA (browser chat tab or Telegram — future)
                               │      (loaded from agent/orchestrator_skills/*/SKILL.md; fail-closed)
                               ├── save_notes       → document_store.save_note()
                               ├── get_summary      → context_store.build_context_summary()
+                              ├── dynamic gstack skill injection (all specialist paths)
                               ├── generate_pov     → pov_agent.generate_pov() [in-process]
                               ├── generate_diagram → POST /message:send (A2A self-call via httpx)
                               ├── generate_waf     → waf_agent.generate_waf() [in-process]
                               ├── generate_jep     → jep_agent.generate_jep() [in-process]
                               ├── generate_terraform → LangGraph specialist chain (when enabled)
+                              ├── critic evaluate (POV/JEP/WAF/Terraform)
+                              ├── bounded refine loop (max_refinements, default 3)
                               └── get_document     → document_store.get_latest_doc()
                               └── postflight_check(path_id, tool_result, artifacts, context_summary)
                                      block => pushback + retry guidance, no success finalization
@@ -173,8 +176,10 @@ OCI GenAI has no native function-calling. The orchestrator uses a prompt-based p
 4. No tool call found → return plain text reply
 
 Every path tool (`diagram`, `pov`, `jep`, `waf`, `terraform`, `summary_document`) is
-validated via SKILL.md-driven preflight and postflight checks. Missing or malformed
-skill files fail closed.
+validated via `agent/orchestrator_skills/*` SKILL.md preflight/postflight checks.
+Missing or malformed orchestrator skill files fail closed.
+
+Separately, dynamic specialist guidance is injected from `gstack_skills/*`.
 
 ---
 
@@ -207,6 +212,21 @@ Turn format:
  "tool_call": {"tool": "generate_pov", "args": {}}}
 {"role": "tool",      "tool": "generate_pov",
  "result_summary": "POV v1 saved. Key: pov/acme/v1.md", "timestamp": "…"}
+```
+
+Tool call `result_data` includes v1.6 trace metadata:
+```json
+{
+  "trace": {
+    "path_id": "pov",
+    "applied_skills": ["oci_customer_pov_writer"],
+    "model_profile": "pov",
+    "refinement_count": 1,
+    "max_refinements": 3,
+    "overall_pass": true,
+    "warnings": []
+  }
+}
 ```
 
 ---
