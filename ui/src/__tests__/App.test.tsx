@@ -112,7 +112,8 @@ describe('C2: Clarification flow', () => {
   it('submits answers and shows ok result after clarify', async () => {
     server.use(
       http.post('/api/generate', () => HttpResponse.json(CLARIFY_RESPONSE)),
-      http.post('/api/clarify', () => HttpResponse.json(GENERATE_OK_RESPONSE)),
+      http.post('/api/clarify', () => HttpResponse.json({ status: 'pending', job_id: 'job-clarify-test' })),
+      http.get('/api/job/:jobId', () => HttpResponse.json(GENERATE_OK_RESPONSE)),
     );
 
     renderApp();
@@ -132,7 +133,7 @@ describe('C2: Clarification flow', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('response-ok')).toBeInTheDocument();
-    });
+    }, { timeout: 5000 });
   });
 });
 
@@ -210,7 +211,7 @@ describe('C4: Health indicator', () => {
 
   it('shows error state when health check fails', async () => {
     server.use(
-      http.get('/api/health', () =>
+      http.get('/health', () =>
         HttpResponse.json({ detail: 'Server error' }, { status: 503 }),
       ),
     );
@@ -219,7 +220,7 @@ describe('C4: Health indicator', () => {
 
     await waitFor(() => {
       const indicator = screen.getByTestId('health-indicator');
-      expect(indicator).toHaveTextContent('Health error');
+      expect(indicator).toHaveTextContent(/health error/i);
     });
   });
 });
@@ -258,5 +259,25 @@ describe('C5: Persistence', () => {
     const href = link.getAttribute('href')!;
     expect(href).toContain('client_id=');
     expect(href).toContain('diagram_name=');
+  });
+});
+
+describe('C6: BOM tab', () => {
+  it('renders BOM advisor and accepts a chat submission', async () => {
+    renderApp();
+    fireEvent.click(screen.getByText('BOM'));
+
+    await waitFor(() => {
+      expect(screen.getByText('BOM Advisor')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByTestId('bom-input'), {
+      target: { value: 'Generate BOM for 4 OCPU and 64 GB RAM' },
+    });
+    fireEvent.click(screen.getByTestId('bom-send'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/BOM data is not ready/i)).toBeInTheDocument();
+    });
   });
 });

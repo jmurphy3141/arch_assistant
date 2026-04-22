@@ -18,6 +18,7 @@ from agent.persistence_objectstore import ObjectStoreBase
 import agent.context_store as context_store
 import agent.document_store as document_store
 from agent.graphs import diagram_graph, jep_graph, pov_graph, terraform_graph, waf_graph
+from agent.bom_service import get_shared_bom_service, new_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,27 @@ async def execute_tool(
             text_runner=text_runner,
         )
         return summary, key, {}
+
+    if tool_name == "generate_bom":
+        prompt = str(args.get("prompt", "") or "").strip() or "Generate a BOM from current request context."
+        service = get_shared_bom_service()
+        result = await asyncio.to_thread(
+            service.chat,
+            message=prompt,
+            conversation=[],
+            trace_id=new_trace_id(),
+            model_id="langgraph-generate_bom",
+            text_runner=text_runner,
+        )
+        result_type = str(result.get("type", "normal"))
+        summary = str(result.get("reply", "")).strip() or "BOM response generated."
+        if result_type == "final":
+            summary = f"Final BOM prepared. {summary}"
+        elif result_type == "question":
+            summary = f"BOM clarification required. {summary}"
+        elif "not ready" in summary.lower():
+            summary = f"BOM data not ready. {summary}"
+        return summary, "", result
 
     if tool_name == "generate_terraform":
         skill_root = Path(__file__).resolve().parents[1] / "gstack_skills"

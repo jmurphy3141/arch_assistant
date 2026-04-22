@@ -9,6 +9,7 @@ import { PovForm } from './components/PovForm';
 import { JepForm } from './components/JepForm';
 import { TerraformForm } from './components/TerraformForm';
 import { WafForm } from './components/WafForm';
+import { BomAdvisor } from './components/BomAdvisor';
 import { ChatInterface } from './components/ChatInterface';
 import { ChatSidebar, type SidebarHistoryItem } from './components/ChatSidebar';
 import { ArtifactPreviewPanel } from './components/ArtifactPreviewPanel';
@@ -23,7 +24,7 @@ import {
   type OrchestrationResult,
 } from './api/client';
 
-type Mode = 'chat' | 'upload' | 'generate' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
+type Mode = 'chat' | 'upload' | 'generate' | 'bom' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
 function getLastCustomerId(): string {
   try { return localStorage.getItem('last_customer_id') ?? ''; } catch { return ''; }
@@ -287,6 +288,7 @@ export function App() {
         <span style={{ fontSize: '0.62rem', color: '#454d64', margin: '0 0.2rem 0 0.75rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Diagrams:</span>
         <button style={btnStyle(mode === 'upload')}   onClick={() => switchMode('upload')}>Upload BOM</button>
         <button style={btnStyle(mode === 'generate')} onClick={() => switchMode('generate')}>Generate</button>
+        <button style={btnStyle(mode === 'bom')} onClick={() => switchMode('bom')}>BOM</button>
         <span style={{ fontSize: '0.62rem', color: '#454d64', margin: '0 0.2rem 0 0.75rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Documents:</span>
         <button style={btnStyle(mode === 'notes')}     onClick={() => switchMode('notes')}>Notes</button>
         <button style={btnStyle(mode === 'pov')}       onClick={() => switchMode('pov')}>POV</button>
@@ -371,6 +373,8 @@ export function App() {
           onError={handleError}
         />
       )}
+
+      {mode === 'bom' && <BomAdvisor />}
 
       {(mode === 'upload' || mode === 'generate') && (
         <>

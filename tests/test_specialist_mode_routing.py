@@ -85,6 +85,7 @@ def test_run_orchestrator_turn_passes_specialist_mode(monkeypatch):
 
     assert result["reply"] == "ok"
     assert captured["specialist_mode"] == "langgraph"
+    assert captured["max_refinements"] == 3
 
 
 def test_generate_terraform_langgraph_mode_returns_blocking_questions():
@@ -101,10 +102,9 @@ def test_generate_terraform_langgraph_mode_returns_blocking_questions():
         )
     )
 
-    assert "Terraform generation blocked at stage" in result[0]
-    assert "Clarifications required" in result[0]
+    assert "Terraform generation is gated until an architecture diagram/definition exists." in result[0]
     assert isinstance(result[2], dict)
-    assert "stages" in result[2]
+    assert result[2].get("skill_decision", {}).get("status") == "block"
 
 
 def test_run_orchestrator_turn_falls_back_to_legacy_on_langgraph_error(monkeypatch):
@@ -193,6 +193,140 @@ def test_orchestrator_parallel_plan_detects_pov_and_jep_only():
         "Generate POV, JEP, and terraform."
     )
     assert blocked_plan == []
+
+
+def test_orchestrator_parallel_plan_detects_bom_intent():
+    plan = orchestrator_agent._parallel_plan_for_message(
+        "Please generate a BOM for 8 OCPU and 128 GB RAM."
+    )
+    assert len(plan) == 1
+    assert plan[0]["tool"] == "generate_bom"
+
+
+def test_orchestrator_gates_unrequested_generation_tools(monkeypatch):
+    calls: list[str] = []
+    outputs = iter(
+        [
+            '{"tool": "generate_terraform", "args": {"prompt":"now create terraform"}}',
+            "Done.",
+        ]
+    )
+
+    async def _fake_execute_tool(tool_name, args, **kwargs):
+        _ = (args, kwargs)
+        calls.append(tool_name)
+        return (f"{tool_name}-ok", "", {})
+
+    def _text_runner(_prompt: str, _system_message: str) -> str:
+        return next(outputs)
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        orchestrator_agent,
+        "_build_context_summary_for_skills",
+        lambda *_args, **_kwargs: "diagram exists with baseline architecture",
+    )
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="Generate a BOM for 16 OCPU, 256 GB RAM, 2 TB block storage, with load balancer.",
+            store=InMemoryObjectStore(),
+            text_runner=_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=3,
+            specialist_mode="langgraph",
+        )
+    )
+
+    assert calls == ["generate_bom"]
+    assert "Skipped `generate_terraform` because it was not requested." in result["reply"]
+
+
+def test_orchestrator_change_request_requires_confirmation() -> None:
+    store = InMemoryObjectStore()
+    store.put(
+        "context/acme/context.json",
+        (
+            '{"schema_version":"1.0","customer_id":"acme","customer_name":"ACME Corp",'
+            '"last_updated":"","agents":{"diagram":{"version":1},"waf":{"version":1},'
+            '"terraform":{"version":1},"pov":{"version":1},"jep":{"version":1}}}'
+        ).encode("utf-8"),
+        "application/json",
+    )
+    orchestrator_agent._PENDING_UPDATE_WORKFLOWS.clear()
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="We forgot an element in the application and need to update the system.",
+            store=store,
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=2,
+            specialist_mode="langgraph",
+        )
+    )
+
+    assert "confirm update all" in result["reply"].lower()
+    assert result["tool_calls"] == []
+    assert orchestrator_agent._PENDING_UPDATE_WORKFLOWS["acme"]["tools"] == [
+        "generate_diagram",
+        "generate_waf",
+        "generate_terraform",
+        "generate_pov",
+        "generate_jep",
+    ]
+
+
+def test_orchestrator_change_request_confirmation_executes_in_order(monkeypatch):
+    calls: list[str] = []
+    store = InMemoryObjectStore()
+    orchestrator_agent._PENDING_UPDATE_WORKFLOWS.clear()
+    orchestrator_agent._PENDING_UPDATE_WORKFLOWS["acme"] = {
+        "tools": [
+            "generate_diagram",
+            "generate_waf",
+            "generate_terraform",
+            "generate_pov",
+            "generate_jep",
+        ],
+        "change_request": "Add missing service element.",
+        "created_at": "2026-04-22T00:00:00Z",
+    }
+
+    async def _fake_execute_tool(tool_name, args, **kwargs):
+        _ = (args, kwargs)
+        calls.append(tool_name)
+        return (f"{tool_name}-ok", "", {})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="confirm update all",
+            store=store,
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=2,
+            specialist_mode="langgraph",
+        )
+    )
+
+    assert calls == [
+        "generate_diagram",
+        "generate_waf",
+        "generate_terraform",
+        "generate_pov",
+        "generate_jep",
+    ]
+    assert len(result["tool_calls"]) == 5
+    assert "executed the approved update sequence in order" in result["reply"].lower()
+    assert "acme" not in orchestrator_agent._PENDING_UPDATE_WORKFLOWS
 
 
 def test_orchestrator_runs_pov_jep_in_parallel(monkeypatch):
@@ -319,6 +453,26 @@ def test_skill_injection_applies_model_profile_for_pov():
     assert injected.get("_skill_model_profile") == "pov"
 
 
+def test_skill_injection_applies_model_profile_for_jep():
+    injected = orchestrator_agent._inject_skill_into_tool_args(
+        "generate_jep",
+        {"feedback": "focus milestones"},
+        user_message="Generate JEP for OCI POC",
+    )
+    assert "oci_jep_writer" in injected.get("_skill_injected", [])
+    assert injected.get("_skill_model_profile") == "jep"
+
+
+def test_skill_injection_applies_model_profile_for_waf():
+    injected = orchestrator_agent._inject_skill_into_tool_args(
+        "generate_waf",
+        {"feedback": "tighten findings"},
+        user_message="Run OCI WAF review",
+    )
+    assert "oci_waf_reviewer" in injected.get("_skill_injected", [])
+    assert injected.get("_skill_model_profile") == "waf"
+
+
 def test_runner_for_tool_uses_profile_aware_runner():
     called = {}
 
@@ -347,8 +501,22 @@ def test_orchestrator_critic_refines_once(monkeypatch):
 
     critic_results = iter(
         [
-            {"overall_pass": False, "feedback": "Add measurable business outcomes.", "reason": "too generic"},
-            {"overall_pass": True, "feedback": "", "reason": "ok"},
+            {
+                "issues": ["Too generic on business outcomes."],
+                "severity": "medium",
+                "suggestions": ["Add measurable business outcomes."],
+                "confidence": 82,
+                "overall_pass": False,
+                "critique_summary": "Need clearer business impact metrics.",
+            },
+            {
+                "issues": [],
+                "severity": "low",
+                "suggestions": [],
+                "confidence": 90,
+                "overall_pass": True,
+                "critique_summary": "Acceptable.",
+            },
         ]
     )
 
@@ -378,6 +546,109 @@ def test_orchestrator_critic_refines_once(monkeypatch):
     assert "v2" in summary
     assert key == "pov/acme/v2.md"
     assert data.get("critic_retry", {}).get("attempt") == 1
+    assert data.get("refinement_count") == 1
+    assert isinstance(data.get("critic_history"), list)
+    assert isinstance(data.get("trace"), dict)
+    assert data["trace"].get("max_refinements") == 3
+
+
+def test_skill_injection_applies_for_diagram():
+    injected = orchestrator_agent._inject_skill_into_tool_args(
+        "generate_diagram",
+        {"bom_text": "VCN with private subnet and LB"},
+        user_message="Generate an OCI architecture diagram",
+    )
+    assert "Injected Skill Guidance" in injected.get("bom_text", "")
+    assert injected.get("_skill_injected")
+    assert isinstance(injected.get("_skill_sections"), dict)
+
+
+def test_orchestrator_critic_respects_max_refinements(monkeypatch):
+    calls = {"count": 0}
+
+    async def _fake_execute_tool_core(tool_name, args, **_kwargs):
+        calls["count"] += 1
+        _ = (tool_name, args)
+        return (f"POV v{calls['count']} saved. Key: pov/acme/v{calls['count']}.md", f"pov/acme/v{calls['count']}.md", {})
+
+    critic_results = iter(
+        [
+            {
+                "issues": ["Issue 1"],
+                "severity": "high",
+                "suggestions": ["Fix 1"],
+                "confidence": 70,
+                "overall_pass": False,
+                "critique_summary": "Not enough detail.",
+            },
+            {
+                "issues": ["Issue 2"],
+                "severity": "high",
+                "suggestions": ["Fix 2"],
+                "confidence": 70,
+                "overall_pass": False,
+                "critique_summary": "Still not enough detail.",
+            },
+        ]
+    )
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(
+        orchestrator_agent.critic_agent,
+        "evaluate_tool_result",
+        lambda **_kwargs: next(critic_results),
+    )
+
+    summary, _key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_pov",
+            {"feedback": "initial pass"},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Generate POV",
+            max_refinements=1,
+        )
+    )
+    assert calls["count"] == 2  # initial + one retry
+    assert data.get("refinement_count") == 1
+    assert data.get("best_effort") is True
+    assert "best-effort" in summary.lower()
+
+
+def test_orchestrator_critic_fail_open_on_error(monkeypatch):
+    async def _fake_execute_tool_core(tool_name, args, **_kwargs):
+        _ = (tool_name, args)
+        return ("POV v1 saved. Key: pov/acme/v1.md", "pov/acme/v1.md", {})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(
+        orchestrator_agent.critic_agent,
+        "evaluate_tool_result",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("critic parse failed")),
+    )
+
+    summary, key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_pov",
+            {"feedback": "initial pass"},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Generate POV",
+        )
+    )
+    assert "v1" in summary
+    assert key == "pov/acme/v1.md"
+    assert any("critic_error_fail_open" in w for w in data.get("warnings", []))
 
 
 def test_dynamic_skill_selector_prefers_tool_tag(tmp_path: Path):

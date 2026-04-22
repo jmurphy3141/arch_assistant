@@ -218,23 +218,36 @@ pip3.11 install -r requirements.txt
 | `writing.max_tokens` | Token budget for POV/JEP generation |
 | `writing.temperature` | Sampling temperature for document writing (default: 0.7) |
 | `orchestrator.max_tool_iterations` | ReAct loop max iterations (default: 5) |
+| `orchestrator.max_refinements` | Critic/refine retry cap for POV/JEP/WAF/Terraform (default: 3) |
 | `orchestrator.history_max_turns` | History turns loaded per prompt (default: 30) |
 | `orchestrator.telegram.enabled` | Enable Telegram notifications (default: false) |
 
 ### G-Stack Skills and Critic Layer
 
-Agent 0 now dynamically discovers and selects skills from `gstack_skills/`
-before specialist dispatch (top-ranked matches are injected into the call).
+Agent 0 dynamically discovers and selects skills from `gstack_skills/` before
+specialist dispatch (top-ranked matches are injected into the call).
 
-Default domain examples:
+Current path coverage:
+- `generate_diagram` -> `diagram_for_oci`
+- `generate_bom` -> `oci_bom_expert`
 - `generate_pov` -> `oci_customer_pov_writer`
-- `generate_terraform` -> `terraform_for_oci` (+ other terraform-tagged skills)
+- `generate_jep` -> `oci_jep_writer`
+- `generate_waf` -> `oci_waf_reviewer`
+- `generate_terraform` -> `terraform_for_oci`
 
-The orchestrator also runs a bounded critic/refine pass for specialist outputs:
+Layered behavior is intentional:
+- `agent/orchestrator_skills/*` remain authoritative preflight/postflight fail-closed gates.
+- `gstack_skills/*` provide dynamic specialist guidance and model routing.
+
+The orchestrator runs a bounded critic/refine pass for specialist outputs
+(`generate_pov`, `generate_jep`, `generate_waf`, `generate_terraform`):
 
 1. Specialist generates initial output.
-2. Critic evaluates pass/fail and returns actionable feedback.
-3. On fail, orchestrator retries once with critic feedback injected.
+2. Critic evaluates with structured JSON (`issues`, `severity`, `suggestions`,
+   `confidence`, `overall_pass`, `critique_summary`).
+3. On fail, orchestrator re-dispatches with critic feedback + re-injected skills.
+4. Loop stops when pass or `max_refinements` is reached.
+5. Critic failures are fail-open with warning metadata.
 
 Skill frontmatter can request model routing per specialist call:
 
@@ -244,8 +257,16 @@ model_profile: terraform
 ---
 ```
 
-`model_profile` maps to `config.yaml -> agents.<profile>` and falls back to
-default inference settings when not configured.
+`model_profile` maps to `config.yaml -> agents.<profile>` and falls back to default inference settings when not configured.
+
+### Requirements and Checklists
+
+- v1.7 BOM integration requirements: `docs/requirements-v1.7.0-bom-agent-integration.md`
+- v1.7 implementation checklist: `docs/v1.7-implementation-checklist.md`
+
+Each tool call now includes trace metadata in `tool_calls[].result_data.trace`,
+including `applied_skills`, `model_profile`, `refinement_count`,
+`max_refinements`, `overall_pass`, and `warnings`.
 
 ```mermaid
 flowchart LR

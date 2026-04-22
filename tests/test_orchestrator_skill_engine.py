@@ -82,6 +82,19 @@ def test_preflight_and_postflight_decisions_cover_all_paths(tmp_path: Path) -> N
     ).status == "allow"
 
     assert engine.preflight_check(
+        path_id="bom",
+        user_message="hello",
+        context_summary="",
+        current_state={"tool": "generate_bom", "args": {}},
+    ).status == "block"
+    assert engine.preflight_check(
+        path_id="bom",
+        user_message="please build bill of materials",
+        context_summary="",
+        current_state={"tool": "generate_bom", "args": {"prompt": "Generate BOM for 8 OCPU"}},
+    ).status == "allow"
+
+    assert engine.preflight_check(
         path_id="pov",
         user_message="draft pov",
         context_summary="No engagement activity yet.",
@@ -129,9 +142,15 @@ def test_preflight_and_postflight_decisions_cover_all_paths(tmp_path: Path) -> N
     assert engine.preflight_check(
         path_id="terraform",
         user_message="generate terraform",
-        context_summary="",
+        context_summary="diagram exists with vcn and lb",
         current_state={"tool": "generate_terraform", "args": {"prompt": "vcn + oke + policies"}},
     ).status == "allow"
+    assert engine.preflight_check(
+        path_id="terraform",
+        user_message="generate terraform",
+        context_summary="notes captured only",
+        current_state={"tool": "generate_terraform", "args": {"prompt": "vcn + oke + policies"}},
+    ).status == "block"
 
     assert engine.preflight_check(
         path_id="summary_document",
@@ -165,3 +184,10 @@ def test_preflight_and_postflight_decisions_cover_all_paths(tmp_path: Path) -> N
         artifacts={"artifact_key": ""},
         context_summary="",
     ).status == "block"
+
+    assert engine.postflight_check(
+        path_id="bom",
+        tool_result="Final BOM prepared. Ready for export.",
+        artifacts={"artifact_key": ""},
+        context_summary="",
+    ).status == "allow"

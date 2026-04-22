@@ -157,6 +157,77 @@ export interface ResolveResponse {
   errors: Record<string, unknown>;
 }
 
+export type BomChatType = 'normal' | 'question' | 'final';
+
+export interface BomConversationTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface BomChatRequest {
+  message: string;
+  conversation?: BomConversationTurn[];
+  model_id?: string;
+}
+
+export interface BomPayloadLineItem {
+  sku: string;
+  description: string;
+  category: string;
+  quantity: number;
+  unit_price: number;
+  extended_price: number;
+  notes?: string;
+}
+
+export interface BomPayload {
+  currency: string;
+  line_items: BomPayloadLineItem[];
+  assumptions?: string[];
+  totals?: {
+    estimated_monthly_cost: number;
+  };
+}
+
+export interface BomChatResponse {
+  type: BomChatType;
+  reply: string;
+  trace_id: string;
+  json_bom?: string;
+  bom_payload?: BomPayload;
+  score?: number;
+  trace?: Record<string, unknown>;
+}
+
+export interface BomConfigResponse {
+  status: string;
+  default_model_id: string;
+  cache: {
+    ready: boolean;
+    source: string;
+    refreshed_at: number | null;
+    pricing_sku_count: number;
+  };
+  allowed_types: BomChatType[];
+}
+
+export interface BomHealthResponse {
+  ready: boolean;
+  source: string;
+  refreshed_at: number | null;
+  pricing_sku_count: number;
+  trace_id?: string;
+}
+
+export interface BomRefreshResponse {
+  ready: boolean;
+  source: string;
+  pricing_sku_count: number;
+  latency_ms: number;
+  refreshed_at: number | null;
+  trace_id?: string;
+}
+
 // ---------------------------------------------------------------------------
 // API functions
 // ---------------------------------------------------------------------------
@@ -224,6 +295,47 @@ export async function apiInputsResolve(body: object): Promise<ResolveResponse> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+export async function apiBomConfig(): Promise<BomConfigResponse> {
+  return apiFetch<BomConfigResponse>('/bom/config');
+}
+
+export async function apiBomHealth(): Promise<BomHealthResponse> {
+  return apiFetch<BomHealthResponse>('/bom/health');
+}
+
+export async function apiBomChat(req: BomChatRequest): Promise<BomChatResponse> {
+  return apiFetch<BomChatResponse>('/bom/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function apiBomRefreshData(): Promise<BomRefreshResponse> {
+  return apiFetch<BomRefreshResponse>('/bom/refresh-data', {
+    method: 'POST',
+  });
+}
+
+export async function apiBomGenerateXlsx(payload: BomPayload): Promise<Blob> {
+  const resp = await fetch(`${API_BASE}/bom/generate-xlsx`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bom_payload: payload }),
+  });
+  if (!resp.ok) {
+    let detail = await resp.text();
+    try {
+      const body = JSON.parse(detail);
+      detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body);
+    } catch {
+      // keep raw
+    }
+    throw { status: resp.status, detail } as ApiError;
+  }
+  return resp.blob();
 }
 
 export interface UploadToBucketResponse {
