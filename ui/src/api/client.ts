@@ -11,6 +11,7 @@ export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api';
 export interface ApiError {
   status: number;
   detail: string; // raw text if not JSON
+  body?: unknown;
 }
 
 /** Generic fetch wrapper that returns parsed JSON or throws ApiError. */
@@ -455,6 +456,7 @@ export interface DocResponse {
   bom?: Record<string, unknown>;
   diagram_key?: string;
   overall_rating?: string;
+  jep_state?: JepState;
   errors: string[];
 }
 
@@ -516,6 +518,7 @@ export interface DocLatestResponse {
   customer_id: string;
   doc_type: string;
   content: string;
+  jep_state?: JepState;
 }
 
 export interface DocVersionsResponse {
@@ -604,6 +607,25 @@ export interface JepQuestionsResponse {
   timestamp?: string;
 }
 
+export interface JepSourceSnippet {
+  source: string;
+  key?: string;
+  text: string;
+}
+
+export interface JepSourceContext {
+  references: Record<string, unknown>;
+  snippets: JepSourceSnippet[];
+}
+
+export interface JepState {
+  state: 'not_started' | 'kickoff_ready' | 'questions_pending' | 'ready_to_generate' | 'generated' | 'approved' | 'revision_requested';
+  is_locked: boolean;
+  missing_fields: string[];
+  required_next_step: string;
+  source_context: JepSourceContext;
+}
+
 export async function apiJepKickoff(
   customerId: string,
   customerName: string,
@@ -636,7 +658,7 @@ export async function apiGenerateJep(
   diagramKey?: string,
   feedback?: string,
 ): Promise<DocResponse> {
-  return apiFetch<DocResponse>('/jep/generate', {
+  const resp = await fetch(`${API_BASE}/jep/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -646,13 +668,29 @@ export async function apiGenerateJep(
       ...(feedback?.trim() ? { feedback } : {}),
     }),
   });
+  const ct = resp.headers.get('content-type') ?? '';
+  const body = ct.includes('application/json')
+    ? await resp.json()
+    : await resp.text();
+  if (!resp.ok) {
+    const err: ApiError = {
+      status: resp.status,
+      detail:
+        typeof body === 'object' && body !== null
+          ? JSON.stringify((body as Record<string, unknown>).detail ?? body)
+          : String(body),
+      body,
+    };
+    throw err;
+  }
+  return body as DocResponse;
 }
 
 export async function apiApproveJep(
   customerId: string,
   customerName: string,
   content: string,
-): Promise<{ status: string; key: string }> {
+): Promise<{ status: string; key: string; jep_state?: JepState }> {
   return apiFetch('/jep/approve', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -670,6 +708,20 @@ export async function apiGetLatestJep(customerId: string): Promise<DocLatestResp
 
 export async function apiListJepVersions(customerId: string): Promise<DocVersionsResponse> {
   return apiFetch<DocVersionsResponse>(`/jep/${encodeURIComponent(customerId)}/versions`);
+}
+
+export async function apiRequestJepRevision(
+  customerId: string,
+  reason?: string,
+): Promise<{ status: string; revision_requested: boolean; jep_state: JepState }> {
+  return apiFetch('/jep/revision-request', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_id: customerId,
+      ...(reason?.trim() ? { reason } : {}),
+    }),
+  });
 }
 
 // ---------------------------------------------------------------------------

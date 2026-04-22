@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import {
   apiGenerateJep, apiGetLatestJep, apiListJepVersions,
   apiApproveJep, apiGetApprovedJep,
+  apiRequestJepRevision,
   apiJepKickoff, apiSaveJepAnswers, apiGetJepQuestions,
-  type DocResponse, type DocVersionEntry, type KickoffQuestion,
+  type DocResponse, type DocVersionEntry, type KickoffQuestion, type JepState,
 } from '../api/client';
 import { DocViewer } from './DocViewer';
 
@@ -26,7 +27,9 @@ export function JepForm({ customerId, onCustomerIdChange }: Props) {
   const [versions, setVersions]           = useState<DocVersionEntry[]>([]);
   const [loading, setLoading]             = useState(false);
   const [approving, setApproving]         = useState(false);
+  const [requestingRevision, setRequestingRevision] = useState(false);
   const [approvedExists, setApprovedExists] = useState<boolean | null>(null);
+  const [jepState, setJepState]           = useState<JepState | null>(null);
   const [error, setError]                 = useState<string | null>(null);
   const [successMsg, setSuccessMsg]       = useState<string | null>(null);
 
@@ -99,14 +102,29 @@ export function JepForm({ customerId, onCustomerIdChange }: Props) {
         feedback.trim() || undefined,
       );
       setResult(resp);
+      setJepState(resp.jep_state ?? null);
       setFeedback('');
       setPhase('idle');
       const vResp = await apiListJepVersions(customerId.trim());
       setVersions(vResp.versions);
       checkApproved(customerId.trim());
     } catch (err: unknown) {
-      const e2 = err as { detail?: string };
-      setError(`Generation failed: ${e2.detail ?? String(err)}`);
+      const e2 = err as { detail?: string; body?: unknown };
+      const policy = e2.body as {
+        status?: string;
+        required_next_step?: string;
+        reason_codes?: string[];
+        jep_state?: JepState;
+      } | undefined;
+      if (policy?.status === 'policy_block') {
+        setJepState(policy.jep_state ?? null);
+        setError(
+          `Generation blocked by policy (${(policy.reason_codes ?? []).join(', ') || 'JEP lock'}). ` +
+          `Next step: ${policy.required_next_step ?? 'request_revision'}.`,
+        );
+      } else {
+        setError(`Generation failed: ${e2.detail ?? String(err)}`);
+      }
       setPhase('idle');
     } finally {
       setLoading(false);
@@ -133,7 +151,9 @@ export function JepForm({ customerId, onCustomerIdChange }: Props) {
         status: 'ok', agent_version: '', customer_id: customerId, doc_type: 'jep',
         version: vResp.versions.length > 0 ? vResp.versions[vResp.versions.length - 1].version : 1,
         key: '', latest_key: '', content: resp.content, errors: [],
+        jep_state: resp.jep_state,
       });
+      setJepState(resp.jep_state ?? null);
       setVersions(vResp.versions);
       checkApproved(customerId.trim());
     } catch (err: unknown) {
@@ -147,8 +167,9 @@ export function JepForm({ customerId, onCustomerIdChange }: Props) {
 
   async function checkApproved(cid: string) {
     try {
-      await apiGetApprovedJep(cid);
+      const approved = await apiGetApprovedJep(cid);
       setApprovedExists(true);
+      if (approved.jep_state) setJepState(approved.jep_state);
     } catch {
       setApprovedExists(false);
     }
@@ -160,8 +181,9 @@ export function JepForm({ customerId, onCustomerIdChange }: Props) {
     setError(null);
     setSuccessMsg(null);
     try {
-      await apiApproveJep(customerId.trim(), customerName.trim(), result.content);
+      const approved = await apiApproveJep(customerId.trim(), customerName.trim(), result.content) as { jep_state?: JepState };
       setApprovedExists(true);
+      if (approved.jep_state) setJepState(approved.jep_state);
       setSuccessMsg('Approved version saved. Future generations will start from this version.');
     } catch (err: unknown) {
       const e2 = err as { detail?: string };
@@ -171,11 +193,31 @@ export function JepForm({ customerId, onCustomerIdChange }: Props) {
     }
   }
 
+  async function handleRequestRevision() {
+    if (!customerId.trim()) return;
+    setRequestingRevision(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const resp = await apiRequestJepRevision(customerId.trim(), feedback.trim() || undefined);
+      setJepState(resp.jep_state);
+      setSuccessMsg('Revision requested. Generate is now re-enabled.');
+    } catch (err: unknown) {
+      const e2 = err as { detail?: string; body?: unknown };
+      const policy = e2.body as { jep_state?: JepState; required_next_step?: string } | undefined;
+      if (policy?.jep_state) setJepState(policy.jep_state);
+      setError(`Revision request failed: ${policy?.required_next_step ?? e2.detail ?? String(err)}`);
+    } finally {
+      setRequestingRevision(false);
+    }
+  }
+
   const inputStyle: React.CSSProperties = {
     width: '100%', padding: '0.4rem', boxSizing: 'border-box', marginBottom: '0.5rem',
   };
 
   const isLoading = loading || phase === 'kickoff_loading' || phase === 'generating';
+  const isLocked = Boolean(jepState?.is_locked);
 
   return (
     <div>
@@ -235,22 +277,37 @@ export function JepForm({ customerId, onCustomerIdChange }: Props) {
             Approved version exists — next generation will start from it.
           </div>
         )}
+        {jepState && (
+          <div style={{ marginBottom: '0.5rem', padding: '0.45rem 0.6rem', background: isLocked ? '#fff4f2' : '#f4f7ff', border: `1px solid ${isLocked ? '#e27' : '#99b'}`, borderRadius: 4, fontSize: '0.8rem' }}>
+            Lifecycle: <strong>{jepState.state}</strong> · {isLocked ? 'locked' : 'unlocked'} · next: {jepState.required_next_step}
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem', flexWrap: 'wrap' }}>
           <button
             type="button"
             onClick={handleKickoff}
-            disabled={isLoading || !customerId.trim() || !customerName.trim()}
+            disabled={isLoading || !customerId.trim() || !customerName.trim() || isLocked}
             style={{ background: '#f0f4ff', border: '1px solid #aac' }}
           >
             {phase === 'kickoff_loading' ? 'Scanning notes…' : 'Start JEP Kickoff'}
           </button>
-          <button type="submit" disabled={isLoading || !customerId.trim() || !customerName.trim()}>
+          <button type="submit" disabled={isLoading || !customerId.trim() || !customerName.trim() || isLocked}>
             {phase === 'generating' ? 'Generating…' : feedback.trim() ? 'Generate with Feedback' : 'Generate / Update JEP'}
           </button>
           <button type="button" onClick={handleLoadLatest} disabled={isLoading || !customerId.trim()}>
             Load Latest
           </button>
+          {isLocked && (
+            <button
+              type="button"
+              onClick={handleRequestRevision}
+              disabled={requestingRevision || !customerId.trim()}
+              style={{ background: '#fff4e8', border: '1px solid #d9a66b' }}
+            >
+              {requestingRevision ? 'Requesting…' : 'Request Revision'}
+            </button>
+          )}
           {result?.content && (
             <button
               type="button"
@@ -300,6 +357,22 @@ export function JepForm({ customerId, onCustomerIdChange }: Props) {
               Cancel
             </button>
           </div>
+        </div>
+      )}
+      {jepState && (
+        <div style={{ marginTop: '0.75rem', padding: '0.6rem', background: '#f8f9fb', border: '1px solid #ccd2de', borderRadius: 4, fontSize: '0.82rem' }}>
+          <div style={{ fontWeight: 'bold', marginBottom: '0.35rem' }}>Missing required fields</div>
+          {jepState.missing_fields.length === 0 ? (
+            <div style={{ color: '#2a6' }}>None</div>
+          ) : (
+            <div style={{ color: '#b24' }}>{jepState.missing_fields.join(', ')}</div>
+          )}
+          <details style={{ marginTop: '0.55rem' }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 'bold' }}>Source context</summary>
+            <pre style={{ marginTop: '0.5rem', padding: '0.5rem', background: '#fff', border: '1px solid #dde3ea', borderRadius: 4, whiteSpace: 'pre-wrap', fontSize: '0.75rem' }}>
+{JSON.stringify(jepState.source_context, null, 2)}
+            </pre>
+          </details>
         </div>
       )}
 

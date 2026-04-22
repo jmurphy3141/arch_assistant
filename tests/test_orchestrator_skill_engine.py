@@ -112,7 +112,7 @@ def test_preflight_and_postflight_decisions_cover_all_paths(tmp_path: Path) -> N
         user_message="draft jep",
         context_summary="No engagement activity yet.",
         current_state={"tool": "generate_jep", "args": {}},
-    ).status == "block"
+    ).status == "allow"
     assert engine.preflight_check(
         path_id="jep",
         user_message="draft jep",

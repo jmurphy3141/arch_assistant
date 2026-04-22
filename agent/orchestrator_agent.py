@@ -31,6 +31,7 @@ from typing import Any, Callable
 from agent.persistence_objectstore import ObjectStoreBase
 import agent.document_store as document_store
 import agent.context_store as context_store
+import agent.jep_lifecycle as jep_lifecycle
 from agent import critic_agent
 from agent.orchestrator_skill_engine import (
     OrchestratorSkillDecision,
@@ -440,6 +441,32 @@ async def _execute_tool(
     Execute a tool call and return (result_summary, artifact_key).
     artifact_key is "" when no persistent artifact was produced.
     """
+    if tool_name == "generate_jep":
+        policy_block = await asyncio.to_thread(
+            jep_lifecycle.generate_policy_block_payload,
+            store,
+            customer_id,
+        )
+        if policy_block is not None:
+            blocked_data = {
+                "jep_state": policy_block.get("jep_state", {}),
+                "reason_codes": list(policy_block.get("reason_codes", [])),
+                "required_next_step": policy_block.get("required_next_step", ""),
+                "retry_instructions": list(policy_block.get("retry_instructions", [])),
+                "lock_outcome": "blocked",
+                "warnings": [],
+            }
+            blocked_data["trace"] = _build_tool_trace(
+                tool_name=tool_name,
+                result_data=blocked_data,
+                max_refinements=max_refinements,
+            )
+            return (
+                "JEP generation is locked because an approved JEP exists. Request revision first.",
+                "",
+                blocked_data,
+            )
+
     path_id = _tool_to_path_id(tool_name)
     context_summary = ""
     preflight_decision = None
@@ -637,7 +664,13 @@ async def _execute_tool_core(
             feedback=feedback,
         )
         key = result.get("key", "")
-        return f"JEP v{result.get('version')} saved. Key: {key}", key, {}
+        jep_state = await asyncio.to_thread(jep_lifecycle.mark_generated, store, customer_id)
+        return f"JEP v{result.get('version')} saved. Key: {key}", key, {
+            "jep_state": jep_state,
+            "reason_codes": [],
+            "required_next_step": jep_state.get("required_next_step", ""),
+            "lock_outcome": "allowed",
+        }
 
     if tool_name == "generate_bom":
         prompt = str(args.get("prompt", "") or "").strip() or "Generate a BOM from current request context."
@@ -1036,7 +1069,7 @@ def _build_tool_trace(*, tool_name: str, result_data: dict[str, Any], max_refine
     applied = list(result_data.get("applied_skills", []) or [])
     last_critique = result_data.get("last_critique", {}) or {}
     prior_trace = result_data.get("trace", {}) if isinstance(result_data.get("trace"), dict) else {}
-    return {
+    trace = {
         **prior_trace,
         "path_id": _tool_to_path_id(tool_name) or "",
         "applied_skills": applied,
@@ -1050,6 +1083,12 @@ def _build_tool_trace(*, tool_name: str, result_data: dict[str, Any], max_refine
         "critic_confidence": int(last_critique.get("confidence", 0) or 0),
         "warnings": list(result_data.get("warnings", []) or []),
     }
+    if tool_name == "generate_jep":
+        trace["jep_state"] = result_data.get("jep_state", {})
+        trace["reason_codes"] = list(result_data.get("reason_codes", []) or [])
+        trace["required_next_step"] = str(result_data.get("required_next_step", "") or "")
+        trace["lock_outcome"] = str(result_data.get("lock_outcome", "") or "")
+    return trace
 
 
 async def _call_generate_diagram(

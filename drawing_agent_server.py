@@ -104,6 +104,13 @@ from agent.document_store import (
     list_terraform_versions,
     get_terraform_file,
 )
+from agent.jep_lifecycle import (
+    generate_policy_block_payload as jep_generate_policy_block_payload,
+    mark_approved as mark_jep_approved,
+    mark_generated as mark_jep_generated,
+    request_revision as request_jep_revision,
+    sync_jep_state,
+)
 from agent.pov_agent import generate_pov
 from agent.jep_agent import generate_jep, kickoff_jep
 from agent.waf_agent import generate_waf
@@ -367,6 +374,11 @@ class JepKickoffRequest(BaseModel):
 class JepAnswersRequest(BaseModel):
     customer_id: str
     answers:     dict
+
+
+class JepRevisionRequest(BaseModel):
+    customer_id: str
+    reason: Optional[str] = None
 
 
 class WafRequest(BaseModel):
@@ -3506,7 +3518,16 @@ async def jep_generate(req: JepRequest):
         )
 
     try:
+        policy_block = await anyio.to_thread.run_sync(
+            functools.partial(jep_generate_policy_block_payload, store, req.customer_id)
+        )
+        if policy_block is not None:
+            return JSONResponse(status_code=409, content=policy_block)
+
         result = await anyio.to_thread.run_sync(_run_jep)
+        jep_state = await anyio.to_thread.run_sync(
+            functools.partial(mark_jep_generated, store, req.customer_id)
+        )
         return {
             "status":        "ok",
             "agent_version": AGENT_VERSION,
@@ -3518,6 +3539,7 @@ async def jep_generate(req: JepRequest):
             "content":       result["content"],
             "bom":           result.get("bom"),
             "diagram_key":   result.get("diagram_key"),
+            "jep_state":     jep_state,
             "errors":        [],
         }
     except HTTPException:
@@ -3537,7 +3559,16 @@ async def jep_latest(customer_id: str):
     )
     if content is None:
         raise HTTPException(status_code=404, detail=f"No JEP found for customer_id={customer_id!r}")
-    return {"status": "ok", "customer_id": customer_id, "doc_type": "jep", "content": content}
+    jep_state = await anyio.to_thread.run_sync(
+        functools.partial(sync_jep_state, store, customer_id)
+    )
+    return {
+        "status": "ok",
+        "customer_id": customer_id,
+        "doc_type": "jep",
+        "content": content,
+        "jep_state": jep_state,
+    }
 
 
 @app.get("/jep/{customer_id}/versions")
@@ -3602,10 +3633,19 @@ async def jep_approve(req: ApproveDocRequest):
         key = await anyio.to_thread.run_sync(
             functools.partial(save_approved_doc, store, "jep", req.customer_id, req.content)
         )
+        jep_state = await anyio.to_thread.run_sync(
+            functools.partial(mark_jep_approved, store, req.customer_id)
+        )
         from agent.notifications import notify
         notify("jep_approved", req.customer_id,
                f"Approved JEP uploaded for {req.customer_name}")
-        return {"status": "ok", "customer_id": req.customer_id, "doc_type": "jep", "key": key}
+        return {
+            "status": "ok",
+            "customer_id": req.customer_id,
+            "doc_type": "jep",
+            "key": key,
+            "jep_state": jep_state,
+        }
     except Exception as exc:
         logger.error("Error in /jep/approve: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -3620,7 +3660,55 @@ async def jep_get_approved(customer_id: str):
     )
     if content is None:
         raise HTTPException(status_code=404, detail=f"No approved JEP for customer_id={customer_id!r}")
-    return {"status": "ok", "customer_id": customer_id, "doc_type": "jep", "content": content}
+    jep_state = await anyio.to_thread.run_sync(
+        functools.partial(sync_jep_state, store, customer_id)
+    )
+    return {
+        "status": "ok",
+        "customer_id": customer_id,
+        "doc_type": "jep",
+        "content": content,
+        "jep_state": jep_state,
+    }
+
+
+@app.post("/api/jep/revision-request")
+async def jep_revision_request(req: JepRevisionRequest):
+    """Request revision after an approved JEP; unlocks a subsequent generate."""
+    store = _require_object_store()
+    try:
+        jep_state = await anyio.to_thread.run_sync(
+            functools.partial(request_jep_revision, store, req.customer_id, req.reason or "")
+        )
+        return {
+            "status": "ok",
+            "customer_id": req.customer_id,
+            "doc_type": "jep",
+            "revision_requested": True,
+            "jep_state": jep_state,
+        }
+    except ValueError:
+        jep_state = await anyio.to_thread.run_sync(
+            functools.partial(sync_jep_state, store, req.customer_id)
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "policy_block",
+                "customer_id": req.customer_id,
+                "doc_type": "jep",
+                "reason_codes": ["REVISION_REQUEST_INVALID_STATE"],
+                "missing_fields": list(jep_state.get("missing_fields", [])),
+                "required_next_step": jep_state.get("required_next_step", ""),
+                "retry_instructions": [
+                    "Approve a generated JEP first, then request revision.",
+                ],
+                "jep_state": jep_state,
+            },
+        )
+    except Exception as exc:
+        logger.error("Error in /jep/revision-request: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/jep/kickoff")
@@ -3654,12 +3742,16 @@ async def jep_kickoff(req: JepKickoffRequest):
 
     try:
         result = await anyio.to_thread.run_sync(_run_kickoff)
+        jep_state = await anyio.to_thread.run_sync(
+            functools.partial(sync_jep_state, store, req.customer_id)
+        )
         return {
             "status":        "ok",
             "customer_id":   req.customer_id,
             "questions":     result["questions"],
             "extracted":     result["extracted"],
             "questions_key": result["questions_key"],
+            "jep_state":     jep_state,
         }
     except Exception as exc:
         logger.error("Error in /jep/kickoff: %s", exc)
@@ -3682,7 +3774,15 @@ async def jep_save_answers(req: JepAnswersRequest):
         await anyio.to_thread.run_sync(
             functools.partial(save_jep_questions, store, req.customer_id, questions, req.answers)
         )
-        return {"status": "ok", "customer_id": req.customer_id, "answers_saved": len(req.answers)}
+        jep_state = await anyio.to_thread.run_sync(
+            functools.partial(sync_jep_state, store, req.customer_id)
+        )
+        return {
+            "status": "ok",
+            "customer_id": req.customer_id,
+            "answers_saved": len(req.answers),
+            "jep_state": jep_state,
+        }
     except Exception as exc:
         logger.error("Error in /jep/answers: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -3695,7 +3795,10 @@ async def jep_get_questions(customer_id: str):
     data = await anyio.to_thread.run_sync(
         functools.partial(get_jep_questions, store, customer_id)
     )
-    return {"status": "ok", "customer_id": customer_id, **data}
+    jep_state = await anyio.to_thread.run_sync(
+        functools.partial(sync_jep_state, store, customer_id)
+    )
+    return {"status": "ok", "customer_id": customer_id, "jep_state": jep_state, **data}
 
 
 # ── WAF endpoints ─────────────────────────────────────────────────────────────

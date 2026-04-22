@@ -62,8 +62,8 @@ def test_recursive_prompt_static_contracts_cover_core_paths() -> None:
             "orchestrator",
             "rules",
             "cross_agent_dependency",
-            'if path_id in {"pov", "jep"}' in preflight_src and "Call get_summary and retry this generation." in preflight_src,
-            "POV/JEP preflight requires notes context and summary retry guidance",
+            'if path_id == "pov"' in preflight_src and "Call get_summary and retry this generation." in preflight_src,
+            "POV preflight requires notes context and summary retry guidance",
         )
     )
     rows.append(
