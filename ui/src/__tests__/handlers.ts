@@ -104,6 +104,13 @@ export const POV_VERSIONS_RESPONSE = {
 export const JEP_GENERATE_RESPONSE = { ...POV_GENERATE_RESPONSE, doc_type: 'jep', key: 'jep/test_customer/v1/jep.md' };
 export const JEP_LATEST_RESPONSE   = { ...POV_LATEST_RESPONSE,   doc_type: 'jep' };
 export const JEP_VERSIONS_RESPONSE = { ...POV_VERSIONS_RESPONSE, doc_type: 'jep' };
+export const JEP_STATE = {
+  state: 'generated',
+  is_locked: false,
+  missing_fields: [],
+  required_next_step: 'approve_or_regenerate',
+  source_context: { references: {}, snippets: [] },
+};
 
 // ---------------------------------------------------------------------------
 // Terraform fixtures
@@ -240,8 +247,9 @@ export const handlers = [
   http.get(`${BASE}/pov/:customerId/versions`, () => HttpResponse.json(POV_VERSIONS_RESPONSE)),
 
   // JEP
-  http.post(`${BASE}/jep/generate`, () => HttpResponse.json(JEP_GENERATE_RESPONSE)),
-  http.get(`${BASE}/jep/:customerId/latest`, () => HttpResponse.json(JEP_LATEST_RESPONSE)),
+  http.post(`${BASE}/jep/generate`, () => HttpResponse.json({ ...JEP_GENERATE_RESPONSE, jep_state: JEP_STATE })),
+  http.post(`${BASE}/jep/revision-request`, () => HttpResponse.json({ status: 'ok', revision_requested: true, jep_state: { ...JEP_STATE, state: 'revision_requested' } })),
+  http.get(`${BASE}/jep/:customerId/latest`, () => HttpResponse.json({ ...JEP_LATEST_RESPONSE, jep_state: JEP_STATE })),
   http.get(`${BASE}/jep/:customerId/versions`, () => HttpResponse.json(JEP_VERSIONS_RESPONSE)),
 
   // Terraform

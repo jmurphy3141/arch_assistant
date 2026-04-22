@@ -180,7 +180,7 @@ class OrchestratorSkillEngine:
                     ],
                 )
 
-        if path_id in {"pov", "jep"}:
+        if path_id == "pov":
             no_context = "no engagement activity yet" in ctx
             has_notes_hint = any(token in ctx for token in ("note", "notes"))
             if no_context or not has_notes_hint:

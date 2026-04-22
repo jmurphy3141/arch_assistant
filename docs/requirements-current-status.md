@@ -36,8 +36,13 @@
   - Fail-closed orchestrator skill coverage extended to `bom` path.
   - Dynamic BOM skill injection via `gstack_skills/oci_bom_expert`.
 
-### v1.8.0 (Planning Only)
-- Future planning artifacts exist but are not part of current delivered baseline:
+### v1.8.0 (In Progress)
+- Scope is now active as a JEP lifecycle delta on top of delivered orchestrator hardening baseline:
+  - Embedded `jep_state` contract on JEP generate/read endpoints.
+  - Approved-lock policy block and explicit revision-request endpoint.
+  - JEP lifecycle metadata propagation into orchestrator tool traces.
+  - JEP UI lock/revision controls and lifecycle visibility.
+- Planning artifacts:
   - `docs/requirements-v1.8.0-orchestrator-skill-hardening-and-jep-lifecycle.md`
   - `docs/v1.8-jep-skill-hardening-one-pager.md`
 
