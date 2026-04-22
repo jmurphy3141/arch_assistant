@@ -80,6 +80,26 @@ def test_terraform_graph_blocks_on_non_json_stage_output():
     assert result_data["ok"] is False
 
 
+def test_terraform_graph_blocks_on_invalid_stage_json_shape():
+    def fake_text_runner(_prompt: str, _system_message: str) -> str:
+        return json.dumps({"ok": True, "output": "partial", "questions": "not-a-list"})
+
+    skill_root = Path(__file__).resolve().parents[1] / "gstack_skills"
+    summary, artifact_key, result_data = asyncio.run(
+        terraform_graph.run(
+            args={"prompt": "Build Terraform"},
+            skill_root=skill_root,
+            text_runner=fake_text_runner,
+        )
+    )
+
+    assert "Terraform generation blocked at stage `plan-eng-review`" in summary
+    assert "invalid stage JSON" in summary
+    assert "questions` must be a list of strings" in summary
+    assert artifact_key == ""
+    assert result_data["ok"] is False
+
+
 def test_terraform_graph_repairs_invalid_oci_fields_in_final_output():
     def fake_text_runner(prompt: str, _system_message: str) -> str:
         if "STAGE: plan-eng-review" in prompt:

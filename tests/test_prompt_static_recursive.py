@@ -9,6 +9,7 @@ import agent.bom_parser as bom_parser
 import agent.gstack_specialists as gstack_specialists
 import agent.jep_agent as jep_agent
 import agent.orchestrator_agent as orchestrator_agent
+import agent.orchestrator_skill_engine as orchestrator_skill_engine
 import agent.pov_agent as pov_agent
 import agent.waf_agent as waf_agent
 from agent.graphs import terraform_graph
@@ -54,10 +55,47 @@ def test_recursive_prompt_static_contracts_cover_core_paths() -> None:
     for tool in required_tools:
         rows.append(_row("orchestrator", "orchestrator", "root", "tool_registry", tool in orch_msg, f"tool declared: {tool}"))
 
-    rows.append(_row("orchestrator", "orchestrator", "rules", "cross_agent_dependency", "Before generating a POV or JEP, call get_summary" in orch_msg, "POV/JEP depends on summary context"))
-    rows.append(_row("orchestrator", "orchestrator", "rules", "cross_agent_dependency", "Before generating a diagram" in orch_msg and "BOM" in orch_msg, "Diagram depends on BOM availability"))
-    rows.append(_row("orchestrator", "orchestrator", "rules", "skill_pre_post_enforcement", "before and after every path tool call" in orch_msg and "expert skill validation" in orch_msg, "orchestrator requires pre/post path validation"))
-    rows.append(_row("orchestrator", "orchestrator", "rules", "skill_block_enforcement", "Enforce block outcomes from the skill layer" in orch_msg, "orchestrator blocks completion on skill failures"))
+    preflight_src = inspect.getsource(orchestrator_skill_engine.OrchestratorSkillEngine.preflight_check)
+    rows.append(
+        _row(
+            "orchestrator",
+            "orchestrator",
+            "rules",
+            "cross_agent_dependency",
+            'if path_id in {"pov", "jep"}' in preflight_src and "Call get_summary and retry this generation." in preflight_src,
+            "POV/JEP preflight requires notes context and summary retry guidance",
+        )
+    )
+    rows.append(
+        _row(
+            "orchestrator",
+            "orchestrator",
+            "rules",
+            "cross_agent_dependency",
+            'if path_id == "diagram"' in preflight_src and "No BOM or equivalent diagram input provided." in preflight_src,
+            "Diagram preflight blocks when BOM/context input is missing",
+        )
+    )
+    rows.append(
+        _row(
+            "orchestrator",
+            "orchestrator",
+            "rules",
+            "skill_pre_post_enforcement",
+            "run preflight and postflight skill checks" in orch_msg,
+            "orchestrator requires pre/post path validation",
+        )
+    )
+    rows.append(
+        _row(
+            "orchestrator",
+            "orchestrator",
+            "rules",
+            "skill_block_enforcement",
+            "authoritative guardrails for allow/block behavior" in orch_msg,
+            "orchestrator treats skill checks as block/allow guardrails",
+        )
+    )
 
     build_prompt_src = inspect.getsource(orchestrator_agent._build_prompt)
     rows.append(_row("orchestrator", "orchestrator", "prompt_builder", "required_context_fields", "Prior conversation summary" in build_prompt_src and "SA:" in build_prompt_src and "ASSISTANT:" in build_prompt_src, "prompt builder injects summary/history/latest message"))

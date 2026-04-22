@@ -32,6 +32,7 @@ import contextvars
 import dataclasses
 import functools
 import hashlib
+import io
 import json
 import logging
 import os
@@ -115,6 +116,7 @@ from agent.context_store import (
     build_context_summary,
 )
 from agent.runtime_config import resolve_agent_llm_config
+from agent.bom_service import get_shared_bom_service, new_trace_id
 
 try:
     import server.services.oci_object_storage as _oci_storage
@@ -487,6 +489,21 @@ class OrchestratorChatRequest(BaseModel):
     customer_id:   str
     customer_name: str
     message:       str
+
+
+class BomConversationTurn(BaseModel):
+    role: str
+    content: str
+
+
+class BomChatRequest(BaseModel):
+    message: str
+    conversation: List[BomConversationTurn] = []
+    model_id: Optional[str] = None
+
+
+class BomXlsxRequest(BaseModel):
+    bom_payload: Dict[str, Any]
 
 
 class A2AObjectRef(BaseModel):
@@ -1045,7 +1062,7 @@ def _startup(app: FastAPI) -> None:
     # If already set, skip OCI initialisation entirely.
     if getattr(app.state, "llm_runner", None) is not None:
         logger.info("llm_runner already injected — skipping OCI init")
-        _ensure_state_defaults()
+        _ensure_state_defaults(app)
         return
 
     # ── Path 1: Direct OCI Inference (preferred) ──────────────────────────────
@@ -1055,7 +1072,7 @@ def _startup(app: FastAPI) -> None:
             logger.info(
                 "Drawing Agent ready (OCI inference) model=%s", INFERENCE_MODEL_ID
             )
-            _ensure_state_defaults()
+            _ensure_state_defaults(app)
             return
         except Exception as exc:
             logger.warning(
@@ -1066,7 +1083,7 @@ def _startup(app: FastAPI) -> None:
     if not _OCI_ADK_AVAILABLE:
         logger.warning("oci[adk] not importable — llm_runner will be None")
         app.state.llm_runner = None
-        _ensure_state_defaults()
+        _ensure_state_defaults(app)
         return
 
     try:
@@ -1091,29 +1108,30 @@ def _startup(app: FastAPI) -> None:
         logger.warning("OCI ADK init failed (%s) — llm_runner will be None", exc)
         app.state.llm_runner = None
 
-    _ensure_state_defaults()
+    _ensure_state_defaults(app)
 
 
-def _init_object_store() -> None:
+def _init_object_store(target_app: FastAPI | None = None) -> None:
     """
     Initialise app.state.object_store from config.
     Only called during startup when tests have NOT pre-injected a store.
     Tests always pre-set app.state.object_store (even to None) so this is skipped.
     """
+    app_obj = target_app or app
     if not PERSISTENCE_ENABLED:
-        app.state.object_store = None
-        app.state.persistence_config = {}
+        app_obj.state.object_store = None
+        app_obj.state.persistence_config = {}
         return
 
     if PERSISTENCE_BACKEND == "oci_object_storage":
         try:
             from agent.object_store_oci import OciObjectStore
-            app.state.object_store = OciObjectStore(
+            app_obj.state.object_store = OciObjectStore(
                 region=PERSISTENCE_REGION,
                 namespace=PERSISTENCE_NAMESPACE,
                 bucket_name=PERSISTENCE_BUCKET,
             )
-            app.state.persistence_config = {"prefix": PERSISTENCE_PREFIX}
+            app_obj.state.persistence_config = {"prefix": PERSISTENCE_PREFIX}
             logger.info(
                 "OCI object store ready: bucket=%s namespace=%s prefix=%s",
                 PERSISTENCE_BUCKET,
@@ -1124,45 +1142,48 @@ def _init_object_store() -> None:
             logger.warning(
                 "OCI object store init failed (%s) — persistence disabled", exc
             )
-            app.state.object_store = None
-            app.state.persistence_config = {}
+            app_obj.state.object_store = None
+            app_obj.state.persistence_config = {}
     else:
         logger.warning(
             "Unknown persistence backend %r — persistence disabled", PERSISTENCE_BACKEND
         )
-        app.state.object_store = None
-        app.state.persistence_config = {}
+        app_obj.state.object_store = None
+        app_obj.state.persistence_config = {}
 
 
-def _ensure_state_defaults() -> None:
+def _ensure_state_defaults(target_app: FastAPI | None = None) -> None:
+    app_obj = target_app or app
     # If tests (or earlier startup paths) have already set the object_store,
     # respect that choice; only fill in defaults for attributes not yet set.
-    if not hasattr(app.state, "object_store"):
-        _init_object_store()
-    if getattr(app.state, "persistence_config", None) is None:
-        app.state.persistence_config = {"prefix": PERSISTENCE_PREFIX}
+    if not hasattr(app_obj.state, "object_store"):
+        _init_object_store(app_obj)
+    if getattr(app_obj.state, "persistence_config", None) is None:
+        app_obj.state.persistence_config = {"prefix": PERSISTENCE_PREFIX}
     # Writing agent text_runner — separate from the JSON llm_runner
-    if not hasattr(app.state, "text_runner"):
+    if not hasattr(app_obj.state, "text_runner"):
         if INFERENCE_ENABLED and _INFERENCE_AVAILABLE:
             try:
-                app.state.text_runner = _make_text_runner()
+                app_obj.state.text_runner = _make_text_runner()
                 logger.info("Text runner ready (writing agents)")
             except Exception as exc:
                 logger.warning("Text runner init failed (%s) — writing agents disabled", exc)
-                app.state.text_runner = None
+                app_obj.state.text_runner = None
         else:
-            app.state.text_runner = None
+            app_obj.state.text_runner = None
     # Diagram editor runner — temperature=0 for deterministic JSON editing
-    if not hasattr(app.state, "editor_runner"):
+    if not hasattr(app_obj.state, "editor_runner"):
         if INFERENCE_ENABLED and _INFERENCE_AVAILABLE:
             try:
-                app.state.editor_runner = _make_editor_runner()
+                app_obj.state.editor_runner = _make_editor_runner()
                 logger.info("Editor runner ready (diagram refine)")
             except Exception as exc:
                 logger.warning("Editor runner init failed (%s) — refine will use text_runner", exc)
-                app.state.editor_runner = None
+                app_obj.state.editor_runner = None
         else:
-            app.state.editor_runner = None
+            app_obj.state.editor_runner = None
+    if not hasattr(app_obj.state, "bom_service"):
+        app_obj.state.bom_service = get_shared_bom_service()
 
 
 # ── OIDC helpers ─────────────────────────────────────────────────────────────
@@ -1203,6 +1224,22 @@ async def require_user(request: Request) -> dict:
     user = request.session.get("user")
     if not user:
         raise HTTPException(status_code=401, detail="Authentication required. Visit /login.")
+    return user
+
+
+async def require_admin_user(user: dict = Depends(require_user)) -> dict:
+    """
+    Admin/authz helper for mutation endpoints that should follow global OIDC group policy.
+    """
+    if not AUTH_ENABLED:
+        return user
+    if not OIDC_REQUIRED_GROUP:
+        return user
+    groups = user.get("groups", [])
+    if isinstance(groups, str):
+        groups = [groups]
+    if OIDC_REQUIRED_GROUP not in groups:
+        raise HTTPException(status_code=403, detail="Admin access required for this endpoint.")
     return user
 
 
@@ -1280,9 +1317,13 @@ async def oauth2_callback(
                 status_code=403,
             )
 
+    groups = userinfo.get("groups", [])
+    if not isinstance(groups, list):
+        groups = []
     request.session["user"] = {
         "email": userinfo.get("email", ""),
         "name":  userinfo.get("name") or userinfo.get("email", "unknown"),
+        "groups": [str(g) for g in groups if str(g).strip()],
     }
     return RedirectResponse("/", status_code=302)
 
@@ -2067,6 +2108,81 @@ def get_config():
     }
 
 
+@app.get("/api/bom/config")
+async def bom_config(_user: dict = Depends(require_user)):
+    service = getattr(app.state, "bom_service", None) or get_shared_bom_service()
+    default_model_id = INFERENCE_MODEL_ID or "bom-default"
+    return service.config(default_model_id=default_model_id)
+
+
+@app.get("/api/bom/health")
+async def bom_health(_user: dict = Depends(require_user)):
+    service = getattr(app.state, "bom_service", None) or get_shared_bom_service()
+    payload = service.health()
+    payload["trace_id"] = _current_trace_id()
+    return payload
+
+
+@app.post("/api/bom/chat")
+async def bom_chat(req: BomChatRequest, _user: dict = Depends(require_user)):
+    service = getattr(app.state, "bom_service", None) or get_shared_bom_service()
+    trace_id = _current_trace_id() or new_trace_id()
+    model_id = req.model_id or INFERENCE_MODEL_ID or "bom-default"
+    started = time.perf_counter()
+    result = await anyio.to_thread.run_sync(
+        functools.partial(
+            service.chat,
+            message=req.message,
+            conversation=[{"role": t.role, "content": t.content} for t in req.conversation],
+            trace_id=trace_id,
+            model_id=model_id,
+            text_runner=getattr(app.state, "text_runner", None),
+        )
+    )
+    trace = result.get("trace", {}) if isinstance(result, dict) else {}
+    logger.info(
+        "bom_chat trace_id=%s model_id=%s type=%s repair_attempts=%s cache_ready=%s cache_source=%s latency_ms=%d",
+        trace_id,
+        trace.get("model_id", model_id),
+        result.get("type") if isinstance(result, dict) else "",
+        trace.get("repair_attempts", 0),
+        trace.get("cache_ready", False),
+        trace.get("cache_source", "none"),
+        int((time.perf_counter() - started) * 1000),
+    )
+    return result
+
+
+@app.post("/api/bom/generate-xlsx")
+async def bom_generate_xlsx(req: BomXlsxRequest, _user: dict = Depends(require_user)):
+    service = getattr(app.state, "bom_service", None) or get_shared_bom_service()
+    workbook_bytes = await anyio.to_thread.run_sync(
+        functools.partial(service.generate_xlsx, req.bom_payload)
+    )
+    filename = f"oci-bom-{time.strftime('%Y%m%d-%H%M%S')}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(workbook_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'},
+    )
+
+
+@app.post("/api/bom/refresh-data")
+async def bom_refresh_data(_user: dict = Depends(require_admin_user)):
+    service = getattr(app.state, "bom_service", None) or get_shared_bom_service()
+    started = time.perf_counter()
+    payload = await anyio.to_thread.run_sync(service.refresh_data)
+    logger.info(
+        "bom_refresh_data trace_id=%s source=%s pricing_skus=%s latency_ms=%d",
+        _current_trace_id(),
+        payload.get("source", "unknown"),
+        payload.get("pricing_sku_count", 0),
+        int((time.perf_counter() - started) * 1000),
+    )
+    payload["trace_id"] = _current_trace_id()
+    return payload
+
+
 @app.post("/refresh-data")
 def refresh_data(_user: dict = Depends(require_user)):
     """
@@ -2430,6 +2546,7 @@ async def a2a_message_send(request: Request):
                 text_runner=text_runner,
                 a2a_base_url=os.environ.get("A2A_BASE_URL", "http://localhost:8080"),
                 max_tool_iterations=int(orch_cfg.get("max_tool_iterations", 5)),
+                max_refinements=int(orch_cfg.get("max_refinements", 3)),
             )
             task["status"] = "COMPLETED"
             artifacts = [
@@ -2550,6 +2667,7 @@ async def _run_orchestrator_turn(
     Run one orchestrator turn via legacy or LangGraph-compatible adapter.
     """
     max_tool_iterations = int(orch_cfg.get("max_tool_iterations", 5))
+    max_refinements = int(orch_cfg.get("max_refinements", 3))
     a2a_base_url = os.environ.get("A2A_BASE_URL", "http://localhost:8080")
     specialist_mode = "langgraph" if bool(
         orch_cfg.get("specialists_langgraph_enabled", False)
@@ -2568,6 +2686,7 @@ async def _run_orchestrator_turn(
                 a2a_base_url=a2a_base_url,
                 max_tool_iterations=max_tool_iterations,
                 specialist_mode=specialist_mode,
+                max_refinements=max_refinements,
             )
         except Exception as exc:
             logger.warning(
@@ -2587,6 +2706,7 @@ async def _run_orchestrator_turn(
         a2a_base_url=a2a_base_url,
         max_tool_iterations=max_tool_iterations,
         specialist_mode=specialist_mode,
+        max_refinements=max_refinements,
     )
 
 

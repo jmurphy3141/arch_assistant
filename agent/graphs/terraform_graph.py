@@ -46,10 +46,22 @@ If blocked or uncertain, return:
 
 
 def _make_stage_runner(text_runner: Callable[[str, str], str]) -> Callable[[str, str, str], dict]:
+    def _invalid(stage_name: str, reason: str) -> dict:
+        return {
+            "ok": False,
+            "output": "",
+            "questions": [
+                f"{stage_name} returned invalid stage JSON: {reason}.",
+                "Return an object with exact keys and types: ok(bool), output(str), questions(list[str]).",
+            ],
+        }
+
     def _run_stage(stage_name: str, stage_input: str, skill_markdown: str) -> dict:
         prompt = _build_stage_prompt(stage_name, stage_input, skill_markdown)
         system_message = (
-            "You are an OCI Terraform specialist. Return only JSON following the required schema."
+            "You are an OCI Terraform specialist. "
+            "Operating contract: produce valid, deterministic OCI Terraform stage output with clear block questions when needed. "
+            "Return only JSON following the required schema."
         )
         raw = text_runner(prompt, system_message)
         cleaned = _strip_fences(raw)
@@ -64,10 +76,23 @@ def _make_stage_runner(text_runner: Callable[[str, str], str]) -> Callable[[str,
                     "Please provide target Terraform module boundaries and provider version constraints.",
                 ],
             }
+        if not isinstance(parsed, dict):
+            return _invalid(stage_name, "top-level payload is not a JSON object")
+        required = {"ok", "output", "questions"}
+        if not required.issubset(parsed):
+            missing = ", ".join(sorted(required - set(parsed.keys())))
+            return _invalid(stage_name, f"missing required keys: {missing}")
+        if not isinstance(parsed.get("ok"), bool):
+            return _invalid(stage_name, "`ok` must be a boolean")
+        if not isinstance(parsed.get("output"), str):
+            return _invalid(stage_name, "`output` must be a string")
+        questions = parsed.get("questions")
+        if not isinstance(questions, list) or any(not isinstance(q, str) for q in questions):
+            return _invalid(stage_name, "`questions` must be a list of strings")
         return {
-            "ok": bool(parsed.get("ok", False)),
-            "output": str(parsed.get("output", "")),
-            "questions": list(parsed.get("questions", [])),
+            "ok": parsed["ok"],
+            "output": parsed["output"],
+            "questions": [q.strip() for q in questions if q.strip()],
         }
 
     return _run_stage
@@ -175,7 +200,8 @@ Current extracted files:
 """
     repaired_raw = text_runner(
         repair_prompt,
-        "You are an OCI Terraform code validator and formatter. Return only strict JSON.",
+        "You are an OCI Terraform code validator and formatter. "
+        "Operating contract: return clean runnable files only, no prose. Return only strict JSON.",
     )
     return _parse_files_json(repaired_raw)
 

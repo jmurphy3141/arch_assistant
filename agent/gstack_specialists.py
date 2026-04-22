@@ -32,7 +32,20 @@ def _read_skill(skill_root: Path, stage: str) -> str:
     skill_path = skill_root / stage / "SKILL.md"
     if not skill_path.exists():
         raise FileNotFoundError(f"Missing skill file: {skill_path}")
-    return skill_path.read_text(encoding="utf-8")
+    return _strip_frontmatter(skill_path.read_text(encoding="utf-8"))
+
+
+def _strip_frontmatter(text: str) -> str:
+    """
+    Remove optional YAML frontmatter so only actionable skill instructions
+    are injected into stage prompts.
+    """
+    if not text.startswith("---\n"):
+        return text
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return text
+    return text[end + 5 :].lstrip()
 
 
 def run_terraform_gstack_chain(
