@@ -1,11 +1,11 @@
 # OCI Architecture Assistant
-## Master Requirements + Delivery Status (v1.7 Current Baseline)
+## Master Requirements + Delivery Status (v1.8 Current Baseline)
 
 - Date: April 22, 2026
 - Snapshot owner: Implementation working thread
 - Master requirements document: `docs/requirements-current-status.md`
 - Historical baseline spec: `docs/requirements-v1.5.0.md`
-- Source branches merged to `main`: v1.5, v1.6, and v1.7 slices merged
+- Source branches merged to `main`: v1.5, v1.6, v1.7, and v1.8 slices merged
 - Current working branch: `main`
 
 ## 1) Version Baseline
@@ -36,13 +36,13 @@
   - Fail-closed orchestrator skill coverage extended to `bom` path.
   - Dynamic BOM skill injection via `gstack_skills/oci_bom_expert`.
 
-### v1.8.0 (In Progress)
-- Scope is now active as a JEP lifecycle delta on top of delivered orchestrator hardening baseline:
+### v1.8.0 (Delivered)
+- JEP lifecycle contract and approved-lock revision flow delivered on top of orchestrator hardening baseline:
   - Embedded `jep_state` contract on JEP generate/read endpoints.
   - Approved-lock policy block and explicit revision-request endpoint.
   - JEP lifecycle metadata propagation into orchestrator tool traces.
   - JEP UI lock/revision controls and lifecycle visibility.
-- Planning artifacts:
+- Requirements artifacts:
   - `docs/requirements-v1.8.0-orchestrator-skill-hardening-and-jep-lifecycle.md`
   - `docs/v1.8-jep-skill-hardening-one-pager.md`
 
@@ -112,6 +112,6 @@
 - v1.6 checklist: `docs/v1.6-implementation-checklist.md`
 - v1.7 requirements: `docs/requirements-v1.7.0-bom-agent-integration.md`
 - v1.7 checklist: `docs/v1.7-implementation-checklist.md`
-- v1.8 planning docs (future scope):
+- v1.8 requirements docs:
   - `docs/requirements-v1.8.0-orchestrator-skill-hardening-and-jep-lifecycle.md`
   - `docs/v1.8-jep-skill-hardening-one-pager.md`
