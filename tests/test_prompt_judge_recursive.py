@@ -13,6 +13,9 @@ pytestmark = pytest.mark.prompt_judge
 
 _RUN_PROMPT_JUDGE = os.environ.get("RUN_PROMPT_JUDGE", "0") == "1"
 _STRICT = os.environ.get("PROMPT_JUDGE_STRICT", "0") == "1"
+_MIN_SCORE = float(os.environ.get("PROMPT_JUDGE_MIN_SCORE", "0.85"))
+_CRITICAL_MIN_SCORE = float(os.environ.get("PROMPT_JUDGE_CRITICAL_MIN_SCORE", "0.90"))
+_CRITICAL_PATHS = {"orchestrator", "orchestrator_pushback", "orchestrator_pushback_terraform", "terraform"}
 
 requires_prompt_judge = pytest.mark.skipif(
     not _RUN_PROMPT_JUDGE,
@@ -38,6 +41,13 @@ def test_prompt_judge_recursive_scorecards() -> None:
             "Next steps:\n- Call save_notes with the latest customer notes.\n"
             "- Call get_summary and retry this generation.\n"
         ),
+        "orchestrator_pushback_terraform": (
+            "Blocked outcome response template:\n"
+            "I need meeting notes context before generating Terraform.\n\n"
+            "Reasons:\n- Required meeting notes are missing for Terraform generation.\n\n"
+            "Next steps:\n- Call save_notes with the latest customer notes.\n"
+            "- Call get_summary and retry Terraform generation.\n"
+        ),
         "diagram": bom_parser.build_llm_prompt(
             [bom_parser.ServiceItem(id="compute_1", oci_type="compute", label="Compute", layer="compute")],
             context="financial services workload",
@@ -51,6 +61,7 @@ def test_prompt_judge_recursive_scorecards() -> None:
     dependency_map = {
         "orchestrator": ["diagram", "pov", "jep", "waf", "terraform"],
         "orchestrator_pushback": ["orchestrator"],
+        "orchestrator_pushback_terraform": ["orchestrator"],
         "jep": ["diagram"],
         "waf": ["diagram"],
         "terraform": ["orchestrator"],
@@ -123,3 +134,21 @@ def test_prompt_judge_recursive_scorecards() -> None:
 
     failing_paths = [row.path_id for row in rows if row.status != "pass"]
     assert not failing_paths, f"prompt_judge failures: {failing_paths}"
+
+    low_score_rows = [
+        f"{row.path_id}:{row.stage}={row.score:.3f}"
+        for row in rows
+        if row.score is not None and row.score < _MIN_SCORE
+    ]
+    assert not low_score_rows, (
+        f"prompt_judge rows below minimum score {_MIN_SCORE:.2f}: {low_score_rows}"
+    )
+
+    critical_low_score_rows = [
+        f"{row.path_id}:{row.stage}={row.score:.3f}"
+        for row in rows
+        if row.path_id in _CRITICAL_PATHS and row.score is not None and row.score < _CRITICAL_MIN_SCORE
+    ]
+    assert not critical_low_score_rows, (
+        f"critical prompt_judge rows below minimum score {_CRITICAL_MIN_SCORE:.2f}: {critical_low_score_rows}"
+    )
