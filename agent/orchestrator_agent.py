@@ -36,7 +36,7 @@ from agent.orchestrator_skill_engine import (
     OrchestratorSkillDecision,
     OrchestratorSkillEngine,
 )
-from agent.skill_loader import load_skill, load_skill_frontmatter, skill_name_for_tool
+from agent.skill_loader import select_skills_for_call
 
 logger = logging.getLogger(__name__)
 MAX_CRITIC_RETRIES = 1
@@ -350,7 +350,11 @@ async def _execute_tool(
                 {"skill_decision": asdict(preflight_decision)},
             )
 
-    enriched_args = _inject_skill_into_tool_args(tool_name, args)
+    enriched_args = _inject_skill_into_tool_args(
+        tool_name,
+        args,
+        user_message=user_message,
+    )
     tool_text_runner = _runner_for_tool(text_runner, enriched_args)
     result_summary, artifact_key, result_data = await _execute_tool_core(
         tool_name,
@@ -604,31 +608,46 @@ def _extract_blocking_skill_decision(result_data: dict | None) -> OrchestratorSk
         return None
 
 
-def _inject_skill_into_tool_args(tool_name: str, args: dict | None) -> dict:
+def _inject_skill_into_tool_args(
+    tool_name: str,
+    args: dict | None,
+    *,
+    user_message: str = "",
+) -> dict:
     payload = dict(args or {})
-    skill_name = skill_name_for_tool(tool_name)
-    skill_text = load_skill(skill_name) if skill_name else ""
-    skill_meta = load_skill_frontmatter(skill_name) if skill_name else {}
-    if not skill_text:
+    selected = select_skills_for_call(
+        tool_name=tool_name,
+        user_message=user_message,
+        tool_args=payload,
+        max_skills=2,
+    )
+    if not selected:
         return payload
 
-    skill_block = (
-        "\n\n[Injected Skill Guidance]\n"
-        f"Skill: {skill_name}\n"
-        f"{skill_text}\n"
-        "[End Skill Guidance]\n"
-    )
+    block_parts: list[str] = []
+    model_profile = ""
+    for spec in selected:
+        block_parts.append(
+            "\n[Injected Skill Guidance]\n"
+            f"Skill: {spec.name}\n"
+            f"{spec.body}\n"
+            "[End Skill Guidance]\n"
+        )
+        if not model_profile:
+            model_profile = str(spec.metadata.get("model_profile", "")).strip()
+    skill_block = "\n".join(block_parts)
+
     if tool_name in {"generate_pov", "generate_jep", "generate_waf"}:
         payload["feedback"] = f"{payload.get('feedback', '')}{skill_block}".strip()
-        payload["_skill_injected"] = skill_name
-        if skill_meta.get("model_profile"):
-            payload["_skill_model_profile"] = skill_meta["model_profile"]
+        payload["_skill_injected"] = [s.name for s in selected]
+        if model_profile:
+            payload["_skill_model_profile"] = model_profile
         return payload
     if tool_name == "generate_terraform":
         payload["prompt"] = f"{payload.get('prompt', '')}{skill_block}".strip()
-        payload["_skill_injected"] = skill_name
-        if skill_meta.get("model_profile"):
-            payload["_skill_model_profile"] = skill_meta["model_profile"]
+        payload["_skill_injected"] = [s.name for s in selected]
+        if model_profile:
+            payload["_skill_model_profile"] = model_profile
         return payload
     return payload
 
@@ -837,14 +856,24 @@ def _parallel_plan_for_message(user_message: str) -> list[dict]:
 # ── Tool call parser ──────────────────────────────────────────────────────────
 
 _TOOL_RE = re.compile(r'\{\s*"tool"\s*:.+?\}', re.DOTALL)
+_TOOL_USE_RE = re.compile(r"<tool_use>\s*(\{.*?\})\s*</tool_use>", re.DOTALL | re.IGNORECASE)
 
 
 def _parse_tool_call(text: str) -> dict | None:
     stripped = text.strip()
     if stripped.startswith("{") and stripped.endswith("}"):
         try:
-            parsed = json.loads(stripped)
-            if isinstance(parsed, dict) and "tool" in parsed:
+            parsed = _normalize_tool_payload(json.loads(stripped))
+            if parsed:
+                return parsed
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+
+    m_tool_use = _TOOL_USE_RE.search(text)
+    if m_tool_use:
+        try:
+            parsed = _normalize_tool_payload(json.loads(m_tool_use.group(1)))
+            if parsed:
                 return parsed
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
@@ -853,11 +882,23 @@ def _parse_tool_call(text: str) -> dict | None:
     if not m:
         return None
     try:
-        parsed = json.loads(m.group())
-        if "tool" in parsed:
+        parsed = _normalize_tool_payload(json.loads(m.group()))
+        if parsed:
             return parsed
     except (json.JSONDecodeError, ValueError):
         pass
+    return None
+
+
+def _normalize_tool_payload(parsed: object) -> dict | None:
+    if not isinstance(parsed, dict):
+        return None
+    if "tool" in parsed:
+        args = parsed.get("args", {})
+        return {"tool": str(parsed.get("tool", "")), "args": args if isinstance(args, dict) else {}}
+    if "name" in parsed:
+        args = parsed.get("args", parsed.get("arguments", {}))
+        return {"tool": str(parsed.get("name", "")), "args": args if isinstance(args, dict) else {}}
     return None
 
 

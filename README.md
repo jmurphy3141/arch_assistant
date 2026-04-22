@@ -223,10 +223,12 @@ pip3.11 install -r requirements.txt
 
 ### G-Stack Skills and Critic Layer
 
-Agent 0 now injects domain skill guidance into specialist calls before dispatch:
+Agent 0 now dynamically discovers and selects skills from `gstack_skills/`
+before specialist dispatch (top-ranked matches are injected into the call).
 
-- `generate_pov` -> `gstack_skills/oci_customer_pov_writer/SKILL.md`
-- `generate_terraform` -> `gstack_skills/terraform_for_oci/SKILL.md`
+Default domain examples:
+- `generate_pov` -> `oci_customer_pov_writer`
+- `generate_terraform` -> `terraform_for_oci` (+ other terraform-tagged skills)
 
 The orchestrator also runs a bounded critic/refine pass for specialist outputs:
 
