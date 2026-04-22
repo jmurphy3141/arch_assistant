@@ -257,7 +257,17 @@ export function App() {
   });
 
   return (
-    <div style={{ maxWidth: '960px', margin: '0 auto', padding: '1.25rem', fontFamily: "'JetBrains Mono', monospace", background: '#08090d', minHeight: '100vh', color: '#cdd2e0' }}>
+    <div
+      style={{
+        maxWidth: mode === 'chat' ? '1540px' : '960px',
+        margin: '0 auto',
+        padding: '1.25rem',
+        fontFamily: "'JetBrains Mono', monospace",
+        background: '#08090d',
+        minHeight: '100vh',
+        color: '#cdd2e0',
+      }}
+    >
       <header style={{ borderBottom: '1px solid #1c2030', paddingBottom: '0.75rem', marginBottom: '1.25rem' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
           <h1 style={{ margin: 0, fontFamily: "'Syne', sans-serif", fontSize: '1.4rem', fontWeight: 800, letterSpacing: '-0.03em', color: '#fff' }}>
@@ -290,7 +300,7 @@ export function App() {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: isCompactChat ? '1fr' : '320px minmax(0, 1fr) 300px',
+            gridTemplateColumns: isCompactChat ? '1fr' : '300px minmax(0, 1fr) 320px',
             gap: '0.9rem',
             alignItems: 'start',
           }}

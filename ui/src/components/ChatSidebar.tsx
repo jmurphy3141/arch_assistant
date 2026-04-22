@@ -56,17 +56,18 @@ export function ChatSidebar({
       aria-label="Conversation history"
       data-testid="chat-sidebar"
       style={{
-        width: compact ? '100%' : '320px',
-        minWidth: compact ? '100%' : '320px',
-        border: '1px solid #1c2030',
-        borderRadius: 8,
-        background: '#0b0d14',
+        width: compact ? '100%' : '300px',
+        minWidth: compact ? '100%' : '300px',
+        border: '1px solid #273149',
+        borderRadius: 14,
+        background: 'linear-gradient(180deg, #0d111d 0%, #0a0d16 100%)',
+        boxShadow: '0 20px 45px rgba(0,0,0,0.35)',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
       }}
     >
-      <div style={{ padding: '0.75rem', borderBottom: '1px solid #1c2030' }}>
+      <div style={{ padding: '0.85rem', borderBottom: '1px solid #273149' }}>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <input
             data-testid="chat-sidebar-search"
@@ -76,13 +77,13 @@ export function ChatSidebar({
             placeholder="Search customers..."
             style={{
               flex: 1,
-              background: '#08090d',
-              border: '1px solid #1c2030',
-              borderRadius: 4,
+              background: '#0a0d16',
+              border: '1px solid #2b3650',
+              borderRadius: 10,
               color: '#cdd2e0',
               fontFamily: "'JetBrains Mono', monospace",
-              fontSize: '0.75rem',
-              padding: '0.45rem 0.6rem',
+              fontSize: '0.78rem',
+              padding: '0.55rem 0.7rem',
             }}
           />
           <button
@@ -90,13 +91,14 @@ export function ChatSidebar({
             aria-label="Start new chat"
             onClick={onNewChat}
             style={{
-              background: '#e8571a',
+              background: 'linear-gradient(180deg, #ff6a2f 0%, #e8571a 100%)',
               color: '#fff',
               border: 'none',
-              borderRadius: 4,
+              borderRadius: 10,
               fontFamily: "'JetBrains Mono', monospace",
-              fontSize: '0.72rem',
-              padding: '0.45rem 0.6rem',
+              fontSize: '0.76rem',
+              fontWeight: 700,
+              padding: '0.55rem 0.7rem',
               cursor: 'pointer',
             }}
           >
@@ -105,7 +107,7 @@ export function ChatSidebar({
         </div>
       </div>
 
-      <div style={{ overflowY: 'auto', padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+      <div style={{ overflowY: 'auto', padding: '0.65rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         {loading && <div style={{ color: '#8b93a8', fontSize: '0.72rem' }}>Loading history...</div>}
         {!loading && filtered.length === 0 && (
           <div style={{ color: '#8b93a8', fontSize: '0.72rem' }}>No conversations found.</div>
@@ -121,31 +123,31 @@ export function ChatSidebar({
               onClick={() => onSelectCustomer(item.customer_id, item.customer_name)}
               style={{
                 textAlign: 'left',
-                border: active ? '1px solid rgba(232,87,26,0.45)' : '1px solid #1c2030',
-                background: active ? 'rgba(232,87,26,0.08)' : '#0e1016',
-                borderRadius: 6,
-                padding: '0.55rem',
+                border: active ? '1px solid rgba(232,87,26,0.45)' : '1px solid #273149',
+                background: active ? 'rgba(232,87,26,0.14)' : '#121828',
+                borderRadius: 10,
+                padding: '0.7rem',
                 cursor: 'pointer',
                 color: '#cdd2e0',
                 fontFamily: "'JetBrains Mono', monospace",
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
-                <strong style={{ fontSize: '0.73rem', color: '#fff' }}>
+                <strong style={{ fontSize: '0.76rem', color: '#fff' }}>
                   {item.customer_name || item.customer_id}
                 </strong>
-                <span style={{ fontSize: '0.65rem', color: '#6b738a' }}>
+                <span style={{ fontSize: '0.66rem', color: '#7f89a4' }}>
                   {item.last_timestamp ? new Date(item.last_timestamp).toLocaleDateString() : ''}
                 </span>
               </div>
-              <div style={{ fontSize: '0.67rem', color: '#8b93a8', marginTop: '0.2rem' }}>
+              <div style={{ fontSize: '0.69rem', color: '#9aa4bb', marginTop: '0.24rem' }}>
                 {item.customer_id}
               </div>
               <div
                 style={{
-                  fontSize: '0.67rem',
-                  color: '#aeb5c8',
-                  marginTop: '0.25rem',
+                  fontSize: '0.71rem',
+                  color: '#c0c8da',
+                  marginTop: '0.3rem',
                   whiteSpace: 'nowrap',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',

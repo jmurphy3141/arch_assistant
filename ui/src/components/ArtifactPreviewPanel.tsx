@@ -80,18 +80,19 @@ export function ArtifactPreviewPanel({ artifacts, compact = false }: ArtifactPre
     <aside
       data-testid="artifact-preview-panel"
       style={{
-        width: compact ? '100%' : '300px',
-        minWidth: compact ? '100%' : '300px',
-        border: '1px solid #1c2030',
-        borderRadius: 8,
-        background: '#0b0d14',
-        padding: '0.75rem',
+        width: compact ? '100%' : '320px',
+        minWidth: compact ? '100%' : '320px',
+        border: '1px solid #273149',
+        borderRadius: 14,
+        background: 'linear-gradient(180deg, #0d111d 0%, #0a0d16 100%)',
+        boxShadow: '0 20px 45px rgba(0,0,0,0.35)',
+        padding: '0.9rem',
         display: 'flex',
         flexDirection: 'column',
-        gap: '0.6rem',
+        gap: '0.75rem',
       }}
     >
-      <div style={{ fontSize: '0.72rem', color: '#8b93a8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+      <div style={{ fontSize: '0.74rem', color: '#9aa4bb', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
         Artifacts
       </div>
 
@@ -116,13 +117,13 @@ export function ArtifactPreviewPanel({ artifacts, compact = false }: ArtifactPre
                 }}
                 style={{
                   textAlign: 'left',
-                  border: active ? '1px solid rgba(232,87,26,0.45)' : '1px solid #1c2030',
-                  background: active ? 'rgba(232,87,26,0.08)' : '#0e1016',
-                  borderRadius: 6,
+                  border: active ? '1px solid rgba(232,87,26,0.45)' : '1px solid #273149',
+                  background: active ? 'rgba(232,87,26,0.14)' : '#121828',
+                  borderRadius: 10,
                   color: '#cdd2e0',
                   fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: '0.7rem',
-                  padding: '0.4rem 0.5rem',
+                  fontSize: '0.74rem',
+                  padding: '0.55rem 0.65rem',
                   cursor: 'pointer',
                 }}
               >
@@ -134,14 +135,14 @@ export function ArtifactPreviewPanel({ artifacts, compact = false }: ArtifactPre
       )}
 
       {selectedUrl && (
-        <div style={{ borderTop: '1px solid #1c2030', paddingTop: '0.6rem', display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
-          <div style={{ fontSize: '0.72rem', color: '#cdd2e0' }}>{selectedLabel}</div>
+        <div style={{ borderTop: '1px solid #273149', paddingTop: '0.65rem', display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+          <div style={{ fontSize: '0.76rem', color: '#e2e7f5' }}>{selectedLabel}</div>
           <a
             href={selectedUrl}
             target="_blank"
             rel="noreferrer"
             data-testid="artifact-preview-download-link"
-            style={{ fontSize: '0.72rem', color: '#e8571a', textDecoration: 'none' }}
+            style={{ fontSize: '0.75rem', color: '#ff7a43', textDecoration: 'none' }}
           >
             Open / Download
           </a>
@@ -151,11 +152,11 @@ export function ArtifactPreviewPanel({ artifacts, compact = false }: ArtifactPre
               style={{
                 margin: 0,
                 background: '#08090d',
-                border: '1px solid #1c2030',
-                borderRadius: 6,
-                padding: '0.55rem',
+                border: '1px solid #273149',
+                borderRadius: 10,
+                padding: '0.6rem',
                 color: '#aeb5c8',
-                fontSize: '0.68rem',
+                fontSize: '0.69rem',
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
                 maxHeight: '280px',
