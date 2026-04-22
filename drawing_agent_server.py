@@ -3718,6 +3718,16 @@ async def terraform_generate(req: TerraformGenerateRequest):
         used_fallback = False
         files = result_data.get("files", {})
         if not result_data.get("ok"):
+            if (req.prompt or "").strip():
+                return {
+                    "status": "need_clarification",
+                    "trace_id": _current_trace_id(),
+                    "customer_id": req.customer_id,
+                    "customer_name": req.customer_name,
+                    "summary": summary,
+                    "blocking_questions": result_data.get("blocking_questions", []),
+                    "stages": result_data.get("stages", []),
+                }
             used_fallback = True
             files = _terraform_fallback_files()
             summary = (

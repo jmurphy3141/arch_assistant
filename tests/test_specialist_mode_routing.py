@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 
 from drawing_agent_server import _run_orchestrator_turn, OrchestratorChatRequest
 from agent.persistence_objectstore import InMemoryObjectStore
 import agent.orchestrator_agent as orchestrator_agent
+from agent import skill_loader
 
 
 def _dummy_text_runner(prompt: str, system_message: str) -> str:
@@ -299,8 +301,9 @@ def test_skill_injection_applies_for_terraform_prompt():
     injected = orchestrator_agent._inject_skill_into_tool_args(
         "generate_terraform",
         {"prompt": "Build VCN"},
+        user_message="Generate terraform for OCI",
     )
-    assert injected.get("_skill_injected") == "terraform_for_oci"
+    assert "terraform_for_oci" in injected.get("_skill_injected", [])
     assert "Injected Skill Guidance" in injected.get("prompt", "")
     assert "Build VCN" in injected.get("prompt", "")
     assert injected.get("_skill_model_profile") == "terraform"
@@ -310,8 +313,9 @@ def test_skill_injection_applies_model_profile_for_pov():
     injected = orchestrator_agent._inject_skill_into_tool_args(
         "generate_pov",
         {"feedback": "tighten wording"},
+        user_message="Generate POV for exec stakeholder readout",
     )
-    assert injected.get("_skill_injected") == "oci_customer_pov_writer"
+    assert "oci_customer_pov_writer" in injected.get("_skill_injected", [])
     assert injected.get("_skill_model_profile") == "pov"
 
 
@@ -374,3 +378,47 @@ def test_orchestrator_critic_refines_once(monkeypatch):
     assert "v2" in summary
     assert key == "pov/acme/v2.md"
     assert data.get("critic_retry", {}).get("attempt") == 1
+
+
+def test_dynamic_skill_selector_prefers_tool_tag(tmp_path: Path):
+    root = tmp_path / "skills"
+    a = root / "alpha"
+    b = root / "beta"
+    a.mkdir(parents=True)
+    b.mkdir(parents=True)
+    (a / "SKILL.md").write_text(
+        "---\n"
+        "tool_tags: generate_terraform\n"
+        "model_profile: terraform\n"
+        "keywords: terraform,oci,network\n"
+        "---\n"
+        "# alpha\nterraform skill\n",
+        encoding="utf-8",
+    )
+    (b / "SKILL.md").write_text(
+        "---\n"
+        "tool_tags: generate_pov\n"
+        "model_profile: pov\n"
+        "keywords: writing,executive\n"
+        "---\n"
+        "# beta\npov skill\n",
+        encoding="utf-8",
+    )
+    selected = skill_loader.select_skills_for_call(
+        tool_name="generate_terraform",
+        user_message="Need OCI terraform networking baseline",
+        tool_args={"prompt": "build vcn"},
+        skill_root=root,
+    )
+    assert selected
+    assert selected[0].name == "alpha"
+
+
+def test_parse_tool_call_accepts_tool_use_block():
+    raw = (
+        "<tool_use>\n"
+        '{"name":"generate_terraform","args":{"prompt":"baseline vcn"}}\n'
+        "</tool_use>"
+    )
+    parsed = orchestrator_agent._parse_tool_call(raw)
+    assert parsed == {"tool": "generate_terraform", "args": {"prompt": "baseline vcn"}}
