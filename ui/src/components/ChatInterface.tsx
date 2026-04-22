@@ -248,14 +248,15 @@ function MessageBubble({
 }) {
   const isUser = msg.role === 'user';
   const bubbleStyle: React.CSSProperties = {
-    maxWidth:     '80%',
+    maxWidth:     '88%',
     alignSelf:    isUser ? 'flex-end' : 'flex-start',
-    background:   isUser ? 'rgba(232,87,26,0.12)' : '#0e1016',
-    border:       `1px solid ${isUser ? 'rgba(232,87,26,0.35)' : '#1c2030'}`,
-    borderRadius: 6,
-    padding:      '0.6rem 0.85rem',
-    fontSize:     '0.8rem',
-    color:        '#cdd2e0',
+    background:   isUser ? 'linear-gradient(180deg, rgba(232,87,26,0.18), rgba(232,87,26,0.12))' : '#101421',
+    border:       `1px solid ${isUser ? 'rgba(232,87,26,0.42)' : '#273047'}`,
+    borderRadius: 12,
+    padding:      '0.78rem 0.95rem',
+    fontSize:     '0.86rem',
+    lineHeight:   1.55,
+    color:        '#dde3f3',
     fontFamily:   "'JetBrains Mono', monospace",
     whiteSpace:   'pre-wrap',
     wordBreak:    'break-word',
@@ -263,7 +264,7 @@ function MessageBubble({
   const content = msg.content ?? '';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignSelf: isUser ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignSelf: isUser ? 'flex-end' : 'flex-start', maxWidth: '88%' }}>
       <div style={bubbleStyle}>
         {isUser ? (
           <span data-testid="chat-user-message">{content}</span>
@@ -468,65 +469,68 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
 
   const inputStyle: React.CSSProperties = {
     width:        '100%',
-    minHeight:    '3.5rem',
-    maxHeight:    '10rem',
+    minHeight:    'clamp(6.5rem, 14vh, 9rem)',
+    maxHeight:    'min(40vh, 18rem)',
     resize:       'vertical',
-    background:   '#0b0d14',
-    border:       '1px solid #1c2030',
-    borderRadius: 4,
-    color:        '#cdd2e0',
+    background:   'transparent',
+    border:       'none',
+    borderRadius: 14,
+    color:        '#e2e7f5',
     fontFamily:   "'JetBrains Mono', monospace",
-    fontSize:     '0.82rem',
-    padding:      '0.6rem 0.75rem',
+    fontSize:     '1rem',
+    lineHeight:   1.58,
+    padding:      '0.4rem 0.5rem',
     outline:      'none',
     boxSizing:    'border-box',
   };
 
   const fieldStyle: React.CSSProperties = {
-    background:   '#0b0d14',
-    border:       '1px solid #1c2030',
-    borderRadius: 4,
+    background:   '#0a0d16',
+    border:       '1px solid #2b3650',
+    borderRadius: 10,
     color:        '#cdd2e0',
     fontFamily:   "'JetBrains Mono', monospace",
-    fontSize:     '0.78rem',
-    padding:      '0.35rem 0.6rem',
+    fontSize:     '0.8rem',
+    padding:      '0.55rem 0.7rem',
     outline:      'none',
     width:        '100%',
     boxSizing:    'border-box',
   };
 
   const btnPrimary: React.CSSProperties = {
-    background:    '#e8571a',
+    background:    'linear-gradient(180deg, #ff6a2f 0%, #e8571a 100%)',
     border:        'none',
-    borderRadius:  4,
+    borderRadius:  10,
     color:         '#fff',
     fontFamily:    "'JetBrains Mono', monospace",
-    fontSize:      '0.78rem',
+    fontSize:      '0.86rem',
     fontWeight:    700,
-    padding:       '0.45rem 1rem',
+    padding:       '0.7rem 1.35rem',
     cursor:        loading ? 'not-allowed' : 'pointer',
     opacity:       loading ? 0.6 : 1,
     letterSpacing: '0.04em',
   };
 
   const btnSecondary: React.CSSProperties = {
-    background:    'transparent',
-    border:        '1px solid #1c2030',
-    borderRadius:  4,
-    color:         '#8b93a8',
+    background:    '#111626',
+    border:        '1px solid #2b344d',
+    borderRadius:  10,
+    color:         '#c9d1e4',
     fontFamily:    "'JetBrains Mono', monospace",
-    fontSize:      '0.72rem',
-    padding:       '0.3rem 0.7rem',
+    fontSize:      '0.76rem',
+    padding:       '0.5rem 0.8rem',
     cursor:        'pointer',
     letterSpacing: '0.04em',
   };
 
+  const canSend = Boolean(customerId.trim() && input.trim()) && !loading;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+    <div style={{ display: 'grid', gridTemplateRows: 'auto 1fr auto auto auto', gap: '0.75rem', minHeight: '72vh' }}>
       {/* Customer identity fields */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.6rem' }}>
         <div>
-          <label style={{ fontSize: '0.68rem', color: '#8b93a8', display: 'block', marginBottom: '0.2rem' }}>
+          <label style={{ fontSize: '0.7rem', color: '#9aa4bb', display: 'block', marginBottom: '0.28rem', letterSpacing: '0.06em' }}>
             CUSTOMER ID
           </label>
           <input
@@ -538,7 +542,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
           />
         </div>
         <div>
-          <label style={{ fontSize: '0.68rem', color: '#8b93a8', display: 'block', marginBottom: '0.2rem' }}>
+          <label style={{ fontSize: '0.7rem', color: '#9aa4bb', display: 'block', marginBottom: '0.28rem', letterSpacing: '0.06em' }}>
             CUSTOMER NAME
           </label>
           <input
@@ -553,15 +557,16 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
 
       {/* Message thread */}
       <div style={{
-        height:        '480px',
+        minHeight:     '50vh',
+        maxHeight:     '64vh',
         overflowY:     'auto',
-        background:    '#08090d',
-        border:        '1px solid #1c2030',
-        borderRadius:  6,
-        padding:       '1rem',
+        background:    'radial-gradient(circle at 50% -20%, rgba(232,87,26,0.07), transparent 55%), #08090d',
+        border:        '1px solid #273149',
+        borderRadius:  16,
+        padding:       '1.25rem',
         display:       'flex',
         flexDirection: 'column',
-        gap:           '0.75rem',
+        gap:           '0.9rem',
       }}>
         {!customerId.trim() && (
           <div style={{ color: '#454d64', fontSize: '0.78rem', textAlign: 'center', marginTop: '2rem' }}>
@@ -587,18 +592,19 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
           />
         ))}
         {streamingReply && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignSelf: 'flex-start', maxWidth: '80%' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignSelf: 'flex-start', maxWidth: '88%' }}>
             <div
               data-testid="chat-streaming-message"
               style={{
-                maxWidth: '80%',
+                maxWidth: '88%',
                 alignSelf: 'flex-start',
-                background: '#0e1016',
-                border: '1px solid #1c2030',
-                borderRadius: 6,
-                padding: '0.6rem 0.85rem',
-                fontSize: '0.8rem',
-                color: '#cdd2e0',
+                background: '#101421',
+                border: '1px solid #273047',
+                borderRadius: 12,
+                padding: '0.78rem 0.95rem',
+                fontSize: '0.86rem',
+                lineHeight: 1.55,
+                color: '#dde3f3',
                 fontFamily: "'JetBrains Mono', monospace",
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
@@ -621,7 +627,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
           padding:      '0.6rem 0.75rem',
           background:   'rgba(232,65,90,0.08)',
           border:       '1px solid rgba(232,65,90,0.4)',
-          borderRadius: 4,
+          borderRadius: 10,
           fontSize:     '0.78rem',
           color:        '#e8415a',
             fontFamily:   "'JetBrains Mono', monospace",
@@ -640,7 +646,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
           gap:          '0.4rem',
           background:   'rgba(232,87,26,0.08)',
           border:       '1px solid rgba(232,87,26,0.25)',
-          borderRadius: 4,
+          borderRadius: 10,
           padding:      '0.2rem 0.5rem',
           fontSize:     '0.7rem',
           color:        '#e8571a',
@@ -657,7 +663,20 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
       )}
 
       {/* Input bar */}
-      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+      <div
+        style={{
+          position: 'sticky',
+          bottom: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.65rem',
+          background: 'linear-gradient(180deg, rgba(8,9,13,0.82) 0%, #0f1119 24%, #0f1119 100%)',
+          border: '1px solid #282d42',
+          boxShadow: '0 20px 45px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02) inset',
+          borderRadius: 20,
+          padding: '0.95rem',
+        }}
+      >
         <input
           ref={fileInputRef}
           type="file"
@@ -665,36 +684,52 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
           style={{ display: 'none' }}
           onChange={handleFileSelect}
         />
-        <textarea
-          ref={inputRef}
-          data-testid="chat-input"
-          style={inputStyle}
-          value={input}
-          placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={loading}
-        />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-          <button data-testid="chat-send-button" style={btnPrimary} onClick={sendMessage} disabled={loading}>
-            Send
-          </button>
-          <button
-            style={btnSecondary}
-            onClick={() => { if (customerId.trim()) fileInputRef.current?.click(); }}
-            disabled={attachLoading || !customerId.trim()}
-            title="Attach a meeting notes file (.md, .txt, .docx, .pdf)"
-          >
-            {attachLoading ? '…' : '📎'}
-          </button>
-          <button style={btnSecondary} onClick={clearHistory} title="Clear conversation history">
-            Clear
+        <div
+          style={{
+            background: '#0a0d15',
+            border: '1px solid #252b3f',
+            borderRadius: 16,
+            padding: '0.35rem',
+          }}
+        >
+          <textarea
+            ref={inputRef}
+            data-testid="chat-input"
+            style={inputStyle}
+            value={input}
+            placeholder="Message OCI Agent… (Enter to send, Shift+Enter for newline)"
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={loading}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: '0.55rem', justifyContent: 'space-between', flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '0.45rem' }}>
+            <button
+              style={btnSecondary}
+              onClick={() => { if (customerId.trim()) fileInputRef.current?.click(); }}
+              disabled={attachLoading || !customerId.trim()}
+              title="Attach a meeting notes file (.md, .txt, .docx, .pdf)"
+            >
+              {attachLoading ? 'Uploading…' : 'Attach Notes'}
+            </button>
+            <button
+              style={btnSecondary}
+              onClick={clearHistory}
+              title="Clear conversation history"
+              disabled={!customerId.trim() || loading}
+            >
+              Clear
+            </button>
+          </div>
+          <button data-testid="chat-send-button" style={btnPrimary} onClick={sendMessage} disabled={!canSend}>
+            {loading ? 'Sending…' : 'Send Message'}
           </button>
         </div>
       </div>
 
       <div style={{ fontSize: '0.65rem', color: '#454d64' }}>
-        Enter = send · Shift+Enter = newline · 📎 = attach notes file · History persisted per customer.
+        Enter = send · Shift+Enter = newline · History is saved per customer.
       </div>
     </div>
   );
