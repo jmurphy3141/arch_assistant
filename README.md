@@ -268,11 +268,14 @@ model_profile: terraform
 - v1.6 implementation checklist: `docs/v1.6-implementation-checklist.md`
 - v1.7 BOM integration requirements: `docs/requirements-v1.7.0-bom-agent-integration.md`
 - v1.7 implementation checklist: `docs/v1.7-implementation-checklist.md`
-- v1.8 planning (future scope): `docs/requirements-v1.8.0-orchestrator-skill-hardening-and-jep-lifecycle.md`
+- v1.8 JEP lifecycle requirements: `docs/requirements-v1.8.0-orchestrator-skill-hardening-and-jep-lifecycle.md`
 
 Each tool call now includes trace metadata in `tool_calls[].result_data.trace`,
 including `applied_skills`, `model_profile`, `refinement_count`,
 `max_refinements`, `overall_pass`, and `warnings`.
+
+For JEP flows, trace and API payloads also include lifecycle contract metadata
+(`jep_state`, lock outcome, and required-next-step policy hints).
 
 ```mermaid
 flowchart LR
@@ -369,9 +372,23 @@ Leave them unset to run without authentication.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/jep/generate` | Generate or update a JEP from notes + diagram |
-| `GET` | `/jep/{customer_id}/latest` | Retrieve the latest JEP |
+| `POST` | `/jep/generate` | Generate or update a JEP from notes + diagram (returns embedded `jep_state`; returns policy block when approved lock is active) |
+| `GET` | `/jep/{customer_id}/latest` | Retrieve the latest JEP (includes `jep_state`) |
 | `GET` | `/jep/{customer_id}/versions` | List all JEP versions |
+| `POST` | `/jep/approve` | Save SA-approved JEP (transitions lifecycle to `approved`) |
+| `GET` | `/jep/{customer_id}/approved` | Retrieve approved JEP |
+| `POST` | `/jep/revision-request` | Request revision of an approved JEP (transitions to `revision_requested`) |
+| `POST` | `/jep/kickoff` | Generate kickoff questions from notes |
+| `POST` | `/jep/answers` | Save kickoff answers |
+| `GET` | `/jep/{customer_id}/questions` | Retrieve kickoff questions/answers |
+
+`jep_state` contract fields:
+- `state`
+- `is_locked`
+- `missing_fields`
+- `required_next_step`
+- `source_context.references`
+- `source_context.snippets`
 
 ### System
 
@@ -438,6 +455,11 @@ curl -sk -X POST $HOST/api/jep/generate \
   -H "Content-Type: application/json" \
   -d '{"customer_id": "acme", "customer_name": "ACME Corp"}' | python3 -m json.tool
 
+# Request revision after approved-lock
+curl -sk -X POST $HOST/api/jep/revision-request \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id": "acme", "reason": "Expand milestones and ownership details"}' | python3 -m json.tool
+
 # Download diagram
 curl -sk -o diagram.drawio \
   "$HOST/api/download/diagram.drawio?client_id=test1&diagram_name=test_diagram"
@@ -470,6 +492,8 @@ agent_assistante/
 └── jep/{customer_id}/
     ├── v1.md  v2.md  ...
     ├── LATEST.md
+    ├── lifecycle.json
+    ├── poc_questions.json
     └── MANIFEST.json
 ```
 
