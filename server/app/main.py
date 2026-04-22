@@ -14,6 +14,7 @@ Run (from repo root):
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import functools
 import hashlib
 import json
@@ -96,7 +97,45 @@ IDEMPOTENCY_CACHE: Dict[tuple, dict] = {}
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-app = FastAPI(title="OCI Drawing Agent", version=AGENT_VERSION)
+
+
+def _startup_init() -> None:
+    global _oci_agent
+    if getattr(app.state, "llm_runner", None) is not None:
+        _ensure_state_defaults()
+        return
+    if not _OCI_AVAILABLE:
+        logger.warning("oci[adk] not importable — llm_runner will be None")
+        app.state.llm_runner = None
+        _ensure_state_defaults()
+        return
+    try:
+        client = AgentClient(auth_type="instance_principal", region=REGION)
+        _oci_agent = Agent(
+            client=client,
+            agent_endpoint_id=AGENT_ENDPOINT_ID,
+            instructions=(
+                "You are an OCI solutions architect and layout compiler. "
+                "Output ONLY valid JSON — no markdown, no explanation."
+            ),
+            tools=[],
+        )
+        _oci_agent.setup()
+        app.state.llm_runner = _make_oci_runner(_oci_agent)
+        logger.info("Drawing Agent ready (OCI Instance Principal)")
+    except Exception as exc:
+        logger.warning("OCI init failed (%s) — llm_runner=None", exc)
+        app.state.llm_runner = None
+    _ensure_state_defaults()
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    _startup_init()
+    yield
+
+
+app = FastAPI(title="OCI Drawing Agent", version=AGENT_VERSION, lifespan=_lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -539,37 +578,6 @@ async def run_pipeline(
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
-
-
-@app.on_event("startup")
-def startup() -> None:
-    global _oci_agent
-    if getattr(app.state, "llm_runner", None) is not None:
-        _ensure_state_defaults()
-        return
-    if not _OCI_AVAILABLE:
-        logger.warning("oci[adk] not importable — llm_runner will be None")
-        app.state.llm_runner = None
-        _ensure_state_defaults()
-        return
-    try:
-        client = AgentClient(auth_type="instance_principal", region=REGION)
-        _oci_agent = Agent(
-            client=client,
-            agent_endpoint_id=AGENT_ENDPOINT_ID,
-            instructions=(
-                "You are an OCI solutions architect and layout compiler. "
-                "Output ONLY valid JSON — no markdown, no explanation."
-            ),
-            tools=[],
-        )
-        _oci_agent.setup()
-        app.state.llm_runner = _make_oci_runner(_oci_agent)
-        logger.info("Drawing Agent ready (OCI Instance Principal)")
-    except Exception as exc:
-        logger.warning("OCI init failed (%s) — llm_runner=None", exc)
-        app.state.llm_runner = None
-    _ensure_state_defaults()
 
 
 def _ensure_state_defaults() -> None:

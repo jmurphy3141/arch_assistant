@@ -61,6 +61,7 @@ WAF_SYSTEM_MESSAGE = (
     "Reference OCI-specific services and best practices. "
     "For each pillar write 2–4 sentences: current state assessment + top recommendation. "
     "End with a one-line summary rating: ✅ Well-Architected / ⚠️ Needs Improvement / ❌ Critical Gaps. "
+    "Operating contract: prioritize material risk and actionable remediation over generic commentary. "
     "Output ONLY the review in Markdown. No meta-commentary."
 )
 
@@ -70,6 +71,7 @@ WAF_ORCHESTRATION_SYSTEM_MESSAGE = (
     "of OCI Well-Architected Framework topology requirements sourced from the official OCI WAF document. "
     "Identify gaps, write a concise review (failing pillars only), and emit "
     "machine-readable draw_instructions so the diagram can be improved automatically. "
+    "Operating contract: align findings to provided checklist evidence and avoid unsupported recommendations. "
     "Output ONLY the WAF review in Markdown, followed by the JSON block. No meta-commentary."
 )
 
@@ -350,6 +352,46 @@ def _parse_refinement_suggestions(content: str) -> list[dict]:
         return []
 
 
+def _fallback_suggestions_from_checklist(annotated_checklist: str) -> list[dict]:
+    """
+    Build deterministic draw_instructions directly from pre-evaluated checklist
+    lines when LLM suggestions are missing or unparsable.
+    """
+    if not annotated_checklist.strip():
+        return []
+
+    pillar = "General"
+    out: list[dict] = []
+    priority_map = {
+        "SECURITY AND COMPLIANCE": "high",
+        "RELIABILITY AND RESILIENCE": "high",
+        "OPERATIONAL EFFICIENCY": "medium",
+        "PERFORMANCE AND COST OPTIMIZATION": "medium",
+        "DISTRIBUTED CLOUD": "low",
+    }
+
+    for raw in annotated_checklist.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line and line[0].isdigit() and ". " in line:
+            pillar = line.split(". ", 1)[1].strip()
+            continue
+        if "[❌ FAIL]" not in line or "draw_instruction required:" not in line:
+            continue
+        instruction = line.split("draw_instruction required:", 1)[1].strip()
+        if not instruction:
+            continue
+        out.append(
+            {
+                "pillar": pillar.title(),
+                "draw_instruction": instruction,
+                "priority": priority_map.get(pillar, "medium"),
+            }
+        )
+    return out
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 def generate_waf(
@@ -386,6 +428,7 @@ def generate_waf(
     context_summary = build_context_summary(context)
 
     # ── Build prompt ───────────────────────────────────────────────────────────
+    annotated_checklist = ""
     if diagram_context is not None:
         # Orchestration mode: topology gap analysis.
         # The checklist is pre-evaluated in Python so the LLM receives facts
@@ -393,6 +436,7 @@ def generate_waf(
         # This eliminates the hallucination where the LLM suggests nodes that
         # were already added by a prior orchestration cycle.
         annotated = _annotate_checklist(diagram_context)
+        annotated_checklist = annotated
 
         prompt = _ORCHESTRATION_PROMPT_TEMPLATE.format(
             annotated_checklist = annotated,
@@ -427,6 +471,13 @@ def generate_waf(
     # ── Parse rating and suggestions ───────────────────────────────────────────
     overall_rating         = _extract_overall_rating(content)
     refinement_suggestions = _parse_refinement_suggestions(content)
+    if mode_label == "orchestration" and annotated_checklist:
+        fallback = _fallback_suggestions_from_checklist(annotated_checklist)
+        if fallback and not refinement_suggestions:
+            logger.warning(
+                "WAF: refinement suggestions missing or invalid in LLM output; using deterministic checklist fallback."
+            )
+            refinement_suggestions = fallback
 
     # ── Persist doc ────────────────────────────────────────────────────────────
     result = save_doc(store, "waf", customer_id, content, {
