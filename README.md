@@ -1,24 +1,26 @@
-# OCI Architecture Assistant (v1.5.0)
+# OCI Architecture Assistant (v1.7.x)
 
-A full Oracle SA engagement platform built as an OCI agent fleet. The new
-**SA Assistant chat tab** (Agent 0) provides a conversational interface that
-orchestrates all sub-agents — notes intake, POV, diagram, WAF review, JEP, and
-Terraform — in a single conversation thread per customer. Implements Oracle
-Agent Spec v26.1.0 (A2A v1.0 JSON-RPC protocol).
+A full Oracle SA engagement platform built as an OCI agent fleet.
+**SA Assistant chat** (Agent 0) orchestrates notes intake, POV, diagram, WAF,
+JEP, Terraform, and BOM advisory/generation in a single conversation thread per
+customer. The current delivered baseline includes v1.6 dynamic skilling +
+bounded critic/refine and v1.7 BOM integration. Implements Oracle Agent Spec
+v26.1.0 (A2A v1.0 JSON-RPC protocol).
 
 ```
 SA chat message
   → Agent 0 orchestrator (ReAct loop)
       ├── save_notes       → OCI Object Storage
+      ├── generate_bom     → BOM advisory + XLSX export
       ├── generate_pov     → POV v1.md
       ├── generate_diagram → .drawio file
       ├── generate_waf     → WAF review
       ├── generate_jep     → JEP v1.md
       └── generate_terraform → .tf files
 
-BOM.xlsx  →  drag-and-drop to OCI bucket  →  A2A generate  →  .drawio download
-Notes     →  /notes/upload                →  /pov/generate  →  Markdown POV
-                                          →  /jep/generate  →  Markdown JEP
+Chat      →  /api/chat + /api/chat/stream  →  tool traces + artifacts
+BOM tab   →  /api/bom/chat                 →  editable BOM + JSON/XLSX
+Diagram   →  /upload-bom or /api/a2a/task →  .drawio download
 ```
 
 ---
@@ -33,10 +35,10 @@ https://<instance-ip>
 ```
 
 The page lets you:
-- Drag-and-drop a BOM.xlsx (uploads to OCI bucket, then generates the diagram)
-- Attach a requirements file or paste architecture context
-- Fill in a 10-question architecture questionnaire (blank fields are inferred by the LLM)
-- Download the generated `.drawio` file
+- Run SA chat with persisted customer history and artifact preview
+- Use the BOM tab for advisory flow, editable line items, JSON export, and XLSX generation
+- Drag-and-drop BOM.xlsx to generate diagrams
+- Generate POV, JEP, WAF, and Terraform outputs
 
 ---
 
@@ -261,8 +263,12 @@ model_profile: terraform
 
 ### Requirements and Checklists
 
+- Master requirements + current delivery status: `docs/requirements-current-status.md`
+- Historical baseline requirements (v1.5): `docs/requirements-v1.5.0.md`
+- v1.6 implementation checklist: `docs/v1.6-implementation-checklist.md`
 - v1.7 BOM integration requirements: `docs/requirements-v1.7.0-bom-agent-integration.md`
 - v1.7 implementation checklist: `docs/v1.7-implementation-checklist.md`
+- v1.8 planning (future scope): `docs/requirements-v1.8.0-orchestrator-skill-hardening-and-jep-lifecycle.md`
 
 Each tool call now includes trace metadata in `tool_calls[].result_data.trace`,
 including `applied_skills`, `model_profile`, `refinement_count`,
@@ -317,8 +323,20 @@ Leave them unset to run without authentication.
 | `GET` | `/tasks/{task_id}` | Poll A2A task status |
 | `POST` | `/tasks/{task_id}:cancel` | Cancel a pending task |
 | `POST` | `/api/chat` | Convenience REST: `{customer_id, customer_name, message}` |
+| `POST` | `/api/chat/stream` | Streaming chat response (`sse` or `chunked`) |
 | `GET` | `/api/chat/{customer_id}/history` | Return conversation history |
+| `GET` | `/api/chat/history` | Aggregated cross-customer chat index for sidebar/search |
 | `DELETE` | `/api/chat/{customer_id}/history` | Clear conversation history |
+
+### BOM Advisor
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/bom/config` | BOM service readiness/config metadata |
+| `GET` | `/api/bom/health` | BOM service health |
+| `POST` | `/api/bom/chat` | BOM advisory/clarify/final chat flow |
+| `POST` | `/api/bom/generate-xlsx` | Generate BOM workbook from final line items |
+| `POST` | `/api/bom/refresh-data` | Manual refresh of BOM source caches |
 
 ### Diagram — Agent 3
 
@@ -329,7 +347,7 @@ Leave them unset to run without authentication.
 | `POST` | `/clarify` | Submit answers to clarification questions |
 | `POST` | `/generate` | Generate from a JSON resource list |
 | `POST` | `/upload-to-bucket` | Upload a file to OCI Object Storage |
-| `GET` | `/download/{file}` | Download generated `.drawio` file |
+| `GET` | `/download/{filename}` | Download generated `.drawio` file |
 | `POST` | `/api/a2a/task` | Legacy A2A task endpoint (schema_version 0.1) |
 
 ### Notes
@@ -504,8 +522,10 @@ drawing-agent/
 │
 ├── agent/
 │   ├── orchestrator_agent.py   # Agent 0 — ReAct loop, tool dispatch, conversation history
+│   ├── bom_service.py          # Shared v1.7 BOM advisory service + cache/repair logic
 │   ├── skill_loader.py         # Lightweight gstack skill loader + frontmatter parser
 │   ├── critic_agent.py         # Critic pass/fail evaluator used for refine retries
+│   ├── orchestrator_skill_engine.py  # Fail-closed skill governance runtime
 │   ├── notifications.py        # Event notification stub (Telegram-ready)
 │   ├── bom_parser.py           # BOM → ServiceItem list + LLM prompt
 │   ├── layout_engine.py        # Layout spec → x,y positions
@@ -523,10 +543,18 @@ drawing-agent/
 │   └── context_store.py        # Shared engagement state across agents
 │
 ├── gstack_skills/
+│   ├── oci_bom_expert/
+│   │   └── SKILL.md            # BOM advisory skill
+│   ├── diagram_for_oci/
+│   │   └── SKILL.md            # Diagram specialist guidance
 │   ├── terraform_for_oci/
 │   │   └── SKILL.md            # Terraform domain skill (model_profile: terraform)
-│   └── oci_customer_pov_writer/
-│       └── SKILL.md            # POV writing skill (model_profile: pov)
+│   ├── oci_customer_pov_writer/
+│   │   └── SKILL.md            # POV writing skill (model_profile: pov)
+│   ├── oci_jep_writer/
+│   │   └── SKILL.md            # JEP writing skill (model_profile: jep)
+│   └── oci_waf_reviewer/
+│       └── SKILL.md            # WAF reviewer skill
 │
 ├── ui/                         # React + Vite front-end (dark OCI theme)
 │   ├── src/
@@ -534,6 +562,7 @@ drawing-agent/
 │   │   ├── api/client.ts       # All API calls incl. apiChat, apiGetChatHistory
 │   │   └── components/
 │   │       ├── ChatInterface.tsx   # SA Assistant chat UI (Agent 0)
+│   │       ├── BomAdvisor.tsx      # BOM advisory tab UI (v1.7)
 │   │       ├── UploadBom.tsx
 │   │       ├── PovForm.tsx
 │   │       ├── JepForm.tsx
@@ -570,9 +599,8 @@ All agents run in the same process. Agent 0 is the conversational entry point.
 
 | # | Agent | Status | Endpoint |
 |---|-------|--------|----------|
-| **0** | **SA Orchestrator (Agent 0)** | **live** | `/message:send`, `/api/chat` |
-| 1 | Requirements gathering | planned | — |
-| 2 | BOM sizing + pricing | planned | — |
+| **0** | **SA Orchestrator (Agent 0)** | **live** | `/message:send`, `/api/chat`, `/api/chat/stream` |
+| **2** | **BOM sizing + pricing advisory** | **live** | `/api/bom/chat`, `/api/bom/generate-xlsx` |
 | **3** | **Architecture diagram** | **live** | `/upload-bom`, `/generate`, `/api/a2a/task` |
 | **4** | **POV document** | **live** | `/pov/generate` |
 | **5** | **JEP document** | **live** | `/jep/generate` |
