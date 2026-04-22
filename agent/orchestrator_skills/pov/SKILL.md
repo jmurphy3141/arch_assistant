@@ -1,28 +1,31 @@
 # Orchestrator Skill: POV
 
 ## Intent
-Ensure POV generation is grounded in saved notes and produces a persisted output artifact.
+Produce customer-facing POV narratives grounded in current notes/context, with verifiable persisted output.
 
 ## Preconditions
 - Customer context exists.
-- Engagement notes are available in summary/context.
+- Notes context is present and meaningful.
 
 ## Input Validation Rules
-- Block if notes context is missing or explicitly empty.
-- Allow optional feedback but do not require it.
+- Block when notes/context is missing.
+- Allow optional revision feedback; do not require it.
+- Block broad POV generation if user asked for a different single deliverable.
 
 ## Expected Output Contract
-- Result summary indicates POV was saved.
-- Artifact key exists for the saved POV version.
+- Result summary indicates POV saved/updated.
+- Persisted artifact key exists for latest POV output.
 
 ## Pushback Rules
-- Block and ask for notes when missing.
-- Block completion if no persisted POV artifact is returned.
+- Request notes when missing.
+- If no persisted output is verifiable, block completion.
 
 ## Escalation Questions Template
-- Please provide or save the latest meeting notes.
-- Are there explicit corrections or goals for this POV version?
+- Which business outcomes should this POV emphasize?
+- Any executive tone, scope, or metric constraints?
+- Is this a fresh draft or a revision of existing POV?
 
 ## Retry Guidance
-- Run `save_notes`, then `get_summary`, then retry `generate_pov`.
-- Include any correction feedback if revising an existing POV.
+- Save notes, confirm context, then retry `generate_pov`.
+- Include revision feedback for iterative improvements.
+- Re-run with clarified outcome metrics when critique fails quality bar.

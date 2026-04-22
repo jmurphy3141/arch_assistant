@@ -72,6 +72,7 @@ _KICKOFF_SYSTEM = (
     "You are an Oracle Cloud solutions architect preparing a POC kickoff. "
     "Your job is to scan meeting notes for POC signals and identify what information "
     "is already known and what still needs to be confirmed with the customer. "
+    "Operating contract: extract known facts first, then ask only missing high-value execution questions. "
     "Respond ONLY with a valid JSON object — no prose, no markdown fences."
 )
 
@@ -150,6 +151,7 @@ JEP_SYSTEM_MESSAGE = (
     "Be specific about hardware specs, software versions, and measurable success criteria. "
     "Use Markdown tables for hardware specs, software specs, participants, and BOM. "
     "Fill in values from the meeting notes. Use [TBD] where information is not available. "
+    "Operating contract: make scope, milestones, ownership, risks, and success criteria explicit and actionable. "
     "Output ONLY the document content in Markdown format. No meta-commentary, no preamble."
 )
 

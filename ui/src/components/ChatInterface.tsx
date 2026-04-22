@@ -92,6 +92,15 @@ function mdToHtml(md: string): string {
 
 function ToolChip({ call }: { call: ChatToolCall }) {
   const [open, setOpen] = useState(false);
+  const trace = (call.result_data?.trace ?? {}) as Record<string, unknown>;
+  const traceSummary = {
+    applied_skills: Array.isArray(trace.applied_skills) ? trace.applied_skills : [],
+    model_profile: typeof trace.model_profile === 'string' ? trace.model_profile : '',
+    refinement_count: typeof trace.refinement_count === 'number' ? trace.refinement_count : 0,
+    max_refinements: typeof trace.max_refinements === 'number' ? trace.max_refinements : 0,
+    overall_pass: typeof trace.overall_pass === 'boolean' ? trace.overall_pass : true,
+    warnings: Array.isArray(trace.warnings) ? trace.warnings : [],
+  };
   const chipStyle: React.CSSProperties = {
     display:      'inline-flex',
     alignItems:   'center',
@@ -109,7 +118,7 @@ function ToolChip({ call }: { call: ChatToolCall }) {
   };
   return (
     <div>
-      <span style={chipStyle} onClick={() => setOpen(v => !v)}>
+      <span data-testid={`tool-chip-${call.tool}`} style={chipStyle} onClick={() => setOpen(v => !v)}>
         ⚙ {call.tool} {open ? '▲' : '▼'}
       </span>
       {open && (
@@ -125,10 +134,27 @@ function ToolChip({ call }: { call: ChatToolCall }) {
           wordBreak:    'break-all',
         }}>
           {`args: ${JSON.stringify(call.args, null, 2)}\nresult: ${call.result_summary}`}
+          {(traceSummary.applied_skills.length > 0 || traceSummary.max_refinements > 0) && (
+            <span
+              data-testid="tool-trace-summary"
+              style={{ display: 'block', marginTop: '0.45rem', color: '#aeb5c8' }}
+            >
+              {`\ntrace: ${JSON.stringify(traceSummary, null, 2)}`}
+            </span>
+          )}
         </pre>
       )}
     </div>
   );
+}
+
+function traceWarningsForCall(call: ChatToolCall): string[] {
+  const trace = (call.result_data?.trace ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(trace.warnings)) return [];
+  return trace.warnings
+    .filter((warning): warning is string => typeof warning === 'string')
+    .map(warning => warning.trim())
+    .filter(Boolean);
 }
 
 function ArtifactLink({ toolName, artifactKey, customerId }: {
@@ -247,6 +273,9 @@ function MessageBubble({
   customerId: string;
 }) {
   const isUser = msg.role === 'user';
+  const traceWarnings = !isUser && Array.isArray(toolCalls)
+    ? Array.from(new Set(toolCalls.flatMap(traceWarningsForCall)))
+    : [];
   const bubbleStyle: React.CSSProperties = {
     maxWidth:     '88%',
     alignSelf:    isUser ? 'flex-end' : 'flex-start',
@@ -272,6 +301,40 @@ function MessageBubble({
           <span data-testid="chat-assistant-message" dangerouslySetInnerHTML={{ __html: mdToHtml(content) }} />
         )}
       </div>
+      {traceWarnings.length > 0 && (
+        <div
+          data-testid="trace-warning-badges"
+          style={{
+            marginTop: '0.25rem',
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '0.28rem',
+            alignSelf: 'flex-start',
+          }}
+        >
+          {traceWarnings.map((warning, idx) => (
+            <span
+              key={`${warning}-${idx}`}
+              data-testid="trace-warning-badge"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.2rem',
+                fontSize: '0.66rem',
+                color: '#f0b35a',
+                background: 'rgba(240,179,90,0.12)',
+                border: '1px solid rgba(240,179,90,0.35)',
+                borderRadius: 999,
+                padding: '0.15rem 0.45rem',
+                fontFamily: "'JetBrains Mono', monospace",
+              }}
+              title={warning}
+            >
+              ⚠ trace warning: {warning}
+            </span>
+          ))}
+        </div>
+      )}
       {toolCalls && toolCalls.length > 0 && (
         <div style={{ paddingLeft: '0.25rem' }}>
           {toolCalls.map((tc, i) => <ToolChip key={i} call={tc} />)}

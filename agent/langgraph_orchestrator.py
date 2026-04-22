@@ -49,6 +49,7 @@ async def _run_turn_via_langgraph(
     a2a_base_url: str,
     max_tool_iterations: int,
     specialist_mode: str,
+    max_refinements: int,
 ) -> dict:
     history = document_store.load_conversation_history(store, customer_id)
     summary = document_store.load_conversation_summary(store, customer_id)
@@ -133,6 +134,7 @@ async def _run_turn_via_langgraph(
             a2a_base_url=a2a_base_url,
             specialist_mode=specialist_mode,
             user_message=str(state.get("user_message", "")),
+            max_refinements=max_refinements,
         )
 
         tool_calls = list(state.get("tool_calls", []))
@@ -216,6 +218,7 @@ async def run_turn(
     a2a_base_url: str,
     max_tool_iterations: int,
     specialist_mode: str = "langgraph",
+    max_refinements: int = 3,
 ) -> dict:
     """
     LangGraph-compatible orchestrator entry point.
@@ -230,6 +233,7 @@ async def run_turn(
             a2a_base_url=a2a_base_url,
             max_tool_iterations=max_tool_iterations,
             specialist_mode=specialist_mode,
+            max_refinements=max_refinements,
         )
 
     return await _run_turn_via_langgraph(
@@ -241,4 +245,5 @@ async def run_turn(
         a2a_base_url=a2a_base_url,
         max_tool_iterations=max_tool_iterations,
         specialist_mode=specialist_mode,
+        max_refinements=max_refinements,
     )

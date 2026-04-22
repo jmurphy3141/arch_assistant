@@ -1,28 +1,31 @@
 # Orchestrator Skill: WAF
 
 ## Intent
-Enforce that WAF review is run only when architecture context exists and output is persisted.
+Run OCI Well-Architected reviews only when architecture context exists, and return persisted, actionable findings.
 
 ## Preconditions
-- A diagram context exists for the customer.
+- Diagram/architecture context exists.
 - Customer context is identified.
 
 ## Input Validation Rules
-- Block if no diagram context is present.
-- No additional required args for baseline WAF execution.
+- Block when no architecture/diagram context exists.
+- Allow focused review feedback for iterative reassessment.
 
 ## Expected Output Contract
-- Result summary indicates WAF review was saved.
-- Artifact key exists for the WAF result.
+- Result summary indicates WAF review saved/updated.
+- Persisted artifact key exists.
+- Findings should be actionable and OCI-specific.
 
 ## Pushback Rules
-- Block and request diagram generation when diagram context is absent.
-- Block completion if output is not persisted.
+- If architecture prerequisite is missing, require diagram generation first.
+- If persistence/output contract fails, block completion.
 
 ## Escalation Questions Template
-- Do you want to generate or refresh the architecture diagram first?
-- Should WAF review focus on a specific environment or workload slice?
+- Should review prioritize security, reliability, or cost first?
+- Is there a specific environment slice to assess?
+- Do you want topology-only or full narrative WAF review?
 
 ## Retry Guidance
-- Run `generate_diagram` first when needed.
-- Retry `generate_waf` after diagram context is available.
+- Generate/refresh diagram first when missing.
+- Retry `generate_waf` after prerequisite context is available.
+- Re-run after applying recommended topology remediations.

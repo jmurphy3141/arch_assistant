@@ -1,11 +1,38 @@
-# review
+---
+name: Terraform Review Gate
+description: Technical review skill for Terraform correctness, OCI alignment, and deployment readiness.
+version: "1.0"
+model_profile: terraform
+tool_tags: [generate_terraform]
+tags: [review, terraform, oci, correctness]
+keywords: [validation, syntax, provider, resources, readiness]
+---
 
-Vendored placeholder skill file for v1.5 foundation.
+# Terraform Review Gate Domain Expertise
 
-Intended upstream source:
-`https://raw.githubusercontent.com/garrytan/gstack/main/review/SKILL.md`
+## When to Apply
+Use after Terraform generation to review correctness, OCI alignment, and structural quality before QA/finalization.
 
-Behavior contract:
-- Review Terraform plan/code for correctness and OCI alignment.
-- Report blocking findings as structured questions.
-- Produce revised output for downstream governance checks.
+## Inputs Required
+- Generated Terraform artifacts
+- Requested architecture constraints
+- Provider and environment requirements
+
+## Execution Pattern
+1. Validate OCI provider/resource correctness.
+2. Detect structural issues and non-runnable content.
+3. Flag drift from requested architecture intent.
+4. Return targeted remediation actions.
+
+## Quality Bar
+- Terraform output is syntactically clean and OCI-valid.
+- Architecture intent is preserved in resource definitions.
+- Blocking issues are explicit and reproducible.
+
+## Failure Questions
+- Which resource definitions conflict with intended architecture?
+- Are provider versions and required arguments correct?
+- Which files need correction before QA approval?
+
+## Output Contract
+- Structured review findings with blocking issues and concrete fixes.

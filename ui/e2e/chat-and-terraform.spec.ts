@@ -96,7 +96,24 @@ test.describe('UI Smoke Flows', () => {
           customer_id: 'acme',
           event_type: 'completion',
           reply: 'Terraform artifacts are ready.',
-          tool_calls: [],
+          tool_calls: [
+            {
+              tool: 'generate_terraform',
+              args: { prompt: 'Generate terraform' },
+              result_summary: 'Terraform artifacts are ready.',
+              result_data: {
+                trace: {
+                  path_id: 'terraform',
+                  applied_skills: ['terraform_for_oci'],
+                  model_profile: 'terraform',
+                  refinement_count: 2,
+                  max_refinements: 3,
+                  overall_pass: true,
+                  warnings: ['max_refinements_reached_best_effort'],
+                },
+              },
+            },
+          ],
           artifacts: {},
           artifact_manifest: {
             downloads: [
@@ -144,6 +161,10 @@ test.describe('UI Smoke Flows', () => {
     await chatResp;
 
     await expect(page.getByTestId('chat-assistant-message').last()).toContainText('Terraform artifacts are ready.');
+    await page.getByTestId('tool-chip-generate_terraform').click();
+    await expect(page.getByTestId('tool-trace-summary')).toContainText('refinement_count');
+    await expect(page.getByTestId('tool-trace-summary')).toContainText('max_refinements');
+    await expect(page.getByTestId('trace-warning-badge')).toContainText('max_refinements_reached_best_effort');
     await expect(page.getByTestId('artifact-link-terraform-main.tf')).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId('artifact-link-diagram-artifact')).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId('artifact-preview-panel')).toBeVisible({ timeout: 10000 });

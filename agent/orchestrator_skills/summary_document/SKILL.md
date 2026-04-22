@@ -1,28 +1,30 @@
 # Orchestrator Skill: Summary and Document Retrieval
 
 ## Intent
-Validate summary/document retrieval requests and prevent unsupported or missing-document completions.
+Ensure summary/document retrieval is valid, type-safe, and not misrepresented as successful generation when artifacts are missing.
 
 ## Preconditions
 - Customer context is identified.
-- For document retrieval, requested type is supported.
+- For document retrieval, requested document type is supported.
 
 ## Input Validation Rules
 - Allow `get_summary`.
 - For `get_document`, allow only `pov`, `jep`, or `waf`.
+- Block unsupported document types.
 
 ## Expected Output Contract
-- Summary/doc retrieval returns coherent content or explicit non-availability.
-- Non-availability must not be treated as completed document delivery.
+- Summary responses are coherent and context-relevant.
+- Document retrieval returns actual content preview or clear non-availability status.
 
 ## Pushback Rules
-- Block unsupported document types.
-- Block completion when requested document does not exist yet.
+- Block unsupported doc type requests.
+- Block completion language that implies document exists when it does not.
 
 ## Escalation Questions Template
-- Which document type do you want: `pov`, `jep`, or `waf`?
-- If missing, should I generate that document now?
+- Which document do you want: `pov`, `jep`, or `waf`?
+- If missing, should I generate it now?
+- Do you want latest summary before retrieving artifacts?
 
 ## Retry Guidance
-- Retry `get_document` with a supported type.
-- Generate missing document first, then retrieve it.
+- Retry `get_document` with supported type.
+- Generate missing artifact first, then retry retrieval.

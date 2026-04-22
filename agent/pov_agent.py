@@ -57,6 +57,9 @@ POV_SYSTEM_MESSAGE = (
     "a customer FAQ section, and internal Oracle strategy questions. "
     "Write in a confident, professional tone. Be specific about OCI services and capabilities. "
     "Reference the customer's industry and concrete challenges found in the notes. "
+    "Operating contract: (1) prioritize customer outcomes and OCI mapping, "
+    "(2) include measurable success indicators, "
+    "(3) preserve factual consistency with notes and context. "
     "Output ONLY the document content in Markdown format. No meta-commentary, no preamble."
 )
 

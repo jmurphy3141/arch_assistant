@@ -1,28 +1,33 @@
 # Orchestrator Skill: Terraform
 
 ## Intent
-Ensure Terraform generation runs with clear constraints and that blocked specialist outcomes produce actionable pushback.
+Generate OCI Terraform only when architecture context and scope constraints are sufficient, returning either valid artifacts or explicit blocking questions.
 
 ## Preconditions
-- Customer context is identified.
-- Request includes module scope/constraints or explicit goals.
+- Architecture definition/diagram context exists.
+- Request includes module/service scope and constraints.
 
 ## Input Validation Rules
-- Block when Terraform request is underspecified.
-- Require enough detail to determine OCI services, boundaries, or constraints.
+- Block when Terraform goals are underspecified.
+- Block when architecture prerequisite is missing.
+- Require explicit constraints for environments/security where applicable.
 
 ## Expected Output Contract
-- Tool result indicates completion or clear clarification questions.
-- On completion, output is coherent and stage outcome is not failed.
+- Result indicates one of:
+  - successful Terraform generation with artifact signals, or
+  - explicit clarification/blocking questions.
+- Do not allow silent partial completion.
 
 ## Pushback Rules
-- Block and ask for missing scope details when input is vague.
-- Block completion when stage result signals failure/error.
+- If prerequisites missing, request architecture/diagram first.
+- If output indicates stage failure/error, block completion and request corrections.
 
 ## Escalation Questions Template
-- Which OCI services/modules should be generated?
+- Which OCI modules/services are mandatory?
 - What environment/security constraints must be enforced?
+- Any naming/tagging/state backend standards to follow?
 
 ## Retry Guidance
-- Provide explicit module/service requirements and constraints.
-- Retry `generate_terraform` with clarified scope.
+- Provide explicit module boundaries and constraints.
+- Retry `generate_terraform` after prerequisites are satisfied.
+- Apply remediation from critique/validation failures before final acceptance.
