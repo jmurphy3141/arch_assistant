@@ -18,6 +18,9 @@ Coverage target for v1 includes all six core paths:
 - Terraform
 - WAF
 
+UX scope note:
+- Streaming chat UX behavior (typing/token partial render) is now part of the delivered baseline and should remain covered by deterministic UI/system tests when changed.
+
 No runtime product behavior changes are required for v1. This is a testing-framework expansion.
 
 ## Goals

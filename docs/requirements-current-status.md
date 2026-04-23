@@ -1,11 +1,11 @@
 # OCI Architecture Assistant
-## Master Requirements + Delivery Status (v1.8 Current Baseline)
+## Master Requirements + Delivery Status (v1.9 Current Baseline)
 
-- Date: April 22, 2026
+- Date: April 23, 2026
 - Snapshot owner: Implementation working thread
 - Master requirements document: `docs/requirements-current-status.md`
 - Historical baseline spec: `docs/requirements-v1.5.0.md`
-- Source branches merged to `main`: v1.5, v1.6, v1.7, and v1.8 slices merged
+- Source branches merged to `main`: v1.5, v1.6, v1.7, v1.8, and v1.9 doc/UX sync slices merged
 - Current working branch: `main`
 
 ## 1) Version Baseline
@@ -46,6 +46,11 @@
   - `docs/requirements-v1.8.0-orchestrator-skill-hardening-and-jep-lifecycle.md`
   - `docs/v1.8-jep-skill-hardening-one-pager.md`
 
+### v1.9.0 (Delivered)
+- Streaming UX refinement delivered for chat typing/token partial render behavior.
+- Documentation synchronized for dynamic specialist skill injection and critic/refine flow.
+- Telegram notifier remains intentionally deferred (not in active scope).
+
 ## 2) Locked Requirements (Still In Effect)
 
 1. Build in phases, not big-bang.
@@ -81,7 +86,7 @@
 - `DONE`: Accessibility metadata for sidebar controls and navigation.
 - `DONE`: Right-side artifact preview panel UX in chat.
 - `DONE`: Native BOM tab for advisory/clarify/final flows with editable table + JSON/XLSX export.
-- `NEXT`: Streaming UX refinement (typing/token partial render behavior).
+- `DONE`: Streaming UX refinement (typing/token partial render behavior).
 
 ### 3.3 Testing Requirements
 - `DONE`: Backend targeted test suites for history/streaming/routing/terraform.
@@ -95,6 +100,10 @@
 - `DONE`: Recursive prompt-static and prompt-judge suites with scorecard/failure artifacts and pushback-quality coverage.
 - `DONE`: Live LLM scenario suite migrated to configured OCI inference path.
 - `DONE`: Live server suite pre-validates `AGENT_BASE_URL` reachability and skip-gates invalid hosts.
+
+### 3.4 Explicitly Deferred
+- `DEFERRED`: Telegram integration for orchestrator notifications.
+  - Rationale: not required for current release goals; keep webhook/bot wiring out of scope until post-v1.9.
 
 ## 4) Merge Gate (Current)
 
@@ -115,3 +124,5 @@
 - v1.8 requirements docs:
   - `docs/requirements-v1.8.0-orchestrator-skill-hardening-and-jep-lifecycle.md`
   - `docs/v1.8-jep-skill-hardening-one-pager.md`
+- v1.9 sync notes:
+  - `docs/requirements-current-status.md` (this file)

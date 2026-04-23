@@ -121,7 +121,7 @@ the diagram's client_id when they are generated together.
 | POV (Agent 4)   | `notes/{customer_id}/`, `pov/.../LATEST`  | `pov/{customer_id}/`            |
 | JEP (Agent 5)   | `notes/`, `jep/.../LATEST`, `agent3/.../LATEST.json` | `jep/{customer_id}/` |
 | Drawing (Agent 3) | —                                       | `agent3/{client_id}/`           |
-| BOM (Agent 2)   | —                                         | `bom/{customer_id}/` (planned)  |
+| BOM (Agent 2)   | advisory context, optional prior BOM data | `bom/{customer_id}/`            |
 
 ---
 

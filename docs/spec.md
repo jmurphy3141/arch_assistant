@@ -16,12 +16,12 @@ This is **Agent 3** in a 7-agent OCI fleet:
 | # | Agent | Status |
 |---|-------|--------|
 | 1 | Requirements gathering | planned |
-| 2 | BOM sizing + pricing | planned |
+| 2 | BOM sizing + pricing | live |
 | **3** | **Architecture diagram** | **this spec** |
 | 4 | Sizing validation | planned |
 | 5 | Cost optimisation | planned |
-| 6 | Terraform generation | planned |
-| 7 | Well-Architected Framework review | planned |
+| 6 | Terraform generation | live |
+| 7 | Well-Architected Framework review | live |
 
 **Upstream:** Receives `BOM.xlsx` from Agent 2 (or direct upload from user).
 **Downstream:** Provides `.drawio` file to Agent 4 for validation; exposes
