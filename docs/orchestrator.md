@@ -15,7 +15,7 @@ both a browser chat UI and a standard A2A v1.0 (Oracle Agent Spec 26.1.0) endpoi
 |---|-------|--------|-------------|
 | **0** | **SA Orchestrator** | **this spec** | `/message:send`, `/api/chat` |
 | 1 | Requirements gathering | planned | — |
-| 2 | BOM sizing + pricing | planned | — |
+| 2 | BOM sizing + pricing | live | `/api/bom/chat`, `/api/bom/generate-xlsx` |
 | 3 | Architecture diagram | live | `/upload-bom`, `/generate` |
 | 4 | POV document | live | `/pov/generate` |
 | 5 | JEP document | live | `/jep/generate` |
@@ -114,7 +114,7 @@ The legacy v0.1 card is kept at `/.well-known/agent-card-legacy.json` for backwa
 ## Architecture
 
 ```
-SA (browser chat tab or Telegram — future)
+SA (browser chat tab; Telegram integration deferred)
     │
     ├─── POST /api/chat          ← REST convenience (UI uses this)
     │
@@ -145,7 +145,7 @@ SA (browser chat tab or Telegram — future)
                               ├── generate_jep     → jep_agent.generate_jep() [in-process]
                               ├── generate_terraform → LangGraph specialist chain (when enabled)
                               ├── critic evaluate (POV/JEP/WAF/Terraform)
-                              ├── bounded refine loop (max_refinements, default 3)
+                              ├── bounded refine loop (critic retry, default 1)
                               └── get_document     → document_store.get_latest_doc()
                               └── postflight_check(path_id, tool_result, artifacts, context_summary)
                                      block => pushback + retry guidance, no success finalization

@@ -1,11 +1,11 @@
-# OCI Architecture Assistant (v1.7.x)
+# OCI Architecture Assistant (v1.9.x)
 
 A full Oracle SA engagement platform built as an OCI agent fleet.
 **SA Assistant chat** (Agent 0) orchestrates notes intake, POV, diagram, WAF,
 JEP, Terraform, and BOM advisory/generation in a single conversation thread per
 customer. The current delivered baseline includes v1.6 dynamic skilling +
-bounded critic/refine and v1.7 BOM integration. Implements Oracle Agent Spec
-v26.1.0 (A2A v1.0 JSON-RPC protocol).
+bounded critic/refine, v1.7 BOM integration, and v1.8 JEP lifecycle hardening.
+Implements Oracle Agent Spec v26.1.0 (A2A v1.0 JSON-RPC protocol).
 
 ```
 SA chat message
