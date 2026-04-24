@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from agent.bom_parser import freeform_arch_text_to_llm_input
 from tests.scenarios.fakes import FakeLLMRunner, MINIMAL_SPEC
 
 
@@ -231,3 +232,20 @@ class TestCombinedContextComposition:
         assert "HA deployment" in prompt
         assert "QUESTIONNAIRE:" not in prompt
         assert "NOTES:" not in prompt
+
+
+class TestFreeformInference:
+    def test_ha_web_server_notes_infer_compute_and_load_balancer(self):
+        items, prompt = freeform_arch_text_to_llm_input("BOM and Diagram for a small HA web server")
+
+        oci_types = {item.oci_type for item in items}
+        assert "compute" in oci_types
+        assert "load balancer" in oci_types
+        assert "small HA web server" in prompt
+
+    def test_ha_web_server_typo_still_infers_minimum_workload(self):
+        items, _prompt = freeform_arch_text_to_llm_input("BOM and Diagram for a small HA web serer")
+
+        oci_types = {item.oci_type for item in items}
+        assert "compute" in oci_types
+        assert "load balancer" in oci_types

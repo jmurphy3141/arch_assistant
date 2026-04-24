@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +273,326 @@ def _find_bom_sheets(wb) -> list[str]:
     if "BOM" in wb.sheetnames:
         return ["BOM"]
     return [wb.worksheets[0].title]
+
+
+_INLINE_CAPACITY_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(tb|gb)\b", re.IGNORECASE)
+
+
+def _parse_markdown_table_rows(text: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line.startswith("|") or line.count("|") < 3:
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if not cells:
+            continue
+        if cells[0].lower() == "category":
+            continue
+        if all(re.fullmatch(r"[:\-\s]+", cell or "") for cell in cells):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def _inline_qty(cell: str) -> float:
+    match = re.search(r"(\d+(?:\.\d+)?)", cell or "")
+    if not match:
+        return 1.0
+    try:
+        value = float(match.group(1))
+    except Exception:
+        return 1.0
+    return value if value > 0 else 1.0
+
+
+def _inline_first_non_egress_capacity_gb(text: str) -> float:
+    for match in _INLINE_CAPACITY_RE.finditer(text or ""):
+        value = float(match.group(1))
+        unit = match.group(2).lower()
+        _, end = match.span()
+        trailing = text[end:min(len(text), end + 8)].lower()
+        if "egress" in trailing or "traffic" in trailing:
+            continue
+        return value * 1024.0 if unit == "tb" else value
+    return 0.0
+
+
+def inline_bom_text_to_llm_input(
+    bom_text: str,
+    context: str = "",
+    questionnaire_text: str = "",
+) -> tuple[list[ServiceItem], str]:
+    """
+    Parse a pasted markdown/plain-text BOM into ServiceItems and a layout prompt.
+
+    This is a lightweight fallback for chat/A2A flows where the user pastes BOM
+    text instead of uploading an XLSX workbook.
+    """
+    rows = _parse_markdown_table_rows(bom_text)
+    if not rows:
+        raise ValueError("inline BOM text did not contain a parseable markdown table")
+
+    parsed_rows: list[dict[str, object]] = []
+    app_ocpu = 0.0
+    db_ocpu = 0.0
+    obj_gb = 0.0
+
+    for row in rows:
+        category = row[0] if len(row) > 0 else ""
+        component = row[1] if len(row) > 1 else ""
+        details = row[2] if len(row) > 2 else ""
+        qty_cell = row[3] if len(row) > 3 else ""
+        qty = _inline_qty(qty_cell)
+        desc = " ".join(part for part in (category, component, details) if part).lower()
+        oci_type, layer = _lookup_row("", desc)
+        if oci_type is None and layer is None:
+            continue
+        if not oci_type:
+            continue
+        parsed_rows.append(
+            {
+                "oci_type": oci_type,
+                "layer": layer,
+                "qty": qty,
+                "desc": desc,
+            }
+        )
+        if oci_type == "compute":
+            match = re.search(r"(\d+(?:\.\d+)?)\s*ocpu", desc)
+            if match:
+                app_ocpu += float(match.group(1)) * qty
+        elif oci_type == "database":
+            if any(token in desc for token in ("autonomous", "postgres", "database", "adb", "mysql")):
+                match = re.search(r"(\d+(?:\.\d+)?)\s*ocpu", desc)
+                if match:
+                    db_ocpu += float(match.group(1)) * qty
+                elif qty > db_ocpu:
+                    db_ocpu = qty
+        elif oci_type == "object storage":
+            obj_gb = max(obj_gb, _inline_first_non_egress_capacity_gb(desc))
+
+    if not parsed_rows:
+        raise ValueError("inline BOM text did not map to any OCI services")
+
+    items: list[ServiceItem] = []
+    seen_global: set[str] = set()
+    counters: dict[str, int] = {}
+
+    for row in parsed_rows:
+        oci_type = str(row["oci_type"])
+        if oci_type in seen_global:
+            continue
+        seen_global.add(oci_type)
+        counters[oci_type] = counters.get(oci_type, 0) + 1
+        qty = float(row["qty"])
+        label_qty = qty
+        if oci_type == "compute" and app_ocpu > 0:
+            label_qty = app_ocpu
+        if oci_type == "database" and db_ocpu > 0:
+            label_qty = db_ocpu
+        label = _make_label(oci_type, label_qty, int(app_ocpu), int(db_ocpu), obj_gb, "")
+        items.append(
+            ServiceItem(
+                id=f"{oci_type.replace(' ', '_')}_{counters[oci_type]}",
+                oci_type=oci_type,
+                label=label,
+                layer=str(row["layer"]),
+                quantity=qty,
+                notes="inline_bom",
+            )
+        )
+
+    items.insert(
+        0,
+        ServiceItem(id="on_prem", oci_type="on premises", label="On-Premises\n(3 Offices)", layer="external"),
+    )
+    seen_global.add("on premises")
+
+    for bp in BEST_PRACTICE:
+        if bp["type"] not in seen_global:
+            items.append(
+                ServiceItem(
+                    id=bp["id"],
+                    oci_type=bp["type"],
+                    label=bp["label"],
+                    layer=bp["layer"],
+                    notes="best practice",
+                )
+            )
+            seen_global.add(bp["type"])
+
+    if "internet gateway" in seen_global and "internet" not in seen_global:
+        items.append(ServiceItem(id="internet", oci_type="internet", label="Public Internet", layer="external", notes="injected_baseline"))
+        seen_global.add("internet")
+
+    if any(i.oci_type in {"compute", "database"} for i in items) and "bastion" not in seen_global:
+        items.append(ServiceItem(id="bastion_1", oci_type="bastion", label="Bastion", layer="ingress", notes="injected_baseline"))
+        seen_global.add("bastion")
+
+    prompt = build_layout_intent_prompt(
+        items,
+        questionnaire_text=questionnaire_text,
+        notes_text=bom_text,
+        context=context,
+    )
+    return items, prompt
+
+
+_FREEFORM_HINTS: list[tuple[str, tuple[str | None, str | None]]] = [
+    ("web application firewall", ("waf", "ingress")),
+    ("network load balancer", ("load balancer", "ingress")),
+    ("web servers", ("compute", "compute")),
+    ("web server", ("compute", "compute")),
+    ("web serer", ("compute", "compute")),
+    ("web service", ("compute", "compute")),
+    ("application server", ("compute", "compute")),
+    ("app server", ("compute", "compute")),
+    ("web tier", ("compute", "compute")),
+    ("app tier", ("compute", "compute")),
+    ("web app", ("compute", "compute")),
+    ("api service", ("compute", "compute")),
+]
+
+
+_HA_SIGNAL_RE = re.compile(
+    r"\b(?:ha|high availability|active-active|active-passive|multi[- ]ad|multi[- ]region|resilient)\b",
+    re.IGNORECASE,
+)
+_WEB_WORKLOAD_RE = re.compile(
+    r"\b(?:web(?:site)?|frontend|front[- ]end|http|https)\b",
+    re.IGNORECASE,
+)
+_SERVER_SIGNAL_RE = re.compile(
+    r"\b(?:server|servers|serer|service|services|tier|application|app)\b",
+    re.IGNORECASE,
+)
+_PUBLIC_EDGE_SIGNAL_RE = re.compile(
+    r"\b(?:internet|public|external|customer[- ]facing)\b",
+    re.IGNORECASE,
+)
+
+
+def freeform_arch_text_to_llm_input(
+    notes_text: str,
+    context: str = "",
+    questionnaire_text: str = "",
+) -> tuple[list[ServiceItem], str]:
+    """
+    Infer a minimal service list from freeform architecture notes.
+
+    This is intentionally lightweight: it supports chat-style requests that
+    mention components in prose, and defers sparse/ambiguous requests to a
+    clarification step instead of hard-failing.
+    """
+    notes = str(notes_text or "").strip()
+    context_text = str(context or "").strip()
+    questionnaire = str(questionnaire_text or "").strip()
+    text = "\n\n".join(part for part in (notes, questionnaire, context_text) if part)
+    if not text.strip():
+        raise ValueError("freeform architecture request is empty")
+
+    desc = _normalize_desc(text.lower())
+    discovered: list[tuple[str, str]] = []
+    seen_types: set[str] = set()
+
+    def _append_discovery(oci_type: str, layer: str) -> None:
+        if not oci_type or not layer or oci_type in seen_types:
+            return
+        discovered.append((oci_type, layer))
+        seen_types.add(oci_type)
+
+    for key, mapping in sorted(_FREEFORM_HINTS, key=lambda item: -len(item[0])):
+        if key not in desc:
+            continue
+        oci_type, layer = mapping
+        _append_discovery(oci_type, layer)
+
+    for key, (oci_type, layer) in sorted(DESC_MAP.items(), key=lambda item: -len(item[0])):
+        if key not in desc:
+            continue
+        _append_discovery(oci_type, layer)
+
+    web_workload = bool(_WEB_WORKLOAD_RE.search(desc) and _SERVER_SIGNAL_RE.search(desc))
+    ha_workload = bool(_HA_SIGNAL_RE.search(desc))
+    public_edge = bool(_PUBLIC_EDGE_SIGNAL_RE.search(desc))
+
+    if web_workload:
+        _append_discovery("compute", "compute")
+    if web_workload and (ha_workload or public_edge):
+        _append_discovery("load balancer", "ingress")
+
+    if not discovered:
+        raise ValueError("freeform architecture request did not identify any OCI services")
+
+    items: list[ServiceItem] = [
+        ServiceItem(
+            id="on_prem",
+            oci_type="on premises",
+            label="On-Premises\n(3 Offices)",
+            layer="external",
+        )
+    ]
+    seen_global: set[str] = {"on premises"}
+    counters: dict[str, int] = {}
+
+    for oci_type, layer in discovered:
+        counters[oci_type] = counters.get(oci_type, 0) + 1
+        items.append(
+            ServiceItem(
+                id=f"{oci_type.replace(' ', '_')}_{counters[oci_type]}",
+                oci_type=oci_type,
+                label=_make_label(oci_type, 1, 0, 0, 0.0, "freeform_notes"),
+                layer=layer,
+                quantity=1.0,
+                notes="freeform_notes",
+            )
+        )
+        seen_global.add(oci_type)
+
+    for bp in BEST_PRACTICE:
+        if bp["type"] not in seen_global:
+            items.append(
+                ServiceItem(
+                    id=bp["id"],
+                    oci_type=bp["type"],
+                    label=bp["label"],
+                    layer=bp["layer"],
+                    notes="best practice",
+                )
+            )
+            seen_global.add(bp["type"])
+
+    if "internet gateway" in seen_global and "internet" not in seen_global:
+        items.append(
+            ServiceItem(
+                id="internet",
+                oci_type="internet",
+                label="Public Internet",
+                layer="external",
+                notes="injected_baseline",
+            )
+        )
+        seen_global.add("internet")
+
+    if any(i.oci_type in {"compute", "database"} for i in items) and "bastion" not in seen_global:
+        items.append(
+            ServiceItem(
+                id="bastion_1",
+                oci_type="bastion",
+                label="Bastion",
+                layer="ingress",
+                notes="injected_baseline",
+            )
+        )
+
+    prompt = build_layout_intent_prompt(
+        items,
+        questionnaire_text=questionnaire_text,
+        notes_text=notes,
+        context=context,
+    )
+    return items, prompt
 
 
 def _extract_sheet_quantities(sheet) -> dict:

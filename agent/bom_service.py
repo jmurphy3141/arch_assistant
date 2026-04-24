@@ -38,6 +38,23 @@ DEFAULT_PRICE_TABLE: dict[str, dict[str, Any]] = {
     "B91628": {"description": "Object Storage Capacity GB", "unit_price": 0.026, "category": "storage"},
 }
 
+NON_OCI_PROVIDER_PATTERNS: tuple[str, ...] = (
+    "hetzner",
+    "digitalocean",
+    "do ",
+    "vultr",
+    "linode",
+    "aws",
+    "amazon web services",
+    "ec2",
+    "azure",
+    "gcp",
+    "google cloud",
+    "cloudflare",
+)
+
+_CAPACITY_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(tb|gb)\b", re.IGNORECASE)
+
 
 @dataclass
 class CacheSnapshot:
@@ -282,13 +299,38 @@ class BomService:
     def _draft_bom_payload(self, message: str, price_table: dict[str, dict[str, Any]]) -> dict[str, Any]:
         text = message.lower()
         is_gpu = "gpu" in text
+        mentions_non_oci = self._mentions_non_oci_provider(text)
+        table_signals = self._extract_table_signals(message)
 
-        ocpu = self._extract_number(r"(\d+(?:\.\d+)?)\s*ocpu", text, default=4.0)
-        mem_gb = self._extract_number(r"(\d+(?:\.\d+)?)\s*gb\s*(?:memory|ram)?", text, default=ocpu * 16)
-        block_tb = self._extract_number(r"(\d+(?:\.\d+)?)\s*tb\s*(?:block|storage)", text, default=1.0)
-        block_gb = block_tb * 1024.0
+        ocpu = float(table_signals.get("ocpu") or 0.0)
+        if ocpu <= 0:
+            ocpu = self._extract_number(r"(\d+(?:\.\d+)?)\s*ocpu", text, default=4.0)
 
-        cpu_sku = "B111129" if "e6" in text else "B94176"
+        mem_gb = float(table_signals.get("mem_gb") or 0.0)
+        if mem_gb <= 0:
+            mem_gb = self._extract_number(r"(\d+(?:\.\d+)?)\s*gb\s*(?:memory|ram)?", text, default=ocpu * 16)
+
+        block_gb = float(table_signals.get("block_gb") or 0.0)
+        if block_gb <= 0:
+            block_tb = self._extract_number(r"(\d+(?:\.\d+)?)\s*tb\s*(?:block|storage)", text, default=1.0)
+            block_gb = block_tb * 1024.0
+
+        object_storage_gb = float(table_signals.get("object_storage_gb") or 0.0)
+        load_balancer_qty = float(table_signals.get("load_balancer_qty") or 0.0)
+
+        shape_hint = str(table_signals.get("cpu_family") or "").lower()
+        if not shape_hint:
+            if "ampere" in text or "a1" in text:
+                shape_hint = "a1"
+            elif "e6" in text:
+                shape_hint = "e6"
+
+        if shape_hint == "a1":
+            cpu_sku = "B88317"
+        elif shape_hint == "e6":
+            cpu_sku = "B111129"
+        else:
+            cpu_sku = "B94176"
         mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
 
         line_items: list[dict[str, Any]] = []
@@ -300,19 +342,41 @@ class BomService:
 
         line_items.append(self._build_line("B91961", block_gb, price_table, "storage", "Block storage capacity"))
 
-        if "load balancer" in text or "lb" in text or "ingress" in text:
-            line_items.append(self._build_line("B93030", 1, price_table, "network", "Flexible load balancer"))
+        if load_balancer_qty > 0 or "load balancer" in text or "lb" in text or "ingress" in text:
+            line_items.append(
+                self._build_line(
+                    "B93030",
+                    load_balancer_qty or 1.0,
+                    price_table,
+                    "network",
+                    "Flexible load balancer",
+                )
+            )
 
-        if "object storage" in text:
-            line_items.append(self._build_line("B91628", max(100.0, block_gb * 0.2), price_table, "storage", "Object storage"))
+        if object_storage_gb > 0 or "object storage" in text:
+            line_items.append(
+                self._build_line(
+                    "B91628",
+                    object_storage_gb or max(100.0, block_gb * 0.2),
+                    price_table,
+                    "storage",
+                    "Object storage",
+                )
+            )
+
+        assumptions = [
+            "Pricing is estimate-only and non-binding.",
+            "Monthly costs assume steady-state usage.",
+        ]
+        if mentions_non_oci:
+            assumptions.append(
+                "OCI-only BOM enforced: non-OCI provider references in the request were normalized to OCI equivalents."
+            )
 
         return {
             "currency": "USD",
             "line_items": line_items,
-            "assumptions": [
-                "Pricing is estimate-only and non-binding.",
-                "Monthly costs assume steady-state usage.",
-            ],
+            "assumptions": assumptions,
         }
 
     @staticmethod
@@ -345,6 +409,143 @@ class BomService:
             "extended_price": round(qty * unit_price, 4),
             "notes": notes,
         }
+
+    @staticmethod
+    def _mentions_non_oci_provider(text: str) -> bool:
+        normalized = f" {text.strip().lower()} "
+        return any(pattern in normalized for pattern in NON_OCI_PROVIDER_PATTERNS)
+
+    def _extract_table_signals(self, message: str) -> dict[str, float | str]:
+        signals: dict[str, float | str] = {
+            "ocpu": 0.0,
+            "mem_gb": 0.0,
+            "block_gb": 0.0,
+            "object_storage_gb": 0.0,
+            "load_balancer_qty": 0.0,
+            "cpu_family": "",
+        }
+
+        for row in self._parse_markdown_table_rows(message):
+            category = row[0].lower() if len(row) > 0 else ""
+            component = row[1].lower() if len(row) > 1 else ""
+            details = row[2].lower() if len(row) > 2 else ""
+            qty_cell = row[3] if len(row) > 3 else ""
+            qty = self._extract_table_quantity(qty_cell)
+            row_text = " | ".join(row).lower()
+
+            if self._is_compute_row(category, component, row_text):
+                row_ocpu = self._extract_number(r"(\d+(?:\.\d+)?)\s*ocpu", details, default=0.0)
+                row_mem_gb = self._extract_number(r"(\d+(?:\.\d+)?)\s*gb\s*(?:ram|memory)\b", details, default=0.0)
+                row_block_gb = self._extract_keyword_capacity_gb(details, keywords=("block", "volume", "vol", "boot"))
+                signals["ocpu"] = float(signals["ocpu"]) + (row_ocpu * qty)
+                signals["mem_gb"] = float(signals["mem_gb"]) + (row_mem_gb * qty)
+                signals["block_gb"] = float(signals["block_gb"]) + (row_block_gb * qty)
+                if "ampere" in row_text or "a1" in row_text or "arm" in row_text:
+                    signals["cpu_family"] = "a1"
+                elif "e6" in row_text and not signals["cpu_family"]:
+                    signals["cpu_family"] = "e6"
+                continue
+
+            if "load balancer" in row_text:
+                signals["load_balancer_qty"] = max(float(signals["load_balancer_qty"]), qty)
+                continue
+
+            if "object storage" in row_text:
+                object_storage_gb = self._extract_first_non_egress_capacity_gb(details)
+                if object_storage_gb > 0:
+                    signals["object_storage_gb"] = max(float(signals["object_storage_gb"]), object_storage_gb * qty)
+                continue
+
+            if "block" in row_text and "storage" in row_text:
+                block_gb = self._extract_keyword_capacity_gb(details, keywords=("block", "volume", "vol", "boot"))
+                if block_gb > 0:
+                    signals["block_gb"] = float(signals["block_gb"]) + (block_gb * qty)
+
+        return signals
+
+    @staticmethod
+    def _parse_markdown_table_rows(message: str) -> list[list[str]]:
+        rows: list[list[str]] = []
+        for raw_line in (message or "").splitlines():
+            line = raw_line.strip()
+            if not line.startswith("|") or line.count("|") < 3:
+                continue
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if not cells:
+                continue
+            if all(re.fullmatch(r"[:\-\s]+", cell or "") for cell in cells):
+                continue
+            if cells[0].lower() == "category":
+                continue
+            rows.append(cells)
+        return rows
+
+    @staticmethod
+    def _extract_table_quantity(cell: str) -> float:
+        match = re.search(r"(\d+(?:\.\d+)?)", cell or "")
+        if not match:
+            return 1.0
+        try:
+            value = float(match.group(1))
+        except Exception:
+            return 1.0
+        return value if value > 0 else 1.0
+
+    @staticmethod
+    def _is_compute_row(category: str, component: str, row_text: str) -> bool:
+        compute_markers = ("compute", "app server", "instance pool", "ampere", "a1 flex")
+        return any(marker in category for marker in compute_markers) or any(
+            marker in component or marker in row_text for marker in compute_markers
+        )
+
+    @staticmethod
+    def _capacity_to_gb(value: float, unit: str) -> float:
+        return value * 1024.0 if unit.lower() == "tb" else value
+
+    @classmethod
+    def _extract_first_non_egress_capacity_gb(cls, text: str) -> float:
+        for match in _CAPACITY_RE.finditer(text or ""):
+            value = float(match.group(1))
+            unit = match.group(2)
+            _, end = match.span()
+            trailing = text[end:min(len(text), end + 8)].lower()
+            if "egress" in trailing or "traffic" in trailing:
+                continue
+            return cls._capacity_to_gb(value, unit)
+        return 0.0
+
+    @classmethod
+    def _extract_keyword_capacity_gb(cls, text: str, keywords: tuple[str, ...]) -> float:
+        best_value = 0.0
+        best_distance: int | None = None
+
+        for match in _CAPACITY_RE.finditer(text or ""):
+            value = float(match.group(1))
+            unit = match.group(2)
+            start, end = match.span()
+            before = text[max(0, start - 24):start].lower()
+            after = text[end:min(len(text), end + 24)].lower()
+            trailing = after[:14]
+            if "egress" in trailing or "traffic" in trailing:
+                continue
+
+            distances: list[int] = []
+            for keyword in keywords:
+                before_idx = before.rfind(keyword)
+                if before_idx >= 0:
+                    distances.append(len(before) - before_idx)
+                after_idx = after.find(keyword)
+                if after_idx >= 0:
+                    distances.append(after_idx + 1)
+            if not distances:
+                continue
+
+            distance = min(distances)
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+                best_value = cls._capacity_to_gb(value, unit)
+
+        return best_value
 
     def _repair_until_valid(
         self,
@@ -393,11 +594,14 @@ class BomService:
                 errors.append(f"line_items[{idx}] non-positive unit_price for SKU {sku}")
             category = str(row.get("category") or "").lower()
             desc = str(row.get("description") or "").lower()
+            notes = str(row.get("notes") or "").lower()
             if category == "compute" and "gpu" not in desc:
                 if sku in CPU_SKU_TO_MEM_SKU:
                     seen_cpu = True
                 if sku in CPU_SKU_TO_MEM_SKU.values():
                     seen_mem = True
+            if self._mentions_non_oci_provider(desc) or self._mentions_non_oci_provider(notes):
+                errors.append(f"line_items[{idx}] references non-OCI provider content")
 
         # non-GPU compute split rule
         if seen_cpu and not seen_mem:

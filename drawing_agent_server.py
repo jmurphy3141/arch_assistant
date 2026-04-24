@@ -77,7 +77,12 @@ except Exception:
     _INFERENCE_AVAILABLE = False
     _run_inference = None  # type: ignore
 
-from agent.bom_parser import bom_to_llm_input, parse_bom
+from agent.bom_parser import (
+    bom_to_llm_input,
+    freeform_arch_text_to_llm_input,
+    inline_bom_text_to_llm_input,
+    parse_bom,
+)
 from agent.layout_engine import spec_to_draw_dict
 from agent.drawio_generator import generate_drawio
 from agent.oci_standards import get_catalogue_summary
@@ -693,6 +698,96 @@ def _clarify_response(
     return resp
 
 
+_FREEFORM_CLARIFY_PREFIX = "FREEFORM_NOTES_JSON:"
+
+
+def _encode_freeform_clarify_prompt(*, notes: str, context: str, questionnaire: str) -> str:
+    payload = {
+        "notes": notes,
+        "context": context,
+        "questionnaire": questionnaire,
+    }
+    return _FREEFORM_CLARIFY_PREFIX + json.dumps(payload, separators=(",", ":"))
+
+
+def _decode_freeform_clarify_prompt(prompt: str) -> dict[str, str] | None:
+    raw = str(prompt or "")
+    if not raw.startswith(_FREEFORM_CLARIFY_PREFIX):
+        return None
+    try:
+        payload = json.loads(raw[len(_FREEFORM_CLARIFY_PREFIX):])
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "notes": str(payload.get("notes", "") or ""),
+        "context": str(payload.get("context", "") or ""),
+        "questionnaire": str(payload.get("questionnaire", "") or ""),
+    }
+
+
+def _freeform_diagram_questions() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "components.scope",
+            "question": (
+                "What major OCI components should be shown in the diagram "
+                "(for example load balancer, app servers, database, object storage, OKE, DRG)?"
+            ),
+            "blocking": True,
+        },
+        {
+            "id": "regions.mode",
+            "question": (
+                "Should I assume a single-region deployment, multi-AD HA in one region, "
+                "or multi-region DR?"
+            ),
+            "blocking": True,
+        },
+    ]
+
+
+def _freeform_clarify_response(
+    *,
+    client_id: str,
+    diagram_name: str,
+    request_id: str,
+    input_hash: str,
+    notes: str,
+    context: str,
+    questionnaire: str,
+    deployment_hints: dict | None = None,
+) -> dict:
+    PENDING_CLARIFY[client_id] = {
+        "items": [],
+        "prompt": _encode_freeform_clarify_prompt(
+            notes=notes,
+            context=context,
+            questionnaire=questionnaire,
+        ),
+        "diagram_name": diagram_name,
+        "deployment_hints": deployment_hints or {},
+        "freeform_notes": notes,
+        "freeform_context": context,
+        "freeform_questionnaire": questionnaire,
+    }
+    return _clarify_response(
+        client_id,
+        diagram_name,
+        request_id,
+        input_hash,
+        _freeform_diagram_questions(),
+        items=[],
+        prompt=_encode_freeform_clarify_prompt(
+            notes=notes,
+            context=context,
+            questionnaire=questionnaire,
+        ),
+        deployment_hints=deployment_hints,
+    )
+
+
 async def run_pipeline(
     items: list,
     prompt: str,
@@ -886,6 +981,15 @@ async def run_pipeline(
         )
         if latest:
             persisted_version = latest.get("version", 0)
+            drawio_key = str(latest.get("artifacts", {}).get("diagram.drawio", "") or "")
+            if drawio_key:
+                resp_drawio_key = drawio_key
+            else:
+                resp_drawio_key = ""
+        else:
+            resp_drawio_key = ""
+    else:
+        resp_drawio_key = ""
 
     if GIT_PUSH_ENABLED:
         threading.Thread(
@@ -919,6 +1023,9 @@ async def run_pipeline(
         },
         "errors": [],
     }
+    if resp_drawio_key:
+        resp["drawio_key"] = resp_drawio_key
+        resp["object_key"] = resp_drawio_key
     # Attach refine context so the UI can request diagram changes without
     # re-uploading the BOM.  Mirrors _clarify_context but for the "ok" path.
     if items is not None:
@@ -1272,9 +1379,15 @@ async def serve_ui(request: Request):
     """Serve the React SPA. Falls back to legacy index.html when dist not built."""
     if AUTH_ENABLED and not request.session.get("user"):
         return RedirectResponse("/login", status_code=302)
+    headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "X-App-Version": AGENT_VERSION,
+    }
     if _UI_INDEX.exists():
-        return FileResponse(str(_UI_INDEX))
-    return FileResponse(str(_LEGACY_INDEX))
+        return FileResponse(str(_UI_INDEX), headers=headers)
+    return FileResponse(str(_LEGACY_INDEX), headers=headers)
 
 
 @app.get("/login")
@@ -1546,11 +1659,17 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
         input_hash = compute_input_hash(req_snapshot.answers or "")
         try:
             # ── Stateless path ────────────────────────────────────────────────
+            freeform_payload: dict[str, str] | None = None
             if req_snapshot.items_json and req_snapshot.prompt:
-                from agent.bom_parser import ServiceItem
                 raw_items = json.loads(req_snapshot.items_json)
-                items = [ServiceItem(**r) for r in raw_items]
-                base_prompt = req_snapshot.prompt
+                freeform_payload = _decode_freeform_clarify_prompt(req_snapshot.prompt)
+                if freeform_payload and not raw_items:
+                    items = []
+                    base_prompt = req_snapshot.prompt
+                else:
+                    from agent.bom_parser import ServiceItem
+                    items = [ServiceItem(**r) for r in raw_items]
+                    base_prompt = req_snapshot.prompt
                 deployment_hints: dict = {}
                 if req_snapshot.deployment_hints_json:
                     try:
@@ -1568,6 +1687,12 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
                 items            = pending["items"]
                 base_prompt      = pending["prompt"]
                 deployment_hints = dict(pending.get("deployment_hints") or {})
+                if pending.get("freeform_notes"):
+                    freeform_payload = {
+                        "notes": str(pending.get("freeform_notes", "") or ""),
+                        "context": str(pending.get("freeform_context", "") or ""),
+                        "questionnaire": str(pending.get("freeform_questionnaire", "") or ""),
+                    }
 
             # ── Resolve auto_waf metadata ──────────────────────────────────────
             pending_meta      = PENDING_CLARIFY.get(req_snapshot.client_id) or {}
@@ -1586,22 +1711,38 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
                 elif any(w in ans_lower for w in ["split", "different workload", "active-active"]):
                     deployment_hints["multi_region_mode"] = "split"
 
-            enriched_prompt = (
-                base_prompt
-                + f"\n\nCLARIFICATION ANSWERS:\n{req_snapshot.answers.strip()}\n\n"
-                + "Now produce the layout spec JSON using the answers above. "
-                + "Output ONLY valid JSON."
-            )
+            if freeform_payload:
+                combined_notes = (
+                    freeform_payload["notes"].strip()
+                    + f"\n\nCLARIFICATION ANSWERS:\n{req_snapshot.answers.strip()}\n"
+                ).strip()
+                result = await _run_freeform_diagram_pipeline(
+                    notes=combined_notes,
+                    context=freeform_payload["context"],
+                    questionnaire=freeform_payload["questionnaire"],
+                    diagram_name=req_snapshot.diagram_name,
+                    client_id=req_snapshot.client_id,
+                    request_id=request_id,
+                    input_hash=input_hash,
+                    deployment_hints=deployment_hints,
+                )
+            else:
+                enriched_prompt = (
+                    base_prompt
+                    + f"\n\nCLARIFICATION ANSWERS:\n{req_snapshot.answers.strip()}\n\n"
+                    + "Now produce the layout spec JSON using the answers above. "
+                    + "Output ONLY valid JSON."
+                )
 
-            result = await run_pipeline(
-                items            = items,
-                prompt           = enriched_prompt,
-                diagram_name     = req_snapshot.diagram_name,
-                client_id        = req_snapshot.client_id,
-                request_id       = request_id,
-                input_hash       = input_hash,
-                deployment_hints = deployment_hints,
-            )
+                result = await run_pipeline(
+                    items            = items,
+                    prompt           = enriched_prompt,
+                    diagram_name     = req_snapshot.diagram_name,
+                    client_id        = req_snapshot.client_id,
+                    request_id       = request_id,
+                    input_hash       = input_hash,
+                    deployment_hints = deployment_hints,
+                )
 
             if result["status"] == "ok":
                 PENDING_CLARIFY.pop(req_snapshot.client_id, None)
@@ -1840,6 +1981,11 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
                 )
                 if latest:
                     persisted_version = latest.get("version", 0)
+                    drawio_key = str(latest.get("artifacts", {}).get("diagram.drawio", "") or "")
+                else:
+                    drawio_key = ""
+            else:
+                drawio_key = ""
 
             if GIT_PUSH_ENABLED:
                 threading.Thread(
@@ -1880,6 +2026,9 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
                     "deployment_hints_json": json.dumps(deployment_hints),
                 },
             }
+            if drawio_key:
+                result["drawio_key"] = drawio_key
+                result["object_key"] = drawio_key
             return JSONResponse(status_code=200, content=result)
 
         else:
@@ -2163,6 +2312,46 @@ async def bom_chat(req: BomChatRequest, _user: dict = Depends(require_user)):
         int((time.perf_counter() - started) * 1000),
     )
     return result
+
+
+async def _run_freeform_diagram_pipeline(
+    *,
+    notes: str,
+    context: str,
+    questionnaire: str,
+    diagram_name: str,
+    client_id: str,
+    request_id: str,
+    input_hash: str,
+    deployment_hints: Optional[dict] = None,
+) -> dict:
+    try:
+        items, prompt = freeform_arch_text_to_llm_input(
+            notes,
+            context=context,
+            questionnaire_text=questionnaire,
+        )
+    except ValueError:
+        return _freeform_clarify_response(
+            client_id=client_id,
+            diagram_name=diagram_name,
+            request_id=request_id,
+            input_hash=input_hash,
+            notes=notes,
+            context=context,
+            questionnaire=questionnaire,
+            deployment_hints=deployment_hints or {},
+        )
+
+    return await run_pipeline(
+        items=items,
+        prompt=prompt,
+        diagram_name=diagram_name,
+        client_id=client_id,
+        request_id=request_id,
+        input_hash=input_hash,
+        deployment_hints=deployment_hints,
+    )
 
 
 @app.post("/api/bom/generate-xlsx")
@@ -2524,21 +2713,52 @@ async def a2a_message_send(request: Request):
                 client_id=context_id,
             )
             result = await _a2a_generate_diagram(legacy_task)
-            task["status"] = "COMPLETED"
-            drawio_key = (result.get("object_key") or result.get("drawio_key") or "")
-            task["artifacts"] = [
+            result_status = str(result.get("status", "error") or "error").lower()
+            if result_status == "ok":
+                task["status"] = "COMPLETED"
+            elif result_status == "need_clarification":
+                task["status"] = "INPUT_REQUIRED"
+            else:
+                task["status"] = "FAILED"
+
+            artifacts = [
                 {
                     "artifactId": "a1",
                     "name": "reply",
-                    "parts": [{"kind": "text", "text": result.get("status", "ok")}],
-                },
-                {
-                    "artifactId": "a2",
-                    "name": "drawio_key",
-                    "parts": [{"kind": "data", "mimeType": "application/json",
-                               "data": {"key": drawio_key}}],
+                    "parts": [{"kind": "text", "text": result_status}],
                 },
             ]
+            drawio_key = (result.get("object_key") or result.get("drawio_key") or "")
+            if drawio_key:
+                artifacts.append(
+                    {
+                        "artifactId": "a2",
+                        "name": "drawio_key",
+                        "parts": [{"kind": "data", "mimeType": "application/json",
+                                   "data": {"key": drawio_key}}],
+                    }
+                )
+            questions = result.get("questions", [])
+            if isinstance(questions, list) and questions:
+                artifacts.append(
+                    {
+                        "artifactId": "a3",
+                        "name": "questions",
+                        "parts": [{"kind": "data", "mimeType": "application/json",
+                                   "data": {"questions": questions}}],
+                    }
+                )
+            clarify_context = result.get("_clarify_context")
+            if isinstance(clarify_context, dict) and clarify_context:
+                artifacts.append(
+                    {
+                        "artifactId": "a4",
+                        "name": "clarify_context",
+                        "parts": [{"kind": "data", "mimeType": "application/json",
+                                   "data": clarify_context}],
+                    }
+                )
+            task["artifacts"] = artifacts
         else:
             # orchestrate_engagement (default)
             store = getattr(app.state, "object_store", None)
@@ -3100,13 +3320,12 @@ async def _a2a_generate_diagram(task: A2ATask) -> dict:
     deployment_hints = inp.get("deployment_hints") or {}
 
     # ── Resolve resources ────────────────────────────────────────────────────
+    raw_resources = None
     if "resources_from_bucket" in inp and inp["resources_from_bucket"]:
         ref = A2AObjectRef(**inp["resources_from_bucket"])
         raw_resources = await _a2a_fetch_resources(ref)
-    elif "resources" in inp:
+    elif "resources" in inp and inp["resources"]:
         raw_resources = inp["resources"]
-    else:
-        raise HTTPException(422, "generate_diagram requires 'resources' or 'resources_from_bucket'")
 
     # ── Resolve optional text fields ─────────────────────────────────────────
     context = inp.get("context") or ""
@@ -3123,27 +3342,51 @@ async def _a2a_generate_diagram(task: A2ATask) -> dict:
         context_total += f"\n\nNOTES:\n{notes}"
 
     # ── Build ServiceItems ───────────────────────────────────────────────────
-    from agent.bom_parser import build_layout_intent_prompt, ServiceItem
-    items = []
-    for r in raw_resources:
-        otype = r.get("oci_type") or r.get("type")
-        if not otype:
-            raise HTTPException(422, f"resource missing oci_type/type: {r}")
-        items.append(ServiceItem(
-            id=r.get("id", otype.replace(" ", "_")),
-            oci_type=otype,
-            label=r.get("label", otype),
-            layer=r.get("layer", "compute"),
-        ))
-
-    input_hash = compute_input_hash(
-        canonical_json(raw_resources), "\n", context_total, "\n", canonical_json(deployment_hints)
-    )
+    if raw_resources is None:
+        if not notes.strip():
+            raise HTTPException(422, "generate_diagram requires 'resources', 'resources_from_bucket', or inline BOM notes")
+        aux_context = context
+        if questionnaire.strip():
+            aux_context = f"{aux_context}\n\nQUESTIONNAIRE:\n{questionnaire}".strip() if aux_context else f"QUESTIONNAIRE:\n{questionnaire}"
+        try:
+            items, prompt = inline_bom_text_to_llm_input(notes, context=aux_context, questionnaire_text=questionnaire)
+        except ValueError:
+            input_hash = compute_input_hash(
+                notes.strip(), "\n", aux_context, "\n", canonical_json(deployment_hints)
+            )
+            return await _run_freeform_diagram_pipeline(
+                notes=notes,
+                context=aux_context,
+                questionnaire=questionnaire,
+                diagram_name=diagram_name,
+                client_id=task.client_id,
+                request_id=request_id,
+                input_hash=input_hash,
+                deployment_hints=deployment_hints,
+            )
+        input_hash = compute_input_hash(
+            notes.strip(), "\n", aux_context, "\n", canonical_json(deployment_hints)
+        )
+    else:
+        from agent.bom_parser import build_layout_intent_prompt, ServiceItem
+        items = []
+        for r in raw_resources:
+            otype = r.get("oci_type") or r.get("type")
+            if not otype:
+                raise HTTPException(422, f"resource missing oci_type/type: {r}")
+            items.append(ServiceItem(
+                id=r.get("id", otype.replace(" ", "_")),
+                oci_type=otype,
+                label=r.get("label", otype),
+                layer=r.get("layer", "compute"),
+            ))
+        input_hash = compute_input_hash(
+            canonical_json(raw_resources), "\n", context_total, "\n", canonical_json(deployment_hints)
+        )
+        prompt = build_layout_intent_prompt(items, context=context_total)
     cache_key = (task.client_id, diagram_name, input_hash)
     if cache_key in IDEMPOTENCY_CACHE:
         return IDEMPOTENCY_CACHE[cache_key]
-
-    prompt = build_layout_intent_prompt(items, context=context_total)
     result = await run_pipeline(items, prompt, diagram_name, task.client_id,
                                 request_id, input_hash, deployment_hints=deployment_hints)
     if result["status"] == "ok":
@@ -3240,15 +3483,31 @@ async def _a2a_clarify(task: A2ATask) -> dict:
             "Call generate_diagram or upload_bom first.",
         )
 
-    enriched = (
-        pending["prompt"]
-        + f"\n\nCLARIFICATION ANSWERS:\n{answers.strip()}\n\n"
-        + "Now produce the layout spec JSON. Output ONLY valid JSON."
-    )
-    result = await run_pipeline(
-        pending["items"], enriched, diagram_name,
-        task.client_id, request_id, input_hash,
-    )
+    if pending.get("freeform_notes"):
+        combined_notes = (
+            str(pending.get("freeform_notes", "") or "").strip()
+            + f"\n\nCLARIFICATION ANSWERS:\n{answers.strip()}\n"
+        ).strip()
+        result = await _run_freeform_diagram_pipeline(
+            notes=combined_notes,
+            context=str(pending.get("freeform_context", "") or ""),
+            questionnaire=str(pending.get("freeform_questionnaire", "") or ""),
+            diagram_name=diagram_name,
+            client_id=task.client_id,
+            request_id=request_id,
+            input_hash=input_hash,
+            deployment_hints=dict(pending.get("deployment_hints") or {}),
+        )
+    else:
+        enriched = (
+            pending["prompt"]
+            + f"\n\nCLARIFICATION ANSWERS:\n{answers.strip()}\n\n"
+            + "Now produce the layout spec JSON. Output ONLY valid JSON."
+        )
+        result = await run_pipeline(
+            pending["items"], enriched, diagram_name,
+            task.client_id, request_id, input_hash,
+        )
     if result["status"] == "ok":
         PENDING_CLARIFY.pop(task.client_id, None)
     return result
@@ -3981,7 +4240,7 @@ async def terraform_generate(req: TerraformGenerateRequest):
             {
                 "version": persisted["version"],
                 "file_count": len(persisted.get("files", {})),
-                "prefix_key": f"terraform/{req.customer_id}/v{persisted['version']}",
+                "prefix_key": f"customers/{req.customer_id}/terraform/v{persisted['version']}",
                 "key": persisted["key"],
                 "latest_key": persisted["latest_key"],
                 "summary": summary[:500],
