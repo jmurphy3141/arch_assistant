@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OCI BOM Admin</title>
+</head>
+<body>
+  <!-- Reference snapshot from source drop -->
+  <h1>OCI BOM Admin</h1>
+  <p>Trigger refresh of price list, compute shapes, and services catalog.</p>
+  <p>Expected action: POST /refresh-data</p>
+</body>
+</html>
