@@ -205,12 +205,7 @@ def test_orchestrator_parallel_plan_detects_bom_intent():
 
 def test_orchestrator_gates_unrequested_generation_tools(monkeypatch):
     calls: list[str] = []
-    outputs = iter(
-        [
-            '{"tool": "generate_terraform", "args": {"prompt":"now create terraform"}}',
-            "Done.",
-        ]
-    )
+    llm_calls = {"count": 0}
 
     async def _fake_execute_tool(tool_name, args, **kwargs):
         _ = (args, kwargs)
@@ -218,7 +213,8 @@ def test_orchestrator_gates_unrequested_generation_tools(monkeypatch):
         return (f"{tool_name}-ok", "", {})
 
     def _text_runner(_prompt: str, _system_message: str) -> str:
-        return next(outputs)
+        llm_calls["count"] += 1
+        return '{"tool": "generate_terraform", "args": {"prompt":"now create terraform"}}'
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
@@ -241,7 +237,8 @@ def test_orchestrator_gates_unrequested_generation_tools(monkeypatch):
     )
 
     assert calls == ["generate_bom"]
-    assert "Skipped `generate_terraform` because it was not requested." in result["reply"]
+    assert result["reply"] == "generate_bom-ok"
+    assert llm_calls["count"] == 0
 
 
 def test_orchestrator_change_request_requires_confirmation() -> None:
