@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from agent.document_store import list_notes
 from agent.persistence_objectstore import ObjectStoreBase
@@ -42,6 +42,10 @@ CONTEXT_SCHEMA_VERSION = "1.0"
 
 
 def _context_key(customer_id: str) -> str:
+    return f"customers/{customer_id}/context/context.json"
+
+
+def _legacy_context_key(customer_id: str) -> str:
     return f"context/{customer_id}/context.json"
 
 
@@ -52,6 +56,9 @@ def _empty_context(customer_id: str, customer_name: str = "") -> dict:
         "customer_name":  customer_name,
         "last_updated":   "",
         "agents":         {},
+        "latest_decision_context": {},
+        "decision_log":   [],
+        "pending_checkpoint": None,
     }
 
 
@@ -68,10 +75,14 @@ def read_context(
     ``customer_name`` is only used when creating a fresh context.
     """
     key = _context_key(customer_id)
+    legacy_key = _legacy_context_key(customer_id)
     try:
-        return json.loads(store.get(key).decode("utf-8"))
+        return _normalize_context(json.loads(store.get(key).decode("utf-8")), customer_id, customer_name)
     except KeyError:
-        return _empty_context(customer_id, customer_name)
+        try:
+            return _normalize_context(json.loads(store.get(legacy_key).decode("utf-8")), customer_id, customer_name)
+        except KeyError:
+            return _empty_context(customer_id, customer_name)
 
 
 def write_context(
@@ -80,13 +91,14 @@ def write_context(
     context: dict,
 ) -> None:
     """Write the context file back to the bucket."""
+    context = _normalize_context(context, customer_id, context.get("customer_name", ""))
     context["last_updated"] = datetime.now(timezone.utc).isoformat()
     key = _context_key(customer_id)
-    store.put(
-        key,
-        json.dumps(context, indent=2).encode("utf-8"),
-        "application/json",
-    )
+    legacy_key = _legacy_context_key(customer_id)
+    payload = json.dumps(context, indent=2).encode("utf-8")
+    store.put(key, payload, "application/json")
+    if legacy_key != key:
+        store.put(legacy_key, payload, "application/json")
     logger.debug("Context written: customer_id=%s", customer_id)
 
 
@@ -169,6 +181,42 @@ def record_agent_run(
     return context
 
 
+def set_latest_decision_context(context: dict, decision_context: dict[str, Any]) -> dict:
+    context["latest_decision_context"] = dict(decision_context or {})
+    return context
+
+
+def append_decision_log(
+    context: dict,
+    entry: dict[str, Any],
+    *,
+    limit: int = 25,
+) -> dict:
+    current = context.get("decision_log", [])
+    if not isinstance(current, list):
+        current = []
+    current.append(dict(entry or {}))
+    context["decision_log"] = current[-limit:]
+    return context
+
+
+def get_pending_checkpoint(context: dict) -> dict[str, Any] | None:
+    pending = context.get("pending_checkpoint")
+    if not isinstance(pending, dict):
+        return None
+    return pending
+
+
+def set_pending_checkpoint(context: dict, checkpoint: dict[str, Any] | None) -> dict:
+    context["pending_checkpoint"] = dict(checkpoint) if isinstance(checkpoint, dict) else None
+    return context
+
+
+def clear_pending_checkpoint(context: dict) -> dict:
+    context["pending_checkpoint"] = None
+    return context
+
+
 # ── Prompt summary ────────────────────────────────────────────────────────────
 
 def build_context_summary(context: dict) -> str:
@@ -226,4 +274,38 @@ def build_context_summary(context: dict) -> str:
             f"key={w.get('key', '?')}"
         )
 
+    latest_decision_context = context.get("latest_decision_context", {})
+    if isinstance(latest_decision_context, dict) and latest_decision_context:
+        constraints = latest_decision_context.get("constraints", {}) or {}
+        assumptions = latest_decision_context.get("assumptions", []) or []
+        lines.append(
+            "  • Latest Decision Context: "
+            f"goal={latest_decision_context.get('goal', '')!r}, "
+            f"region={constraints.get('region') or 'unspecified'}, "
+            f"budget={constraints.get('cost_max_monthly') if constraints.get('cost_max_monthly') is not None else 'unspecified'}, "
+            f"assumptions={len(assumptions)}"
+        )
+
+    pending_checkpoint = get_pending_checkpoint(context)
+    if pending_checkpoint:
+        lines.append(
+            "  • Pending Checkpoint: "
+            f"type={pending_checkpoint.get('type', '?')}, "
+            f"status={pending_checkpoint.get('status', '?')}, "
+            f"recommended_action={pending_checkpoint.get('recommended_action', '')!r}"
+        )
+
     return "\n".join(lines)
+
+
+def _normalize_context(context: dict[str, Any], customer_id: str, customer_name: str = "") -> dict[str, Any]:
+    normalized = dict(context or {})
+    normalized.setdefault("schema_version", CONTEXT_SCHEMA_VERSION)
+    normalized.setdefault("customer_id", customer_id)
+    normalized.setdefault("customer_name", customer_name)
+    normalized.setdefault("last_updated", "")
+    normalized.setdefault("agents", {})
+    normalized.setdefault("latest_decision_context", {})
+    normalized.setdefault("decision_log", [])
+    normalized.setdefault("pending_checkpoint", None)
+    return normalized
