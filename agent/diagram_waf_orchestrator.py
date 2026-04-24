@@ -199,32 +199,57 @@ def _amend_spec_from_suggestions(
 
 # ── Diagram context helper ─────────────────────────────────────────────────────
 
-def _build_diagram_context(draw_result: dict) -> dict:
-    """Build the diagram_context dict for the WAF agent from a run_pipeline result."""
+def _build_diagram_context(draw_result: dict, items: list) -> dict:
+    """Build WAF context with both expected services and rendered diagram facts."""
     node_to_resource_map = draw_result.get("node_to_resource_map") or {}
     spec = draw_result.get("spec") or {}
+    draw_dict = draw_result.get("draw_dict") or {}
+    draw_nodes = draw_dict.get("nodes", [])
+    actual_node_ids = {str(node.get("id", "")) for node in draw_nodes if node.get("id")}
 
-    node_types = sorted({
-        v.get("oci_type", "unknown")
-        for v in node_to_resource_map.values()
-        if isinstance(v, dict)
+    actual_node_types = sorted({
+        str(node.get("type", "unknown")).lower()
+        for node in draw_nodes
+        if isinstance(node, dict) and node.get("type")
     })
-    layers = sorted({
+    actual_layers = sorted({
         v.get("layer", "")
-        for v in node_to_resource_map.values()
-        if isinstance(v, dict) and v.get("layer")
+        for node_id, v in node_to_resource_map.items()
+        if node_id in actual_node_ids and isinstance(v, dict) and v.get("layer")
     })
-
-    draw_dict  = draw_result.get("draw_dict") or {}
     node_count = len(draw_dict.get("nodes", []))
     edge_count = len(draw_dict.get("edges", []))
 
+    expected_items = [
+        item for item in items
+        if getattr(item, "layer", "") != "external"
+        and getattr(item, "notes", "") not in {"best practice", "injected_baseline"}
+    ]
+    expected_node_types = sorted({
+        str(item.oci_type).lower()
+        for item in expected_items
+        if getattr(item, "oci_type", "")
+    })
+    missing_expected_nodes = [
+        {
+            "id": item.id,
+            "oci_type": str(item.oci_type).lower(),
+            "label": item.label,
+            "layer": item.layer,
+        }
+        for item in expected_items
+        if item.id not in actual_node_ids
+    ]
+
     return {
         "deployment_type": spec.get("deployment_type", "single_ad"),
-        "node_types":      node_types,
+        "node_types":      actual_node_types,
+        "actual_node_types": actual_node_types,
+        "expected_node_types": expected_node_types,
+        "missing_expected_nodes": missing_expected_nodes,
         "node_count":      node_count,
         "edge_count":      edge_count,
-        "layers":          layers,
+        "layers":          actual_layers,
     }
 
 
@@ -288,7 +313,7 @@ async def run_diagram_waf_loop(
     for iteration in range(1, max_iterations + 1):
 
         # ── WAF review ─────────────────────────────────────────────────────────
-        diagram_context = _build_diagram_context(draw_result)
+        diagram_context = _build_diagram_context(draw_result, items)
         logger.info(
             "WAF loop iteration=%d customer_id=%s node_types=%s",
             iteration, customer_id, diagram_context.get("node_types"),
