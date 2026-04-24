@@ -189,9 +189,25 @@ def _annotate_checklist(diagram_context: dict) -> str:
     This eliminates the hallucination problem where the LLM suggests missing
     nodes that were already added by a prior orchestration cycle.
     """
-    node_types   = {t.lower() for t in diagram_context.get("node_types", [])}
-    node_count   = diagram_context.get("node_count", 0)
-    depl_type    = diagram_context.get("deployment_type", "single_ad")
+    node_types = {
+        str(t).lower()
+        for t in (
+            diagram_context.get("actual_node_types")
+            or diagram_context.get("node_types", [])
+        )
+    }
+    expected_node_types = {
+        str(t).lower() for t in diagram_context.get("expected_node_types", [])
+    }
+    missing_expected_nodes = [
+        node for node in diagram_context.get("missing_expected_nodes", [])
+        if isinstance(node, dict) and node.get("oci_type") and node.get("layer")
+    ]
+    missing_expected_types = {
+        str(node.get("oci_type", "")).lower() for node in missing_expected_nodes
+    }
+    node_count = diagram_context.get("node_count", 0)
+    depl_type = diagram_context.get("deployment_type", "single_ad")
 
     has_public   = bool(node_types & _PUBLIC_FACING)
     has_waf      = bool(node_types & _WAF_TYPES)
@@ -204,17 +220,36 @@ def _annotate_checklist(diagram_context: dict) -> str:
 
     lines = [
         "OCI Well-Architected Framework — Pre-Evaluated Checklist",
-        f"(Node types present: {', '.join(sorted(node_types)) or '(none)'})",
+        f"(Rendered node types: {', '.join(sorted(node_types)) or '(none)'})",
+        f"(Expected from BOM/context: {', '.join(sorted(expected_node_types)) or '(none)'})",
         f"(node_count={node_count}, deployment_type={depl_type})",
         "",
-        "1. SECURITY AND COMPLIANCE",
+        "0. BOM AND DIAGRAM CONSISTENCY",
     ]
+
+    if missing_expected_nodes:
+        for node in missing_expected_nodes:
+            oci_type = str(node.get("oci_type", "")).lower()
+            layer = str(node.get("layer", "")).lower()
+            lines.append(
+                "   [❌ FAIL] BOM coverage: required service "
+                f"'{oci_type}' is expected from the BOM/context but is not present in the rendered diagram "
+                "→ draw_instruction required: "
+                f"Add a {oci_type} node (oci_type: {oci_type}) in the {layer} layer"
+            )
+    else:
+        lines.append("   [✅ PASS] BOM coverage: required BOM/context services are present in the rendered diagram")
+
+    lines.extend([
+        "",
+        "1. SECURITY AND COMPLIANCE",
+    ])
 
     # WAF check
     if has_public:
         if has_waf:
             lines.append("   [✅ PASS] WAF: public-facing component present AND waf node is present")
-        else:
+        elif "waf" not in missing_expected_types:
             lines.append(
                 "   [❌ FAIL] WAF: public-facing component present (load_balancer/api_gateway) "
                 "but NO waf node found → draw_instruction required: "
@@ -248,7 +283,7 @@ def _annotate_checklist(diagram_context: dict) -> str:
     if len(compute_nodes) >= 2:
         if has_lb:
             lines.append("   [✅ PASS] Load Balancer: multiple compute nodes present AND load_balancer found")
-        else:
+        elif "load_balancer" not in missing_expected_types and "load balancer" not in missing_expected_types:
             lines.append(
                 f"   [❌ FAIL] Load Balancer: {len(compute_nodes)} compute nodes present "
                 "but NO load_balancer — SPOF risk → draw_instruction required: "
@@ -288,7 +323,7 @@ def _annotate_checklist(diagram_context: dict) -> str:
 
     if has_monitor:
         lines.append("   [✅ PASS] Monitoring/Logging: present")
-    else:
+    elif "monitoring" not in missing_expected_types and "logging" not in missing_expected_types:
         lines.append(
             "   [❌ FAIL] Monitoring/Logging: no monitoring/logging/observability node found → "
             "draw_instruction required: "
@@ -389,7 +424,16 @@ def _fallback_suggestions_from_checklist(annotated_checklist: str) -> list[dict]
                 "priority": priority_map.get(pillar, "medium"),
             }
         )
-    return out
+
+    deduped: list[dict] = []
+    seen_instructions: set[str] = set()
+    for item in out:
+        instruction = str(item.get("draw_instruction", "")).strip().lower()
+        if not instruction or instruction in seen_instructions:
+            continue
+        seen_instructions.add(instruction)
+        deduped.append(item)
+    return deduped
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
