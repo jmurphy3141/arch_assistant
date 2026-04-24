@@ -14,23 +14,32 @@ agent or document type to keep namespaces isolated.
 ```
 agent_assistante/
 │
-├── notes/{customer_id}/
-│   ├── {note_name}             ← individual meeting note (text/markdown)
-│   └── MANIFEST.json           ← list of all notes with timestamps
-│
-├── pov/{customer_id}/
-│   ├── v1.md                   ← first POV version
-│   ├── v2.md                   ← second POV version (after new notes added)
-│   ├── ...
-│   ├── LATEST.md               ← content of the most recent version
-│   └── MANIFEST.json           ← version history with timestamps and metadata
-│
-├── jep/{customer_id}/
-│   ├── v1.md                   ← first JEP version
-│   ├── v2.md
-│   ├── ...
-│   ├── LATEST.md
-│   └── MANIFEST.json
+├── customers/{customer_id}/
+│   ├── notes/
+│   │   ├── {note_name}         ← individual meeting note (text/markdown)
+│   │   └── MANIFEST.json       ← list of all notes with timestamps
+│   ├── pov/
+│   │   ├── v1.md  v2.md ...
+│   │   ├── LATEST.md
+│   │   └── MANIFEST.json
+│   ├── jep/
+│   │   ├── v1.md  v2.md ...
+│   │   ├── LATEST.md
+│   │   ├── MANIFEST.json
+│   │   └── poc_questions.json
+│   ├── waf/
+│   ├── terraform/
+│   │   ├── v{n}/...
+│   │   ├── LATEST.json
+│   │   └── MANIFEST.json
+│   ├── approved/
+│   │   ├── pov.md
+│   │   └── jep.md
+│   ├── context/
+│   │   └── context.json
+│   └── conversations/
+│       ├── history.json
+│       └── summary.txt
 │
 └── agent3/{client_id}/{diagram_name}/
     ├── {request_id}/
@@ -53,9 +62,9 @@ agent_assistante/
 | `customer_id`| POV, JEP, Notes  | Customer name slug (`jane_street`, `acme_corp`)      |
 | `client_id`  | Agent 3 diagrams | UI session identifier (UUID generated in browser)    |
 
-When the JEP agent looks for the latest architecture diagram, it searches:
-`agent3/{customer_id}/LATEST.json` — so the customer_id should match
-the diagram's client_id when they are generated together.
+When the JEP agent looks for the latest architecture diagram, it searches
+under `agent3/{customer_id}/...` — so the customer_id should match
+the diagram's client_id when generated together.
 
 ### MANIFEST.json Schema
 
@@ -131,3 +140,6 @@ the diagram's client_id when they are generated together.
 2. Follow the `LATEST.md` + `MANIFEST.json` pattern from `agent/document_store.py`
 3. Update this document
 4. Update the fleet position in `config.yaml`
+Legacy compatibility:
+- Existing `notes/{customer_id}/...`, `pov/{customer_id}/...`, etc. keys remain readable.
+- Writers now persist to `customers/{customer_id}/...` and maintain legacy compatibility paths.
