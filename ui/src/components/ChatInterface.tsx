@@ -21,6 +21,12 @@ import {
   type ChatArtifactManifest,
 } from '../api/client';
 
+interface QuickAction {
+  command: string;
+  label: string;
+  tone: 'primary' | 'secondary';
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function getStoredCustomer(): { id: string; name: string } {
@@ -93,13 +99,22 @@ function mdToHtml(md: string): string {
 function ToolChip({ call }: { call: ChatToolCall }) {
   const [open, setOpen] = useState(false);
   const trace = (call.result_data?.trace ?? {}) as Record<string, unknown>;
+  const governor = (trace.governor ?? {}) as Record<string, unknown>;
+  const checkpoint = (trace.checkpoint ?? null) as Record<string, unknown> | null;
+  const decisionContext = (trace.decision_context ?? {}) as Record<string, unknown>;
   const traceSummary = {
+    path_id: typeof trace.path_id === 'string' ? trace.path_id : '',
     applied_skills: Array.isArray(trace.applied_skills) ? trace.applied_skills : [],
     model_profile: typeof trace.model_profile === 'string' ? trace.model_profile : '',
     refinement_count: typeof trace.refinement_count === 'number' ? trace.refinement_count : 0,
     max_refinements: typeof trace.max_refinements === 'number' ? trace.max_refinements : 0,
     overall_pass: typeof trace.overall_pass === 'boolean' ? trace.overall_pass : true,
     warnings: Array.isArray(trace.warnings) ? trace.warnings : [],
+    constraint_tags: Array.isArray(trace.constraint_tags) ? trace.constraint_tags : [],
+    assumption_count: typeof trace.assumption_count === 'number' ? trace.assumption_count : 0,
+    governor_status: typeof governor.overall_status === 'string' ? governor.overall_status : '',
+    checkpoint_type: checkpoint && typeof checkpoint.type === 'string' ? checkpoint.type : '',
+    decision_context_goal: typeof decisionContext.goal === 'string' ? decisionContext.goal : '',
   };
   const chipStyle: React.CSSProperties = {
     display:      'inline-flex',
@@ -150,8 +165,24 @@ function ToolChip({ call }: { call: ChatToolCall }) {
 
 function traceWarningsForCall(call: ChatToolCall): string[] {
   const trace = (call.result_data?.trace ?? {}) as Record<string, unknown>;
-  if (!Array.isArray(trace.warnings)) return [];
-  return trace.warnings
+  const warnings = Array.isArray(trace.warnings) ? trace.warnings : [];
+  const governor = (trace.governor ?? {}) as Record<string, unknown>;
+  const cost = (governor.cost ?? {}) as Record<string, unknown>;
+  const security = (governor.security ?? {}) as Record<string, unknown>;
+  const derived: string[] = [];
+  if (typeof governor.overall_status === 'string' && governor.overall_status === 'checkpoint_required') {
+    derived.push('checkpoint_required');
+  }
+  if (typeof governor.overall_status === 'string' && governor.overall_status === 'blocked') {
+    derived.push('governor_blocked');
+  }
+  if (typeof cost.variance === 'number') {
+    derived.push(`budget_variance_${cost.variance}`);
+  }
+  if (Array.isArray(security.findings) && security.findings.length > 0) {
+    derived.push('security_findings');
+  }
+  return [...warnings, ...derived]
     .filter((warning): warning is string => typeof warning === 'string')
     .map(warning => warning.trim())
     .filter(Boolean);
@@ -259,23 +290,59 @@ function ArtifactManifestLinks({ manifest }: { manifest?: ChatArtifactManifest }
   );
 }
 
+function extractQuickActions(content: string, toolCalls?: ChatToolCall[]): QuickAction[] {
+  const dedupe = new Set<string>();
+  const actions: QuickAction[] = [];
+
+  const push = (command: string, label: string, tone: 'primary' | 'secondary') => {
+    if (dedupe.has(command)) return;
+    dedupe.add(command);
+    actions.push({ command, label, tone });
+  };
+
+  for (const call of toolCalls ?? []) {
+    const resultData = (call.result_data ?? {}) as Record<string, unknown>;
+    const checkpoint = (resultData.checkpoint ?? null) as Record<string, unknown> | null;
+    const options = Array.isArray(checkpoint?.options) ? checkpoint?.options : [];
+    for (const option of options) {
+      if (typeof option !== 'string') continue;
+      const normalized = option.trim().toLowerCase();
+      if (normalized === 'approve checkpoint') push('approve checkpoint', 'Approve Checkpoint', 'primary');
+      if (normalized === 'revise input') push('revise input', 'Revise Input', 'secondary');
+    }
+  }
+
+  const lower = (content || '').toLowerCase();
+  if (lower.includes('approve checkpoint')) push('approve checkpoint', 'Approve Checkpoint', 'primary');
+  if (lower.includes('revise input')) push('revise input', 'Revise Input', 'secondary');
+  if (lower.includes('confirm update all')) push('confirm update all', 'Confirm Update All', 'primary');
+  if (lower.includes('cancel update')) push('cancel update', 'Cancel Update', 'secondary');
+
+  return actions;
+}
+
 function MessageBubble({
   msg,
   toolCalls,
   artifacts,
   artifactManifest,
   customerId,
+  onQuickAction,
+  busy,
 }: {
   msg: { role: string; content?: string; timestamp: string };
   toolCalls?: ChatToolCall[];
   artifacts?: Record<string, string>;
   artifactManifest?: ChatArtifactManifest;
   customerId: string;
+  onQuickAction?: (command: string) => void;
+  busy?: boolean;
 }) {
   const isUser = msg.role === 'user';
   const traceWarnings = !isUser && Array.isArray(toolCalls)
     ? Array.from(new Set(toolCalls.flatMap(traceWarningsForCall)))
     : [];
+  const quickActions = !isUser ? extractQuickActions(msg.content ?? '', toolCalls) : [];
   const bubbleStyle: React.CSSProperties = {
     maxWidth:     '88%',
     alignSelf:    isUser ? 'flex-end' : 'flex-start',
@@ -344,6 +411,40 @@ function MessageBubble({
         <div style={{ paddingLeft: '0.25rem' }}>
           {Object.entries(artifacts).map(([k, v]) => (
             <ArtifactLink key={k} toolName={k} artifactKey={v} customerId={customerId} />
+          ))}
+        </div>
+      )}
+      {quickActions.length > 0 && (
+        <div
+          data-testid="chat-quick-actions"
+          style={{ paddingLeft: '0.25rem', display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.3rem' }}
+        >
+          {quickActions.map(action => (
+            <button
+              key={action.command}
+              type="button"
+              data-testid={`quick-action-${action.command.replace(/\s+/g, '-')}`}
+              disabled={busy || !onQuickAction}
+              onClick={() => onQuickAction?.(action.command)}
+              style={{
+                fontSize: '0.72rem',
+                borderRadius: 999,
+                padding: '0.32rem 0.72rem',
+                fontFamily: "'JetBrains Mono', monospace",
+                cursor: busy ? 'not-allowed' : 'pointer',
+                border: action.tone === 'primary'
+                  ? '1px solid rgba(232,87,26,0.45)'
+                  : '1px solid #2b344d',
+                background: action.tone === 'primary'
+                  ? 'rgba(232,87,26,0.14)'
+                  : '#111626',
+                color: action.tone === 'primary' ? '#ff9b75' : '#c9d1e4',
+                opacity: busy ? 0.55 : 1,
+              }}
+              title={`Send: ${action.command}`}
+            >
+              {action.label}
+            </button>
           ))}
         </div>
       )}
@@ -461,7 +562,11 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
   }
 
   async function sendMessage() {
-    const text = input.trim();
+    await submitMessage(input, true);
+  }
+
+  async function submitMessage(raw: string, clearComposer: boolean) {
+    const text = raw.trim();
     if (!text || loading) return;
     if (!customerId.trim()) { setError('Enter a Customer ID before sending.'); return; }
 
@@ -469,7 +574,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
       role: 'user', content: text, timestamp: new Date().toISOString(),
     };
     setMessages(prev => [...prev, userMsg]);
-    setInput('');
+    if (clearComposer) setInput('');
     setAttachedFile(null);
     setError(null);
     setLoading(true);
@@ -652,6 +757,8 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
             artifacts={msg.artifacts}
             artifactManifest={msg.artifactManifest}
             customerId={customerId}
+            onQuickAction={(command) => { void submitMessage(command, false); }}
+            busy={loading}
           />
         ))}
         {streamingReply && (

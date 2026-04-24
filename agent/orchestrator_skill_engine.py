@@ -325,7 +325,12 @@ class OrchestratorSkillEngine:
                 )
 
         if path_id == "diagram":
-            has_success_signal = bool(artifact_key) or "started" in summary or "poll" in summary
+            has_success_signal = (
+                bool(artifact_key)
+                or "started" in summary
+                or "poll" in summary
+                or "clarification" in summary
+            )
             if not has_success_signal:
                 return self._block(
                     path_id=path_id,
