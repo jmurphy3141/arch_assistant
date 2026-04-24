@@ -71,3 +71,13 @@ def test_bom_refresh_requires_admin_group_when_auth_enabled(monkeypatch) -> None
         app.dependency_overrides.clear()
         monkeypatch.setattr(drawing_agent_server, "AUTH_ENABLED", False)
         monkeypatch.setattr(drawing_agent_server, "OIDC_REQUIRED_GROUP", "")
+
+
+def test_root_serves_no_store_headers() -> None:
+    with TestClient(app, raise_server_exceptions=True) as client:
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert resp.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+        assert resp.headers["pragma"] == "no-cache"
+        assert resp.headers["expires"] == "0"
+        assert resp.headers["x-app-version"] == drawing_agent_server.AGENT_VERSION

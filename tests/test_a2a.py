@@ -21,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from drawing_agent_server import app, PENDING_CLARIFY, SESSION_STORE, IDEMPOTENCY_CACHE, AGENT_ID
+from agent.persistence_objectstore import InMemoryObjectStore
 from tests.scenarios.fakes import FakeLLMRunner, MINIMAL_SPEC
 
 
@@ -144,6 +145,63 @@ class TestGenerateDiagramSkill:
         assert body["status"] == "error"
         assert body["error_message"] is not None
 
+    def test_message_send_inline_bom_generates_drawio_key(self, client):
+        store = InMemoryObjectStore()
+        app.state.object_store = store
+        app.state.persistence_config = {"prefix": "diagrams"}
+
+        resp = client.post("/message:send", json={
+            "jsonrpc": "2.0",
+            "id": "inline-bom-diagram",
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{
+                        "kind": "text",
+                        "text": (
+                            "Build a diagram from this BOM and write the drawio to the bucket.\n\n"
+                            "| Category | Component | Specs/Details | Quantity |\n"
+                            "|----------|-----------|---------------|----------|\n"
+                            "| Compute (App Servers) | Ampere A1 Flex (Instance Pool/ASG) | 4 OCPU ARM, 24GB RAM, 200GB Block Vol, auto-scale min=3 | 3 |\n"
+                            "| Load Balancer | Flexible Load Balancer (Standard Shape) | 10Mbps, L7 HTTP/S/HTTPS, path routing, health checks, WAF | 1 |\n"
+                            "| Database | Autonomous Database (Serverless HA) | 2 OCPU, 50GB storage, auto-backups/patching | 1 |\n"
+                            "| Storage | Object Storage (Standard) | 250GB, 10TB egress free/yr | 1 |"
+                        ),
+                    }],
+                    "contextId": "inline-bom",
+                },
+                "skill": "generate_diagram",
+            },
+        })
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["result"]["status"] == "COMPLETED"
+        artifacts = body["result"]["artifacts"]
+        drawio_artifact = next(a for a in artifacts if a["name"] == "drawio_key")
+        drawio_key = drawio_artifact["parts"][0]["data"]["key"]
+        assert drawio_key.endswith("/diagram.drawio")
+        assert store.head(drawio_key)
+
+    def test_freeform_ha_web_server_notes_run_without_clarification(self, client):
+        runner = app.state.llm_runner
+
+        resp = client.post("/api/a2a/task", json={
+            "task_id": "t-freeform-ha-web",
+            "skill": "generate_diagram",
+            "client_id": "freeform-ha-web",
+            "inputs": {"notes": "BOM and Diagram for a small HA web server"},
+        })
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert runner.call_count == 1
+        prompt = runner.received_prompts[0]
+        assert '"oci_type": "compute"' in prompt
+        assert '"oci_type": "load balancer"' in prompt
+
 
 # ── 3. generate_diagram — need_clarification ──────────────────────────────────
 
@@ -167,6 +225,68 @@ class TestGenerateDiagramClarification:
         body = resp.json()
         assert body["status"] == "need_clarification"
         questions = body["outputs"].get("questions", [])
+        assert any(q["id"] == "regions.count" for q in questions)
+
+    def test_message_send_freeform_diagram_request_returns_questions(self, client):
+        resp = client.post("/message:send", json={
+            "jsonrpc": "2.0",
+            "id": "freeform-diagram-clarify",
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "I need drawio XML for this architecture diagram, not mermaid."}],
+                    "contextId": "freeform-diagram",
+                },
+                "skill": "generate_diagram",
+            },
+        })
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["result"]["status"] == "INPUT_REQUIRED"
+        artifacts = body["result"]["artifacts"]
+        questions = next(a for a in artifacts if a["name"] == "questions")["parts"][0]["data"]["questions"]
+        assert any("major OCI components" in q["question"] for q in questions)
+
+    def test_message_send_need_clarification_preserves_questions(self, client, monkeypatch):
+        import drawing_agent_server as srv
+
+        async def _fake_generate_diagram(_task):
+            return {
+                "status": "need_clarification",
+                "questions": [
+                    {"id": "regions.count", "question": "How many regions?", "blocking": True},
+                ],
+                "_clarify_context": {
+                    "prompt": "Original prompt",
+                    "items_json": "[]",
+                    "deployment_hints_json": "{}",
+                },
+            }
+
+        monkeypatch.setattr(srv, "_a2a_generate_diagram", _fake_generate_diagram)
+
+        resp = client.post("/message:send", json={
+            "jsonrpc": "2.0",
+            "id": "clarify-message-send",
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "Need a diagram."}],
+                    "contextId": "orch-clarify-message",
+                },
+                "skill": "generate_diagram",
+            },
+        })
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["result"]["status"] == "INPUT_REQUIRED"
+        artifacts = body["result"]["artifacts"]
+        questions_artifact = next(a for a in artifacts if a["name"] == "questions")
+        questions = questions_artifact["parts"][0]["data"]["questions"]
         assert any(q["id"] == "regions.count" for q in questions)
 
 
@@ -213,6 +333,30 @@ class TestClarifyDiagramSkill:
         assert resp.status_code == 200
         assert resp.json()["status"] == "error"
         assert "No pending clarification" in resp.json()["error_message"]
+
+    def test_clarify_freeform_pending_completes_after_answers(self, client):
+        resp = client.post("/api/a2a/task", json={
+            "task_id": "t-freeform-start",
+            "skill": "generate_diagram",
+            "client_id": "freeform-clarify",
+            "inputs": {"notes": "I need an OCI architecture diagram."},
+        })
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "need_clarification"
+
+        resp = client.post("/api/a2a/task", json={
+            "task_id": "t-freeform-answer",
+            "skill": "clarify_diagram",
+            "client_id": "freeform-clarify",
+            "inputs": {
+                "answers": "Single region with a load balancer, app servers, and an autonomous database.",
+                "diagram_name": "arch",
+            },
+        })
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert "drawio_xml" in body["outputs"]
 
 
 # ── 5. upload_bom — mocked bucket ─────────────────────────────────────────────
