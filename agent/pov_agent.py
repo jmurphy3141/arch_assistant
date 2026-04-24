@@ -155,6 +155,7 @@ def generate_pov(
     text_runner: Callable[[str, str], str],
     *,
     feedback: str = "",
+    architect_brief: dict | None = None,
 ) -> dict:
     """
     Generate or update a POV document.
@@ -211,6 +212,31 @@ def generate_pov(
     else:
         feedback_section = ""
 
+    architect_brief_section = ""
+    if isinstance(architect_brief, dict) and architect_brief:
+        lines = []
+        goal = str(architect_brief.get("goal", "") or "").strip()
+        if goal:
+            lines.append(f"Goal: {goal}")
+        assumptions = architect_brief.get("assumptions", []) or []
+        if assumptions:
+            lines.append("Assumptions to make explicit in the POV:")
+            lines.extend(
+                f"  • {item.get('statement', '').strip()} (risk: {item.get('risk', 'low')})"
+                for item in assumptions
+                if isinstance(item, dict) and str(item.get("statement", "")).strip()
+            )
+        missing_inputs = [str(item).strip() for item in architect_brief.get("missing_inputs", []) or [] if str(item).strip()]
+        if missing_inputs:
+            lines.append("Inputs still missing (flag these as assumption-based if you draft anyway):")
+            lines.extend(f"  • {item}" for item in missing_inputs)
+        architect_context = str(architect_brief.get("architect_context", "") or "").strip()
+        if architect_context:
+            lines.append("Archie architect context:")
+            lines.append(architect_context)
+        if lines:
+            architect_brief_section = "Architect brief for this POV draft:\n" + "\n".join(lines)
+
     if base_doc:
         previous_pov_section = (
             "Previous POV version (use as base; update and improve — do not repeat verbatim):\n"
@@ -230,7 +256,7 @@ def generate_pov(
         customer_name=customer_name,
         context_summary=context_block,
         new_notes_section=new_notes_section,
-        feedback_section=feedback_section,
+        feedback_section="\n\n".join(part for part in (feedback_section, architect_brief_section) if part),
         previous_pov_section=previous_pov_section,
         instructions=instructions,
     )

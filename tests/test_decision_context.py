@@ -14,4 +14,14 @@ def test_ballpark_assumption_mode_does_not_require_confirmation_for_missing_budg
     assumptions = {item["id"]: item for item in result["assumptions"]}
     assert assumptions["cost_unbounded"]["risk"] == "medium"
     assert result["requires_user_confirmation"] is False
+    assert result["assumption_mode"] is True
     assert "high_risk_assumptions" not in decision_context.derive_constraint_tags(result)
+
+
+def test_architecture_chat_prompt_is_marked_conversational() -> None:
+    result = decision_context.build_decision_context(
+        user_message="Talk me through architecture tradeoffs for a private OKE platform."
+    )
+
+    assert result["conversational_architecture"] is True
+    assert result["risk_level"] in {"low", "medium", "high"}

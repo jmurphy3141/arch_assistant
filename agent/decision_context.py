@@ -53,6 +53,7 @@ def build_decision_context(
     deployment_preferences = _deployment_preferences(msg_lc)
     success_criteria = _success_criteria(msg_lc)
     assumption_mode = _assumption_mode_requested(msg_lc)
+    conversational_architecture = _is_conversational_architecture_prompt(msg_lc)
 
     assumptions: list[dict[str, str]] = []
     missing_inputs: list[str] = []
@@ -103,9 +104,13 @@ def build_decision_context(
         success_criteria = ["Architecture aligns to declared deployment preferences."]
 
     requires_user_confirmation = any(a["risk"] == "high" for a in assumptions)
+    risk_level = _risk_level_for_assumptions(assumptions)
 
     return {
         "goal": msg or "Clarify OCI architecture requirements.",
+        "assumption_mode": assumption_mode,
+        "conversational_architecture": conversational_architecture,
+        "risk_level": risk_level,
         "constraints": {
             "region": region,
             "availability_target": availability,
@@ -161,6 +166,10 @@ def summarize_decision_context(decision_context: dict[str, Any] | None) -> str:
 
     lines = ["Decision context:"]
     lines.append(f"- Goal: {decision_context.get('goal', '')}")
+    if decision_context.get("assumption_mode"):
+        lines.append("- Mode: best-effort draft from sparse notes")
+    if decision_context.get("conversational_architecture"):
+        lines.append("- Interaction: architecture discussion / copilot mode")
     if constraints:
         lines.append(
             "- Constraints: "
@@ -183,6 +192,9 @@ def summarize_decision_context(decision_context: dict[str, Any] | None) -> str:
         lines.append("- Assumptions: " + "; ".join(rendered))
     if missing_inputs:
         lines.append("- Missing inputs: " + ", ".join(str(item) for item in missing_inputs[:3]))
+    risk_level = str(decision_context.get("risk_level", "") or "").strip()
+    if risk_level:
+        lines.append(f"- Risk level: {risk_level}")
     return "\n".join(lines)
 
 
@@ -241,10 +253,20 @@ def _success_criteria(text: str) -> list[str]:
 def _context_text(context: dict[str, Any]) -> str:
     if not isinstance(context, dict):
         return ""
+    archie = context.get("archie", {}) if isinstance(context.get("archie"), dict) else {}
     parts = [
         str(context.get("customer_name", "") or ""),
         str(context.get("latest_decision_context", {}).get("goal", "") or ""),
+        str(archie.get("engagement_summary", "") or ""),
+        str(archie.get("latest_notes_summary", "") or ""),
+        str(archie.get("latest_approved_constraints", {}) or ""),
     ]
+    resolved = archie.get("resolved_questions", []) if isinstance(archie.get("resolved_questions"), list) else []
+    for item in resolved[-5:]:
+        if not isinstance(item, dict):
+            continue
+        parts.append(str(item.get("question", "") or ""))
+        parts.append(str(item.get("final_answer", "") or item.get("suggested_answer", "") or ""))
     pending = context.get("pending_checkpoint") or {}
     if isinstance(pending, dict):
         parts.append(str(pending.get("prompt", "") or ""))
@@ -266,3 +288,46 @@ def _assumption_mode_requested(text: str) -> bool:
         "safe assumptions",
     )
     return any(marker in text for marker in markers)
+
+
+def _is_conversational_architecture_prompt(text: str) -> bool:
+    if not text:
+        return False
+    architecture_markers = (
+        "architecture",
+        "topology",
+        "design",
+        "tradeoff",
+        "trade-off",
+        "option",
+        "should we",
+        "thinking through",
+        "talk through",
+        "walk me through",
+    )
+    deliverable_markers = (
+        "generate",
+        "create",
+        "build",
+        "draft a pov",
+        "write a pov",
+        "terraform",
+        "bom",
+        "diagram",
+        "drawio",
+        "draw.io",
+        "jep",
+        "waf",
+    )
+    return any(marker in text for marker in architecture_markers) and not any(
+        marker in text for marker in deliverable_markers
+    )
+
+
+def _risk_level_for_assumptions(assumptions: list[dict[str, str]]) -> str:
+    risks = {str(item.get("risk", "") or "").strip().lower() for item in assumptions if isinstance(item, dict)}
+    if "high" in risks:
+        return "high"
+    if "medium" in risks:
+        return "medium"
+    return "low"

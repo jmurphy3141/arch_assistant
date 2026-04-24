@@ -26,7 +26,7 @@ async def run(
         store,
         text_runner,
         feedback=feedback,
+        architect_brief=dict(args.get("_architect_brief", {}) or {}),
     )
     key = result.get("key", "")
     return f"POV v{result.get('version')} saved. Key: {key}", key
-

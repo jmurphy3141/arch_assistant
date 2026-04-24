@@ -40,8 +40,13 @@ from agent.orchestrator_skill_engine import (
     OrchestratorSkillDecision,
     OrchestratorSkillEngine,
 )
-from agent.skill_loader import select_skills_for_call
+from agent.skill_loader import discover_skills, select_skills_for_call
 from agent.bom_service import get_shared_bom_service, new_trace_id
+from agent.reference_architecture import (
+    build_reference_context_lines,
+    select_reference_architecture,
+    select_standards_bundle,
+)
 
 logger = logging.getLogger(__name__)
 _PENDING_UPDATE_WORKFLOWS: dict[str, dict[str, Any]] = {}
@@ -103,6 +108,24 @@ Tool contracts:
 """
 
 _SKILL_ENGINE = OrchestratorSkillEngine()
+_ARCHITECTURE_TOOLS = {
+    "generate_diagram",
+    "generate_bom",
+    "generate_pov",
+    "generate_jep",
+    "generate_waf",
+    "generate_terraform",
+    "get_document",
+}
+_MANDATORY_SKILL_FALLBACKS = {
+    "generate_diagram": ("diagram_for_oci", "orchestrator"),
+    "generate_bom": ("oci_bom_expert", "orchestrator"),
+    "generate_pov": ("oci_customer_pov_writer", "orchestrator"),
+    "generate_jep": ("oci_jep_writer", "orchestrator"),
+    "generate_waf": ("oci_waf_reviewer", "orchestrator"),
+    "generate_terraform": ("terraform_for_oci", "orchestrator"),
+    "get_document": ("orchestrator",),
+}
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -164,6 +187,34 @@ async def run_turn(
         }
 
     pending_checkpoint = context_store.get_pending_checkpoint(context)
+    if pending_checkpoint and str(pending_checkpoint.get("type", "") or "") == "specialist_questions":
+        specialist_reply, specialist_call, specialist_artifact = await _handle_pending_specialist_questions(
+            pending_checkpoint=pending_checkpoint,
+            user_message=user_message,
+            context=context,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            specialist_mode=specialist_mode,
+            max_refinements=max_refinements,
+        )
+        if specialist_reply:
+            if specialist_call:
+                tool_calls.append(specialist_call)
+                if specialist_artifact:
+                    artifacts[specialist_call["tool"]] = specialist_artifact
+                new_turns.append(
+                    {
+                        "role": "tool",
+                        "tool": specialist_call["tool"],
+                        "result_summary": specialist_call["result_summary"],
+                        "timestamp": _now(),
+                    }
+                )
+            return _finalize_turn(specialist_reply)
+
     if pending_checkpoint and _is_checkpoint_approve_message(user_message):
         _resolve_pending_checkpoint(
             context=context,
@@ -187,6 +238,11 @@ async def run_turn(
         context=context,
     )
     context_store.set_latest_decision_context(context, decision_context)
+    context_store.set_archie_decision_state(
+        context,
+        constraints=dict(decision_context.get("constraints", {}) or {}),
+        assumptions=list(decision_context.get("assumptions", []) or []),
+    )
     await asyncio.to_thread(context_store.write_context, store, customer_id, context)
     prompt = _build_prompt(
         history,
@@ -196,16 +252,43 @@ async def run_turn(
         pending_checkpoint=context_store.get_pending_checkpoint(context),
     )
 
-    pending = _PENDING_UPDATE_WORKFLOWS.get(customer_id)
+    if _is_recall_intent(user_message) and not requested_tools:
+        return _finalize_turn(_build_recall_reply(context))
+
+    pending = context_store.get_pending_update(context) or _PENDING_UPDATE_WORKFLOWS.get(customer_id)
     if pending:
         if _is_update_cancel_message(user_message):
             _PENDING_UPDATE_WORKFLOWS.pop(customer_id, None)
+            context_store.clear_pending_update(context)
+            context_store.append_change_record(
+                context,
+                {
+                    "id": str(uuid.uuid4()),
+                    "timestamp": _now(),
+                    "status": "canceled",
+                    "change_request": str(pending.get("change_request", "") or "").strip(),
+                    "impacted_tools": list(pending.get("tools", []) or []),
+                },
+            )
+            await asyncio.to_thread(context_store.write_context, store, customer_id, context)
             return _finalize_turn("Update workflow canceled. No specialist tools were executed.")
 
         if _is_update_confirm_message(user_message):
             _PENDING_UPDATE_WORKFLOWS.pop(customer_id, None)
+            context_store.clear_pending_update(context)
             planned_tools = list(pending.get("tools", []) or [])
             change_request = str(pending.get("change_request", "") or "").strip()
+            change_record = {
+                "id": str(pending.get("id", "") or str(uuid.uuid4())),
+                "timestamp": _now(),
+                "status": "applied",
+                "change_request": change_request,
+                "impacted_tools": planned_tools,
+                "superseded_decision_ids": _infer_superseded_decision_ids(context, change_request),
+            }
+            context_store.append_change_record(context, change_record)
+            context_store.append_update_batch(context, change_record)
+            await asyncio.to_thread(context_store.write_context, store, customer_id, context)
             workflow_decision_context = decision_context_builder.build_decision_context(
                 user_message=change_request or user_message,
                 context=context,
@@ -255,36 +338,52 @@ async def run_turn(
             if forced_reply:
                 return _finalize_turn(forced_reply)
             return _finalize_turn(
-                "Confirmed. I executed the approved update sequence in order and applied skill checks:\n"
+                "Confirmed. I executed the approved update sequence in order using the Archie dependency plan:\n"
                 f"- Executed tools: {executed}\n"
                 "- Review the tool outputs above and confirm if any additional updates are needed."
             )
 
         planned = ", ".join(pending.get("tools", [])) or "(none)"
         return _finalize_turn(
-            "An update workflow is waiting for confirmation.\n"
+            "An Archie update plan is waiting for confirmation.\n"
             f"- Planned tools: {planned}\n"
             "- Reply `confirm update all` to proceed or `cancel update` to stop."
         )
 
     if _is_change_update_intent(user_message):
         ctx = await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
-        planned_tools = _build_update_plan_from_context(ctx)
+        planned_tools = _build_update_plan_from_context(ctx, change_request=user_message)
         if not planned_tools:
             return _finalize_turn(
                 "I don't see existing generated artifacts for this customer yet, so I can't build an impact update plan.\n"
                 "Generate a diagram/related artifacts first, then request a full update."
             )
 
-        _PENDING_UPDATE_WORKFLOWS[customer_id] = {
+        change_batch = {
+            "id": str(uuid.uuid4()),
             "tools": planned_tools,
             "change_request": user_message.strip(),
             "created_at": _now(),
+            "status": "pending_confirmation",
+            "impacted_tools": planned_tools,
         }
+        _PENDING_UPDATE_WORKFLOWS[customer_id] = dict(change_batch)
+        context_store.set_pending_update(ctx, change_batch)
+        context_store.append_change_record(
+            ctx,
+            {
+                "id": change_batch["id"],
+                "timestamp": change_batch["created_at"],
+                "status": "pending_confirmation",
+                "change_request": change_batch["change_request"],
+                "impacted_tools": planned_tools,
+            },
+        )
+        await asyncio.to_thread(context_store.write_context, store, customer_id, ctx)
         ordered = "\n".join(f"{idx}. {tool}" for idx, tool in enumerate(planned_tools, start=1))
         return _finalize_turn(
-            "I detected a change request and reviewed existing customer outputs. "
-            "I can update all impacted elements in this order:\n"
+            "I compared the new information against the latest recorded Archie decisions and artifacts. "
+            "These outputs are impacted and would be regenerated in this order:\n"
             f"{ordered}\n\n"
             "Reply `confirm update all` to execute, or `cancel update`."
         )
@@ -424,6 +523,16 @@ async def run_turn(
             tool_name = tool_call.get("tool", "")
             tool_args = tool_call.get("args", {})
             if (
+                tool_name.startswith("generate_")
+                and not requested_tools
+                and _is_architecture_chat_only_request(user_message, decision_context)
+            ):
+                reply = _build_architecture_chat_reply(
+                    user_message=user_message,
+                    decision_context=decision_context,
+                )
+                break
+            if (
                 requested_tools
                 and tool_name.startswith("generate_")
                 and tool_name not in requested_tools
@@ -503,7 +612,7 @@ async def run_turn(
                 break
 
             if tool_name == "generate_diagram" and requested_tools == {"generate_diagram"}:
-                reply = result_summary
+                reply = _build_parallel_reply(tool_calls, decision_context=decision_context)
                 break
 
             # Feed tool result back into next prompt
@@ -585,6 +694,109 @@ async def _execute_tool(
     path_id = _tool_to_path_id(tool_name)
     context_summary = ""
     preflight_decision = None
+    context: dict[str, Any] | None = None
+    if tool_name == "generate_bom":
+        context = await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
+        args = _prepare_bom_tool_args(
+            args=args,
+            user_message=user_message,
+            context=context,
+            decision_context=decision_context,
+        )
+    if tool_name in {"save_notes", "generate_diagram", "generate_bom", "generate_pov", "generate_jep", "generate_waf", "generate_terraform"}:
+        context = context or await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
+        args = _hydrate_tool_args_from_context(
+            tool_name=tool_name,
+            args=args,
+            context=context,
+            decision_context=decision_context,
+            user_message=user_message,
+        )
+    if (
+        tool_name == "generate_diagram"
+        and context is not None
+        and not _diagram_has_sufficient_context(
+            context=context,
+            args=args,
+            user_message=user_message,
+        )
+    ):
+        return (
+            "Please upload or paste BOM/resource details first, or describe the workload/components you want in the diagram.",
+            "",
+            {},
+        )
+    if (
+        tool_name == "generate_pov"
+        and context is not None
+        and not _pov_has_sufficient_context(
+            context=context,
+            decision_context=decision_context,
+            args=args,
+            user_message=user_message,
+        )
+    ):
+        return await _mediate_specialist_questions(
+            tool_name=tool_name,
+            args=args,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            specialist_mode=specialist_mode,
+            user_message=user_message,
+            max_refinements=max_refinements,
+            decision_context=dict(decision_context or {}),
+            result_summary="POV clarification required before Archie drafts the customer narrative.",
+            artifact_key="",
+            result_data={"questions": _pov_targeted_questions(), "decision_context": dict(decision_context or {})},
+            context=context,
+        )
+    if (
+        tool_name == "generate_terraform"
+        and context is not None
+        and _has_architecture_definition(context)
+        and not _terraform_scope_is_bounded(
+            context=context,
+            args=args,
+            decision_context=decision_context,
+            user_message=user_message,
+        )
+    ):
+        return await _mediate_specialist_questions(
+            tool_name=tool_name,
+            args=args,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            specialist_mode=specialist_mode,
+            user_message=user_message,
+            max_refinements=max_refinements,
+            decision_context=dict(decision_context or {}),
+            result_summary="Terraform clarification required before Archie drafts the implementation bundle.",
+            artifact_key="",
+            result_data={"questions": _terraform_targeted_questions(), "decision_context": dict(decision_context or {})},
+            context=context,
+        )
+    expert_mode = _build_expert_mode_metadata(
+        tool_name=tool_name,
+        args=args,
+        user_message=user_message,
+        decision_context=decision_context,
+    )
+    if _is_architecture_tool(tool_name) and not str(expert_mode.get("standards_bundle_version", "") or "").strip():
+        return (
+            "Architecture expert mode is blocked because no Oracle standards bundle is selected.",
+            "",
+            {
+                "expert_mode": expert_mode,
+                "standards_bundle_version": "",
+                "reference_mode": "blocked",
+            },
+        )
     if path_id:
         context_summary = await asyncio.to_thread(
             _build_context_summary_for_skills, store, customer_id, customer_name
@@ -607,6 +819,7 @@ async def _execute_tool(
         args,
         user_message=user_message,
         decision_context=decision_context,
+        expert_mode=expert_mode,
     )
     tool_text_runner = _runner_for_tool(text_runner, enriched_args)
     result_summary, artifact_key, result_data = await _execute_tool_core(
@@ -621,16 +834,64 @@ async def _execute_tool(
     )
 
     result_data = dict(result_data or {})
+    merged_decision_context = _merge_decision_context(decision_context, result_data.get("decision_context"))
+    merged_constraint_tags = decision_context_builder.derive_constraint_tags(merged_decision_context)
     applied_skills = list(enriched_args.get("_skill_injected", []) or [])
     result_data["skill_injected"] = bool(applied_skills)
     result_data["applied_skills"] = applied_skills
     result_data["skill_sections"] = dict(enriched_args.get("_skill_sections", {}) or {})
     result_data["skill_versions"] = dict(enriched_args.get("_skill_versions", {}) or {})
     result_data["skill_model_profile"] = str(enriched_args.get("_skill_model_profile", "") or "")
-    result_data["decision_context"] = dict(decision_context or {})
-    result_data["constraint_tags"] = list(enriched_args.get("_constraint_tags", []) or [])
+    result_data["decision_context"] = merged_decision_context
+    result_data["constraint_tags"] = merged_constraint_tags or list(enriched_args.get("_constraint_tags", []) or [])
+    result_data["expert_mode"] = dict(enriched_args.get("_expert_mode", {}) or {})
+    result_data["standards_bundle_version"] = str(enriched_args.get("_standards_bundle_version", "") or "")
+    result_data["reference_architecture"] = dict(enriched_args.get("_reference_architecture", {}) or {})
+    result_data["reference_family"] = str(enriched_args.get("_reference_family", "") or result_data.get("reference_family", "") or "")
+    result_data["reference_confidence"] = float(enriched_args.get("_reference_confidence", result_data.get("reference_confidence", 0)) or 0)
+    result_data["reference_mode"] = str(enriched_args.get("_reference_mode", result_data.get("reference_mode", "")) or "")
     if preflight_decision:
         result_data["skill_preflight"] = asdict(preflight_decision)
+
+    if tool_name == "save_notes":
+        _record_saved_note_context(
+            store=store,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            note_key=artifact_key,
+            note_text=str(args.get("text", "") or ""),
+            decision_context=merged_decision_context,
+        )
+
+    if tool_name.startswith("generate_") and not bool(enriched_args.get("_archie_question_retry")):
+        context = context or await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
+        result_summary, artifact_key, result_data = await _mediate_specialist_questions(
+            tool_name=tool_name,
+            args=enriched_args,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            specialist_mode=specialist_mode,
+            user_message=user_message,
+            max_refinements=max_refinements,
+            decision_context=merged_decision_context,
+            result_summary=result_summary,
+            artifact_key=artifact_key,
+            result_data=result_data,
+            context=context,
+        )
+
+    if isinstance(result_data.get("archie_question_bundle"), dict):
+        result_data["trace"] = _build_tool_trace(
+            tool_name=tool_name,
+            result_data=result_data,
+            max_refinements=max_refinements,
+        )
+        return result_summary, artifact_key, result_data
+    if isinstance(result_data.get("archie_auto_answers"), list):
+        return result_summary, artifact_key, result_data
 
     if path_id:
         postflight_decision = _SKILL_ENGINE.postflight_check(
@@ -638,9 +899,31 @@ async def _execute_tool(
             tool_result=result_summary,
             artifacts={"artifact_key": artifact_key},
             context_summary=context_summary,
+            tool_args=enriched_args,
+            result_data=result_data,
         )
         result_data["skill_postflight"] = asdict(postflight_decision)
         if postflight_decision.status == "block":
+            _record_tool_decision_state(
+                store=store,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                tool_name=tool_name,
+                artifact_key="",
+                decision_context=merged_decision_context,
+                result_data=result_data,
+            )
+            _persist_tool_metadata(
+                tool_name=tool_name,
+                customer_id=customer_id,
+                store=store,
+                result_data=result_data,
+            )
+            result_data["trace"] = _build_tool_trace(
+                tool_name=tool_name,
+                result_data=result_data,
+                max_refinements=max_refinements,
+            )
             return (
                 _decision_pushback_text(postflight_decision),
                 "",
@@ -662,7 +945,7 @@ async def _execute_tool(
             result_data=result_data,
             context_summary=context_summary,
             max_refinements=max_refinements,
-            decision_context=decision_context or {},
+            decision_context=merged_decision_context,
         )
 
     _record_tool_decision_state(
@@ -671,7 +954,7 @@ async def _execute_tool(
         customer_name=customer_name,
         tool_name=tool_name,
         artifact_key=artifact_key,
-        decision_context=decision_context or {},
+        decision_context=merged_decision_context,
         result_data=result_data,
     )
     _persist_tool_metadata(
@@ -747,7 +1030,7 @@ async def _execute_tool_core(
     if tool_name == "generate_pov":
         from agent import pov_agent
 
-        feedback = args.get("feedback", "")
+        feedback = str(args.get("_user_request_text", "") or args.get("feedback", "") or "")
         result = await asyncio.to_thread(
             pov_agent.generate_pov,
             customer_id,
@@ -755,6 +1038,7 @@ async def _execute_tool_core(
             store,
             text_runner,
             feedback=feedback,
+            architect_brief=dict(args.get("_architect_brief", {}) or {}),
         )
         key = result.get("key", "")
         return f"POV v{result.get('version')} saved. Key: {key}", key, {}
@@ -801,24 +1085,12 @@ async def _execute_tool_core(
         }
 
     if tool_name == "generate_bom":
-        prompt = str(args.get("prompt", "") or "").strip() or "Generate a BOM from current request context."
-        service = get_shared_bom_service()
-        response = await asyncio.to_thread(
-            service.chat,
-            message=prompt,
-            conversation=[],
-            trace_id=new_trace_id(),
-            model_id="orchestrator-generate_bom",
+        response = await _execute_bom_tool_request(
+            args=args,
             text_runner=text_runner,
+            model_id="orchestrator-generate_bom",
         )
-        result_type = str(response.get("type", "normal"))
-        summary = str(response.get("reply", "")).strip() or "BOM response generated."
-        if result_type == "final":
-            summary = f"Final BOM prepared. {summary}"
-        elif result_type == "question":
-            summary = f"BOM clarification required. {summary}"
-        elif "not ready" in summary.lower():
-            summary = f"BOM data not ready. {summary}"
+        summary = _summarize_bom_tool_response(response)
         return summary, "", response
 
     if tool_name == "generate_terraform":
@@ -843,6 +1115,141 @@ async def _execute_tool_core(
         return f"{doc_type.upper()} content (first 500 chars):\n{preview}", "", {}
 
     return f"Unknown tool: {tool_name!r}", "", {}
+
+
+def _bom_response_needs_refresh(response: dict[str, Any] | None) -> bool:
+    if not isinstance(response, dict):
+        return False
+    trace = response.get("trace", {}) if isinstance(response.get("trace"), dict) else {}
+    if trace.get("cache_ready") is False:
+        return True
+    return "not ready" in str(response.get("reply", "") or "").lower()
+
+
+def _summarize_bom_tool_response(response: dict[str, Any] | None) -> str:
+    if not isinstance(response, dict):
+        return "BOM response generated."
+    summary = str(response.get("reply", "")).strip() or "BOM response generated."
+    if response.get("error_code") == "bom_data_init_failed":
+        return summary
+    result_type = str(response.get("type", "normal") or "normal")
+    lowered = summary.lower()
+    if result_type == "final" and not lowered.startswith("final bom prepared"):
+        return f"Final BOM prepared. {summary}"
+    if result_type == "question" and not lowered.startswith("bom clarification required"):
+        return f"BOM clarification required. {summary}"
+    if "not ready" in lowered and not lowered.startswith("bom data not ready"):
+        return f"BOM data not ready. {summary}"
+    return summary
+
+
+async def _execute_bom_tool_request(
+    *,
+    args: dict[str, Any],
+    text_runner: Callable,
+    model_id: str,
+) -> dict[str, Any]:
+    trace_id = new_trace_id()
+    context_source = str(args.get("_bom_context_source", "") or "direct_request")
+    direct_reply = str(args.get("_bom_direct_reply", "") or "").strip()
+    if direct_reply:
+        return {
+            "type": "question",
+            "reply": direct_reply,
+            "trace_id": trace_id,
+            "trace": {
+                "model_id": model_id,
+                "type": "question",
+                "repair_attempts": 0,
+                "cache_ready": None,
+                "cache_source": "unknown",
+                "latency_ms": 0,
+                "bom_cache_status_before_attempt": "not_checked",
+                "bom_cache_refresh_attempted": False,
+                "bom_cache_refresh_status": "not_attempted",
+                "bom_context_source": context_source,
+                "bom_retry_count": 0,
+                "bom_retry_succeeded": False,
+            },
+            "bom_context_source": context_source,
+        }
+
+    clean_request = str(args.get("_user_request_text", "") or args.get("prompt", "") or "").strip()
+    architect_brief = dict(args.get("_architect_brief", {}) or {})
+    prompt = _compose_specialist_request_text(
+        clean_request=clean_request or "Generate a BOM from current request context.",
+        architect_brief=architect_brief if context_source == "direct_request" else {},
+    )
+    if not prompt:
+        prompt = "Generate a BOM from current request context."
+    service = get_shared_bom_service()
+    cache_before = await asyncio.to_thread(service.health)
+    cache_status_before_attempt = "ready" if cache_before.get("ready") else "not_ready"
+    response = await asyncio.to_thread(
+        service.chat,
+        message=prompt,
+        conversation=[],
+        trace_id=trace_id,
+        model_id=model_id,
+        text_runner=text_runner,
+    )
+
+    refresh_attempted = False
+    refresh_status = "not_attempted"
+    retry_count = 0
+    retry_succeeded = False
+    if _bom_response_needs_refresh(response):
+        refresh_attempted = True
+        try:
+            refresh_result = await asyncio.to_thread(service.refresh_data)
+            refresh_status = "succeeded" if refresh_result.get("ready") else "failed"
+        except Exception as exc:
+            logger.warning("Archie BOM cache refresh failed: %s", exc)
+            refresh_status = "failed"
+        if refresh_status == "succeeded":
+            retry_count = 1
+            response = await asyncio.to_thread(
+                service.chat,
+                message=prompt,
+                conversation=[],
+                trace_id=trace_id,
+                model_id=model_id,
+                text_runner=text_runner,
+            )
+            retry_succeeded = not _bom_response_needs_refresh(response)
+        if refresh_status != "succeeded" or not retry_succeeded:
+            response = {
+                "type": "normal",
+                "reply": (
+                    "I could not initialize the internal OCI BOM pricing data for this chat request. "
+                    "Retry in a moment; if it persists, the BOM service data source needs attention."
+                ),
+                "trace_id": trace_id,
+                "error_code": "bom_data_init_failed",
+                "trace": {
+                    "model_id": model_id,
+                    "type": "normal",
+                    "repair_attempts": 0,
+                    "cache_ready": False,
+                    "cache_source": "none",
+                    "latency_ms": 0,
+                },
+            }
+
+    trace = response.get("trace", {}) if isinstance(response.get("trace"), dict) else {}
+    trace.update(
+        {
+            "bom_cache_status_before_attempt": cache_status_before_attempt,
+            "bom_cache_refresh_attempted": refresh_attempted,
+            "bom_cache_refresh_status": refresh_status,
+            "bom_context_source": context_source,
+            "bom_retry_count": retry_count,
+            "bom_retry_succeeded": retry_succeeded,
+        }
+    )
+    response["trace"] = trace
+    response["bom_context_source"] = context_source
+    return response
 
 
 def _tool_to_path_id(tool_name: str) -> str | None:
@@ -874,6 +1281,975 @@ def _build_context_summary_for_skills(
     except Exception as exc:
         logger.warning("Failed to build context summary for skill checks: %s", exc)
         return ""
+
+
+_BOM_DEICTIC_MARKERS: tuple[str, ...] = (
+    "for this",
+    "from this",
+    "use this",
+    "use that",
+    "for that",
+    "from that",
+    "this diagram",
+    "that diagram",
+    "previous diagram",
+    "latest diagram",
+)
+
+
+def _is_bom_deictic_followup(prompt: str, user_message: str) -> bool:
+    combined = " ".join(part.strip().lower() for part in (user_message, prompt) if str(part).strip())
+    if not combined:
+        return False
+    if "bom" not in combined and "bill of materials" not in combined and "cost" not in combined and "pricing" not in combined:
+        return False
+    return any(marker in combined for marker in _BOM_DEICTIC_MARKERS)
+
+
+def _has_meaningful_decision_context(decision_context: dict[str, Any] | None) -> bool:
+    if not isinstance(decision_context, dict):
+        return False
+    if str(decision_context.get("goal", "") or "").strip():
+        return True
+    if list(decision_context.get("success_criteria", []) or []):
+        return True
+    constraints = dict(decision_context.get("constraints", {}) or {})
+    return any(value not in (None, "", [], {}) for value in constraints.values())
+
+
+def _diagram_context_supports_bom(
+    diagram_ctx: dict[str, Any] | None,
+    decision_context: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(diagram_ctx, dict):
+        return False
+    if not str(diagram_ctx.get("diagram_key", "") or "").strip():
+        return False
+    if int(diagram_ctx.get("node_count", 0) or 0) > 0:
+        return True
+    for key in ("deployment_summary", "spec_summary", "reference_family", "decision_context_summary", "summary"):
+        if str(diagram_ctx.get(key, "") or "").strip():
+            return True
+    if list(diagram_ctx.get("assumptions_used", []) or []):
+        return True
+    return _has_meaningful_decision_context(decision_context)
+
+
+def _format_bom_followup_clarification() -> str:
+    return (
+        "I can build the BOM, but `this` is not grounded to a prior diagram or workload yet.\n"
+        "Please share the workload or diagram context plus rough sizing for OCPU, memory, storage, "
+        "and any load balancer, database, or Object Storage requirements."
+    )
+
+
+def _summarize_diagram_scope(diagram_ctx: dict[str, Any]) -> str:
+    parts: list[str] = []
+    deployment_summary = str(diagram_ctx.get("deployment_summary", "") or "").strip()
+    if deployment_summary:
+        parts.append(deployment_summary)
+    reference_family = str(diagram_ctx.get("reference_family", "") or "").strip()
+    if reference_family:
+        parts.append(f"reference family={reference_family}")
+    node_count = int(diagram_ctx.get("node_count", 0) or 0)
+    if node_count > 0:
+        parts.append(f"node_count={node_count}")
+    spec_summary = str(diagram_ctx.get("spec_summary", "") or "").strip()
+    if spec_summary and spec_summary not in parts:
+        parts.append(spec_summary)
+    return ", ".join(parts)
+
+
+def _build_bom_followup_prompt(
+    *,
+    prompt: str,
+    diagram_ctx: dict[str, Any],
+    decision_context: dict[str, Any] | None,
+) -> str:
+    current_decision_context = dict(decision_context or {})
+    lines = [
+        "Generate BOM for the latest OCI architecture diagram.",
+        "Treat this as a best-effort OCI BOM draft/finalization request, not a generic clarification-only question.",
+        "Use existing BOM draft defaults for missing numeric sizing and surface assumptions or checkpoint items instead of refusing the draft.",
+    ]
+    cleaned_prompt = _strip_injected_guidance_blocks(prompt).strip()
+    if cleaned_prompt:
+        lines.append(f"User follow-up: {cleaned_prompt}")
+    lines.append("[Latest Diagram Context]")
+    lines.append(f"- diagram_key: {diagram_ctx.get('diagram_key', '')}")
+    scope_summary = _summarize_diagram_scope(diagram_ctx)
+    if scope_summary:
+        lines.append(f"- scope_summary: {scope_summary}")
+    prior_decision_summary = str(diagram_ctx.get("decision_context_summary", "") or "").strip()
+    if prior_decision_summary:
+        lines.append(f"- prior_decision_context: {prior_decision_summary}")
+    if _has_meaningful_decision_context(current_decision_context):
+        lines.append(
+            f"- current_decision_context: {decision_context_builder.summarize_decision_context(current_decision_context)}"
+        )
+    assumptions = _merge_assumption_lists(
+        list(diagram_ctx.get("assumptions_used", []) or []),
+        list(current_decision_context.get("assumptions", []) or []),
+    )
+    if assumptions:
+        lines.append("- assumptions already applied:")
+        lines.extend(
+            f"  - {item.get('statement', '').strip()} (risk: {item.get('risk', 'low')})"
+            for item in assumptions
+            if str(item.get("statement", "")).strip()
+        )
+    lines.append("[End Latest Diagram Context]")
+    return "\n".join(lines).strip()
+
+
+def _prepare_bom_tool_args(
+    *,
+    args: dict[str, Any] | None,
+    user_message: str,
+    context: dict[str, Any] | None,
+    decision_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = dict(args or {})
+    prompt = str(payload.get("prompt", "") or "").strip() or str(user_message or "").strip()
+    payload["prompt"] = prompt or "Generate a BOM from current request context."
+    payload["_bom_context_source"] = str(payload.get("_bom_context_source", "") or "direct_request")
+
+    if not _is_bom_deictic_followup(prompt, user_message):
+        return payload
+
+    diagram_ctx = dict(((context or {}).get("agents", {}) or {}).get("diagram", {}) or {})
+    if _diagram_context_supports_bom(diagram_ctx, decision_context):
+        payload["prompt"] = _build_bom_followup_prompt(
+            prompt=prompt,
+            diagram_ctx=diagram_ctx,
+            decision_context=decision_context,
+        )
+        payload["_bom_context_source"] = "latest_diagram"
+        payload["_bom_grounded_from_context"] = True
+        return payload
+
+    payload["_bom_direct_reply"] = _format_bom_followup_clarification()
+    payload["_bom_context_source"] = "unresolved_followup"
+    payload["_bom_grounded_from_context"] = False
+    return payload
+
+
+def _summarize_note_text(note_text: str, *, limit: int = 280) -> str:
+    cleaned = re.sub(r"\s+", " ", str(note_text or "")).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3].rstrip() + "..."
+
+
+def _record_saved_note_context(
+    *,
+    store: ObjectStoreBase,
+    customer_id: str,
+    customer_name: str,
+    note_key: str,
+    note_text: str,
+    decision_context: dict[str, Any] | None,
+) -> None:
+    context = context_store.read_context(store, customer_id, customer_name)
+    note_summary = _summarize_note_text(note_text)
+    archie = context_store.get_archie_state(context)
+    prior_summary = str(archie.get("engagement_summary", "") or "").strip()
+    if note_summary and note_summary not in prior_summary:
+        merged = f"{prior_summary} {note_summary}".strip() if prior_summary else note_summary
+        context_store.set_archie_engagement_summary(context, _summarize_note_text(merged, limit=480), note_summary=note_summary)
+    elif note_summary:
+        context_store.set_archie_engagement_summary(context, prior_summary or note_summary, note_summary=note_summary)
+    context_store.set_archie_decision_state(
+        context,
+        constraints=dict((decision_context or {}).get("constraints", {}) or {}),
+        assumptions=list((decision_context or {}).get("assumptions", []) or []),
+    )
+    context_store.append_change_record(
+        context,
+        {
+            "id": str(uuid.uuid4()),
+            "timestamp": _now(),
+            "status": "recorded",
+            "change_request": note_summary or "Notes saved.",
+            "source": "save_notes",
+            "note_key": note_key,
+            "impacted_tools": [],
+        },
+    )
+    context_store.write_context(store, customer_id, context)
+
+
+def _build_archie_specialist_context(
+    context: dict[str, Any] | None,
+    *,
+    decision_context: dict[str, Any] | None,
+) -> str:
+    if not isinstance(context, dict):
+        return ""
+    archie = context_store.get_archie_state(context)
+    lines: list[str] = []
+    engagement_summary = str(archie.get("engagement_summary", "") or "").strip()
+    if engagement_summary:
+        lines.append(f"Engagement summary: {engagement_summary}")
+    latest_notes_summary = str(archie.get("latest_notes_summary", "") or "").strip()
+    if latest_notes_summary and latest_notes_summary != engagement_summary:
+        lines.append(f"Latest notes: {latest_notes_summary}")
+    resolved = archie.get("resolved_questions", []) if isinstance(archie.get("resolved_questions"), list) else []
+    if resolved:
+        lines.append("Resolved Archie decisions:")
+        for item in resolved[-5:]:
+            if not isinstance(item, dict):
+                continue
+            question_id = str(item.get("question_id", "") or item.get("id", "") or "question").strip()
+            answer = str(item.get("final_answer", "") or item.get("suggested_answer", "") or "").strip()
+            if question_id and answer:
+                lines.append(f"- {question_id}: {answer}")
+    if isinstance(decision_context, dict) and decision_context:
+        lines.append(decision_context_builder.summarize_decision_context(decision_context))
+    return "\n".join(line for line in lines if str(line).strip()).strip()
+
+
+def _tool_primary_input_key(tool_name: str) -> str | None:
+    if tool_name == "generate_diagram":
+        return "bom_text"
+    if tool_name == "generate_bom":
+        return "prompt"
+    if tool_name in {"generate_pov", "generate_jep", "generate_waf"}:
+        return "feedback"
+    if tool_name == "generate_terraform":
+        return "prompt"
+    return None
+
+
+def _clean_tool_user_request(
+    *,
+    tool_name: str,
+    args: dict[str, Any] | None,
+    user_message: str,
+) -> str:
+    payload = dict(args or {})
+    key = _tool_primary_input_key(tool_name)
+    raw = ""
+    if key:
+        raw = str(payload.get(key, "") or "")
+    if not raw.strip():
+        raw = str(user_message or "")
+    return _strip_injected_guidance_blocks(raw).strip()
+
+
+def _tool_goal_label(tool_name: str) -> str:
+    labels = {
+        "generate_diagram": "Architecture diagram",
+        "generate_bom": "Bill of materials",
+        "generate_pov": "Customer POV draft",
+        "generate_jep": "Joint execution plan",
+        "generate_waf": "Well-Architected review",
+        "generate_terraform": "Terraform draft",
+    }
+    return labels.get(tool_name, tool_name)
+
+
+def _build_architect_brief(
+    *,
+    tool_name: str,
+    user_request: str,
+    context: dict[str, Any] | None,
+    decision_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    current_decision_context = dict(decision_context or {})
+    assumptions = _merge_assumption_lists(
+        list(current_decision_context.get("assumptions", []) or []),
+        [],
+    )
+    missing_inputs = list(current_decision_context.get("missing_inputs", []) or [])
+    success_criteria = list(current_decision_context.get("success_criteria", []) or [])
+    architect_context = _build_archie_specialist_context(
+        context,
+        decision_context=current_decision_context,
+    )
+    return {
+        "tool_name": tool_name,
+        "goal": str(current_decision_context.get("goal", "") or user_request or _tool_goal_label(tool_name)),
+        "deliverable": _tool_goal_label(tool_name),
+        "user_request": user_request,
+        "user_notes": user_request,
+        "architect_context": architect_context,
+        "assumptions": assumptions,
+        "missing_inputs": missing_inputs,
+        "success_criteria": success_criteria,
+        "risk_level": str(current_decision_context.get("risk_level", "") or "low"),
+        "assumption_mode": bool(current_decision_context.get("assumption_mode", False)),
+        "requires_user_confirmation": bool(current_decision_context.get("requires_user_confirmation", False)),
+    }
+
+
+def _render_architect_brief_text(architect_brief: dict[str, Any] | None) -> str:
+    brief = dict(architect_brief or {})
+    if not brief:
+        return ""
+    lines = ["[Architect Brief]"]
+    goal = str(brief.get("goal", "") or "").strip()
+    if goal:
+        lines.append(f"Goal: {goal}")
+    deliverable = str(brief.get("deliverable", "") or "").strip()
+    if deliverable:
+        lines.append(f"Deliverable: {deliverable}")
+    user_notes = str(brief.get("user_notes", "") or "").strip()
+    if user_notes:
+        lines.append(f"User notes/request: {user_notes}")
+    architect_context = str(brief.get("architect_context", "") or "").strip()
+    if architect_context:
+        lines.append("Architect context:")
+        lines.append(architect_context)
+    assumptions = list(brief.get("assumptions", []) or [])
+    if assumptions:
+        lines.append("Assumptions:")
+        lines.extend(
+            f"- {item.get('statement', '').strip()} (risk: {item.get('risk', 'low')})"
+            for item in assumptions
+            if isinstance(item, dict) and str(item.get("statement", "")).strip()
+        )
+    success_criteria = [str(item).strip() for item in brief.get("success_criteria", []) or [] if str(item).strip()]
+    if success_criteria:
+        lines.append("Success criteria:")
+        lines.extend(f"- {item}" for item in success_criteria)
+    missing_inputs = [str(item).strip() for item in brief.get("missing_inputs", []) or [] if str(item).strip()]
+    if missing_inputs:
+        lines.append("Missing inputs:")
+        lines.extend(f"- {item}" for item in missing_inputs)
+    lines.append(f"Risk level: {str(brief.get('risk_level', '') or 'low')}")
+    lines.append("[End Architect Brief]")
+    return "\n".join(lines)
+
+
+def _append_archie_context_block(text: str, archie_context: str) -> str:
+    if not archie_context.strip():
+        return text.strip()
+    block = f"[Archie Shared Context]\n{archie_context}\n[End Archie Shared Context]"
+    if block in text:
+        return text.strip()
+    return f"{text.strip()}\n\n{block}".strip()
+
+
+def _hydrate_tool_args_from_context(
+    *,
+    tool_name: str,
+    args: dict[str, Any] | None,
+    context: dict[str, Any] | None,
+    decision_context: dict[str, Any] | None,
+    user_message: str,
+) -> dict[str, Any]:
+    payload = dict(args or {})
+    clean_request = _clean_tool_user_request(
+        tool_name=tool_name,
+        args=payload,
+        user_message=user_message,
+    )
+    architect_brief = _build_architect_brief(
+        tool_name=tool_name,
+        user_request=clean_request,
+        context=context,
+        decision_context=decision_context,
+    )
+    payload["_user_request_text"] = clean_request
+    payload["_architect_brief"] = architect_brief
+    payload["_archie_context_summary"] = str(architect_brief.get("architect_context", "") or "")
+
+    primary_key = _tool_primary_input_key(tool_name)
+    if primary_key and clean_request:
+        payload[primary_key] = clean_request
+
+    return payload
+
+
+def _normalize_specialist_question(
+    tool_name: str,
+    raw_question: Any,
+    *,
+    index: int,
+) -> dict[str, Any] | None:
+    if isinstance(raw_question, dict):
+        question = str(raw_question.get("question", "") or raw_question.get("prompt", "") or "").strip()
+        if not question:
+            return None
+        return {
+            "question_id": str(raw_question.get("id", "") or f"{tool_name}.q{index}"),
+            "question": question,
+            "blocking": bool(raw_question.get("blocking", True)),
+        }
+    if isinstance(raw_question, str) and raw_question.strip():
+        return {
+            "question_id": f"{tool_name}.q{index}",
+            "question": raw_question.strip(),
+            "blocking": True,
+        }
+    return None
+
+
+def _has_architecture_definition(context: dict[str, Any] | None) -> bool:
+    agents = (context or {}).get("agents", {}) if isinstance(context, dict) else {}
+    diagram = dict((agents or {}).get("diagram", {}) or {})
+    return bool(str(diagram.get("diagram_key", "") or "").strip() or str(diagram.get("summary", "") or "").strip())
+
+
+def _text_has_any_marker(text: str, markers: tuple[str, ...]) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in markers)
+
+
+def _pov_has_sufficient_context(
+    *,
+    context: dict[str, Any] | None,
+    decision_context: dict[str, Any] | None,
+    args: dict[str, Any],
+    user_message: str,
+) -> bool:
+    combined = " ".join(
+        part
+        for part in (
+            str(args.get("_user_request_text", "") or ""),
+            user_message,
+            str((args.get("_architect_brief", {}) or {}).get("architect_context", "") or ""),
+            decision_context_builder.summarize_decision_context(decision_context),
+            context_store.build_context_summary(context or {}),
+        )
+        if str(part).strip()
+    ).lower()
+    business_markers = (
+        "industry",
+        "customer",
+        "business",
+        "revenue",
+        "outcome",
+        "modernize",
+        "migration",
+        "latency",
+        "scale",
+        "resilience",
+        "retail",
+        "healthcare",
+        "finance",
+    )
+    architecture_markers = (
+        "oke",
+        "kubernetes",
+        "database",
+        "load balancer",
+        "waf",
+        "object storage",
+        "vcn",
+        "private",
+        "public",
+        "multi-region",
+        "autonomous database",
+    )
+    return _text_has_any_marker(combined, business_markers) and (
+        _text_has_any_marker(combined, architecture_markers) or _has_architecture_definition(context)
+    )
+
+
+def _pov_targeted_questions() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "pov.business_outcomes",
+            "question": "What two or three business outcomes should the POV emphasize for this customer?",
+            "blocking": True,
+        },
+        {
+            "id": "pov.customer_profile",
+            "question": "What customer context should anchor the story: industry, workload type, or strategic initiative?",
+            "blocking": True,
+        },
+        {
+            "id": "pov.scope",
+            "question": "Should this POV stay high-level executive, or should it call out specific OCI services and deployment scope?",
+            "blocking": True,
+        },
+    ]
+
+
+def _terraform_scope_is_bounded(
+    *,
+    context: dict[str, Any] | None,
+    args: dict[str, Any],
+    decision_context: dict[str, Any] | None,
+    user_message: str,
+) -> bool:
+    combined = " ".join(
+        part
+        for part in (
+            str(args.get("_user_request_text", "") or ""),
+            user_message,
+            str((args.get("_architect_brief", {}) or {}).get("architect_context", "") or ""),
+            decision_context_builder.summarize_decision_context(decision_context),
+            context_store.build_context_summary(context or {}),
+        )
+        if str(part).strip()
+    ).lower()
+    module_markers = ("module", "network", "vcn", "oke", "database", "subnet", "load balancer", "waf")
+    state_markers = ("remote state", "state backend", "object storage backend", "terraform cloud", "local state")
+    security_markers = ("private", "public", "nsg", "security list", "kms", "vault", "iam")
+    return (
+        _has_architecture_definition(context)
+        and _text_has_any_marker(combined, module_markers)
+        and _text_has_any_marker(combined, state_markers)
+        and _text_has_any_marker(combined, security_markers)
+    )
+
+
+def _terraform_targeted_questions() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "terraform.module_scope",
+            "question": "Which Terraform module boundary should Archie draft first: networking foundation, compute/app tier, database tier, or the full stack?",
+            "blocking": True,
+        },
+        {
+            "id": "terraform.state_backend",
+            "question": "What should the Terraform state backend be: OCI Object Storage, Terraform Cloud, or local state for a draft?",
+            "blocking": True,
+        },
+        {
+            "id": "terraform.security_controls",
+            "question": "What security defaults must be enforced in code: private-only networking, specific NSG posture, KMS/Vault usage, or tagging/IAM constraints?",
+            "blocking": True,
+        },
+    ]
+
+
+def _diagram_has_sufficient_context(
+    *,
+    context: dict[str, Any] | None,
+    args: dict[str, Any],
+    user_message: str,
+) -> bool:
+    if _has_architecture_definition(context):
+        return True
+    archie = context_store.get_archie_state(context or {})
+    if any(
+        str(archie.get(key, "") or "").strip()
+        for key in ("engagement_summary", "latest_notes_summary")
+    ):
+        return True
+    if list(archie.get("resolved_questions", []) or []):
+        return True
+    architect_context = str((args.get("_architect_brief", {}) or {}).get("architect_context", "") or "").strip()
+    combined = " ".join(
+        part
+        for part in (
+            str(args.get("_user_request_text", "") or ""),
+            user_message,
+            architect_context,
+            context_store.build_context_summary(context or {}),
+        )
+        if str(part).strip()
+    )
+    return _diagram_request_has_topology_intent(combined)
+
+
+def _specialist_question_bundle_from_result(
+    *,
+    tool_name: str,
+    result_summary: str,
+    result_data: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    data = dict(result_data or {})
+    raw_questions: list[Any] = []
+    if isinstance(data.get("questions"), list):
+        raw_questions = list(data.get("questions", []))
+    elif isinstance(data.get("blocking_questions"), list):
+        raw_questions = list(data.get("blocking_questions", []))
+    elif str(data.get("type", "") or "") == "question":
+        raw_questions = [str(data.get("reply", "") or result_summary or "").strip()]
+
+    bundle: list[dict[str, Any]] = []
+    for idx, raw in enumerate(raw_questions, start=1):
+        normalized = _normalize_specialist_question(tool_name, raw, index=idx)
+        if normalized:
+            bundle.append(normalized)
+    return bundle
+
+
+def _latest_resolved_answer_map(context: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not isinstance(context, dict):
+        return {}
+    archie = context_store.get_archie_state(context)
+    resolved = archie.get("resolved_questions", []) if isinstance(archie.get("resolved_questions"), list) else []
+    latest: dict[str, dict[str, Any]] = {}
+    for item in resolved:
+        if not isinstance(item, dict):
+            continue
+        question_id = str(item.get("question_id", "") or "").strip()
+        if question_id:
+            latest[question_id] = item
+    return latest
+
+
+def _suggest_answer_for_question(
+    question: dict[str, Any],
+    *,
+    context: dict[str, Any],
+    user_message: str,
+) -> tuple[str, str, str]:
+    question_id = str(question.get("question_id", "") or "").strip()
+    prompt = str(question.get("question", "") or "").strip()
+    resolved = _latest_resolved_answer_map(context)
+    prior = resolved.get(question_id)
+    if isinstance(prior, dict):
+        answer = str(prior.get("final_answer", "") or prior.get("suggested_answer", "") or "").strip()
+        if answer:
+            return answer, "prior Archie-approved decision", "high"
+
+    archie = context_store.get_archie_state(context)
+    latest_decision_context = dict(context.get("latest_decision_context", {}) or {})
+    constraints = dict(latest_decision_context.get("constraints", {}) or {})
+    text = " ".join(
+        part
+        for part in (
+            user_message,
+            str(archie.get("engagement_summary", "") or ""),
+            str(archie.get("latest_notes_summary", "") or ""),
+            json.dumps(constraints, ensure_ascii=True, sort_keys=True),
+            context_store.build_context_summary(context),
+        )
+        if str(part).strip()
+    ).lower()
+
+    if question_id in {"regions.count", "topology.scope"} or "region" in prompt.lower():
+        if any(token in text for token in ("multi-region", "multi region", "two regions", "2 regions")):
+            if question_id == "regions.count":
+                return "2", "current Archie context mentions a multi-region topology", "high"
+            return "multi-region", "current Archie context mentions a multi-region topology", "high"
+        region = str(constraints.get("region", "") or "").strip()
+        if region or "single region" in text or "single-region" in text:
+            if question_id == "regions.count":
+                return "1", "latest decision context has a single primary region", "medium"
+            return "single-region", "latest decision context has a single primary region", "medium"
+
+    if question_id == "network.exposure" or "public, private, or both" in prompt.lower():
+        has_private = "private" in text
+        has_public = "public" in text or "internet" in text
+        if has_private and has_public:
+            return "both", "notes mention both private and public exposure", "medium"
+        if has_private:
+            return "private", "notes emphasize private networking/exposure", "high"
+        if has_public:
+            return "public", "notes mention public or internet ingress", "high"
+
+    if question_id == "workload.components" or "major oci components" in prompt.lower():
+        components: list[str] = []
+        markers = (
+            ("oke", "OKE"),
+            ("load balancer", "Load Balancer"),
+            ("database", "Database"),
+            ("object storage", "Object Storage"),
+            ("waf", "WAF"),
+            ("vcn", "VCN"),
+        )
+        for token, label in markers:
+            if token in text and label not in components:
+                components.append(label)
+        if components:
+            return ", ".join(components), "latest notes already mention these OCI components", "medium"
+
+    if question_id == "data.tier" or "data tier" in prompt.lower():
+        if "autonomous database" in text or "adb" in text:
+            return "Autonomous Database", "notes mention Autonomous Database", "high"
+        if "postgres" in text:
+            return "PostgreSQL", "notes mention PostgreSQL", "high"
+        if "mysql" in text:
+            return "MySQL", "notes mention MySQL", "high"
+        if "database" in text or "data tier" in text:
+            return "generic database node", "notes imply a data tier without a pinned engine", "medium"
+
+    if "budget" in prompt.lower() or "monthly" in prompt.lower():
+        if constraints.get("cost_max_monthly") is not None:
+            return str(constraints.get("cost_max_monthly")), "latest decision context already has a monthly budget", "high"
+
+    return "", "", "needs_confirmation"
+
+
+def _apply_resolved_answers_to_tool_args(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    answers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    payload = dict(args or {})
+    lines = ["[Archie Resolved Specialist Inputs]"]
+    for item in answers:
+        question_id = str(item.get("question_id", "") or item.get("id", "") or "question").strip()
+        answer = str(item.get("final_answer", "") or item.get("suggested_answer", "") or "").strip()
+        if question_id and answer:
+            lines.append(f"- {question_id}: {answer}")
+    lines.append("[End Archie Resolved Specialist Inputs]")
+    block = "\n".join(lines)
+    payload["_archie_question_retry"] = True
+    if tool_name == "generate_diagram":
+        payload["bom_text"] = f"{payload.get('bom_text', '')}\n\n{block}".strip()
+    elif tool_name == "generate_bom":
+        payload["prompt"] = f"{payload.get('prompt', '')}\n\n{block}".strip()
+    elif tool_name in {"generate_pov", "generate_jep", "generate_waf"}:
+        payload["feedback"] = f"{payload.get('feedback', '')}\n\n{block}".strip()
+    elif tool_name == "generate_terraform":
+        payload["prompt"] = f"{payload.get('prompt', '')}\n\n{block}".strip()
+    return payload
+
+
+async def _mediate_specialist_questions(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    customer_id: str,
+    customer_name: str,
+    store: ObjectStoreBase,
+    text_runner: Callable,
+    a2a_base_url: str,
+    specialist_mode: str,
+    user_message: str,
+    max_refinements: int,
+    decision_context: dict[str, Any],
+    result_summary: str,
+    artifact_key: str,
+    result_data: dict[str, Any],
+    context: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    questions = _specialist_question_bundle_from_result(
+        tool_name=tool_name,
+        result_summary=result_summary,
+        result_data=result_data,
+    )
+    if not questions:
+        return result_summary, artifact_key, result_data
+
+    auto_answered: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    for item in questions:
+        suggestion, basis, confidence = _suggest_answer_for_question(item, context=context, user_message=user_message)
+        candidate = {
+            **item,
+            "specialist_path": tool_name,
+            "request_intent": user_message,
+            "suggested_answer": suggestion,
+            "basis": basis,
+            "confidence": confidence,
+            "timestamp": _now(),
+        }
+        if suggestion and confidence in {"high", "medium"}:
+            candidate["final_answer"] = suggestion
+            auto_answered.append(candidate)
+        else:
+            unresolved.append(candidate)
+
+    for item in auto_answered:
+        context_store.record_resolved_question(
+            context,
+            {
+                "id": str(uuid.uuid4()),
+                **item,
+                "source": "archie_auto_fill",
+            },
+        )
+
+    if unresolved:
+        checkpoint = _build_specialist_question_checkpoint(
+            tool_name=tool_name,
+            args=args,
+            original_request=user_message,
+            questions=[*auto_answered, *unresolved],
+        )
+        context_store.set_open_questions(context, [*auto_answered, *unresolved])
+        context_store.set_pending_checkpoint(context, checkpoint)
+        context_store.write_context(store, customer_id, context)
+        result_data["archie_question_bundle"] = checkpoint
+        return checkpoint["prompt"], "", result_data
+
+    context_store.clear_pending_checkpoint(context)
+    context_store.set_open_questions(context, [])
+    context_store.write_context(store, customer_id, context)
+    rerun_args = _apply_resolved_answers_to_tool_args(tool_name=tool_name, args=args, answers=auto_answered)
+    rerun_summary, rerun_key, rerun_data = await _execute_tool(
+        tool_name,
+        rerun_args,
+        customer_id=customer_id,
+        customer_name=customer_name,
+        store=store,
+        text_runner=text_runner,
+        a2a_base_url=a2a_base_url,
+        specialist_mode=specialist_mode,
+        user_message=user_message,
+        max_refinements=max_refinements,
+        decision_context=decision_context,
+    )
+    rerun_data = dict(rerun_data or {})
+    rerun_data["archie_auto_answers"] = auto_answered
+    return rerun_summary, rerun_key, rerun_data
+
+
+def _build_specialist_question_checkpoint(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    original_request: str,
+    questions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    rendered = ["Archie needs confirmation on the remaining specialist inputs before continuing."]
+    for item in questions:
+        question = str(item.get("question", "") or "").strip()
+        if not question:
+            continue
+        rendered.append("")
+        rendered.append(f"- Question ID: {item.get('question_id', '')}")
+        rendered.append(f"  Question: {question}")
+        suggestion = str(item.get("suggested_answer", "") or "").strip()
+        if suggestion:
+            rendered.append(f"  Suggested answer: {suggestion}")
+        basis = str(item.get("basis", "") or "").strip()
+        if basis:
+            rendered.append(f"  Basis: {basis}")
+        rendered.append(f"  Confidence: {item.get('confidence', 'needs_confirmation')}")
+    rendered.append("")
+    rendered.append("Reply `approve suggested answers` to accept Archie's suggestions, or answer inline as `question_id: answer`.")
+    return {
+        "id": str(uuid.uuid4()),
+        "type": "specialist_questions",
+        "status": "pending",
+        "tool_name": tool_name,
+        "tool_args": dict(args or {}),
+        "original_request": original_request,
+        "questions": [dict(item) for item in questions],
+        "prompt": "\n".join(rendered),
+        "options": ["approve suggested answers", "answer inline"],
+    }
+
+
+def _is_specialist_question_approve_message(user_message: str) -> bool:
+    lowered = str(user_message or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "approve suggested answers",
+            "use suggested answers",
+            "use those answers",
+            "approve answers",
+        )
+    )
+
+
+def _parse_specialist_answers_from_user(
+    *,
+    pending_checkpoint: dict[str, Any],
+    user_message: str,
+) -> list[dict[str, Any]]:
+    questions = [dict(item) for item in list(pending_checkpoint.get("questions", []) or []) if isinstance(item, dict)]
+    if _is_specialist_question_approve_message(user_message):
+        answers: list[dict[str, Any]] = []
+        for item in questions:
+            suggested = str(item.get("suggested_answer", "") or "").strip()
+            if suggested:
+                answers.append({**item, "final_answer": suggested})
+        return answers
+
+    overrides: dict[str, str] = {}
+    for line in str(user_message or "").splitlines():
+        if ":" not in line:
+            continue
+        question_id, answer = line.split(":", 1)
+        qid = question_id.strip()
+        value = answer.strip()
+        if qid and value:
+            overrides[qid] = value
+
+    answers = []
+    for item in questions:
+        question_id = str(item.get("question_id", "") or "").strip()
+        final_answer = overrides.get(question_id, "")
+        if not final_answer and len(questions) == 1 and str(user_message or "").strip() and ":" not in str(user_message or ""):
+            final_answer = str(user_message or "").strip()
+        if not final_answer:
+            final_answer = str(item.get("suggested_answer", "") or "").strip()
+        if final_answer:
+            answers.append({**item, "final_answer": final_answer})
+    return answers
+
+
+async def _handle_pending_specialist_questions(
+    *,
+    pending_checkpoint: dict[str, Any],
+    user_message: str,
+    context: dict[str, Any],
+    customer_id: str,
+    customer_name: str,
+    store: ObjectStoreBase,
+    text_runner: Callable,
+    a2a_base_url: str,
+    specialist_mode: str,
+    max_refinements: int,
+) -> tuple[str, dict[str, Any] | None, str]:
+    if _is_checkpoint_reject_message(user_message):
+        context_store.clear_pending_checkpoint(context)
+        context_store.set_open_questions(context, [])
+        context_store.write_context(store, customer_id, context)
+        return (
+            "I cleared the pending specialist question batch. Revise the request and rerun when ready.",
+            None,
+            "",
+        )
+
+    answers = _parse_specialist_answers_from_user(
+        pending_checkpoint=pending_checkpoint,
+        user_message=user_message,
+    )
+    if not answers:
+        return pending_checkpoint.get("prompt", ""), None, ""
+
+    for item in answers:
+        context_store.record_resolved_question(
+            context,
+            {
+                "id": str(uuid.uuid4()),
+                **item,
+                "source": "user_confirmed",
+                "timestamp": _now(),
+                "request_intent": str(pending_checkpoint.get("original_request", "") or ""),
+            },
+        )
+    context_store.clear_pending_checkpoint(context)
+    context_store.set_open_questions(context, [])
+    context_store.write_context(store, customer_id, context)
+
+    tool_name = str(pending_checkpoint.get("tool_name", "") or "")
+    tool_args = _apply_resolved_answers_to_tool_args(
+        tool_name=tool_name,
+        args=dict(pending_checkpoint.get("tool_args", {}) or {}),
+        answers=answers,
+    )
+    result_summary, artifact_key, result_data = await _execute_tool(
+        tool_name,
+        tool_args,
+        customer_id=customer_id,
+        customer_name=customer_name,
+        store=store,
+        text_runner=text_runner,
+        a2a_base_url=a2a_base_url,
+        specialist_mode=specialist_mode,
+        user_message=str(pending_checkpoint.get("original_request", "") or user_message),
+        max_refinements=max_refinements,
+        decision_context=decision_context_builder.build_decision_context(
+            user_message=str(pending_checkpoint.get("original_request", "") or user_message),
+            context=context,
+        ),
+    )
+    return (
+        result_summary,
+        {
+            "tool": tool_name,
+            "args": tool_args,
+            "result_summary": result_summary,
+            "result_data": result_data,
+        },
+        artifact_key,
+    )
 
 
 def _skill_preflight_for_tool(
@@ -930,14 +2306,90 @@ def _extract_blocking_skill_decision(result_data: dict | None) -> OrchestratorSk
         return None
 
 
+def _is_architecture_tool(tool_name: str) -> bool:
+    return tool_name in _ARCHITECTURE_TOOLS
+
+
+def _build_expert_mode_metadata(
+    *,
+    tool_name: str,
+    args: dict[str, Any] | None,
+    user_message: str,
+    decision_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not _is_architecture_tool(tool_name):
+        return {}
+
+    bundle = select_standards_bundle()
+    metadata: dict[str, Any] = {
+        "enabled": True,
+        "tool_name": tool_name,
+        "mandatory_skill_injection": True,
+        "standards_bundle_id": str(bundle.get("bundle_id", "") or ""),
+        "standards_bundle_version": str(bundle.get("bundle_version", "") or ""),
+        "standards_policy": str(bundle.get("policy", "curated_snapshot") or "curated_snapshot"),
+        "approved_sources": list(bundle.get("approved_sources", []) or []),
+        "supported_families": list(bundle.get("supported_families", []) or []),
+    }
+    if tool_name != "generate_diagram":
+        return metadata
+
+    payload = dict(args or {})
+    selection_text = "\n".join(
+        part
+        for part in (
+            user_message or "",
+            str(payload.get("bom_text", "") or ""),
+            decision_context_builder.summarize_decision_context(decision_context),
+        )
+        if part and str(part).strip()
+    )
+    selection = select_reference_architecture(
+        text=selection_text,
+        deployment_hints=dict(payload.get("deployment_hints", {}) or {}),
+    ).as_dict()
+    metadata.update(selection)
+    return metadata
+
+
+def _apply_expert_mode_to_payload(
+    *,
+    tool_name: str,
+    payload: dict[str, Any],
+    expert_mode: dict[str, Any],
+) -> None:
+    if not expert_mode:
+        return
+    payload["_expert_mode"] = dict(expert_mode)
+    payload["_standards_bundle_version"] = str(expert_mode.get("standards_bundle_version", "") or "")
+    payload["_reference_architecture"] = dict(expert_mode)
+    if tool_name == "generate_diagram":
+        payload["_reference_family"] = str(expert_mode.get("reference_family", "") or "")
+        payload["_reference_confidence"] = float(expert_mode.get("reference_confidence", 0) or 0)
+        payload["_reference_mode"] = str(expert_mode.get("reference_mode", "best-effort-generic") or "best-effort-generic")
+        payload["_reference_constraints"] = dict(expert_mode.get("family_constraints", {}) or {})
+
+
+def _mandatory_skill_specs(
+    *,
+    tool_name: str,
+) -> list[Any]:
+    fallback_names = _MANDATORY_SKILL_FALLBACKS.get(tool_name, ())
+    available = {spec.name: spec for spec in discover_skills()}
+    selected = [available[name] for name in fallback_names if name in available]
+    return selected
+
+
 def _inject_skill_into_tool_args(
     tool_name: str,
     args: dict | None,
     *,
     user_message: str = "",
     decision_context: dict[str, Any] | None = None,
+    expert_mode: dict[str, Any] | None = None,
 ) -> dict:
     payload = dict(args or {})
+    _apply_expert_mode_to_payload(tool_name=tool_name, payload=payload, expert_mode=dict(expert_mode or {}))
     constraint_tags = decision_context_builder.derive_constraint_tags(decision_context)
     decision_block = _build_decision_context_block(decision_context)
     selection_message = " ".join([user_message.strip(), *constraint_tags]).strip()
@@ -945,8 +2397,15 @@ def _inject_skill_into_tool_args(
         tool_name=tool_name,
         user_message=selection_message,
         tool_args=payload,
-        max_skills=2,
+        max_skills=3,
     )
+    if _is_architecture_tool(tool_name):
+        fallback_specs = _mandatory_skill_specs(tool_name=tool_name)
+        existing = {spec.name for spec in selected}
+        for spec in fallback_specs:
+            if spec.name not in existing:
+                selected.append(spec)
+                existing.add(spec.name)
     payload["_decision_context"] = dict(decision_context or {})
     payload["_constraint_tags"] = constraint_tags
     if not selected:
@@ -1132,6 +2591,8 @@ async def _critic_refine_if_needed(
             tool_result=retry_summary,
             artifacts={"artifact_key": retry_key},
             context_summary=context_summary,
+            tool_args=args,
+            result_data=retry_data,
         )
         retry_data["skill_postflight"] = asdict(postflight)
         current_summary, current_key, current_data = retry_summary, retry_key, retry_data
@@ -1228,6 +2689,11 @@ def _persist_tool_metadata(
         "governor": result_data.get("governor", {}),
         "decision_context": result_data.get("decision_context", {}),
         "constraint_tags": list(result_data.get("constraint_tags", []) or []),
+        "expert_mode": dict(result_data.get("expert_mode", {}) or {}),
+        "standards_bundle_version": str(result_data.get("standards_bundle_version", "") or ""),
+        "reference_family": str(result_data.get("reference_family", "") or ""),
+        "reference_confidence": float(result_data.get("reference_confidence", 0) or 0),
+        "reference_mode": str(result_data.get("reference_mode", "") or ""),
     }
     if tool_name == "generate_pov":
         document_store.merge_latest_doc_metadata(store, "pov", customer_id, metadata)
@@ -1249,6 +2715,13 @@ def _build_tool_trace(*, tool_name: str, result_data: dict[str, Any], max_refine
         "path_id": _tool_to_path_id(tool_name) or "",
         "applied_skills": applied,
         "skill_versions": dict(result_data.get("skill_versions", {}) or {}),
+        "expert_mode": dict(result_data.get("expert_mode", {}) or {}),
+        "standards_bundle_version": str(result_data.get("standards_bundle_version", "") or ""),
+        "reference_family": str(result_data.get("reference_family", "") or ""),
+        "reference_confidence": float(result_data.get("reference_confidence", 0) or 0),
+        "reference_mode": str(result_data.get("reference_mode", "") or ""),
+        "reference_architecture": dict(result_data.get("reference_architecture", {}) or {}),
+        "family_fit_score": float(((result_data.get("reference_architecture", {}) or {}).get("family_fit_score", 0)) or 0),
         "model_profile": str(result_data.get("skill_model_profile", "") or ""),
         "model_id": str(prior_trace.get("model_id", "") or ""),
         "critic_enabled": tool_name in {"generate_pov", "generate_jep", "generate_waf", "generate_terraform"},
@@ -1269,6 +2742,19 @@ def _build_tool_trace(*, tool_name: str, result_data: dict[str, Any], max_refine
         trace["reason_codes"] = list(result_data.get("reason_codes", []) or [])
         trace["required_next_step"] = str(result_data.get("required_next_step", "") or "")
         trace["lock_outcome"] = str(result_data.get("lock_outcome", "") or "")
+    if tool_name == "generate_bom":
+        trace["bom_cache_status_before_attempt"] = str(prior_trace.get("bom_cache_status_before_attempt", "") or "")
+        trace["bom_cache_refresh_attempted"] = bool(prior_trace.get("bom_cache_refresh_attempted", False))
+        trace["bom_cache_refresh_status"] = str(prior_trace.get("bom_cache_refresh_status", "") or "")
+        trace["bom_context_source"] = str(prior_trace.get("bom_context_source", result_data.get("bom_context_source", "")) or "")
+        trace["bom_retry_count"] = int(prior_trace.get("bom_retry_count", 0) or 0)
+        trace["bom_retry_succeeded"] = bool(prior_trace.get("bom_retry_succeeded", False))
+    if tool_name == "generate_diagram":
+        trace["backend_error_message"] = str(result_data.get("backend_error_message", "") or "")
+        trace["diagram_recovery_status"] = str(result_data.get("diagram_recovery_status", "none") or "none")
+        trace["assumptions_used"] = list(result_data.get("assumptions_used", []) or [])
+        trace["recovery_attempt_count"] = int(result_data.get("recovery_attempt_count", 0) or 0)
+        trace["final_disposition"] = str(result_data.get("diagram_final_disposition", "") or "")
     return trace
 
 
@@ -1282,6 +2768,28 @@ def _build_decision_context_block(decision_context: dict[str, Any] | None) -> st
     )
 
 
+def _compose_specialist_request_text(
+    *,
+    clean_request: str,
+    architect_brief: dict[str, Any] | None,
+    include_missing_inputs: bool = True,
+) -> str:
+    brief_block = _render_architect_brief_text(architect_brief)
+    if not brief_block:
+        return clean_request.strip()
+    rendered = [part for part in (clean_request.strip(), brief_block) if part]
+    if not include_missing_inputs:
+        rendered_text = "\n\n".join(rendered)
+        rendered_text = re.sub(
+            r"\nMissing inputs:\n(?:- .+\n?)+",
+            "\n",
+            rendered_text,
+            flags=re.MULTILINE,
+        )
+        return rendered_text.strip()
+    return "\n\n".join(rendered).strip()
+
+
 def _inject_decision_block_into_payload(tool_name: str, payload: dict[str, Any], block: str) -> None:
     if not block.strip():
         return
@@ -1292,6 +2800,91 @@ def _inject_decision_block_into_payload(tool_name: str, payload: dict[str, Any],
     elif tool_name in {"generate_diagram", "generate_bom"}:
         key = "bom_text" if tool_name == "generate_diagram" else "prompt"
         payload[key] = f"{payload.get(key, '')}\n\n{block}".strip()
+
+
+def _infer_diagram_name_from_key(artifact_key: str) -> str:
+    parts = [part for part in str(artifact_key or "").split("/") if part]
+    if len(parts) >= 3 and re.fullmatch(r"v\d+", parts[-2]):
+        return parts[-3]
+    if len(parts) >= 2:
+        return parts[-2]
+    return ""
+
+
+def _summarize_diagram_deployment(
+    result_data: dict[str, Any] | None,
+) -> tuple[str, str]:
+    result = dict(result_data or {})
+    spec = result.get("spec", {}) if isinstance(result.get("spec"), dict) else {}
+    render_manifest = result.get("render_manifest", {}) if isinstance(result.get("render_manifest"), dict) else {}
+    deployment_type = str(spec.get("deployment_type", "") or "").strip()
+    node_count = int(render_manifest.get("node_count", 0) or 0)
+    layer_count = len(list(render_manifest.get("layers", []) or []))
+    parts: list[str] = []
+    if deployment_type:
+        parts.append(deployment_type)
+    if node_count > 0:
+        parts.append(f"{node_count} nodes")
+    if layer_count > 0:
+        parts.append(f"{layer_count} layers")
+    deployment_summary = ", ".join(parts)
+    return deployment_summary, json.dumps(spec, ensure_ascii=True, sort_keys=True)[:400] if spec else ""
+
+
+def _record_shared_agent_state(
+    *,
+    context: dict[str, Any],
+    tool_name: str,
+    artifact_key: str,
+    decision_context: dict[str, Any],
+    result_data: dict[str, Any],
+) -> None:
+    existing = dict((context.get("agents", {}) or {}).get("diagram" if tool_name == "generate_diagram" else "bom", {}) or {})
+    if tool_name == "generate_diagram":
+        recovery_status = str(result_data.get("diagram_recovery_status", "none") or "none")
+        if recovery_status in {"needs_clarification", "backend_error"} or not artifact_key:
+            return
+        deployment_summary, spec_summary = _summarize_diagram_deployment(result_data)
+        record = {
+            "version": int(existing.get("version", 0) or 0) + 1,
+            "diagram_key": artifact_key,
+            "artifact_ref": artifact_key,
+            "diagram_name": _infer_diagram_name_from_key(artifact_key),
+            "node_count": int(((result_data.get("render_manifest", {}) or {}).get("node_count", 0)) or 0),
+            "deployment_summary": deployment_summary,
+            "spec_summary": spec_summary,
+            "reference_family": str(result_data.get("reference_family", "") or ""),
+            "reference_mode": str(result_data.get("reference_mode", "") or ""),
+            "assumptions_used": _merge_assumption_lists(
+                list((decision_context or {}).get("assumptions", []) or []),
+                list(result_data.get("assumptions_used", []) or []),
+            ),
+            "decision_context_hash": _decision_context_hash(decision_context),
+            "decision_context_summary": decision_context_builder.summarize_decision_context(decision_context),
+            "summary": deployment_summary or "Latest architecture diagram available for downstream follow-up work.",
+        }
+        context_store.record_agent_run(context, "diagram", [], record)
+        return
+
+    if tool_name == "generate_bom":
+        payload = result_data.get("bom_payload", {}) if isinstance(result_data.get("bom_payload"), dict) else {}
+        if str(result_data.get("type", "") or "") != "final" or not payload:
+            return
+        totals = payload.get("totals", {}) if isinstance(payload.get("totals"), dict) else {}
+        trace = result_data.get("trace", {}) if isinstance(result_data.get("trace"), dict) else {}
+        record = {
+            "version": int(existing.get("version", 0) or 0) + 1,
+            "result_type": "final",
+            "summary": str(result_data.get("reply", "") or "").strip() or "Final BOM prepared.",
+            "estimated_monthly_cost": totals.get("estimated_monthly_cost"),
+            "line_item_count": len(list(payload.get("line_items", []) or [])),
+            "assumption_count": len(list(payload.get("assumptions", []) or [])),
+            "payload_ref": f"trace:{result_data.get('trace_id', '')}" if str(result_data.get("trace_id", "") or "").strip() else "",
+            "trace_id": str(result_data.get("trace_id", "") or ""),
+            "context_source": str(trace.get("bom_context_source", result_data.get("bom_context_source", "")) or ""),
+            "decision_context_hash": _decision_context_hash(decision_context),
+        }
+        context_store.record_agent_run(context, "bom", [], record)
 
 
 def _record_tool_decision_state(
@@ -1308,6 +2901,11 @@ def _record_tool_decision_state(
         return
     context = context_store.read_context(store, customer_id, customer_name)
     context_store.set_latest_decision_context(context, decision_context)
+    context_store.set_archie_decision_state(
+        context,
+        constraints=dict((decision_context or {}).get("constraints", {}) or {}),
+        assumptions=list((decision_context or {}).get("assumptions", []) or []),
+    )
     checkpoint = _checkpoint_from_result(tool_name=tool_name, decision_context=decision_context, result_data=result_data)
     if checkpoint:
         context_store.set_pending_checkpoint(context, checkpoint)
@@ -1327,8 +2925,45 @@ def _record_tool_decision_state(
         "artifact_refs": [artifact_key] if artifact_key else [],
     }
     context_store.append_decision_log(context, decision_log)
+    _record_shared_agent_state(
+        context=context,
+        tool_name=tool_name,
+        artifact_key=artifact_key,
+        decision_context=decision_context,
+        result_data=result_data,
+    )
     context_store.write_context(store, customer_id, context)
     result_data["decision_log"] = decision_log
+
+
+def _checkpoint_needed_for_result(
+    *,
+    tool_name: str,
+    decision_context: dict[str, Any],
+    governor: dict[str, Any],
+) -> bool:
+    constraints = dict((decision_context or {}).get("constraints", {}) or {})
+    assumptions = list((decision_context or {}).get("assumptions", []) or [])
+    cost = dict(governor.get("cost", {}) or {})
+    has_budget_signal = any(value is not None for value in (
+        constraints.get("cost_max_monthly"),
+        cost.get("budget_target"),
+        cost.get("estimated_monthly_cost"),
+        cost.get("variance"),
+    ))
+    if has_budget_signal and str(cost.get("status", "pass") or "pass") == "checkpoint_required":
+        return True
+
+    security = dict(governor.get("security", {}) or {})
+    if str(security.get("status", "pass") or "pass") == "blocked":
+        return False
+    if list(constraints.get("compliance_requirements", []) or []) and list((decision_context or {}).get("missing_inputs", []) or []):
+        return True
+    if any(str(item.get("risk", "") or "").strip().lower() == "high" for item in assumptions if isinstance(item, dict)):
+        return True
+    if tool_name == "generate_terraform":
+        return bool(list((decision_context or {}).get("missing_inputs", []) or []))
+    return False
 
 
 def _checkpoint_from_result(
@@ -1341,6 +2976,12 @@ def _checkpoint_from_result(
     if not isinstance(governor, dict):
         return None
     if str(governor.get("overall_status", "pass")) != "checkpoint_required":
+        return None
+    if not _checkpoint_needed_for_result(
+        tool_name=tool_name,
+        decision_context=decision_context,
+        governor=governor,
+    ):
         return None
     cost = governor.get("cost", {}) or {}
     estimated = cost.get("estimated_monthly_cost")
@@ -1473,26 +3114,31 @@ async def _call_generate_diagram(
     a2a_base_url: str,
 ) -> tuple[str, str, dict]:
     """Call the drawing agent via A2A with clean user notes plus architect context."""
-    try:
-        import httpx
-    except ImportError:
-        return "httpx not installed — cannot call diagram agent.", "", {}
-
+    architect_brief = dict(args.get("_architect_brief", {}) or {})
     bom_text = str(args.get("bom_text", "") or "")
-    user_notes = _strip_injected_guidance_blocks(bom_text).strip()
+    user_notes = str(architect_brief.get("user_notes", "") or "").strip() or _strip_injected_guidance_blocks(bom_text).strip()
     if not user_notes:
         user_notes = "Generate a diagram for this engagement."
 
     context_parts: list[str] = []
     decision_context = args.get("_decision_context")
-    decision_summary = decision_context_builder.summarize_decision_context(decision_context)
-    if decision_summary:
-        context_parts.append(decision_summary)
-    if _notes_request_best_effort_assumptions(user_notes):
+    architect_context = str(architect_brief.get("architect_context", "") or "").strip()
+    if architect_context:
+        context_parts.append(architect_context)
+    if _notes_request_best_effort_assumptions(user_notes) or bool(architect_brief.get("assumption_mode", False)):
         context_parts.append(
             "Assumption mode requested: apply standard safe OCI assumptions for a ballpark architecture. "
             "Ask only truly blocking questions when the workload/components are still unspecified."
         )
+    assumptions = _render_assumptions(architect_brief, limit=6)
+    if assumptions:
+        context_parts.append("Architect assumptions:\n" + "\n".join(f"- {item}" for item in assumptions))
+    missing_inputs = [str(item).strip() for item in architect_brief.get("missing_inputs", []) or [] if str(item).strip()]
+    if missing_inputs:
+        context_parts.append("Still missing:\n" + "\n".join(f"- {item}" for item in missing_inputs))
+    reference_architecture = dict(args.get("_reference_architecture", {}) or {})
+    if reference_architecture:
+        context_parts.append("\n".join(build_reference_context_lines(reference_architecture)))
     payload = {
         "task_id": f"orch-{_now()}",
         "skill": "generate_diagram",
@@ -1500,31 +3146,164 @@ async def _call_generate_diagram(
         "inputs": {
             "notes": user_notes,
             "context": "\n\n".join(part for part in context_parts if part.strip()),
+            "reference_architecture": reference_architecture,
+            "standards_bundle_version": str(args.get("_standards_bundle_version", "") or ""),
         },
     }
 
     try:
-        async with httpx.AsyncClient(timeout=180) as client:
-            resp = await client.post(f"{a2a_base_url}/api/a2a/task", json=payload)
-        body = resp.json()
+        body = await _post_diagram_a2a_task(payload=payload, a2a_base_url=a2a_base_url)
         status = str(body.get("status", "error") or "error").lower()
         outputs = body.get("outputs", {}) if isinstance(body.get("outputs"), dict) else {}
         task_id = str(body.get("task_id", "") or payload["task_id"])
         if status == "ok":
             key = str(outputs.get("object_key") or outputs.get("drawio_key") or "")
+            result_data = _diagram_result_payload_from_outputs(outputs, final_disposition="completed")
             if key:
-                return f"Diagram generated. Key: {key}", key, {}
-            return f"Diagram generated (task {task_id}).", "", {}
+                return f"Diagram generated. Key: {key}", key, result_data
+            return f"Diagram generated (task {task_id}).", "", result_data
         if status == "need_clarification":
             questions = outputs.get("questions", []) if isinstance(outputs.get("questions"), list) else []
-            result_data: dict[str, Any] = {"questions": questions}
+            result_data: dict[str, Any] = {
+                "questions": questions,
+                "diagram_recovery_status": "needs_clarification",
+                "diagram_final_disposition": "needs_clarification",
+                "backend_error_message": "",
+                "assumptions_used": [],
+                "recovery_attempt_count": 0,
+            }
             clarify_context = outputs.get("_clarify_context")
             if isinstance(clarify_context, dict):
                 result_data["_clarify_context"] = clarify_context
             if questions:
                 return _format_diagram_clarification_reply(questions), "", result_data
             return "Diagram clarification required before generation can continue.", "", result_data
-        return f"Diagram generation returned status={status}.", "", {}
+        backend_error_message = _sanitize_diagram_backend_error_message(
+            str(body.get("error_message", "") or outputs.get("error_message", "") or f"Diagram generation returned status={status}.")
+        )
+
+        if _diagram_request_has_contradiction(user_notes):
+            questions = _diagram_clarification_questions(
+                user_notes=user_notes,
+                backend_error_message=backend_error_message,
+            )
+            result_data = {
+                "questions": questions,
+                "backend_error_message": backend_error_message,
+                "diagram_recovery_status": "needs_clarification",
+                "assumptions_used": [],
+                "recovery_attempt_count": 0,
+                "diagram_final_disposition": "needs_clarification",
+            }
+            return _format_diagram_clarification_reply(questions), "", result_data
+
+        assumptions_used = _diagram_retry_assumptions(
+            user_notes=user_notes,
+            decision_context=decision_context,
+            backend_error_message=backend_error_message,
+        )
+        should_retry = bool(assumptions_used) and not _is_diagram_system_error(backend_error_message)
+        if should_retry:
+            retry_context_parts = list(context_parts)
+            retry_context_parts.append(_build_diagram_recovery_context(assumptions_used))
+            retry_payload = {
+                **payload,
+                "task_id": f"{payload['task_id']}-retry1",
+                "inputs": {
+                    **payload["inputs"],
+                    "context": "\n\n".join(part for part in retry_context_parts if part.strip()),
+                },
+            }
+            retry_body = await _post_diagram_a2a_task(payload=retry_payload, a2a_base_url=a2a_base_url)
+            retry_status = str(retry_body.get("status", "error") or "error").lower()
+            retry_outputs = retry_body.get("outputs", {}) if isinstance(retry_body.get("outputs"), dict) else {}
+            retry_task_id = str(retry_body.get("task_id", "") or retry_payload["task_id"])
+            merged_decision_context = _merge_decision_context(
+                decision_context,
+                {
+                    "goal": str((decision_context or {}).get("goal", "") or user_notes),
+                    "constraints": dict((decision_context or {}).get("constraints", {}) or {}),
+                    "assumptions": assumptions_used,
+                    "success_criteria": list((decision_context or {}).get("success_criteria", []) or []),
+                    "missing_inputs": [],
+                    "requires_user_confirmation": bool((decision_context or {}).get("requires_user_confirmation", False)),
+                },
+            )
+            if retry_status == "ok":
+                key = str(retry_outputs.get("object_key") or retry_outputs.get("drawio_key") or "")
+                result_data = _diagram_result_payload_from_outputs(
+                    retry_outputs,
+                    backend_error_message=backend_error_message,
+                    diagram_recovery_status="retried_with_assumptions",
+                    assumptions_used=assumptions_used,
+                    recovery_attempt_count=1,
+                    final_disposition="completed_with_assumptions",
+                )
+                result_data["decision_context"] = merged_decision_context
+                if key:
+                    return f"Diagram generated. Key: {key}", key, result_data
+                return f"Diagram generated (task {retry_task_id}).", "", result_data
+            if retry_status == "need_clarification":
+                questions = retry_outputs.get("questions", []) if isinstance(retry_outputs.get("questions"), list) else []
+                result_data = {
+                    "questions": questions,
+                    "backend_error_message": backend_error_message,
+                    "diagram_recovery_status": "needs_clarification",
+                    "assumptions_used": assumptions_used,
+                    "recovery_attempt_count": 1,
+                    "diagram_final_disposition": "needs_clarification",
+                    "decision_context": merged_decision_context,
+                }
+                clarify_context = retry_outputs.get("_clarify_context")
+                if isinstance(clarify_context, dict):
+                    result_data["_clarify_context"] = clarify_context
+                if questions:
+                    return _format_diagram_clarification_reply(questions), "", result_data
+            backend_error_message = _sanitize_diagram_backend_error_message(
+                str(retry_body.get("error_message", "") or retry_outputs.get("error_message", "") or backend_error_message)
+            )
+            error_reply, next_steps = _build_diagram_error_reply(
+                backend_error_message=backend_error_message,
+                attempted_recovery=True,
+            )
+            result_data = {
+                "backend_error_message": backend_error_message,
+                "diagram_recovery_status": "backend_error",
+                "assumptions_used": assumptions_used,
+                "recovery_attempt_count": 1,
+                "diagram_final_disposition": "backend_error",
+                "decision_context": merged_decision_context,
+                "diagram_next_steps": next_steps,
+            }
+            return error_reply, "", result_data
+
+        clarification_questions = _diagram_clarification_questions(
+            user_notes=user_notes,
+            backend_error_message=backend_error_message,
+        )
+        if clarification_questions and not _is_diagram_system_error(backend_error_message) and not _is_diagram_invariant_error(backend_error_message):
+            result_data = {
+                "questions": clarification_questions,
+                "backend_error_message": backend_error_message,
+                "diagram_recovery_status": "needs_clarification",
+                "assumptions_used": [],
+                "recovery_attempt_count": 0,
+                "diagram_final_disposition": "needs_clarification",
+            }
+            return _format_diagram_clarification_reply(clarification_questions), "", result_data
+
+        error_reply, next_steps = _build_diagram_error_reply(
+            backend_error_message=backend_error_message,
+            attempted_recovery=False,
+        )
+        return error_reply, "", {
+            "backend_error_message": backend_error_message,
+            "diagram_recovery_status": "backend_error",
+            "assumptions_used": [],
+            "recovery_attempt_count": 0,
+            "diagram_final_disposition": "backend_error",
+            "diagram_next_steps": next_steps,
+        }
     except Exception as exc:
         logger.warning("Diagram A2A call failed: %s", exc)
         return f"Diagram generation failed: {exc}", "", {}
@@ -1534,6 +3313,55 @@ _INJECTED_GUIDANCE_BLOCKS: tuple[tuple[str, str], ...] = (
     ("[Decision Context]", "[End Decision Context]"),
     ("[Skill Injection Contract]", "[End Skill Injection Contract]"),
     ("[Injected Skill Guidance]", "[End Skill Guidance]"),
+)
+
+_OCI_REGION_RE = re.compile(r"\b[a-z]{2}-[a-z]+-\d\b")
+_DIAGRAM_COMPONENT_MARKERS = (
+    "oke",
+    "kubernetes",
+    "container engine",
+    "database",
+    "db",
+    "load balancer",
+    "lb",
+    "waf",
+    "object storage",
+    "bucket",
+    "bastion",
+    "web",
+    "app tier",
+    "data tier",
+    "private subnet",
+    "public subnet",
+    "vcn",
+    "subnet",
+    "dr",
+    "disaster recovery",
+    "multi-region",
+    "multi region",
+)
+_DIAGRAM_SYSTEM_ERROR_MARKERS = (
+    "timeout",
+    "timed out",
+    "connection refused",
+    "connection reset",
+    "service unavailable",
+    "internal server error",
+    "traceback",
+    "unexpected exception",
+    "dns",
+    "socket",
+    "503",
+    "500",
+)
+_DIAGRAM_INVARIANT_ERROR_MARKERS = (
+    "invariant",
+    "unsupported",
+    "invalid combination",
+    "cannot combine",
+    "must not",
+    "conflict",
+    "violates",
 )
 
 
@@ -1566,6 +3394,405 @@ def _notes_request_best_effort_assumptions(notes: str) -> bool:
         "notes",
     )
     return any(marker in lowered for marker in markers)
+
+
+def _normalize_assumption_payload(assumption: dict[str, Any]) -> dict[str, str]:
+    return {
+        "id": str(assumption.get("id", "") or "").strip(),
+        "statement": str(assumption.get("statement", "") or "").strip(),
+        "reason": str(assumption.get("reason", "") or "").strip(),
+        "risk": str(assumption.get("risk", "low") or "low").strip().lower(),
+    }
+
+
+def _merge_assumption_lists(
+    existing: list[dict[str, Any]] | None,
+    additions: list[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in [*(existing or []), *(additions or [])]:
+        if not isinstance(raw, dict):
+            continue
+        normalized = _normalize_assumption_payload(raw)
+        statement = normalized["statement"]
+        if not statement:
+            continue
+        key = normalized["id"] or statement.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(normalized)
+    return merged
+
+
+def _merge_decision_context(
+    base_context: dict[str, Any] | None,
+    overlay_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    base = dict(base_context or {})
+    overlay = dict(overlay_context or {})
+    if not base:
+        base = {
+            "goal": "",
+            "constraints": {},
+            "assumptions": [],
+            "success_criteria": [],
+            "missing_inputs": [],
+            "requires_user_confirmation": False,
+        }
+
+    base["goal"] = str(overlay.get("goal", "") or base.get("goal", "") or "")
+    merged_constraints = dict(base.get("constraints", {}) or {})
+    for key, value in dict(overlay.get("constraints", {}) or {}).items():
+        if value not in (None, "", [], {}):
+            merged_constraints[key] = value
+    base["constraints"] = merged_constraints
+    base["assumptions"] = _merge_assumption_lists(
+        list(base.get("assumptions", []) or []),
+        list(overlay.get("assumptions", []) or []),
+    )
+    base["success_criteria"] = list(dict.fromkeys([
+        *list(base.get("success_criteria", []) or []),
+        *list(overlay.get("success_criteria", []) or []),
+    ]))
+    base["missing_inputs"] = list(dict.fromkeys([
+        *list(base.get("missing_inputs", []) or []),
+        *list(overlay.get("missing_inputs", []) or []),
+    ]))
+    base["requires_user_confirmation"] = bool(
+        overlay.get("requires_user_confirmation", base.get("requires_user_confirmation", False))
+    )
+    return base
+
+
+def _sanitize_diagram_backend_error_message(message: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(message or "")).strip()
+    if not cleaned:
+        return "Unknown backend failure."
+    return cleaned[:320]
+
+
+def _diagram_mentions_multi_region(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in (
+        "multi-region",
+        "multi region",
+        "across two regions",
+        "across 2 regions",
+        "two regions",
+        "2 regions",
+        "cross-region",
+        "cross region",
+    ))
+
+
+def _diagram_has_region_names(text: str) -> bool:
+    return bool(_OCI_REGION_RE.search(str(text or "").lower()))
+
+
+def _diagram_has_explicit_posture(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return "active-active" in lowered or "active active" in lowered or "active-passive" in lowered or "active passive" in lowered
+
+
+def _diagram_has_explicit_replication_technology(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in (
+        "goldengate",
+        "golden gate",
+        "data guard",
+        "dataguard",
+        "mysql replication",
+        "postgres replication",
+        "physical standby",
+        "logical replication",
+        "object storage replication",
+    ))
+
+
+def _diagram_has_concrete_database_flavor(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in (
+        "autonomous database",
+        "adb",
+        "postgres",
+        "mysql",
+        "oracle database",
+        "exadata",
+    ))
+
+
+def _diagram_request_has_topology_intent(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in _DIAGRAM_COMPONENT_MARKERS)
+
+
+def _diagram_request_has_contradiction(text: str) -> bool:
+    lowered = str(text or "").lower()
+    single_region = "single-region" in lowered or "single region" in lowered
+    multi_region = _diagram_mentions_multi_region(lowered)
+    active_active = "active-active" in lowered or "active active" in lowered
+    active_passive = "active-passive" in lowered or "active passive" in lowered
+    return (single_region and multi_region) or (active_active and active_passive)
+
+
+def _is_diagram_system_error(message: str) -> bool:
+    lowered = str(message or "").lower()
+    return any(marker in lowered for marker in _DIAGRAM_SYSTEM_ERROR_MARKERS)
+
+
+def _is_diagram_invariant_error(message: str) -> bool:
+    lowered = str(message or "").lower()
+    return any(marker in lowered for marker in _DIAGRAM_INVARIANT_ERROR_MARKERS)
+
+
+def _diagram_retry_assumptions(
+    *,
+    user_notes: str,
+    decision_context: dict[str, Any] | None,
+    backend_error_message: str,
+) -> list[dict[str, str]]:
+    lowered = str(user_notes or "").lower()
+    backend_lowered = str(backend_error_message or "").lower()
+    assumptions: list[dict[str, str]] = []
+
+    if _diagram_mentions_multi_region(lowered) and not _diagram_has_explicit_posture(lowered):
+        assumptions.append(
+            {
+                "id": "diagram_multi_region_posture_default",
+                "statement": "Multi-region posture not specified; assume active-passive HA/DR across two OCI regions.",
+                "reason": "The request asks for a multi-region diagram without an explicit active-active or active-passive posture.",
+                "risk": "medium",
+            }
+        )
+
+    if (
+        _diagram_mentions_multi_region(lowered)
+        and not _diagram_has_region_names(lowered)
+        and (
+            "region" in backend_lowered
+            or "multi-region" in backend_lowered
+            or "paired" in backend_lowered
+            or "secondary" in backend_lowered
+            or True
+        )
+    ):
+        assumptions.append(
+            {
+                "id": "diagram_region_pair_default",
+                "statement": "Exact OCI region names were not provided; assume the tenancy-preferred primary region plus a paired secondary region placeholder.",
+                "reason": "The topology requires two regions but the request does not name them.",
+                "risk": "medium",
+            }
+        )
+
+    if (
+        any(marker in lowered for marker in ("replication", "replica", "dr", "disaster recovery"))
+        or "replication" in backend_lowered
+    ) and not _diagram_has_explicit_replication_technology(lowered):
+        assumptions.append(
+            {
+                "id": "diagram_replication_default",
+                "statement": "Replication technology was not specified; assume inter-region database replication plus object replication.",
+                "reason": "The request implies cross-region data protection without naming the replication mechanism.",
+                "risk": "medium",
+            }
+        )
+
+    if (
+        "database" in lowered
+        or "db" in lowered
+        or "database" in backend_lowered
+        or (_diagram_mentions_multi_region(lowered) and not _diagram_has_concrete_database_flavor(lowered))
+    ) and not _diagram_has_concrete_database_flavor(lowered):
+        assumptions.append(
+            {
+                "id": "diagram_database_flavor_default",
+                "statement": "Database flavor was not specified; use a generic database node in the diagram.",
+                "reason": "The request implies a data tier but does not pin a concrete managed database service.",
+                "risk": "low",
+            }
+        )
+
+    merged = _merge_assumption_lists(
+        list((decision_context or {}).get("assumptions", []) or []),
+        assumptions,
+    )
+    existing_ids = {
+        str(item.get("id", "") or "")
+        for item in list((decision_context or {}).get("assumptions", []) or [])
+        if isinstance(item, dict)
+    }
+    return [item for item in merged if item.get("id") not in existing_ids]
+
+
+def _diagram_clarification_questions(
+    *,
+    user_notes: str,
+    backend_error_message: str,
+) -> list[dict[str, Any]]:
+    lowered = str(user_notes or "").lower()
+    if _diagram_request_has_contradiction(lowered):
+        return [
+            {
+                "id": "topology.scope",
+                "question": "Should the diagram be single-region or multi-region? The current request asks for both.",
+                "blocking": True,
+            }
+        ]
+
+    questions: list[dict[str, Any]] = []
+    if not _diagram_request_has_topology_intent(lowered):
+        questions.append(
+            {
+                "id": "workload.components",
+                "question": "What major OCI components need to appear in the diagram (for example OKE, load balancer, database, Object Storage, or WAF)?",
+                "blocking": True,
+            }
+        )
+    if "public" not in lowered and "private" not in lowered and "internet" not in lowered:
+        questions.append(
+            {
+                "id": "network.exposure",
+                "question": "Should ingress be public, private, or both?",
+                "blocking": True,
+            }
+        )
+    if not questions and "database" in str(backend_error_message or "").lower():
+        questions.append(
+            {
+                "id": "data.tier",
+                "question": "What data tier should appear in the diagram: a generic database node, Autonomous Database, PostgreSQL, or MySQL?",
+                "blocking": True,
+            }
+        )
+    return questions
+
+
+def _build_diagram_recovery_context(assumptions: list[dict[str, Any]]) -> str:
+    if not assumptions:
+        return ""
+    lines = [
+        "Retry the diagram with these bounded architect assumptions. Do not ask follow-up questions unless the request is still contradictory.",
+    ]
+    lines.extend(
+        f"- {item.get('statement', '').strip()}"
+        for item in assumptions
+        if str(item.get("statement", "")).strip()
+    )
+    return "\n".join(lines)
+
+
+def _build_diagram_error_reply(
+    *,
+    backend_error_message: str,
+    attempted_recovery: bool,
+) -> tuple[str, list[str]]:
+    cleaned = _sanitize_diagram_backend_error_message(backend_error_message)
+    lines = []
+    if _is_diagram_system_error(cleaned):
+        lines.append("I could not complete the diagram because the drawing backend hit a system-side failure.")
+        next_steps = ["Retry the diagram once the drawing backend is healthy."]
+    elif _is_diagram_invariant_error(cleaned):
+        lines.append("I could not complete the diagram because the requested topology still violates a backend layout invariant.")
+        next_steps = ["Revise the conflicting topology requirement and retry generate_diagram."]
+    else:
+        lines.append("I could not complete the diagram because the drawing backend rejected the current topology inputs.")
+        next_steps = ["Revise the blocking decision in the request and retry generate_diagram."]
+    if attempted_recovery:
+        lines.append("I retried once with bounded OCI defaults, but the backend still could not render the diagram.")
+    lines.append(f"Backend failure: {cleaned}")
+    return "\n".join(lines), next_steps
+
+
+def _diagram_result_payload_from_outputs(
+    outputs: dict[str, Any],
+    *,
+    backend_error_message: str = "",
+    diagram_recovery_status: str = "none",
+    assumptions_used: list[dict[str, Any]] | None = None,
+    recovery_attempt_count: int = 0,
+    final_disposition: str = "",
+) -> dict[str, Any]:
+    result_data: dict[str, Any] = {
+        "backend_error_message": str(backend_error_message or ""),
+        "diagram_recovery_status": str(diagram_recovery_status or "none"),
+        "assumptions_used": _merge_assumption_lists([], list(assumptions_used or [])),
+        "recovery_attempt_count": int(recovery_attempt_count or 0),
+        "diagram_final_disposition": str(final_disposition or ""),
+    }
+    if isinstance(outputs.get("reference_architecture"), dict):
+        result_data["reference_architecture"] = dict(outputs.get("reference_architecture", {}) or {})
+        result_data["reference_family"] = str(result_data["reference_architecture"].get("reference_family", "") or "")
+        result_data["reference_confidence"] = float(result_data["reference_architecture"].get("reference_confidence", 0) or 0)
+        result_data["reference_mode"] = str(result_data["reference_architecture"].get("reference_mode", "") or "")
+        result_data["standards_bundle_version"] = str(result_data["reference_architecture"].get("standards_bundle_version", "") or "")
+    if isinstance(outputs.get("render_manifest"), dict):
+        result_data["render_manifest"] = dict(outputs.get("render_manifest", {}) or {})
+    if isinstance(outputs.get("node_to_resource_map"), dict):
+        result_data["node_to_resource_map"] = dict(outputs.get("node_to_resource_map", {}) or {})
+    if isinstance(outputs.get("draw_dict"), dict):
+        result_data["draw_dict"] = dict(outputs.get("draw_dict", {}) or {})
+    if isinstance(outputs.get("spec"), dict):
+        result_data["spec"] = dict(outputs.get("spec", {}) or {})
+    return result_data
+
+
+async def _post_diagram_a2a_task(
+    *,
+    payload: dict[str, Any],
+    a2a_base_url: str,
+) -> dict[str, Any]:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=180) as client:
+        resp = await client.post(f"{a2a_base_url}/api/a2a/task", json=payload)
+    body = resp.json()
+    return body if isinstance(body, dict) else {}
+
+
+def _diagram_reply_assumptions(
+    result_data: dict[str, Any] | None,
+    fallback_decision_context: dict[str, Any] | None = None,
+) -> list[str]:
+    assumption_pool = _merge_assumption_lists(
+        list((fallback_decision_context or {}).get("assumptions", []) or []),
+        list((result_data or {}).get("assumptions_used", []) or []),
+    )
+    if isinstance((result_data or {}).get("decision_context"), dict):
+        assumption_pool = _merge_assumption_lists(
+            assumption_pool,
+            list(((result_data or {}).get("decision_context") or {}).get("assumptions", []) or []),
+        )
+    rendered: list[str] = []
+    for assumption in assumption_pool:
+        statement = str(assumption.get("statement", "") or "").strip()
+        if not statement:
+            continue
+        risk = str(assumption.get("risk", "") or "low").strip().lower()
+        rendered.append(f"{statement} (risk: {risk or 'low'})")
+    return rendered
+
+
+def _build_single_diagram_reply(
+    call: dict[str, Any],
+    *,
+    decision_context: dict[str, Any] | None = None,
+) -> str:
+    summary = str(call.get("result_summary", "") or "").strip() or "Diagram request completed."
+    if "Assumptions applied:" in summary:
+        return summary
+    result_data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+    recovery_status = str(result_data.get("diagram_recovery_status", "none") or "none")
+    if recovery_status in {"needs_clarification", "backend_error"}:
+        return summary
+    if recovery_status != "retried_with_assumptions" and not list(result_data.get("assumptions_used", []) or []):
+        return summary
+    assumptions = _diagram_reply_assumptions(result_data, decision_context)
+    if not assumptions:
+        return summary
+    return "\n".join([summary, "", "Assumptions applied:", *[f"- {item}" for item in assumptions]])
 
 
 def _extract_a2a_artifact_data(artifacts: list[dict[str, Any]], name: str) -> Any:
@@ -1670,9 +3897,10 @@ def _build_parallel_reply(
 ) -> str:
     if not tool_calls:
         return "Requested tool execution completed."
-    assumptions = _render_assumptions(decision_context, limit=3)
     if len(tool_calls) == 1 and followup is None:
         call = tool_calls[0]
+        if str(call.get("tool", "") or "") == "generate_diagram":
+            return _build_single_diagram_reply(call, decision_context=decision_context)
         summary = str(call.get("result_summary", "") or "").strip()
         return summary or f"Completed `{call.get('tool', 'requested_tool')}`."
 
@@ -1684,10 +3912,42 @@ def _build_parallel_reply(
             lines.append(f"- `{tool_name}`: {summary}")
         else:
             lines.append(f"- `{tool_name}` completed.")
+    merged_assumptions = _merge_assumption_lists(
+        list((decision_context or {}).get("assumptions", []) or []),
+        [],
+    )
+    for call in tool_calls:
+        data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+        merged_assumptions = _merge_assumption_lists(
+            merged_assumptions,
+            list((data.get("decision_context", {}) or {}).get("assumptions", []) or []),
+        )
+        merged_assumptions = _merge_assumption_lists(
+            merged_assumptions,
+            list(data.get("assumptions_used", []) or []),
+        )
+    assumptions = [
+        f"{str(item.get('statement', '') or '').strip()} (risk: {str(item.get('risk', '') or 'low').strip().lower() or 'low'})"
+        for item in merged_assumptions
+        if str(item.get("statement", "") or "").strip()
+    ]
+    missing_inputs = list(dict.fromkeys([
+        *[str(item).strip() for item in (decision_context or {}).get("missing_inputs", []) or [] if str(item).strip()],
+        *[
+            str(item).strip()
+            for call in tool_calls
+            for item in ((call.get("result_data", {}) or {}).get("decision_context", {}) or {}).get("missing_inputs", []) or []
+            if str(item).strip()
+        ],
+    ]))
     if assumptions and (len(tool_calls) > 1 or followup is not None):
         lines.append("")
         lines.append("Assumptions applied:")
         lines.extend(f"- {assumption}" for assumption in assumptions)
+    if missing_inputs and followup is None:
+        lines.append("")
+        lines.append("Missing inputs to tighten the next pass:")
+        lines.extend(f"- {item}" for item in missing_inputs)
     if followup:
         lines.append("")
         lines.append(str(followup.get("message", "")).strip())
@@ -1743,7 +4003,7 @@ def _requested_generation_tools(user_message: str) -> set[str]:
     requested: set[str] = set()
     if "bom" in msg or "bill of materials" in msg:
         requested.add("generate_bom")
-    if "diagram" in msg or "architecture" in msg or "drawio" in msg:
+    if "diagram" in msg or "drawio" in msg:
         requested.add("generate_diagram")
     if "terraform" in msg or "iac" in msg:
         requested.add("generate_terraform")
@@ -1756,11 +4016,56 @@ def _requested_generation_tools(user_message: str) -> set[str]:
     return requested
 
 
+def _is_architecture_chat_only_request(user_message: str, decision_context: dict[str, Any] | None) -> bool:
+    requested = _requested_generation_tools(user_message)
+    if requested:
+        return False
+    if isinstance(decision_context, dict) and decision_context.get("conversational_architecture"):
+        return True
+    msg = str(user_message or "").lower()
+    discussion_markers = (
+        "architecture options",
+        "tradeoffs",
+        "trade-offs",
+        "which approach",
+        "should we",
+        "talk through",
+        "walk me through",
+        "thinking through",
+    )
+    return any(marker in msg for marker in discussion_markers)
+
+
+def _build_architecture_chat_reply(
+    *,
+    user_message: str,
+    decision_context: dict[str, Any] | None,
+) -> str:
+    goal = str((decision_context or {}).get("goal", "") or user_message or "the OCI architecture").strip()
+    missing_inputs = [str(item).strip() for item in (decision_context or {}).get("missing_inputs", []) or [] if str(item).strip()]
+    assumptions = _render_assumptions(decision_context, limit=3)
+    lines = [
+        "I'm treating this as an architecture discussion first, not an artifact-generation request.",
+        f"Current direction: {goal}",
+    ]
+    if assumptions:
+        lines.append("")
+        lines.append("Reasonable defaults to start from:")
+        lines.extend(f"- {item}" for item in assumptions)
+    if missing_inputs:
+        lines.append("")
+        lines.append("Decisions still worth confirming:")
+        lines.extend(f"- {item}" for item in missing_inputs)
+    lines.append("")
+    lines.append("If you want, I can turn the agreed direction into a diagram, BOM, POV, or Terraform draft next.")
+    return "\n".join(lines).strip()
+
+
 def _is_change_update_intent(user_message: str) -> bool:
     msg = (user_message or "").lower()
     if _requested_generation_tools(user_message):
         return False
-    has_change = any(token in msg for token in ("forgot", "missing", "add", "update", "change", "modify"))
+    has_change = any(token in msg for token in ("forgot", "missing", "add", "update", "change", "modify", "we learned", "learned that"))
     has_scope = any(token in msg for token in ("element", "component", "application", "system", "architecture"))
     has_direct_generate = any(token in msg for token in ("generate bom", "generate terraform", "generate diagram"))
     return has_change and has_scope and not has_direct_generate
@@ -1791,18 +4096,81 @@ def _is_checkpoint_reject_message(user_message: str) -> bool:
     return "reject checkpoint" in msg or "revise input" in msg or "do not approve" in msg
 
 
-def _build_update_plan_from_context(context: dict[str, Any]) -> list[str]:
+def _is_recall_intent(user_message: str) -> bool:
+    msg = (user_message or "").lower()
+    if _requested_generation_tools(user_message):
+        return False
+    return any(
+        marker in msg
+        for marker in (
+            "what did we have before",
+            "what did we decide",
+            "what do you remember",
+            "recall",
+            "summarize the current state",
+            "what's the current state",
+            "what did we learn",
+        )
+    )
+
+
+def _build_recall_reply(context: dict[str, Any]) -> str:
+    summary = context_store.build_context_summary(context).strip()
+    if not summary:
+        return "I don't have persisted Archie context for this customer yet."
+    return "Here is the latest persisted Archie engagement state:\n\n" + summary
+
+
+def _build_update_plan_from_context(context: dict[str, Any], *, change_request: str = "") -> list[str]:
     agents = context.get("agents", {}) if isinstance(context, dict) else {}
     available = set(agents.keys()) if isinstance(agents, dict) else set()
+    msg = str(change_request or "").lower()
+
+    impact_groups = {
+        "architecture": {"diagram", "bom", "waf", "terraform", "pov", "jep"},
+        "security": {"diagram", "waf", "terraform", "pov", "jep"},
+        "delivery": {"pov", "jep"},
+    }
+    if any(token in msg for token in ("private", "public", "security", "waf", "iam", "compliance")):
+        impacted = set(impact_groups["security"])
+    elif any(token in msg for token in ("timeline", "milestone", "workshop", "poc", "objective")):
+        impacted = set(impact_groups["delivery"])
+    else:
+        impacted = set(impact_groups["architecture"])
+
     tool_map = {
+        "bom": "generate_bom",
         "diagram": "generate_diagram",
         "waf": "generate_waf",
-        "terraform": "generate_terraform",
         "pov": "generate_pov",
         "jep": "generate_jep",
+        "terraform": "generate_terraform",
     }
-    ordered_paths = ["diagram", "waf", "terraform", "pov", "jep"]
-    return [tool_map[path] for path in ordered_paths if path in available]
+    ordered_paths = ["bom", "diagram", "waf", "terraform", "pov", "jep"]
+    return [tool_map[path] for path in ordered_paths if path in available and path in impacted]
+
+
+def _infer_superseded_decision_ids(context: dict[str, Any], change_request: str) -> list[str]:
+    archie = context_store.get_archie_state(context)
+    resolved = archie.get("resolved_questions", []) if isinstance(archie.get("resolved_questions"), list) else []
+    msg = str(change_request or "").lower()
+    matched: list[str] = []
+    for item in reversed(resolved):
+        if not isinstance(item, dict):
+            continue
+        question_id = str(item.get("question_id", "") or "").lower()
+        if not question_id:
+            continue
+        if "private" in msg or "public" in msg:
+            if question_id == "network.exposure":
+                matched.append(str(item.get("id", "") or ""))
+        if "region" in msg:
+            if question_id in {"regions.count", "topology.scope"}:
+                matched.append(str(item.get("id", "") or ""))
+        if "database" in msg or "data tier" in msg:
+            if question_id == "data.tier":
+                matched.append(str(item.get("id", "") or ""))
+    return [item for item in matched if item]
 
 
 def _update_tool_args(tool_name: str, change_request: str) -> dict[str, Any]:
