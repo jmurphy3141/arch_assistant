@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OCI BOM Generator</title>
+</head>
+<body>
+<!--
+Reference snapshot: imported standalone BOM UI.
+Preserved as a visual/behavioral example only.
+
+Key behaviors from source drop:
+- Sidebar with connection/model/progress/presets
+- Chat flow for advisory + questions + final BOM
+- Editable BOM review table
+- JSON save and XLSX export actions
+- Calls endpoints: /config, /chat, /generate-xlsx, /refresh-data
+
+Integration decision for v1.7:
+- Do not ship this standalone page in product.
+- Re-implement required UX behaviors in existing UI framework/components.
+-->
+</body>
+</html>
