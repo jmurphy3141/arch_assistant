@@ -486,6 +486,11 @@ function latestManifestDownloads(messages: LocalMessage[]): ChatArtifactDownload
   return [];
 }
 
+function isNearBottom(element: HTMLElement, threshold = 96): boolean {
+  const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
+  return remaining <= threshold;
+}
+
 export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInterfaceProps) {
   const stored = getStoredCustomer();
   const [customerId,    setCustomerId]    = useState(stored.id);
@@ -498,9 +503,11 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
   const [attachedFile,  setAttachedFile]  = useState<string | null>(null);
   const [attachLoading, setAttachLoading] = useState(false);
   const [streamingReply, setStreamingReply] = useState('');
+  const threadRef = useRef<HTMLDivElement>(null);
   const bottomRef   = useRef<HTMLDivElement>(null);
   const inputRef    = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const shouldAutoScrollRef = useRef(true);
 
   // Load history on mount / customer change
   useEffect(() => {
@@ -522,10 +529,25 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
       .catch(() => setHistoryLoaded(true));
   }, [customerId]);
 
-  // Scroll to bottom on new messages
+  function syncAutoScrollPreference() {
+    const thread = threadRef.current;
+    if (!thread) return;
+    shouldAutoScrollRef.current = isNearBottom(thread);
+  }
+
+  // Keep the message pane pinned only when the user is already reading the latest content.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading]);
+    const thread = threadRef.current;
+    if (!thread || !shouldAutoScrollRef.current) return;
+    const rafId = window.requestAnimationFrame(() => {
+      if (typeof thread.scrollTo === 'function') {
+        thread.scrollTo({ top: thread.scrollHeight, behavior: 'auto' });
+      } else {
+        thread.scrollTop = thread.scrollHeight;
+      }
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [messages, loading, streamingReply, historyLoaded]);
 
   useEffect(() => {
     onArtifactsChange?.(latestManifestDownloads(messages));
@@ -569,6 +591,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
     const text = raw.trim();
     if (!text || loading) return;
     if (!customerId.trim()) { setError('Enter a Customer ID before sending.'); return; }
+    syncAutoScrollPreference();
 
     const userMsg: LocalMessage = {
       role: 'user', content: text, timestamp: new Date().toISOString(),
@@ -735,7 +758,9 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
         display:       'flex',
         flexDirection: 'column',
         gap:           '0.9rem',
-      }}>
+      }}
+      ref={threadRef}
+      onScroll={syncAutoScrollPreference}>
         {!customerId.trim() && (
           <div style={{ color: '#454d64', fontSize: '0.78rem', textAlign: 'center', marginTop: '2rem' }}>
             Enter a Customer ID above to start or resume a conversation.

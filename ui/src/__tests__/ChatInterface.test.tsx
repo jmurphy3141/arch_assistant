@@ -38,6 +38,7 @@ describe('ChatInterface quick actions', () => {
     clientMocks.apiGetLatestPov.mockResolvedValue({ content: '' });
     clientMocks.apiGetLatestJep.mockResolvedValue({ content: '' });
     clientMocks.apiGetLatestWaf.mockResolvedValue({ content: '' });
+    vi.restoreAllMocks();
   });
 
   it('renders checkpoint actions and sends the selected reply', async () => {
@@ -106,5 +107,44 @@ describe('ChatInterface quick actions', () => {
       expect(screen.getByTestId('quick-action-confirm-update-all')).toBeInTheDocument();
       expect(screen.getByTestId('quick-action-cancel-update')).toBeInTheDocument();
     });
+  });
+
+  it('keeps scrolling inside the chat pane instead of forcing the page to jump', async () => {
+    const scrollToMock = vi.fn();
+    const scrollIntoViewMock = vi.fn();
+    if (!HTMLElement.prototype.scrollTo) {
+      Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+        configurable: true,
+        value: () => {},
+      });
+    }
+    vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(scrollToMock);
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(scrollIntoViewMock);
+
+    clientMocks.apiChatStream.mockResolvedValue({
+      reply: 'Diagram generated.',
+      tool_calls: [],
+      artifacts: {},
+      artifact_manifest: { downloads: [] },
+    });
+
+    render(<ChatInterface />);
+
+    const customerId = screen.getByTestId('chat-customer-id');
+    const input = screen.getByTestId('chat-input');
+    await userEvent.type(customerId, 'acme');
+    await userEvent.type(input, 'generate a diagram');
+
+    const thread = screen.getByText(/No messages yet/i).parentElement as HTMLDivElement;
+    Object.defineProperty(thread, 'scrollHeight', { configurable: true, value: 1200 });
+    Object.defineProperty(thread, 'clientHeight', { configurable: true, value: 600 });
+    Object.defineProperty(thread, 'scrollTop', { configurable: true, writable: true, value: 580 });
+
+    await userEvent.click(screen.getByTestId('chat-send-button'));
+
+    await waitFor(() => {
+      expect(scrollToMock).toHaveBeenCalled();
+    });
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
   });
 });
