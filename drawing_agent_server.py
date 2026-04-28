@@ -1436,12 +1436,20 @@ async def require_admin_user(user: dict = Depends(require_user)) -> dict:
 
 _UI_DIST = Path(__file__).parent / "ui" / "dist"
 _UI_INDEX = _UI_DIST / "index.html"
+_UI_FAVICON = _UI_DIST / "favicon.jpg"
 _LEGACY_INDEX = Path(__file__).parent / "index.html"
 
 # Mount built React assets so /assets/... requests are served correctly.
 _UI_ASSETS = _UI_DIST / "assets"
 if _UI_ASSETS.exists():
     app.mount("/assets", StaticFiles(directory=_UI_ASSETS), name="ui_assets")
+
+
+@app.get("/favicon.jpg")
+async def serve_favicon():
+    if _UI_FAVICON.exists():
+        return FileResponse(str(_UI_FAVICON), media_type="image/jpeg")
+    raise HTTPException(status_code=404, detail="favicon not found")
 
 
 @app.get("/")
