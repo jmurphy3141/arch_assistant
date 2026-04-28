@@ -805,11 +805,17 @@ export interface ChatMessage {
   result_summary?: string;
   timestamp: string;
   tool_call?: { tool: string; args: Record<string, unknown> };
+  tool_calls?: ChatToolCall[];
+  artifacts?: Record<string, string>;
+  artifact_manifest?: ChatArtifactManifest;
 }
 
 export interface ChatResponse {
   status:         string;
   trace_id?:      string;
+  project_id?:    string;
+  project_name?:  string;
+  engagement_id?: string;
   reply:          string;
   tool_calls:     ChatToolCall[];
   artifacts:      Record<string, string>;
@@ -820,6 +826,9 @@ export interface ChatResponse {
 export interface ChatStreamEvent {
   trace_id?: string;
   customer_id?: string;
+  project_id?: string;
+  project_name?: string;
+  engagement_id?: string;
   event_type: 'status' | 'tool' | 'token' | 'terraform_stage' | 'completion' | 'error';
   status?: string;
   delta?: string;
@@ -842,9 +851,22 @@ export interface ChatHistoryResponse {
 export interface ChatHistoryIndexItem {
   customer_id: string;
   customer_name: string;
+  engagement_id?: string;
+  project_id?: string;
+  project_name?: string;
   last_message_preview: string;
   last_activity_timestamp: string;
   status: string;
+}
+
+export interface ChatProjectSummary {
+  project_id: string;
+  project_name: string;
+  engagement_count: number;
+  last_message_preview?: string;
+  last_activity_timestamp?: string;
+  status?: string;
+  engagements: ChatHistoryIndexItem[];
 }
 
 export interface ChatHistoryIndexResponse {
@@ -859,10 +881,23 @@ export interface ChatHistoryIndexResponse {
   };
 }
 
+export interface ChatProjectIndexResponse {
+  status: string;
+  trace_id?: string;
+  items: ChatProjectSummary[];
+  pagination: {
+    page: number;
+    page_size: number;
+    total: number;
+    has_next: boolean;
+  };
+}
+
 export async function apiChat(
   customerId: string,
   customerName: string,
   message: string,
+  project?: { projectId?: string; projectName?: string },
 ): Promise<ChatResponse> {
   return apiFetch<ChatResponse>('/chat', {
     method: 'POST',
@@ -870,6 +905,8 @@ export async function apiChat(
     body: JSON.stringify({
       customer_id:   customerId,
       customer_name: customerName,
+      ...(project?.projectId ? { project_id: project.projectId } : {}),
+      ...(project?.projectName ? { project_name: project.projectName } : {}),
       message,
     }),
   });
@@ -886,6 +923,7 @@ export async function apiChatStream(
   customerName: string,
   message: string,
   handlers: ChatStreamHandlers = {},
+  project?: { projectId?: string; projectName?: string },
 ): Promise<ChatResponse> {
   const url = `${API_BASE}/chat/stream?mode=chunked`;
   const resp = await fetch(url, {
@@ -894,6 +932,8 @@ export async function apiChatStream(
     body: JSON.stringify({
       customer_id: customerId,
       customer_name: customerName,
+      ...(project?.projectId ? { project_id: project.projectId } : {}),
+      ...(project?.projectName ? { project_name: project.projectName } : {}),
       message,
     }),
   });
@@ -931,6 +971,9 @@ export async function apiChatStream(
       completion = {
         status: 'ok',
         trace_id: event.trace_id,
+        project_id: event.project_id,
+        project_name: event.project_name,
+        engagement_id: event.engagement_id,
         reply: event.reply ?? '',
         tool_calls: event.tool_calls ?? [],
         artifacts: event.artifacts ?? {},
@@ -991,6 +1034,16 @@ export async function apiGetChatHistoryIndex(
 ): Promise<ChatHistoryIndexResponse> {
   return apiFetch<ChatHistoryIndexResponse>(
     `/chat/history?page=${page}&page_size=${pageSize}&search=${encodeURIComponent(search)}`,
+  );
+}
+
+export async function apiGetChatProjects(
+  page = 1,
+  pageSize = 50,
+  search = '',
+): Promise<ChatProjectIndexResponse> {
+  return apiFetch<ChatProjectIndexResponse>(
+    `/chat/projects?page=${page}&page_size=${pageSize}&search=${encodeURIComponent(search)}`,
   );
 }
 

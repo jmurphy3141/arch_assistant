@@ -23,9 +23,23 @@ function renderApp() {
   return render(<App />);
 }
 
+function openSidebarMode(mode: string) {
+  fireEvent.click(screen.getByTestId(`sidebar-nav-${mode}`));
+}
+
+function submitGenerateForm() {
+  const form = screen.getByTestId('generate-form');
+  const submit = form.querySelector('button[type="submit"]');
+  if (!(submit instanceof HTMLElement)) {
+    throw new Error('Generate form submit button not found');
+  }
+  fireEvent.click(submit);
+}
+
 // Silence console.error for expected test errors
 beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  localStorage.clear();
 });
 
 // ---------------------------------------------------------------------------
@@ -36,10 +50,10 @@ describe('C1: Generate success', () => {
     renderApp();
 
     // Switch to Generate mode
-    fireEvent.click(screen.getByText('Generate'));
+    openSidebarMode('generate');
 
     // Submit the form (default resources is [])
-    fireEvent.click(screen.getByText('Generate Diagram'));
+    submitGenerateForm();
 
     await waitFor(() => {
       expect(screen.getByTestId('response-ok')).toBeInTheDocument();
@@ -55,8 +69,8 @@ describe('C1: Generate success', () => {
 
   it('renders correct download links for all artifact files', async () => {
     renderApp();
-    fireEvent.click(screen.getByText('Generate'));
-    fireEvent.click(screen.getByText('Generate Diagram'));
+    openSidebarMode('generate');
+    submitGenerateForm();
 
     await waitFor(() => {
       expect(screen.getByTestId('download-list')).toBeInTheDocument();
@@ -99,8 +113,8 @@ describe('C2: Clarification flow', () => {
     );
 
     renderApp();
-    fireEvent.click(screen.getByText('Generate'));
-    fireEvent.click(screen.getByText('Generate Diagram'));
+    openSidebarMode('generate');
+    submitGenerateForm();
 
     await waitFor(() => {
       expect(screen.getByTestId('clarify-form')).toBeInTheDocument();
@@ -117,8 +131,8 @@ describe('C2: Clarification flow', () => {
     );
 
     renderApp();
-    fireEvent.click(screen.getByText('Generate'));
-    fireEvent.click(screen.getByText('Generate Diagram'));
+    openSidebarMode('generate');
+    submitGenerateForm();
 
     await waitFor(() => {
       expect(screen.getByTestId('clarify-form')).toBeInTheDocument();
@@ -152,8 +166,8 @@ describe('C3: Error handling', () => {
     );
 
     renderApp();
-    fireEvent.click(screen.getByText('Generate'));
-    fireEvent.click(screen.getByText('Generate Diagram'));
+    openSidebarMode('generate');
+    submitGenerateForm();
 
     await waitFor(() => {
       expect(screen.getByTestId('error-display')).toBeInTheDocument();
@@ -172,8 +186,8 @@ describe('C3: Error handling', () => {
     );
 
     renderApp();
-    fireEvent.click(screen.getByText('Generate'));
-    fireEvent.click(screen.getByText('Generate Diagram'));
+    openSidebarMode('generate');
+    submitGenerateForm();
 
     await waitFor(() => {
       expect(screen.getByTestId('error-display')).toBeInTheDocument();
@@ -190,10 +204,10 @@ describe('C3: Error handling', () => {
     );
 
     renderApp();
-    fireEvent.click(screen.getByText('Generate'));
+    openSidebarMode('generate');
 
     // Should not throw
-    expect(() => fireEvent.click(screen.getByText('Generate Diagram'))).not.toThrow();
+    expect(() => submitGenerateForm()).not.toThrow();
   });
 });
 
@@ -205,7 +219,7 @@ describe('C4: Health indicator', () => {
     renderApp();
 
     await waitFor(() => {
-      expect(screen.getByTestId('health-indicator')).toHaveTextContent('1.5.0');
+      expect(screen.getByTestId('health-indicator')).toHaveTextContent('1.9.1');
     });
   });
 
@@ -247,8 +261,8 @@ describe('C5: Persistence', () => {
     renderApp();
 
     // Generate a diagram
-    fireEvent.click(screen.getByText('Generate'));
-    fireEvent.click(screen.getByText('Generate Diagram'));
+    openSidebarMode('generate');
+    submitGenerateForm();
 
     await waitFor(() => {
       expect(screen.getByTestId('download-list')).toBeInTheDocument();
@@ -265,10 +279,10 @@ describe('C5: Persistence', () => {
 describe('C6: BOM tab', () => {
   it('renders BOM advisor and accepts a chat submission', async () => {
     renderApp();
-    fireEvent.click(screen.getByText('BOM'));
+    openSidebarMode('bom');
 
     await waitFor(() => {
-      expect(screen.getByText('BOM Advisor')).toBeInTheDocument();
+      expect(screen.getByTestId('bom-input')).toBeInTheDocument();
     });
 
     fireEvent.change(screen.getByTestId('bom-input'), {
@@ -279,5 +293,82 @@ describe('C6: BOM tab', () => {
     await waitFor(() => {
       expect(screen.getByText(/BOM data is not ready/i)).toBeInTheDocument();
     });
+  });
+});
+
+describe('C7: Project sidebar', () => {
+  it('filters chats when a project is selected and opens an engagement', async () => {
+    renderApp();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-sidebar-project-acme-corp')).toBeInTheDocument();
+      expect(screen.getByTestId('chat-sidebar-item-acme-discovery')).toBeInTheDocument();
+      expect(screen.getByTestId('chat-sidebar-item-globex-review')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('chat-sidebar-project-globex'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-sidebar-item-globex-review')).toBeInTheDocument();
+      expect(screen.queryByTestId('chat-sidebar-item-acme-discovery')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('chat-sidebar-item-globex-review'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-customer-id')).toHaveValue('globex-review');
+    });
+  });
+});
+
+describe('C8: Documents sidebar section', () => {
+  it('is collapsed by default while conversations remain visible', async () => {
+    renderApp();
+
+    const toggle = screen.getByTestId('sidebar-documents-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('sidebar-nav-notes')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-nav-pov')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-nav-jep')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-nav-terraform')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-nav-waf')).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-sidebar-project-acme-corp')).toBeInTheDocument();
+      expect(screen.getByTestId('chat-sidebar-item-acme-discovery')).toBeInTheDocument();
+    });
+  });
+
+  it('expands and collapses document navigation', () => {
+    renderApp();
+
+    const toggle = screen.getByTestId('sidebar-documents-toggle');
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('sidebar-nav-notes')).toHaveTextContent('Notes');
+    expect(screen.getByTestId('sidebar-nav-pov')).toHaveTextContent('POV');
+    expect(screen.getByTestId('sidebar-nav-jep')).toHaveTextContent('JEP');
+    expect(screen.getByTestId('sidebar-nav-terraform')).toHaveTextContent('Terraform');
+    expect(screen.getByTestId('sidebar-nav-waf')).toHaveTextContent('WAF Review');
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('sidebar-nav-notes')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-nav-pov')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-nav-jep')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-nav-terraform')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-nav-waf')).not.toBeInTheDocument();
+  });
+
+  it('switches workspace when a document mode is selected', () => {
+    renderApp();
+
+    fireEvent.click(screen.getByTestId('sidebar-documents-toggle'));
+    fireEvent.click(screen.getByTestId('sidebar-nav-notes'));
+
+    expect(screen.getByRole('heading', { name: 'Notes' })).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-nav-notes')).toHaveAttribute('aria-current', 'page');
   });
 });

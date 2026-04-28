@@ -185,4 +185,58 @@ describe('ChatInterface quick actions', () => {
     });
     expect(scrollIntoViewMock).not.toHaveBeenCalled();
   });
+
+  it('restores diagram artifacts from loaded chat history', async () => {
+    localStorage.setItem('chat_customer_id', 'acme');
+    localStorage.setItem('chat_customer_name', 'Acme');
+    clientMocks.apiGetChatHistory.mockResolvedValue({
+      history: [
+        {
+          role: 'user',
+          content: 'generate a diagram',
+          timestamp: '2026-04-28T12:00:00Z',
+        },
+        {
+          role: 'assistant',
+          content: JSON.stringify({
+            tool: 'generate_diagram',
+            args: {},
+            result_summary: 'Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio',
+          }),
+          timestamp: '2026-04-28T12:00:01Z',
+          tool_call: { tool: 'generate_diagram', args: {} },
+        },
+        {
+          role: 'tool',
+          tool: 'generate_diagram',
+          result_summary: 'Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio',
+          timestamp: '2026-04-28T12:00:02Z',
+        },
+        {
+          role: 'assistant',
+          content: 'Diagram generated.',
+          timestamp: '2026-04-28T12:00:03Z',
+        },
+      ],
+    });
+    const onArtifactsChange = vi.fn();
+
+    render(<ChatInterface onArtifactsChange={onArtifactsChange} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Diagram generated.')).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      expect(onArtifactsChange).toHaveBeenLastCalledWith([
+        expect.objectContaining({
+          type: 'diagram',
+          tool: 'generate_diagram',
+          key: 'diagrams/acme/oci_architecture/v1/diagram.drawio',
+          filename: 'diagram.drawio',
+          download_url: '/api/download/diagram.drawio?client_id=acme&diagram_name=oci_architecture',
+        }),
+      ]);
+    });
+  });
 });

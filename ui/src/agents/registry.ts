@@ -24,7 +24,7 @@ export interface AgentDefinition {
 const ARCHIE_AGENT: AgentDefinition = {
   id: 'archie',
   name: 'Archie',
-  version: '1.5.0',
+  version: '1.9.1',
   description:
     'Coordinates OCI architecture diagrams, BOMs, documents, Terraform, and WAF review.',
   endpoints: {

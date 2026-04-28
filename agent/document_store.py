@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -78,6 +79,10 @@ def _conversation_key(customer_id: str, filename: str, *, customer_first: bool) 
     if customer_first:
         return f"{_customer_prefix(customer_id)}/conversations/{filename}"
     return f"conversations/{customer_id}/{filename}"
+
+
+def _project_key(project_id: str, tail: str) -> str:
+    return f"projects/{project_id}/{tail}"
 
 
 def _put_dual(
@@ -688,6 +693,98 @@ def load_conversation_summary(
         return ""
 
 
+# ── Projects / engagement index ───────────────────────────────────────────────
+
+def normalize_project_id(project_name: str, fallback_customer_id: str = "") -> str:
+    """
+    Return a stable, URL/path-safe project id derived from a project name.
+    Falls back to the customer/engagement id when the name has no slug content.
+    """
+    source = (project_name or "").strip() or (fallback_customer_id or "").strip()
+    slug = re.sub(r"[^a-z0-9]+", "-", source.lower()).strip("-")
+    return slug or (fallback_customer_id or "project").strip() or "project"
+
+
+def _load_project_engagement_index(store: ObjectStoreBase) -> dict[str, dict]:
+    """
+    Return project engagement metadata keyed by existing customer_id.
+    """
+    by_customer: dict[str, dict] = {}
+    for key in store.list("projects/"):
+        if "/engagements/" not in key or not key.endswith(".json"):
+            continue
+        try:
+            record = json.loads(store.get(key))
+        except Exception:
+            logger.warning("Skipping invalid project engagement metadata: %s", key)
+            continue
+        if not isinstance(record, dict):
+            continue
+        customer_id = str(record.get("customer_id") or record.get("engagement_id") or "").strip()
+        project_id = str(record.get("project_id") or "").strip()
+        if not customer_id or not project_id:
+            continue
+        by_customer[customer_id] = record
+    return by_customer
+
+
+def save_project_engagement(
+    store: ObjectStoreBase,
+    *,
+    customer_id: str,
+    customer_name: str = "",
+    project_id: str = "",
+    project_name: str = "",
+) -> dict:
+    """
+    Save lightweight membership metadata for an engagement without moving artifacts.
+
+    A project is the customer/account. The existing customer_id remains the
+    engagement/thread id used by all current APIs.
+    """
+    customer_id = (customer_id or "").strip()
+    customer_name = (customer_name or "").strip()
+    resolved_project_name = (project_name or "").strip() or customer_name or customer_id
+    resolved_project_id = normalize_project_id(project_id or resolved_project_name, customer_id)
+    now = datetime.now(timezone.utc).isoformat()
+
+    project_key = _project_key(resolved_project_id, "project.json")
+    project_doc = _get_first_json(store, [project_key], {})
+    if not isinstance(project_doc, dict):
+        project_doc = {}
+    project_doc.update({
+        "project_id": resolved_project_id,
+        "project_name": resolved_project_name,
+        "updated_at": now,
+    })
+    project_doc.setdefault("created_at", now)
+    store.put(
+        project_key,
+        json.dumps(project_doc, indent=2).encode("utf-8"),
+        "application/json",
+    )
+
+    engagement_key = _project_key(resolved_project_id, f"engagements/{customer_id}.json")
+    engagement_doc = _get_first_json(store, [engagement_key], {})
+    if not isinstance(engagement_doc, dict):
+        engagement_doc = {}
+    engagement_doc.update({
+        "project_id": resolved_project_id,
+        "project_name": resolved_project_name,
+        "engagement_id": customer_id,
+        "customer_id": customer_id,
+        "customer_name": customer_name or resolved_project_name,
+        "updated_at": now,
+    })
+    engagement_doc.setdefault("created_at", now)
+    store.put(
+        engagement_key,
+        json.dumps(engagement_doc, indent=2).encode("utf-8"),
+        "application/json",
+    )
+    return engagement_doc
+
+
 # ── Terraform bundles ──────────────────────────────────────────────────────────
 
 def save_terraform_bundle(
@@ -887,6 +984,65 @@ def list_conversation_customers(store: ObjectStoreBase) -> list[str]:
     return sorted(customer_ids)
 
 
+def _build_conversation_summary(
+    store: ObjectStoreBase,
+    customer_id: str,
+    project_index: Optional[dict[str, dict]] = None,
+) -> dict | None:
+    history = load_conversation_history(store, customer_id, max_turns=0)
+    if not history:
+        return None
+
+    last_turn = history[-1]
+    last_ts = last_turn.get("timestamp", "")
+    customer_name = ""
+    last_preview = ""
+    status = "In Progress"
+    project_id = ""
+    project_name = ""
+
+    for turn in reversed(history):
+        if not customer_name and turn.get("role") == "user":
+            customer_name = turn.get("customer_name", "") or ""
+        if not project_id:
+            project_id = str(turn.get("project_id", "") or "").strip()
+        if not project_name:
+            project_name = str(turn.get("project_name", "") or "").strip()
+        if not last_preview and turn.get("content"):
+            text = str(turn.get("content", "")).strip()
+            if text:
+                last_preview = text.replace("\n", " ")[:160]
+        if turn.get("tool") == "generate_terraform":
+            summary = str(turn.get("result_summary", "")).lower()
+            if "blocked" in summary or "clarification" in summary:
+                status = "Terraform Needs Input"
+            else:
+                status = "Completed with Terraform"
+        if customer_name and project_id and project_name and last_preview and status != "In Progress":
+            break
+
+    project_meta = (project_index or {}).get(customer_id, {})
+    if project_meta:
+        project_id = str(project_meta.get("project_id") or project_id or "").strip()
+        project_name = str(project_meta.get("project_name") or project_name or "").strip()
+        customer_name = str(project_meta.get("customer_name") or customer_name or "").strip()
+
+    customer_name = customer_name or customer_id
+    project_name = project_name or customer_name or customer_id
+    project_id = project_id or normalize_project_id(project_name, customer_id)
+
+    return {
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+        "engagement_id": customer_id,
+        "project_id": project_id,
+        "project_name": project_name,
+        "last_message_preview": last_preview,
+        "last_activity_timestamp": last_ts,
+        "status": status,
+    }
+
+
 def list_conversation_summaries(
     store: ObjectStoreBase,
     *,
@@ -904,47 +1060,25 @@ def list_conversation_summaries(
 
     search_lc = search.strip().lower()
     summaries: list[dict] = []
+    project_index = _load_project_engagement_index(store)
 
     for customer_id in list_conversation_customers(store):
-        history = load_conversation_history(store, customer_id, max_turns=0)
-        if not history:
+        summary = _build_conversation_summary(store, customer_id, project_index)
+        if not summary:
             continue
 
-        last_turn = history[-1]
-        last_ts = last_turn.get("timestamp", "")
-        customer_name = ""
-        last_preview = ""
-        status = "In Progress"
-
-        for turn in reversed(history):
-            if not customer_name and turn.get("role") == "user":
-                customer_name = turn.get("customer_name", "") or ""
-            if not last_preview and turn.get("content"):
-                text = str(turn.get("content", "")).strip()
-                if text:
-                    last_preview = text.replace("\n", " ")[:160]
-            if turn.get("tool") == "generate_terraform":
-                summary = str(turn.get("result_summary", "")).lower()
-                if "blocked" in summary or "clarification" in summary:
-                    status = "Terraform Needs Input"
-                else:
-                    status = "Completed with Terraform"
-            if customer_name and last_preview and status != "In Progress":
-                break
-
-        haystack = f"{customer_id} {customer_name} {last_preview}".lower()
+        haystack = " ".join([
+            str(summary.get("customer_id", "")),
+            str(summary.get("customer_name", "")),
+            str(summary.get("engagement_id", "")),
+            str(summary.get("project_id", "")),
+            str(summary.get("project_name", "")),
+            str(summary.get("last_message_preview", "")),
+        ]).lower()
         if search_lc and search_lc not in haystack:
             continue
 
-        summaries.append(
-            {
-                "customer_id": customer_id,
-                "customer_name": customer_name or customer_id,
-                "last_message_preview": last_preview,
-                "last_activity_timestamp": last_ts,
-                "status": status,
-            }
-        )
+        summaries.append(summary)
 
     summaries.sort(key=lambda item: item.get("last_activity_timestamp", ""), reverse=True)
     total = len(summaries)
@@ -952,6 +1086,96 @@ def list_conversation_summaries(
     end = start + page_size
     return {
         "items": summaries[start:end],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_next": end < total,
+        },
+    }
+
+
+def list_project_summaries(
+    store: ObjectStoreBase,
+    *,
+    search: str = "",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """
+    Return projects grouped from conversation history and project metadata.
+    Legacy histories without project metadata are grouped by customer_name,
+    falling back to customer_id.
+    """
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+
+    search_lc = search.strip().lower()
+    project_index = _load_project_engagement_index(store)
+    projects: dict[str, dict] = {}
+
+    for customer_id in list_conversation_customers(store):
+        engagement = _build_conversation_summary(store, customer_id, project_index)
+        if not engagement:
+            continue
+        project_id = str(engagement["project_id"])
+        project = projects.setdefault(
+            project_id,
+            {
+                "project_id": project_id,
+                "project_name": engagement["project_name"],
+                "last_activity_timestamp": "",
+                "engagement_count": 0,
+                "engagements": [],
+            },
+        )
+        if len(str(engagement.get("project_name", ""))) > len(str(project.get("project_name", ""))):
+            project["project_name"] = engagement["project_name"]
+        project["engagements"].append(engagement)
+        project["engagement_count"] = len(project["engagements"])
+        if str(engagement.get("last_activity_timestamp", "")) > str(project.get("last_activity_timestamp", "")):
+            project["last_activity_timestamp"] = engagement.get("last_activity_timestamp", "")
+
+    for project in projects.values():
+        project["engagements"].sort(
+            key=lambda item: item.get("last_activity_timestamp", ""),
+            reverse=True,
+        )
+        first = project["engagements"][0] if project["engagements"] else {}
+        project["last_message_preview"] = first.get("last_message_preview", "")
+        project["status"] = first.get("status", "In Progress")
+
+    project_list = list(projects.values())
+    if search_lc:
+        filtered: list[dict] = []
+        for project in project_list:
+            engagement_haystack = " ".join(
+                " ".join([
+                    str(item.get("customer_id", "")),
+                    str(item.get("customer_name", "")),
+                    str(item.get("engagement_id", "")),
+                    str(item.get("last_message_preview", "")),
+                ])
+                for item in project.get("engagements", [])
+            )
+            haystack = " ".join([
+                str(project.get("project_id", "")),
+                str(project.get("project_name", "")),
+                str(project.get("last_message_preview", "")),
+                engagement_haystack,
+            ]).lower()
+            if search_lc in haystack:
+                filtered.append(project)
+        project_list = filtered
+
+    project_list.sort(key=lambda item: item.get("last_activity_timestamp", ""), reverse=True)
+    total = len(project_list)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return {
+        "items": project_list[start:end],
         "pagination": {
             "page": page,
             "page_size": page_size,

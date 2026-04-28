@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from drawing_agent_server import app
 from agent.persistence_objectstore import InMemoryObjectStore
-from agent.document_store import save_conversation_turns
+from agent.document_store import save_conversation_turns, save_project_engagement
 
 
 @pytest.fixture
@@ -91,6 +91,136 @@ def test_chat_history_index_supports_search(client):
     body = resp.json()
     assert body["pagination"]["total"] == 1
     assert body["items"][0]["customer_id"] == "beta"
+
+
+def test_chat_history_index_includes_project_metadata(client):
+    test_client, store = client
+
+    save_project_engagement(
+        store,
+        customer_id="acme-discovery",
+        customer_name="Discovery",
+        project_name="ACME Corp",
+    )
+    save_conversation_turns(
+        store,
+        "acme-discovery",
+        [
+            {
+                "role": "user",
+                "content": "Need terraform",
+                "timestamp": "2026-04-17T13:00:00Z",
+                "customer_name": "Discovery",
+            }
+        ],
+    )
+
+    resp = test_client.get("/api/chat/history?search=acme")
+    assert resp.status_code == 200
+    item = resp.json()["items"][0]
+    assert item["customer_id"] == "acme-discovery"
+    assert item["engagement_id"] == "acme-discovery"
+    assert item["project_id"] == "acme-corp"
+    assert item["project_name"] == "ACME Corp"
+
+
+def test_chat_projects_groups_multiple_engagements_by_project_name(client):
+    test_client, store = client
+
+    for customer_id, message, ts in [
+        ("acme-discovery", "Discovery notes", "2026-04-17T10:00:00Z"),
+        ("acme-build", "Build plan", "2026-04-17T13:00:00Z"),
+    ]:
+        save_project_engagement(
+            store,
+            customer_id=customer_id,
+            customer_name=customer_id,
+            project_name="ACME Corp",
+        )
+        save_conversation_turns(
+            store,
+            customer_id,
+            [
+                {
+                    "role": "user",
+                    "content": message,
+                    "timestamp": ts,
+                    "customer_name": customer_id,
+                }
+            ],
+        )
+
+    resp = test_client.get("/api/chat/projects")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pagination"]["total"] == 1
+    project = body["items"][0]
+    assert project["project_id"] == "acme-corp"
+    assert project["project_name"] == "ACME Corp"
+    assert project["engagement_count"] == 2
+    assert [item["customer_id"] for item in project["engagements"]] == ["acme-build", "acme-discovery"]
+
+
+def test_chat_projects_legacy_histories_group_by_customer_name(client):
+    test_client, store = client
+
+    save_conversation_turns(
+        store,
+        "legacy-one",
+        [
+            {
+                "role": "user",
+                "content": "First legacy thread",
+                "timestamp": "2026-04-17T10:00:00Z",
+                "customer_name": "Legacy Co",
+            }
+        ],
+    )
+    save_conversation_turns(
+        store,
+        "legacy-two",
+        [
+            {
+                "role": "user",
+                "content": "Second legacy thread",
+                "timestamp": "2026-04-17T11:00:00Z",
+                "customer_name": "Legacy Co",
+            }
+        ],
+    )
+
+    resp = test_client.get("/api/chat/projects")
+    assert resp.status_code == 200
+    project = resp.json()["items"][0]
+    assert project["project_id"] == "legacy-co"
+    assert project["project_name"] == "Legacy Co"
+    assert project["engagement_count"] == 2
+
+
+def test_chat_projects_search_matches_engagement_and_last_message(client):
+    test_client, store = client
+
+    save_project_engagement(store, customer_id="acme-build", customer_name="Build", project_name="ACME Corp")
+    save_conversation_turns(
+        store,
+        "acme-build",
+        [
+            {
+                "role": "user",
+                "content": "Need GPU sizing",
+                "timestamp": "2026-04-17T13:00:00Z",
+                "customer_name": "Build",
+            }
+        ],
+    )
+
+    resp = test_client.get("/api/chat/projects?search=gpu")
+    assert resp.status_code == 200
+    assert resp.json()["pagination"]["total"] == 1
+
+    resp = test_client.get("/api/chat/projects?search=acme-build")
+    assert resp.status_code == 200
+    assert resp.json()["pagination"]["total"] == 1
 
 
 def test_chat_history_index_terraform_needs_input_status(client):
