@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OCI Drawing Agent - FastAPI Server  (v1.5.0)
+OCI Drawing Agent - FastAPI Server  (v1.9.1)
 Pipeline: BOM.xlsx + optional context file
   → bom_parser.py   (rule-based service extraction + LLM prompt)
   → OCI GenAI       (layout compiler → layout spec JSON or clarification questions)
@@ -108,6 +108,9 @@ from agent.document_store import (
     load_conversation_history,
     clear_conversation_history,
     list_conversation_summaries,
+    list_project_summaries,
+    normalize_project_id,
+    save_project_engagement,
     save_terraform_bundle,
     get_latest_terraform_bundle,
     list_terraform_versions,
@@ -151,7 +154,9 @@ async def _lifespan(application: FastAPI):
     yield
 
 
-app = FastAPI(title="OCI Drawing Agent", version="1.5.0", lifespan=_lifespan)
+AGENT_VERSION = "1.9.1"
+
+app = FastAPI(title="OCI Drawing Agent", version=AGENT_VERSION, lifespan=_lifespan)
 
 
 @app.middleware("http")
@@ -273,7 +278,6 @@ AUTH_ENABLED = all([
 AGENT_ID    = _cfg.get("agent_id", "agent3-oci-drawing")
 FLEET_CFG   = _cfg.get("fleet", {})
 
-AGENT_VERSION  = "1.5.0"
 SCHEMA_VERSION = {"spec": "1.1", "draw_dict": "1.0"}
 
 # ── Diagram editor system message ─────────────────────────────────────────────
@@ -541,6 +545,8 @@ class OrchestratorChatRequest(BaseModel):
     customer_id:   str
     customer_name: str
     message:       str
+    project_id:    Optional[str] = None
+    project_name:  Optional[str] = None
 
 
 class BomConversationTurn(BaseModel):
@@ -3042,12 +3048,22 @@ def _build_artifact_manifest(customer_id: str, result: dict) -> dict:
     artifacts = result.get("artifacts", {}) or {}
     for tool_name, artifact_key in artifacts.items():
         if tool_name == "generate_diagram":
+            parts = [part for part in str(artifact_key or "").split("/") if part]
+            version_index = next((idx for idx, part in enumerate(parts) if re.fullmatch(r"v\d+", part)), -1)
+            artifact_filename = parts[-1] if parts else "diagram.drawio"
+            artifact_client_id = parts[version_index - 2] if version_index >= 2 else customer_id
+            diagram_name = parts[version_index - 1] if version_index >= 1 else "oci_architecture"
             manifest["downloads"].append(
                 {
                     "type": "diagram",
                     "tool": tool_name,
                     "key": artifact_key,
-                    "download_url": "/api/download/diagram.drawio",
+                    "filename": artifact_filename,
+                    "download_url": (
+                        f"/api/download/{urllib.parse.quote(artifact_filename)}"
+                        f"?client_id={urllib.parse.quote(artifact_client_id)}"
+                        f"&diagram_name={urllib.parse.quote(diagram_name)}"
+                    ),
                 }
             )
 
@@ -3069,6 +3085,18 @@ def _build_artifact_manifest(customer_id: str, result: dict) -> dict:
     return manifest
 
 
+def _persist_chat_project_membership(store, req: OrchestratorChatRequest) -> dict:
+    project_name = (req.project_name or "").strip() or (req.customer_name or "").strip() or req.customer_id
+    project_id = (req.project_id or "").strip() or normalize_project_id(project_name, req.customer_id)
+    return save_project_engagement(
+        store,
+        customer_id=req.customer_id,
+        customer_name=req.customer_name,
+        project_id=project_id,
+        project_name=project_name,
+    )
+
+
 @app.post("/api/chat")
 async def api_chat(req: OrchestratorChatRequest):
     """
@@ -3087,9 +3115,13 @@ async def api_chat(req: OrchestratorChatRequest):
             orch_cfg=orch_cfg,
         )
         artifact_manifest = _build_artifact_manifest(req.customer_id, result)
+        project_membership = _persist_chat_project_membership(store, req)
         return {
             "status":         "ok",
             "trace_id":       _current_trace_id(),
+            "project_id":     project_membership["project_id"],
+            "project_name":   project_membership["project_name"],
+            "engagement_id":  req.customer_id,
             "reply":          result["reply"],
             "tool_calls":     result["tool_calls"],
             "artifacts":      result["artifacts"],
@@ -3137,6 +3169,7 @@ async def api_chat_stream(
                 text_runner=text_runner,
                 orch_cfg=orch_cfg,
             )
+            project_membership = _persist_chat_project_membership(store, req)
             for tool_call in result.get("tool_calls", []):
                 if (
                     tool_call.get("tool") == "generate_terraform"
@@ -3168,6 +3201,9 @@ async def api_chat_stream(
             completed = {
                 "trace_id": trace_id,
                 "customer_id": req.customer_id,
+                "project_id": project_membership["project_id"],
+                "project_name": project_membership["project_name"],
+                "engagement_id": req.customer_id,
                 "event_type": "completion",
                 "reply": result.get("reply", ""),
                 "tool_calls": result.get("tool_calls", []),
@@ -3206,6 +3242,7 @@ async def api_chat_stream(
                 text_runner=text_runner,
                 orch_cfg=orch_cfg,
             )
+            project_membership = _persist_chat_project_membership(store, req)
             for tool_call in result.get("tool_calls", []):
                 if (
                     tool_call.get("tool") == "generate_terraform"
@@ -3237,6 +3274,9 @@ async def api_chat_stream(
             completed = {
                 "trace_id": trace_id,
                 "customer_id": req.customer_id,
+                "project_id": project_membership["project_id"],
+                "project_name": project_membership["project_name"],
+                "engagement_id": req.customer_id,
                 "event_type": "completion",
                 "reply": result.get("reply", ""),
                 "tool_calls": result.get("tool_calls", []),
@@ -3294,6 +3334,33 @@ async def api_chat_history_index(
     result = await anyio.to_thread.run_sync(
         functools.partial(
             list_conversation_summaries,
+            store,
+            page=page,
+            page_size=page_size,
+            search=search,
+        )
+    )
+    return {
+        "status": "ok",
+        "trace_id": _current_trace_id(),
+        "items": result["items"],
+        "pagination": result["pagination"],
+    }
+
+
+@app.get("/api/chat/projects")
+async def api_chat_project_index(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    search: str = Query(default=""),
+):
+    """
+    Return grouped project/customer summaries with engagement chat summaries.
+    """
+    store = _require_object_store()
+    result = await anyio.to_thread.run_sync(
+        functools.partial(
+            list_project_summaries,
             store,
             page=page,
             page_size=page_size,

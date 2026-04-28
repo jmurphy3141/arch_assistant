@@ -13,7 +13,7 @@ const BASE = '/api';
 
 export const HEALTH_RESPONSE = {
   status: 'ok',
-  agent_version: '1.5.0',
+  agent_version: '1.9.1',
   agent: 'oci-drawing-agent',
   pending_clarifications: [],
   idempotency_cache_size: 0,
@@ -21,7 +21,7 @@ export const HEALTH_RESPONSE = {
 
 export const GENERATE_OK_RESPONSE = {
   status: 'ok',
-  agent_version: '1.5.0',
+  agent_version: '1.9.1',
   request_id: 'aabbccdd-0000-0000-0000-112233445566',
   input_hash: 'a'.repeat(64),
   client_id: 'test-client',
@@ -36,7 +36,7 @@ export const GENERATE_OK_RESPONSE = {
 
 export const CLARIFY_RESPONSE = {
   status: 'need_clarification',
-  agent_version: '1.5.0',
+  agent_version: '1.9.1',
   request_id: 'clarify-req-id',
   input_hash: 'b'.repeat(64),
   client_id: 'test-client',
@@ -74,7 +74,7 @@ const DOC_CONTENT = '# Test Document\n\n## Section One\n\nSome **bold** content 
 
 export const POV_GENERATE_RESPONSE = {
   status: 'ok',
-  agent_version: '1.5.0',
+  agent_version: '1.9.1',
   customer_id: 'test_customer',
   doc_type: 'pov',
   version: 1,
@@ -125,7 +125,7 @@ export const TERRAFORM_FILES = {
 
 export const TERRAFORM_GENERATE_RESPONSE = {
   status: 'ok',
-  agent_version: '1.5.0',
+  agent_version: '1.9.1',
   customer_id: 'test_customer',
   doc_type: 'terraform',
   version: 1,
@@ -191,7 +191,7 @@ export const WAF_CONTENT = [
 
 export const WAF_GENERATE_RESPONSE = {
   status: 'ok',
-  agent_version: '1.5.0',
+  agent_version: '1.9.1',
   customer_id: 'test_customer',
   doc_type: 'waf',
   version: 1,
@@ -218,6 +218,58 @@ export const WAF_VERSIONS_RESPONSE = {
   ],
 };
 
+export const CHAT_HISTORY_RESPONSE = {
+  status: 'ok',
+  items: [
+    {
+      customer_id: 'acme-discovery',
+      customer_name: 'Discovery',
+      engagement_id: 'acme-discovery',
+      project_id: 'acme-corp',
+      project_name: 'ACME Corp',
+      last_message_preview: 'Need terraform for acme',
+      last_activity_timestamp: '2026-04-17T13:00:00Z',
+      status: 'Completed with Terraform',
+    },
+    {
+      customer_id: 'globex-review',
+      customer_name: 'Review',
+      engagement_id: 'globex-review',
+      project_id: 'globex',
+      project_name: 'Globex',
+      last_message_preview: 'Need CIDR details',
+      last_activity_timestamp: '2026-04-17T10:00:00Z',
+      status: 'Terraform Needs Input',
+    },
+  ],
+  pagination: { page: 1, page_size: 100, total: 2, has_next: false },
+};
+
+export const CHAT_PROJECTS_RESPONSE = {
+  status: 'ok',
+  items: [
+    {
+      project_id: 'acme-corp',
+      project_name: 'ACME Corp',
+      engagement_count: 1,
+      last_message_preview: 'Need terraform for acme',
+      last_activity_timestamp: '2026-04-17T13:00:00Z',
+      status: 'Completed with Terraform',
+      engagements: [CHAT_HISTORY_RESPONSE.items[0]],
+    },
+    {
+      project_id: 'globex',
+      project_name: 'Globex',
+      engagement_count: 1,
+      last_message_preview: 'Need CIDR details',
+      last_activity_timestamp: '2026-04-17T10:00:00Z',
+      status: 'Terraform Needs Input',
+      engagements: [CHAT_HISTORY_RESPONSE.items[1]],
+    },
+  ],
+  pagination: { page: 1, page_size: 100, total: 2, has_next: false },
+};
+
 // ---------------------------------------------------------------------------
 // Handler registry
 // ---------------------------------------------------------------------------
@@ -236,6 +288,13 @@ export const handlers = [
   http.post(`${BASE}/bom/chat`, () => HttpResponse.json({ type: 'normal', reply: 'BOM data is not ready. Run /api/bom/refresh-data, then retry.', trace_id: 'trace-bom-chat' })),
   http.post(`${BASE}/bom/refresh-data`, () => HttpResponse.json({ ready: true, source: 'fallback', pricing_sku_count: 9, latency_ms: 12, refreshed_at: 1710000000, trace_id: 'trace-bom-refresh' })),
   http.post(`${BASE}/bom/generate-xlsx`, () => new HttpResponse('xlsx-bytes', { status: 200, headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } })),
+  http.get(`${BASE}/chat/history`, () => HttpResponse.json(CHAT_HISTORY_RESPONSE)),
+  http.get(`${BASE}/chat/projects`, () => HttpResponse.json(CHAT_PROJECTS_RESPONSE)),
+  http.get(`${BASE}/chat/:customerId/history`, ({ params }) => HttpResponse.json({
+    status: 'ok',
+    customer_id: params.customerId,
+    history: [],
+  })),
 
   // Notes
   http.post(`${BASE}/notes/upload`, () => HttpResponse.json(NOTE_UPLOAD_RESPONSE)),

@@ -51,6 +51,11 @@
 - Documentation synchronized for dynamic specialist skill injection and critic/refine flow.
 - Telegram notifier remains intentionally deferred (not in active scope).
 
+### v1.9.1 (Delivered)
+- Sidebar Documents navigation is collapsed by default so project/customer conversations stay visible.
+- Historical chat diagram artifacts are restored into the right-side Artifacts panel.
+- Chat artifact download URLs now include the required diagram scope.
+
 ## 2) Locked Requirements (Still In Effect)
 
 1. Build in phases, not big-bang.

@@ -75,7 +75,7 @@ test('BOM tab supports refresh and chat flow', async ({ page }) => {
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'BOM', exact: true }).click();
+  await page.getByTestId('sidebar-nav-bom').click();
   await page.getByRole('button', { name: 'Refresh BOM Data' }).click();
   await page.getByTestId('bom-input').fill('Generate BOM for 8 OCPU and 128 GB RAM');
   await page.getByTestId('bom-send').click();

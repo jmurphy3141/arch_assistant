@@ -496,6 +496,8 @@ interface LocalMessage {
 interface ChatInterfaceProps {
   onCustomerIdChange?: (id: string) => void;
   onArtifactsChange?: (downloads: ChatArtifactDownload[]) => void;
+  projectId?: string;
+  projectName?: string;
 }
 
 function latestManifestDownloads(messages: LocalMessage[]): ChatArtifactDownload[] {
@@ -510,12 +512,132 @@ function latestManifestDownloads(messages: LocalMessage[]): ChatArtifactDownload
   return [];
 }
 
+function parseToolCallMessage(message: ChatMessage): ChatToolCall | null {
+  let parsedContent: Partial<ChatToolCall> = {};
+  const content = (message.content ?? '').trim();
+  if (content.startsWith('{')) {
+    try {
+      parsedContent = JSON.parse(content) as Partial<ChatToolCall>;
+    } catch {
+      parsedContent = {};
+    }
+  }
+  if (message.tool_call?.tool) {
+    return {
+      tool: message.tool_call.tool,
+      args: message.tool_call.args ?? {},
+      result_summary: message.result_summary ?? parsedContent.result_summary ?? '',
+      result_data: parsedContent.result_data,
+    };
+  }
+  if (typeof parsedContent.tool !== 'string') return null;
+  return {
+    tool: parsedContent.tool,
+    args: parsedContent.args ?? {},
+    result_summary: parsedContent.result_summary ?? '',
+    result_data: parsedContent.result_data,
+  };
+}
+
+function diagramKeyToDownload(key: string, fallbackCustomerId: string): ChatArtifactDownload | null {
+  const parts = key.split('/').filter(Boolean);
+  const versionIndex = parts.findIndex(part => /^v\d+$/i.test(part));
+  const filename = parts.length > 0 ? parts[parts.length - 1] : 'diagram.drawio';
+  const clientId = versionIndex >= 2 ? parts[versionIndex - 2] : fallbackCustomerId;
+  const diagramName = versionIndex >= 1 ? parts[versionIndex - 1] : 'oci_architecture';
+  if (!clientId || !diagramName) return null;
+  return {
+    type: 'diagram',
+    tool: 'generate_diagram',
+    key,
+    filename,
+    download_url: `/api/download/${encodeURIComponent(filename)}?client_id=${encodeURIComponent(clientId)}&diagram_name=${encodeURIComponent(diagramName)}`,
+  };
+}
+
+function inferDiagramKeyFromSummary(summary: string): string {
+  const match = summary.match(/Key:\s*([^\s,]+)/i);
+  return match?.[1] ?? '';
+}
+
+function normalizeHistoryMessages(history: ChatMessage[], customerId: string): LocalMessage[] {
+  const loaded: LocalMessage[] = [];
+  let pendingToolCalls: ChatToolCall[] = [];
+  let pendingDownloads: ChatArtifactDownload[] = [];
+  let pendingDownloadUrls = new Set<string>();
+
+  const pushPendingDownload = (download: ChatArtifactDownload | null) => {
+    if (!download || pendingDownloadUrls.has(download.download_url)) return;
+    pendingDownloadUrls.add(download.download_url);
+    pendingDownloads.push(download);
+  };
+
+  const attachPending = (message: LocalMessage): LocalMessage => {
+    if (pendingToolCalls.length === 0 && pendingDownloads.length === 0) return message;
+    const next: LocalMessage = {
+      ...message,
+      ...(pendingToolCalls.length > 0 ? { toolCalls: pendingToolCalls } : {}),
+      ...(pendingDownloads.length > 0 ? { artifactManifest: { downloads: pendingDownloads } } : {}),
+    };
+    pendingToolCalls = [];
+    pendingDownloads = [];
+    pendingDownloadUrls = new Set<string>();
+    return next;
+  };
+
+  for (const item of history) {
+    if (item.role === 'tool') {
+      const summary = item.result_summary ?? '';
+      if (item.tool === 'generate_diagram') {
+        const key = inferDiagramKeyFromSummary(summary);
+        pushPendingDownload(key ? diagramKeyToDownload(key, customerId) : null);
+      }
+      continue;
+    }
+
+    const toolCall = parseToolCallMessage(item);
+    if (toolCall) {
+      pendingToolCalls.push(toolCall);
+      const key = toolCall.tool === 'generate_diagram'
+        ? inferDiagramKeyFromSummary(toolCall.result_summary)
+        : '';
+      pushPendingDownload(key ? diagramKeyToDownload(key, customerId) : null);
+      continue;
+    }
+
+    if (item.role !== 'user' && item.role !== 'assistant') continue;
+    const message: LocalMessage = {
+      role:      item.role,
+      content:   item.content ?? '',
+      timestamp: item.timestamp,
+      toolCalls: item.tool_calls,
+      artifacts: item.artifacts,
+      artifactManifest: item.artifact_manifest,
+    };
+    loaded.push(item.role === 'assistant' ? attachPending(message) : message);
+  }
+
+  if (pendingDownloads.length > 0 && loaded.length > 0) {
+    for (let i = loaded.length - 1; i >= 0; i -= 1) {
+      if (loaded[i].role !== 'assistant') continue;
+      loaded[i] = {
+        ...loaded[i],
+        ...(pendingToolCalls.length > 0 ? { toolCalls: pendingToolCalls } : {}),
+        artifactManifest: { downloads: pendingDownloads },
+      };
+      break;
+    }
+  }
+
+  return loaded;
+}
+
 function isNearBottom(element: HTMLElement, threshold = 96): boolean {
   const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
   return remaining <= threshold;
 }
 
-export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInterfaceProps) {
+export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId, projectName }: ChatInterfaceProps) {
   const stored = getStoredCustomer();
   const [customerId,    setCustomerId]    = useState(stored.id);
   const [customerName,  setCustomerName]  = useState(stored.name);
@@ -540,13 +662,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
     setHistoryLoaded(false);
     apiGetChatHistory(customerId)
       .then(resp => {
-        const loaded: LocalMessage[] = resp.history
-          .filter(m => m.role === 'user' || m.role === 'assistant')
-          .map(m => ({
-            role:      m.role as 'user' | 'assistant',
-            content:   m.content ?? '',
-            timestamp: m.timestamp,
-          }));
+        const loaded = normalizeHistoryMessages(resp.history, customerId);
         // Avoid clobbering newly-sent local messages if history returns late.
         setMessages(prev => (prev.length > 0 ? prev : loaded));
         setHistoryLoaded(true);
@@ -634,16 +750,21 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
     try {
       let streamed = '';
       let resp;
+      const effectiveCustomerName = customerName || projectName || customerId;
+      const projectMeta = {
+        ...(projectId ? { projectId } : {}),
+        ...(projectName ? { projectName } : {}),
+      };
       try {
-        resp = await apiChatStream(customerId, customerName || customerId, text, {
+        resp = await apiChatStream(customerId, effectiveCustomerName, text, {
           onToken: delta => {
             streamed += delta;
             setStreamingReply(prev => prev + delta);
           },
-        });
+        }, projectMeta);
       } catch {
         // Fallback for environments where stream endpoint is unavailable.
-        resp = await apiChat(customerId, customerName || customerId, text);
+        resp = await apiChat(customerId, effectiveCustomerName, text, projectMeta);
       }
       const assistantMsg: LocalMessage = {
         role:      'assistant',
