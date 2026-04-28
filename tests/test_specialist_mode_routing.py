@@ -576,6 +576,103 @@ def test_bom_diagram_pair_does_not_treat_scenario_prompt_as_ungrounded_followup(
     assert "Architecture diagram: skipped" not in result["reply"]
 
 
+def test_fresh_generation_request_supersedes_stale_specialist_checkpoint(monkeypatch):
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "acme", "ACME Corp")
+    context_store.set_pending_checkpoint(
+        ctx,
+        {
+            "id": "stale-specialist",
+            "type": "specialist_questions",
+            "status": "pending",
+            "tool_name": "generate_bom",
+            "tool_args": {"prompt": "old unresolved request"},
+            "original_request": "old unresolved request",
+            "questions": [
+                {
+                    "question_id": "generate_bom.q1",
+                    "question": "Please share workload sizing.",
+                    "blocking": True,
+                }
+            ],
+            "prompt": "stale pending specialist questions",
+        },
+    )
+    context_store.set_open_questions(
+        ctx,
+        [
+            {
+                "question_id": "generate_bom.q1",
+                "question": "Please share workload sizing.",
+                "blocking": True,
+            }
+        ],
+    )
+    context_store.write_context(store, "acme", ctx)
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_execute_tool_core(tool_name, args, **kwargs):
+        _ = kwargs
+        calls.append((tool_name, dict(args)))
+        if tool_name == "generate_bom":
+            return (
+                "Final BOM prepared. Review line items.",
+                "",
+                {
+                    "type": "final",
+                    "reply": "Final BOM prepared for scenario.",
+                    "bom_payload": {
+                        "line_items": [{"sku": "B94176", "description": "Compute", "quantity": 2}],
+                        "totals": {"estimated_monthly_cost": 500},
+                    },
+                },
+            )
+        return (
+            "Diagram generated. Key: diagram.drawio",
+            "diagram.drawio",
+            {"render_manifest": {"node_count": 4}},
+        )
+
+    def _text_runner(_prompt: str, _system_message: str) -> str:
+        raise AssertionError("Fresh workflow should not answer the stale checkpoint or call the planner LLM")
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
+    monkeypatch.setattr(
+        orchestrator_agent.critic_agent,
+        "evaluate_tool_result",
+        lambda **_kwargs: {"overall_status": "pass", "overall_pass": True},
+    )
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message=(
+                "ok, I want to do two things. 1. Full lift and shift to OCI, so get off of VMware. "
+                "2. direct migration using their stack but running on OCI. I need BOM and Diagram for each."
+            ),
+            store=store,
+            text_runner=_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=3,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert [tool for tool, _args in calls] == [
+        "generate_bom",
+        "generate_diagram",
+        "generate_bom",
+        "generate_diagram",
+    ]
+    assert "stale pending specialist questions" not in result["reply"]
+    assert "Architecture diagram: skipped" not in result["reply"]
+    updated = context_store.read_context(store, "acme", "ACME Corp")
+    assert updated["pending_checkpoint"] is None
+    assert updated["archie"]["open_questions"] == []
+
+
 def test_orchestrator_blocks_completion_when_postflight_fails(monkeypatch):
     calls = {"count": 0}
     store = InMemoryObjectStore()
