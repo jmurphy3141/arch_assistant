@@ -11,6 +11,18 @@ import agent.orchestrator_agent as orchestrator_agent
 from agent import skill_loader
 
 
+REQUIRED_GSTACK_SKILLS = (
+    "orchestrator",
+    "orchestrator_critic",
+    "oci_waf_reviewer",
+    "oci_jep_writer",
+    "oci_bom_expert",
+    "diagram_for_oci",
+    "oci_customer_pov_writer",
+    "terraform_for_oci",
+)
+
+
 def _dummy_text_runner(prompt: str, system_message: str) -> str:
     _ = (prompt, system_message)
     return '{"ok": false, "output": "", "questions": ["Need module boundaries."]}'
@@ -864,6 +876,41 @@ def test_orchestrator_pov_jep_without_context_asks_before_running(monkeypatch):
 
     assert calls == []
     assert "engagement context" in result["reply"].lower()
+    assert "Management Summary" not in result["reply"]
+
+
+def test_required_gstack_skills_have_quality_and_critic_guidance():
+    specs = {spec.name: spec for spec in skill_loader.discover_skills()}
+    for name in REQUIRED_GSTACK_SKILLS:
+        spec = specs[name]
+        version = tuple(int(part) for part in str(spec.metadata.get("version", "0")).split("."))
+        assert version >= (1, 1)
+        assert spec.sections.get("Quality Bar", "").strip()
+        assert spec.sections.get("Critic Evaluation Guidance", "").strip()
+
+
+def test_react_prompt_includes_internal_orchestrator_self_guidance():
+    decision_context = {
+        "goal": "Generate OCI diagram and WAF review",
+        "constraints": {"security_requirements": ["private subnets"]},
+        "assumptions": [],
+        "success_criteria": ["Well-Architected risks are visible"],
+    }
+    prompt = orchestrator_agent._build_prompt(
+        [],
+        "",
+        "Generate a diagram and WAF for private OKE with public ingress.",
+        decision_context=decision_context,
+    )
+
+    assert prompt.startswith("[Internal Orchestrator Self-Guidance")
+    assert "[Internal Plan]" in prompt
+    assert "Requested deliverables: Architecture diagram, Well-Architected review" in prompt
+    assert "Selected skills:" in prompt
+    assert "orchestrator" in prompt
+    assert "diagram_for_oci" in prompt
+    assert "oci_waf_reviewer" in prompt
+    assert "Relevant WAF pillars:" in prompt
 
 
 def test_skill_injection_applies_for_terraform_prompt():
@@ -873,6 +920,7 @@ def test_skill_injection_applies_for_terraform_prompt():
         user_message="Generate terraform for OCI",
     )
     assert "terraform_for_oci" in injected.get("_skill_injected", [])
+    assert "orchestrator" in injected.get("_skill_injected", [])
     assert "Injected Skill Guidance" in injected.get("prompt", "")
     assert "Build VCN" in injected.get("prompt", "")
     assert injected.get("_skill_model_profile") == "terraform"
@@ -885,6 +933,7 @@ def test_skill_injection_applies_model_profile_for_pov():
         user_message="Generate POV for exec stakeholder readout",
     )
     assert "oci_customer_pov_writer" in injected.get("_skill_injected", [])
+    assert "orchestrator" in injected.get("_skill_injected", [])
     assert injected.get("_skill_model_profile") == "pov"
 
 
@@ -895,6 +944,7 @@ def test_skill_injection_applies_model_profile_for_jep():
         user_message="Generate JEP for OCI POC",
     )
     assert "oci_jep_writer" in injected.get("_skill_injected", [])
+    assert "orchestrator" in injected.get("_skill_injected", [])
     assert injected.get("_skill_model_profile") == "jep"
 
 
@@ -905,6 +955,7 @@ def test_skill_injection_applies_model_profile_for_waf():
         user_message="Run OCI WAF review",
     )
     assert "oci_waf_reviewer" in injected.get("_skill_injected", [])
+    assert "orchestrator" in injected.get("_skill_injected", [])
     assert injected.get("_skill_model_profile") == "waf"
 
 
@@ -997,6 +1048,8 @@ def test_skill_injection_applies_for_diagram():
     )
     assert "Injected Skill Guidance" in injected.get("bom_text", "")
     assert injected.get("_skill_injected")
+    assert "diagram_for_oci" in injected.get("_skill_injected", [])
+    assert "orchestrator" in injected.get("_skill_injected", [])
     assert isinstance(injected.get("_skill_sections"), dict)
 
 

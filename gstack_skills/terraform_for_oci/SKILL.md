@@ -30,6 +30,13 @@ Use for Terraform generation, review, or remediation for OCI infrastructure deli
 - Security defaults are sensible and explicit.
 - No prose/mixed-format output in Terraform files.
 
+## Critic Evaluation Guidance
+- Accept only if Terraform scope, provider constraints, module boundaries, state backend, variables, outputs, and security defaults are coherent.
+- Verify OCI resource names/arguments are valid, dependencies are explicit, and generated code aligns to the latest architecture context.
+- Treat prose inside code artifacts, missing state/security decisions, invalid OCI provider resources, or unbounded module scope as fail conditions.
+- Example pass: emits network, app, and data modules with private subnets, NSGs, tagging, provider versions, and remote state guidance.
+- Example fail: creates pseudo Terraform, omits required variables/state backend, or provisions public resources despite private-only constraints.
+
 ## Failure Questions
 - Which OCI services/modules are mandatory?
 - What environment/security constraints must be enforced?

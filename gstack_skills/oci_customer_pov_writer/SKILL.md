@@ -29,6 +29,13 @@ Use for drafting or revising customer-facing POV narratives and executive storyt
 - Clear OCI-to-outcome traceability.
 - Includes concrete metrics and next-step realism.
 
+## Critic Evaluation Guidance
+- Accept only if the narrative connects customer context, OCI capabilities, business outcomes, and measurable proof points.
+- Verify executive readability while preserving technical credibility around architecture, migration path, risks, and next steps.
+- Flag generic marketing copy, unsupported metrics, missing customer constraints, or weak OCI-to-outcome traceability.
+- Example pass: ties OCI WAF/OKE/Autonomous Database to resilience, release velocity, and operational cost outcomes with caveated metrics.
+- Example fail: describes OCI benefits broadly without customer-specific workload, success metrics, or decision rationale.
+
 ## Failure Questions
 - Which outcomes are most important to emphasize?
 - Which constraints/risks must be acknowledged?

@@ -29,6 +29,13 @@ Use for OCI Well-Architected assessment, topology gap analysis, and prioritized 
 - Recommendations are practical and prioritized.
 - Overall rating aligns with actual evidence.
 
+## Critic Evaluation Guidance
+- Accept only if each finding maps to an OCI Well-Architected pillar and cites topology evidence or a stated assumption.
+- Verify security, reliability, performance efficiency, cost optimization, and operational excellence are considered when relevant.
+- Prioritize remediation by risk and customer impact; avoid generic cloud guidance without OCI services or controls.
+- Example pass: identifies public ingress risk and recommends OCI WAF, NSGs, logging, and private subnet placement.
+- Example fail: assigns a strong rating while ignoring missing DR posture, IAM/KMS controls, or observability gaps.
+
 ## Failure Questions
 - Which pillars are highest priority for this engagement?
 - Are there non-negotiable compliance/security constraints?

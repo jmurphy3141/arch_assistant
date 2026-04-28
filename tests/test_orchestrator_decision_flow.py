@@ -1073,6 +1073,7 @@ def test_recall_request_returns_persisted_context_without_regeneration() -> None
     assert "latest persisted Archie engagement state" in result["reply"]
     assert "Private OKE platform with WAF and BOM draft." in result["reply"]
     assert "Architecture Diagram (v2)" in result["reply"]
+    assert "Management Summary" not in result["reply"]
     assert llm_calls["count"] == 0
 
 
@@ -1142,6 +1143,8 @@ def test_update_plan_and_confirmation_track_superseded_decisions(monkeypatch) ->
 
     assert calls == ["generate_diagram", "generate_waf", "generate_terraform"]
     assert "approved update sequence" in confirm_result["reply"]
+    assert "Management Summary" in confirm_result["reply"]
+    assert "Checkpoint status: none" in confirm_result["reply"]
     updated = context_store.read_context(store, "archie-update", "Archie Update")
     assert updated["archie"]["pending_update"] is None
     assert updated["archie"]["change_history"][-1]["status"] == "applied"

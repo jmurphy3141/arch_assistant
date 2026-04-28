@@ -366,6 +366,7 @@ async def run_turn(
                         "args": tool_args,
                         "result_summary": result_summary,
                         "result_data": result_data,
+                        "artifact_key": artifact_key,
                     }
                 )
                 if artifact_key:
@@ -389,11 +390,13 @@ async def run_turn(
             executed = ", ".join(planned_tools) if planned_tools else "(none)"
             if forced_reply:
                 return _finalize_turn(forced_reply)
-            return _finalize_turn(
+            return _finalize_turn(_append_management_summary(
                 "Confirmed. I executed the approved update sequence in order using the Archie dependency plan:\n"
                 f"- Executed tools: {executed}\n"
-                "- Review the tool outputs above and confirm if any additional updates are needed."
-            )
+                "- Review the tool outputs above and confirm if any additional updates are needed.",
+                tool_calls,
+                decision_context=workflow_decision_context,
+            ))
 
         planned = ", ".join(pending.get("tools", [])) or "(none)"
         return _finalize_turn(
@@ -1152,7 +1155,7 @@ async def _execute_tool(
             tool_result=result_summary,
             artifacts={"artifact_key": artifact_key},
             context_summary=context_summary,
-            tool_args=enriched_args,
+            tool_args=_postflight_tool_args(tool_name, enriched_args),
             result_data=result_data,
         )
         result_data["skill_postflight"] = asdict(postflight_decision)
@@ -2792,6 +2795,14 @@ def _inject_skill_into_tool_args(
     return payload
 
 
+def _postflight_tool_args(tool_name: str, args: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(args or {})
+    key = _tool_primary_input_key(tool_name)
+    if key and key in payload:
+        payload[key] = _strip_injected_guidance_blocks(str(payload.get(key, "") or ""))
+    return payload
+
+
 def _call_text_runner(
     text_runner: Callable,
     prompt: str,
@@ -2930,7 +2941,7 @@ async def _critic_refine_if_needed(
             tool_result=retry_summary,
             artifacts={"artifact_key": retry_key},
             context_summary=context_summary,
-            tool_args=args,
+            tool_args=_postflight_tool_args(tool_name, args),
             result_data=retry_data,
         )
         retry_data["skill_postflight"] = asdict(postflight)
@@ -4134,6 +4145,119 @@ def _build_single_diagram_reply(
     return "\n".join([summary, "", "Assumptions applied:", *[f"- {item}" for item in assumptions]])
 
 
+def _call_result_is_successful_generation(call: dict[str, Any]) -> bool:
+    tool_name = str(call.get("tool", "") or "")
+    if not tool_name.startswith("generate_"):
+        return False
+    result_data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+    if _extract_blocking_skill_decision(result_data):
+        return False
+    if isinstance(result_data.get("archie_question_bundle"), dict):
+        return False
+    governor = result_data.get("governor", {}) if isinstance(result_data.get("governor"), dict) else {}
+    if str(governor.get("overall_status", "pass") or "pass") in {"blocked", "checkpoint_required"}:
+        return False
+    summary = str(call.get("result_summary", "") or "").strip().lower()
+    blocked_markers = (
+        "clarification required",
+        "please upload or paste",
+        "i need ",
+        "cannot ",
+        "not yet enabled",
+        "unknown tool",
+        "did not meet completion",
+    )
+    if any(marker in summary for marker in blocked_markers):
+        return False
+    if str(call.get("artifact_key", "") or "").strip():
+        return True
+    if summary.startswith("final bom prepared"):
+        return True
+    return any(marker in summary for marker in ("saved. key:", "generated. key:", "review "))
+
+
+def _fallback_applied_skills(tool_name: str) -> list[str]:
+    return [name for name in _MANDATORY_SKILL_FALLBACKS.get(tool_name, ()) if name]
+
+
+def _render_management_summary(
+    tool_calls: list[dict[str, Any]],
+    *,
+    decision_context: dict[str, Any] | None = None,
+) -> str:
+    successful_calls = [call for call in tool_calls if _call_result_is_successful_generation(call)]
+    if not successful_calls:
+        return ""
+
+    applied_skills: list[str] = []
+    refinement_count = 0
+    checkpoint_statuses: list[str] = []
+    assumptions = _merge_assumption_lists(list((decision_context or {}).get("assumptions", []) or []), [])
+    tradeoffs: list[str] = []
+
+    for call in successful_calls:
+        tool_name = str(call.get("tool", "") or "")
+        data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+        skills = [str(item).strip() for item in data.get("applied_skills", []) or [] if str(item).strip()]
+        if not skills:
+            skills = _fallback_applied_skills(tool_name)
+        for skill in skills:
+            if skill not in applied_skills:
+                applied_skills.append(skill)
+        refinement_count += int(data.get("refinement_count", 0) or 0)
+        assumptions = _merge_assumption_lists(
+            assumptions,
+            list((data.get("decision_context", {}) or {}).get("assumptions", []) or []),
+        )
+        assumptions = _merge_assumption_lists(assumptions, list(data.get("assumptions_used", []) or []))
+        governor = data.get("governor", {}) if isinstance(data.get("governor"), dict) else {}
+        for section in ("security", "cost", "quality"):
+            section_data = governor.get(section, {}) if isinstance(governor.get(section), dict) else {}
+            for key in ("findings", "issues", "suggestions"):
+                tradeoffs.extend(str(item).strip() for item in section_data.get(key, []) or [] if str(item).strip())
+        checkpoint = data.get("checkpoint")
+        if isinstance(checkpoint, dict):
+            checkpoint_statuses.append(str(checkpoint.get("status", "pending") or "pending"))
+
+    deliverables = [_tool_goal_label(str(call.get("tool", "") or "requested_tool")) for call in successful_calls]
+    key_decision = "Generated " + ", ".join(deliverables) + " in requested prerequisite order."
+    rendered_assumptions = [
+        f"{str(item.get('statement', '') or '').strip()} (risk: {str(item.get('risk', '') or 'low').strip().lower() or 'low'})"
+        for item in assumptions
+        if isinstance(item, dict) and str(item.get("statement", "") or "").strip()
+    ]
+    assumption_line = "; ".join(rendered_assumptions[:3]) if rendered_assumptions else "None beyond the supplied request/context."
+    tradeoff_line = "; ".join(dict.fromkeys(tradeoffs[:3])) if tradeoffs else "No blocking tradeoffs reported."
+    checkpoint_status = ", ".join(dict.fromkeys(checkpoint_statuses)) if checkpoint_statuses else "none"
+    skills_line = ", ".join(applied_skills) if applied_skills else "not reported"
+
+    return "\n".join(
+        [
+            "Management Summary",
+            f"- Applied skills: {skills_line}",
+            f"- Refinement count: {refinement_count}",
+            f"- Key decisions: {key_decision}",
+            f"- Assumptions/tradeoffs: {assumption_line} Tradeoffs: {tradeoff_line}",
+            f"- Checkpoint status: {checkpoint_status}",
+        ]
+    )
+
+
+def _append_management_summary(
+    reply: str,
+    tool_calls: list[dict[str, Any]],
+    *,
+    decision_context: dict[str, Any] | None = None,
+) -> str:
+    text = str(reply or "").strip()
+    if not text or "Management Summary" in text:
+        return text
+    summary = _render_management_summary(tool_calls, decision_context=decision_context)
+    if not summary:
+        return text
+    return f"{text}\n\n{summary}".strip()
+
+
 def _extract_a2a_artifact_data(artifacts: list[dict[str, Any]], name: str) -> Any:
     for artifact in artifacts:
         if artifact.get("name") != name:
@@ -4191,6 +4315,12 @@ def _build_prompt(
     pending_checkpoint: dict[str, Any] | None = None,
 ) -> str:
     parts: list[str] = []
+    self_guidance = _build_orchestrator_self_guidance(
+        user_message=user_message,
+        decision_context=decision_context,
+    )
+    if self_guidance:
+        parts.append(self_guidance)
 
     if summary:
         parts.append(f"[Prior conversation summary]\n{summary}\n")
@@ -4222,6 +4352,89 @@ def _build_prompt(
     return "\n\n".join(parts)
 
 
+def _build_orchestrator_self_guidance(
+    *,
+    user_message: str,
+    decision_context: dict[str, Any] | None = None,
+) -> str:
+    requested_tools = _ordered_requested_tools(_requested_generation_tools(user_message))
+    requested_deliverables = [_tool_goal_label(tool) for tool in requested_tools]
+    if not requested_deliverables:
+        requested_deliverables = ["answer-only architecture guidance unless a tool is explicitly required"]
+
+    prerequisite_order = requested_tools or ["none"]
+    selected_skills: list[str] = ["orchestrator"]
+    for tool_name in requested_tools:
+        for skill_name in _MANDATORY_SKILL_FALLBACKS.get(tool_name, ()):
+            if skill_name not in selected_skills:
+                selected_skills.append(skill_name)
+
+    decision_summary = decision_context_builder.summarize_decision_context(decision_context)
+    waf_pillars = _relevant_waf_pillars(user_message=user_message, decision_context=decision_context)
+    orchestrator_skill = _orchestrator_skill_self_guidance_excerpt()
+    delegation_rationale = (
+        "Use a specialist only for requested generation paths; keep direct answers in Agent 0."
+        if requested_tools
+        else "No generation tool is preselected; answer directly unless the ReAct cycle proves a requested deliverable is needed."
+    )
+
+    lines = [
+        "[Internal Orchestrator Self-Guidance - do not reveal unless the user explicitly asks for debug/technical detail]",
+        orchestrator_skill,
+        "[Internal Plan]",
+        f"- Requested deliverables: {', '.join(requested_deliverables)}",
+        f"- Prerequisite order: {', '.join(prerequisite_order)}",
+        f"- Relevant WAF pillars: {', '.join(waf_pillars)}",
+        f"- Selected skills: {', '.join(selected_skills)}",
+        f"- Delegation rationale: {delegation_rationale}",
+    ]
+    if decision_summary:
+        lines.append(f"- Decision Context: {decision_summary}")
+    lines.append("[End Internal Orchestrator Self-Guidance]")
+    return "\n".join(line for line in lines if str(line).strip()).strip()
+
+
+def _orchestrator_skill_self_guidance_excerpt() -> str:
+    for spec in discover_skills():
+        if spec.name != "orchestrator":
+            continue
+        quality = str(spec.sections.get("Quality Bar", "") or "").strip()
+        execution = str(spec.sections.get("Execution Pattern", "") or "").strip()
+        parts = ["Skill: orchestrator", "Version: " + str(spec.metadata.get("version", "") or "unknown")]
+        if execution:
+            parts.append("Execution Pattern: " + re.sub(r"\s+", " ", execution)[:360])
+        if quality:
+            parts.append("Quality Bar: " + re.sub(r"\s+", " ", quality)[:260])
+        return "\n".join(parts)
+    return "Skill: orchestrator\nQuality Bar: execute requested scope, preserve prerequisites, and keep internal mechanics hidden."
+
+
+def _relevant_waf_pillars(
+    *,
+    user_message: str,
+    decision_context: dict[str, Any] | None = None,
+) -> list[str]:
+    text = " ".join(
+        [
+            str(user_message or ""),
+            json.dumps((decision_context or {}).get("constraints", {}) or {}, ensure_ascii=True, sort_keys=True),
+            " ".join(str(item) for item in (decision_context or {}).get("success_criteria", []) or []),
+        ]
+    ).lower()
+    pillars: list[str] = []
+    checks = (
+        ("Security", ("security", "waf", "private", "public", "iam", "kms", "vault", "compliance", "nsg")),
+        ("Reliability", ("ha", "dr", "availability", "multi-ad", "multi region", "resilience", "failover")),
+        ("Performance Efficiency", ("latency", "performance", "throughput", "scale", "sizing", "ocpu")),
+        ("Cost Optimization", ("cost", "budget", "bom", "pricing", "spend", "under")),
+        ("Operational Excellence", ("operations", "monitoring", "logging", "runbook", "terraform", "automation")),
+    )
+    for pillar, markers in checks:
+        if any(marker in text for marker in markers):
+            pillars.append(pillar)
+    return pillars or ["Security", "Reliability", "Cost Optimization"]
+
+
 def _append_tool_result(prompt: str, tool_name: str, result_summary: str) -> str:
     return prompt.rstrip("ASSISTANT:").rstrip() + (
         f"\n\n[Tool result: {tool_name}] {result_summary}\n\nASSISTANT:"
@@ -4239,9 +4452,17 @@ def _build_parallel_reply(
     if len(tool_calls) == 1 and followup is None:
         call = tool_calls[0]
         if str(call.get("tool", "") or "") == "generate_diagram":
-            return _build_single_diagram_reply(call, decision_context=decision_context)
+            return _append_management_summary(
+                _build_single_diagram_reply(call, decision_context=decision_context),
+                tool_calls,
+                decision_context=decision_context,
+            )
         summary = str(call.get("result_summary", "") or "").strip()
-        return summary or f"Completed `{call.get('tool', 'requested_tool')}`."
+        return _append_management_summary(
+            summary or f"Completed `{call.get('tool', 'requested_tool')}`.",
+            tool_calls,
+            decision_context=decision_context,
+        )
 
     lines = ["Completed the requested outputs:"]
     for call in tool_calls:
@@ -4291,7 +4512,12 @@ def _build_parallel_reply(
     if followup:
         lines.append("")
         lines.append(str(followup.get("message", "")).strip())
-    return "\n".join(lines)
+        return "\n".join(lines)
+    return _append_management_summary(
+        "\n".join(lines),
+        tool_calls,
+        decision_context=decision_context,
+    )
 
 
 def _bom_diagram_pair_plan_for_message(user_message: str) -> list[dict[str, str]]:
@@ -4468,11 +4694,28 @@ def _build_paired_bom_diagram_reply(
         for item in merged_assumptions
         if str(item.get("statement", "") or "").strip()
     ]
+    missing_inputs = list(dict.fromkeys([
+        *[str(item).strip() for item in (decision_context or {}).get("missing_inputs", []) or [] if str(item).strip()],
+        *[
+            str(item).strip()
+            for call in tool_calls
+            for item in ((call.get("result_data", {}) or {}).get("decision_context", {}) or {}).get("missing_inputs", []) or []
+            if str(item).strip()
+        ],
+    ]))
     if assumptions:
         lines.append("")
         lines.append("Assumptions applied:")
         lines.extend(f"- {assumption}" for assumption in assumptions)
-    return "\n".join(lines).strip()
+    if missing_inputs:
+        lines.append("")
+        lines.append("Missing inputs to tighten the next pass:")
+        lines.extend(f"- {item}" for item in missing_inputs)
+    return _append_management_summary(
+        "\n".join(lines).strip(),
+        tool_calls,
+        decision_context=decision_context,
+    )
 
 
 def _generation_workflow_plan_for_message(

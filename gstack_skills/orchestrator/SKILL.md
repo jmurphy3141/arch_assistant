@@ -31,6 +31,13 @@ Use for any request that requires routing, sequencing, or coordinating multiple 
 - Preserves prerequisite ordering (for example, architecture before Terraform).
 - Produces traceable decisions with clear outcomes.
 
+## Critic Evaluation Guidance
+- Accept only if the orchestration path matches the user's explicit scope and no unrelated generation path ran.
+- Verify prerequisite order: BOM before diagram when requested together, diagram before WAF/Terraform, notes/context before POV or JEP.
+- Check that every generation call applies the mandatory domain skill plus this orchestrator skill and records decision context.
+- Example pass: user asks for BOM, diagram, and WAF; Archie runs BOM -> diagram -> WAF and summarizes assumptions.
+- Example fail: user asks only for a diagram; Archie also generates Terraform or exposes tool-call JSON.
+
 ## Failure Questions
 - Which deliverable do you want first: diagram, BOM, POV, JEP, WAF, or Terraform?
 - Do you want a full update across all impacted artifacts or only selected outputs?

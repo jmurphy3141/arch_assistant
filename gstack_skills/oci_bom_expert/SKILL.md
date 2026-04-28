@@ -1,7 +1,7 @@
 ---
 name: OCI BOM Expert
 description: Specialist guidance for OCI BOM sizing, SKU hygiene, and costed line-item exports.
-version: "1.1"
+version: "1.2"
 model_profile: orchestrator
 tool_tags: [generate_bom]
 tags: [bom, pricing, sku, oci, sizing]
@@ -30,6 +30,13 @@ Use for BOM sizing, pricing estimate requests, SKU-level review, and export-read
 - Non-positive unit prices are rejected.
 - Non-GPU compute split (OCPU + memory) is enforced.
 - Trace includes model/cache/repair metadata.
+
+## Critic Evaluation Guidance
+- Accept only if line items use known OCI SKUs/pricing data and quantities, units, and totals are internally consistent.
+- Verify non-GPU compute separates OCPU and memory, storage/network services are sized, and missing sizing is handled through explicit assumptions or questions.
+- Treat unknown SKUs, zero/negative pricing, inconsistent totals, or missing cache/repair trace as fail conditions.
+- Example pass: produces a final BOM with OCPU, memory, block volume, load balancer, Object Storage assumptions, and deterministic totals.
+- Example fail: invents SKU names, merges OCPU and memory into one non-GPU line, or returns prose without export-ready payload data.
 
 ## Failure Questions
 - What OCPU, memory, and storage should be priced?
