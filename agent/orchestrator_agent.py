@@ -186,6 +186,49 @@ async def run_turn(
             "history_length": len(history) + len(new_turns),
         }
 
+    async def _run_generation_step(
+        tool_name: str,
+        tool_args: dict[str, Any],
+        *,
+        scenario_label: str = "",
+    ) -> dict[str, Any]:
+        result_summary, artifact_key, result_data = await _execute_tool(
+            tool_name,
+            tool_args,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            specialist_mode=specialist_mode,
+            user_message=user_message,
+            max_refinements=max_refinements,
+            decision_context=decision_context,
+        )
+        notify(f"tool:{tool_name}", customer_id, result_summary)
+        call = {
+            "tool": tool_name,
+            "args": tool_args,
+            "result_summary": result_summary,
+            "result_data": result_data,
+            "artifact_key": artifact_key,
+        }
+        if scenario_label:
+            call["scenario_label"] = scenario_label
+        tool_calls.append(call)
+        new_turns.append(
+            {
+                "role": "tool",
+                "tool": tool_name,
+                "result_summary": result_summary,
+                "timestamp": _now(),
+                **({"scenario_label": scenario_label} if scenario_label else {}),
+            }
+        )
+        if artifact_key:
+            artifacts[tool_name] = artifact_key
+        return call
+
     pending_checkpoint = context_store.get_pending_checkpoint(context)
     if pending_checkpoint and str(pending_checkpoint.get("type", "") or "") == "specialist_questions":
         specialist_reply, specialist_call, specialist_artifact = await _handle_pending_specialist_questions(
@@ -386,6 +429,101 @@ async def run_turn(
             "These outputs are impacted and would be regenerated in this order:\n"
             f"{ordered}\n\n"
             "Reply `confirm update all` to execute, or `cancel update`."
+        )
+
+    workflow_plan = _generation_workflow_plan_for_message(
+        user_message=user_message,
+        requested_tools=requested_tools,
+        context=context,
+        decision_context=decision_context,
+    )
+    if workflow_plan:
+        if workflow_plan.get("status") == "ask":
+            return _finalize_turn(str(workflow_plan.get("message", "") or "").strip())
+
+        scenarios = list(workflow_plan.get("scenarios", []) or [])
+        sequence = list(workflow_plan.get("sequence", []) or [])
+        bom_feeds_diagram = bool(workflow_plan.get("bom_feeds_diagram", False))
+
+        for scenario in scenarios:
+            scenario_label = str(scenario.get("label", "") or "Scenario").strip()
+            scenario_text = str(scenario.get("text", "") or user_message).strip()
+            last_bom_call: dict[str, Any] | None = None
+            diagram_available_this_scenario = _has_architecture_definition(context)
+
+            for tool_name in sequence:
+                if tool_name == "generate_bom":
+                    tool_args = {
+                        "prompt": _build_scenario_bom_prompt(
+                            scenario_label=scenario_label,
+                            scenario_text=scenario_text,
+                            user_message=user_message,
+                        )
+                    }
+                    call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
+                    last_bom_call = call
+                    if (
+                        "generate_diagram" in sequence
+                        and bom_feeds_diagram
+                        and not _bom_result_can_feed_diagram(
+                            str(call.get("result_summary", "") or ""),
+                            call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {},
+                        )
+                    ):
+                        break
+                    continue
+
+                if tool_name == "generate_diagram":
+                    if bom_feeds_diagram and last_bom_call is not None:
+                        tool_args = {
+                            "bom_text": _build_diagram_bom_text_from_bom_result(
+                                scenario_label=scenario_label,
+                                scenario_text=scenario_text,
+                                user_message=user_message,
+                                bom_summary=str(last_bom_call.get("result_summary", "") or ""),
+                                bom_result_data=last_bom_call.get("result_data", {})
+                                if isinstance(last_bom_call.get("result_data"), dict)
+                                else {},
+                            )
+                        }
+                    else:
+                        tool_args = {"bom_text": scenario_text or user_message.strip()}
+                    call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
+                    diagram_available_this_scenario = bool(call.get("artifact_key")) or not _workflow_call_is_blocked(call)
+                    if not diagram_available_this_scenario:
+                        break
+                    continue
+
+                if tool_name == "generate_waf":
+                    if not diagram_available_this_scenario:
+                        break
+                    tool_args = {"feedback": _build_downstream_workflow_prompt(tool_name, scenario_text, user_message)}
+                    call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
+                    if _workflow_call_is_blocked(call):
+                        break
+                    continue
+
+                if tool_name == "generate_terraform":
+                    if not diagram_available_this_scenario:
+                        break
+                    tool_args = {"prompt": _build_downstream_workflow_prompt(tool_name, scenario_text, user_message)}
+                    call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
+                    if _workflow_call_is_blocked(call):
+                        break
+                    continue
+
+                if tool_name in {"generate_pov", "generate_jep"}:
+                    tool_args = {"feedback": _build_downstream_workflow_prompt(tool_name, scenario_text, user_message)}
+                    call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
+                    if _workflow_call_is_blocked(call):
+                        break
+
+        return _finalize_turn(
+            _build_generation_workflow_reply(
+                workflow_plan,
+                tool_calls,
+                decision_context=decision_context,
+            )
         )
 
     paired_bom_diagram_plan = _bom_diagram_pair_plan_for_message(user_message)
@@ -1877,6 +2015,21 @@ def _terraform_scope_is_bounded(
     decision_context: dict[str, Any] | None,
     user_message: str,
 ) -> bool:
+    return _has_architecture_definition(context) and _terraform_scope_details_are_bounded(
+        context=context,
+        args=args,
+        decision_context=decision_context,
+        user_message=user_message,
+    )
+
+
+def _terraform_scope_details_are_bounded(
+    *,
+    context: dict[str, Any] | None,
+    args: dict[str, Any],
+    decision_context: dict[str, Any] | None,
+    user_message: str,
+) -> bool:
     combined = " ".join(
         part
         for part in (
@@ -1892,8 +2045,7 @@ def _terraform_scope_is_bounded(
     state_markers = ("remote state", "state backend", "object storage backend", "terraform cloud", "local state")
     security_markers = ("private", "public", "nsg", "security list", "kms", "vault", "iam")
     return (
-        _has_architecture_definition(context)
-        and _text_has_any_marker(combined, module_markers)
+        _text_has_any_marker(combined, module_markers)
         and _text_has_any_marker(combined, state_markers)
         and _text_has_any_marker(combined, security_markers)
     )
@@ -4009,11 +4161,12 @@ def _build_parallel_reply(
     lines = ["Completed the requested outputs:"]
     for call in tool_calls:
         tool_name = str(call.get("tool", "") or "requested_tool")
+        label = _tool_goal_label(tool_name)
         summary = str(call.get("result_summary", "") or "").strip()
         if summary:
-            lines.append(f"- `{tool_name}`: {summary}")
+            lines.append(f"- {label}: {summary}")
         else:
-            lines.append(f"- `{tool_name}` completed.")
+            lines.append(f"- {label} completed.")
     merged_assumptions = _merge_assumption_lists(
         list((decision_context or {}).get("assumptions", []) or []),
         [],
@@ -4186,7 +4339,7 @@ def _build_paired_bom_diagram_reply(
     *,
     decision_context: dict[str, Any] | None = None,
 ) -> str:
-    lines = ["Completed the requested BOM-to-diagram workflow:"]
+    lines = ["I built the requested workflow in prerequisite order:"]
     calls_by_scenario: dict[str, list[dict[str, Any]]] = {}
     for call in tool_calls:
         calls_by_scenario.setdefault(str(call.get("scenario_label", "") or "Scenario"), []).append(call)
@@ -4203,12 +4356,13 @@ def _build_paired_bom_diagram_reply(
         diagram_ran = False
         for call in scenario_calls:
             tool_name = str(call.get("tool", "") or "requested_tool")
+            label = _tool_goal_label(tool_name)
             summary = str(call.get("result_summary", "") or "").strip()
             if tool_name == "generate_diagram":
                 diagram_ran = True
-            lines.append(f"- `{tool_name}`: {summary or 'completed.'}")
+            lines.append(f"- {label}: {summary or 'completed.'}")
         if not diagram_ran:
-            lines.append("- `generate_diagram`: skipped until the BOM clarification above is resolved.")
+            lines.append("- Architecture diagram: skipped until the BOM clarification above is resolved.")
 
     merged_assumptions = _merge_assumption_lists(
         list((decision_context or {}).get("assumptions", []) or []),
@@ -4234,6 +4388,209 @@ def _build_paired_bom_diagram_reply(
         lines.append("Assumptions applied:")
         lines.extend(f"- {assumption}" for assumption in assumptions)
     return "\n".join(lines).strip()
+
+
+def _generation_workflow_plan_for_message(
+    *,
+    user_message: str,
+    requested_tools: set[str],
+    context: dict[str, Any] | None,
+    decision_context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not requested_tools:
+        return None
+
+    pov_or_jep = requested_tools & {"generate_pov", "generate_jep"}
+    if pov_or_jep and not _engagement_context_supports_documents(
+        context=context,
+        decision_context=decision_context,
+        user_message=user_message,
+    ):
+        docs = " and ".join(_tool_goal_label(tool) for tool in _ordered_requested_tools(pov_or_jep))
+        return {
+            "status": "ask",
+            "message": (
+                f"I need engagement context before drafting the {docs}. "
+                "Please paste or upload discovery notes, or give me the customer profile, business outcomes, "
+                "workload scope, and target OCI architecture."
+            ),
+        }
+
+    if requested_tools <= {"generate_pov", "generate_jep"}:
+        return None
+
+    has_architecture = _has_architecture_definition(context)
+    diagram_requested = "generate_diagram" in requested_tools
+    bom_requested = "generate_bom" in requested_tools
+    diagram_will_be_built = diagram_requested
+
+    terraform_args = {"_user_request_text": user_message, "prompt": user_message}
+    terraform_scope_bounded = _terraform_scope_details_are_bounded(
+        context=context,
+        args=terraform_args,
+        decision_context=decision_context,
+        user_message=user_message,
+    )
+    if "generate_terraform" in requested_tools and (
+        not terraform_scope_bounded or (not has_architecture and not diagram_will_be_built)
+    ):
+        lines = ["I need one more set of details before Terraform so the code has a safe boundary:"]
+        if not has_architecture and not diagram_will_be_built:
+            lines.append("- Architecture definition or diagram context to implement.")
+        if not terraform_scope_bounded:
+            lines.extend(f"- {item['question']}" for item in _terraform_targeted_questions())
+        return {
+            "status": "ask",
+            "message": "\n".join(lines),
+        }
+
+    if "generate_waf" in requested_tools and not has_architecture and not diagram_will_be_built:
+        return {
+            "status": "ask",
+            "message": (
+                "I need an architecture diagram before I can run the Well-Architected review. "
+                "Ask me to generate the diagram first, or provide the existing diagram context."
+            ),
+        }
+
+    if "generate_terraform" in requested_tools and not has_architecture and not diagram_will_be_built:
+        return {
+            "status": "ask",
+            "message": (
+                "I need an architecture definition or diagram before Terraform. "
+                "Provide the architecture context, or ask for the diagram and Terraform together with bounded module, state, and security scope."
+            ),
+        }
+
+    if diagram_will_be_built and not bom_requested:
+        diagram_args = {"_user_request_text": user_message, "bom_text": user_message}
+        if not _diagram_has_sufficient_context(
+            context=context,
+            args=diagram_args,
+            user_message=user_message,
+        ):
+            return {
+                "status": "ask",
+                "message": (
+                    "I need topology context before building the diagram. "
+                    "Please describe the major OCI components, network exposure, data tier, and region/DR posture."
+                ),
+            }
+
+    sequence: list[str] = []
+    if bom_requested:
+        sequence.append("generate_bom")
+    if diagram_will_be_built:
+        sequence.append("generate_diagram")
+    for tool_name in ("generate_waf", "generate_terraform", "generate_pov", "generate_jep"):
+        if tool_name in requested_tools:
+            sequence.append(tool_name)
+
+    if not sequence:
+        return None
+
+    scenarios = _extract_numbered_scenarios(user_message) if bom_requested and diagram_will_be_built else []
+    if not scenarios:
+        scenarios = [{"label": "Scenario 1", "text": str(user_message or "").strip()}]
+
+    return {
+        "status": "sequence",
+        "sequence": sequence,
+        "scenarios": scenarios,
+        "bom_feeds_diagram": bom_requested and diagram_will_be_built and not _request_references_existing_bom(user_message),
+    }
+
+
+def _ordered_requested_tools(tools: set[str]) -> list[str]:
+    order = ["generate_bom", "generate_diagram", "generate_waf", "generate_terraform", "generate_pov", "generate_jep"]
+    return [tool for tool in order if tool in tools]
+
+
+def _engagement_context_supports_documents(
+    *,
+    context: dict[str, Any] | None,
+    decision_context: dict[str, Any] | None,
+    user_message: str,
+) -> bool:
+    args = {"_user_request_text": user_message, "feedback": user_message}
+    return _pov_has_sufficient_context(
+        context=context,
+        decision_context=decision_context,
+        args=args,
+        user_message=user_message,
+    )
+
+
+def _workflow_call_is_blocked(call: dict[str, Any]) -> bool:
+    result_data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+    if _extract_blocking_skill_decision(result_data):
+        return True
+    if isinstance(result_data.get("archie_question_bundle"), dict):
+        return True
+    summary = str(call.get("result_summary", "") or "").lower()
+    return "clarification required" in summary or "please upload or paste" in summary
+
+
+def _build_downstream_workflow_prompt(tool_name: str, scenario_text: str, user_message: str) -> str:
+    scenario = str(scenario_text or "").strip()
+    request = str(user_message or "").strip()
+    if tool_name == "generate_waf":
+        intent = "Review the latest generated architecture diagram for OCI Well-Architected risks."
+    elif tool_name == "generate_terraform":
+        intent = "Draft Terraform for the latest generated architecture diagram using the bounded module, state, and security scope in the request."
+    elif tool_name == "generate_pov":
+        intent = "Draft the customer POV from the current engagement context and requested workflow."
+    elif tool_name == "generate_jep":
+        intent = "Draft the JEP from the current engagement context and requested workflow."
+    else:
+        intent = "Continue the requested generation workflow."
+    lines = [intent]
+    if scenario:
+        lines.append(f"Scenario: {scenario}")
+    if request:
+        lines.append(f"Original request: {request}")
+    return "\n".join(lines).strip()
+
+
+def _build_generation_workflow_reply(
+    workflow_plan: dict[str, Any],
+    tool_calls: list[dict[str, Any]],
+    *,
+    decision_context: dict[str, Any] | None = None,
+) -> str:
+    sequence = list(workflow_plan.get("sequence", []) or [])
+    followup = _workflow_followup_from_calls(tool_calls)
+    if len(tool_calls) == 1:
+        return _build_parallel_reply(tool_calls, decision_context=decision_context, followup=followup)
+
+    if "generate_bom" in sequence and "generate_diagram" in sequence:
+        reply = _build_paired_bom_diagram_reply(
+            list(workflow_plan.get("scenarios", []) or []),
+            tool_calls,
+            decision_context=decision_context,
+        )
+        if followup:
+            return f"{reply}\n\n{followup['message']}".strip()
+        return reply
+
+    return _build_parallel_reply(tool_calls, decision_context=decision_context, followup=followup)
+
+
+def _workflow_followup_from_calls(tool_calls: list[dict[str, Any]]) -> dict[str, str] | None:
+    pending_followup: dict[str, str] | None = None
+    for call in tool_calls:
+        result_data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+        decision = _extract_blocking_skill_decision(result_data)
+        if decision:
+            pending_followup = _prefer_followup(
+                pending_followup,
+                {"kind": "blocked", "message": _decision_pushback_text(decision)},
+            )
+            continue
+        followup = _extract_governor_followup(result_data)
+        if followup:
+            pending_followup = _prefer_followup(pending_followup, followup)
+    return pending_followup
 
 
 def _parallel_plan_for_message(user_message: str) -> list[dict]:
