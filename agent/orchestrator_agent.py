@@ -231,32 +231,41 @@ async def run_turn(
 
     pending_checkpoint = context_store.get_pending_checkpoint(context)
     if pending_checkpoint and str(pending_checkpoint.get("type", "") or "") == "specialist_questions":
-        specialist_reply, specialist_call, specialist_artifact = await _handle_pending_specialist_questions(
-            pending_checkpoint=pending_checkpoint,
+        if _message_supersedes_pending_specialist_questions(
             user_message=user_message,
-            context=context,
-            customer_id=customer_id,
-            customer_name=customer_name,
-            store=store,
-            text_runner=text_runner,
-            a2a_base_url=a2a_base_url,
-            specialist_mode=specialist_mode,
-            max_refinements=max_refinements,
-        )
-        if specialist_reply:
-            if specialist_call:
-                tool_calls.append(specialist_call)
-                if specialist_artifact:
-                    artifacts[specialist_call["tool"]] = specialist_artifact
-                new_turns.append(
-                    {
-                        "role": "tool",
-                        "tool": specialist_call["tool"],
-                        "result_summary": specialist_call["result_summary"],
-                        "timestamp": _now(),
-                    }
-                )
-            return _finalize_turn(specialist_reply)
+            pending_checkpoint=pending_checkpoint,
+        ):
+            context_store.clear_pending_checkpoint(context)
+            context_store.set_open_questions(context, [])
+            await asyncio.to_thread(context_store.write_context, store, customer_id, context)
+            pending_checkpoint = None
+        else:
+            specialist_reply, specialist_call, specialist_artifact = await _handle_pending_specialist_questions(
+                pending_checkpoint=pending_checkpoint,
+                user_message=user_message,
+                context=context,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                store=store,
+                text_runner=text_runner,
+                a2a_base_url=a2a_base_url,
+                specialist_mode=specialist_mode,
+                max_refinements=max_refinements,
+            )
+            if specialist_reply:
+                if specialist_call:
+                    tool_calls.append(specialist_call)
+                    if specialist_artifact:
+                        artifacts[specialist_call["tool"]] = specialist_artifact
+                    new_turns.append(
+                        {
+                            "role": "tool",
+                            "tool": specialist_call["tool"],
+                            "result_summary": specialist_call["result_summary"],
+                            "timestamp": _now(),
+                        }
+                    )
+                return _finalize_turn(specialist_reply)
 
     if pending_checkpoint and _is_checkpoint_approve_message(user_message):
         _resolve_pending_checkpoint(
@@ -2432,6 +2441,24 @@ def _parse_specialist_answers_from_user(
         if final_answer:
             answers.append({**item, "final_answer": final_answer})
     return answers
+
+
+def _message_supersedes_pending_specialist_questions(
+    *,
+    user_message: str,
+    pending_checkpoint: dict[str, Any],
+) -> bool:
+    if not _requested_generation_tools(user_message):
+        return False
+    if _is_specialist_question_approve_message(user_message) or _is_checkpoint_reject_message(user_message):
+        return False
+    lowered = str(user_message or "").lower()
+    questions = [dict(item) for item in list(pending_checkpoint.get("questions", []) or []) if isinstance(item, dict)]
+    for item in questions:
+        question_id = str(item.get("question_id", "") or "").strip().lower()
+        if question_id and f"{question_id}:" in lowered:
+            return False
+    return True
 
 
 async def _handle_pending_specialist_questions(
