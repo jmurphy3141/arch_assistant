@@ -396,6 +396,8 @@ def test_orchestrator_change_request_confirmation_executes_in_order(monkeypatch)
 
 def test_orchestrator_runs_pov_jep_in_parallel(monkeypatch):
     calls = []
+    store = InMemoryObjectStore()
+    _seed_pov_context(store)
 
     async def _fake_execute_tool(tool_name, args, **kwargs):
         _ = (args, kwargs)
@@ -420,7 +422,7 @@ def test_orchestrator_runs_pov_jep_in_parallel(monkeypatch):
             customer_id="acme",
             customer_name="ACME Corp",
             user_message="Please generate POV and JEP for this customer.",
-            store=InMemoryObjectStore(),
+            store=store,
             text_runner=_text_runner,
             a2a_base_url="http://localhost:8080",
             max_tool_iterations=2,
@@ -569,7 +571,137 @@ def test_orchestrator_blocks_preflight_and_skips_tool_execution(monkeypatch):
     )
 
     assert calls["count"] == 0
-    assert "please upload or paste bom/resource details first" in result["reply"].lower()
+    assert "i need topology context" in result["reply"].lower()
+
+
+def test_orchestrator_runs_bom_diagram_waf_in_prerequisite_order(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_execute_tool(tool_name, args, **kwargs):
+        _ = kwargs
+        calls.append((tool_name, dict(args)))
+        if tool_name == "generate_bom":
+            return (
+                "Final BOM prepared. OKE, load balancer, database.",
+                "",
+                {
+                    "type": "final",
+                    "reply": "OKE BOM",
+                    "bom_payload": {
+                        "line_items": [{"sku": "B94176", "description": "OKE worker", "quantity": 3}],
+                        "totals": {"estimated_monthly_cost": 1200},
+                    },
+                },
+            )
+        if tool_name == "generate_diagram":
+            return ("Diagram generated. Key: diagram.drawio", "diagram.drawio", {"render_manifest": {"node_count": 5}})
+        return ("WAF review saved. Key: waf.md", "waf.md", {})
+
+    def _text_runner(_prompt: str, _system_message: str) -> str:
+        raise AssertionError("Prerequisite workflow should not call the planner LLM")
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="Generate a BOM, diagram, and WAF for an OKE app with public load balancer and private database.",
+            store=InMemoryObjectStore(),
+            text_runner=_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=3,
+            specialist_mode="langgraph",
+        )
+    )
+
+    assert [tool for tool, _args in calls] == ["generate_bom", "generate_diagram", "generate_waf"]
+    assert "Final BOM prepared" in calls[1][1]["bom_text"]
+    assert "WAF review saved" in result["reply"]
+
+
+def test_orchestrator_runs_diagram_before_waf_without_existing_diagram(monkeypatch):
+    calls: list[str] = []
+
+    async def _fake_execute_tool(tool_name, args, **kwargs):
+        _ = (args, kwargs)
+        calls.append(tool_name)
+        if tool_name == "generate_diagram":
+            return ("Diagram generated. Key: diagram.drawio", "diagram.drawio", {"render_manifest": {"node_count": 4}})
+        return ("WAF review saved. Key: waf.md", "waf.md", {})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="Generate a diagram and WAF for an OKE app with WAF, public load balancer, private subnets, and Autonomous Database.",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=3,
+            specialist_mode="langgraph",
+        )
+    )
+
+    assert calls == ["generate_diagram", "generate_waf"]
+    assert "WAF review saved" in result["reply"]
+
+
+def test_orchestrator_terraform_without_bounded_scope_asks_before_running(monkeypatch):
+    calls: list[str] = []
+
+    async def _fake_execute_tool(tool_name, args, **kwargs):
+        _ = (args, kwargs)
+        calls.append(tool_name)
+        return ("unexpected", "", {})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="Generate Terraform for the architecture.",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=3,
+            specialist_mode="langgraph",
+        )
+    )
+
+    assert calls == []
+    assert "module boundary" in result["reply"].lower()
+    assert "state backend" in result["reply"].lower()
+
+
+def test_orchestrator_pov_jep_without_context_asks_before_running(monkeypatch):
+    calls: list[str] = []
+
+    async def _fake_execute_tool(tool_name, args, **kwargs):
+        _ = (args, kwargs)
+        calls.append(tool_name)
+        return ("unexpected", "", {})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="Generate POV and JEP for this customer.",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=3,
+            specialist_mode="langgraph",
+        )
+    )
+
+    assert calls == []
+    assert "engagement context" in result["reply"].lower()
 
 
 def test_skill_injection_applies_for_terraform_prompt():
