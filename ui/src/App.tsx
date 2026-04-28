@@ -26,7 +26,7 @@ import {
 
 type Mode = 'chat' | 'generate' | 'bom' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
-const TEAM_MARK_SRC = '/favicon.png';
+const TEAM_MARK_SRC = '/favicon.jpg';
 
 function getLastCustomerId(): string {
   try { return localStorage.getItem('last_customer_id') ?? ''; } catch { return ''; }
