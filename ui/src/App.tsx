@@ -411,8 +411,8 @@ export function App() {
         overflow: 'hidden',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', minWidth: 0 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.35rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', minWidth: 0, maxWidth: '100%' }}>
           <img
             src={TEAM_MARK_SRC}
             alt=""
@@ -426,7 +426,7 @@ export function App() {
               flex: '0 0 auto',
             }}
           />
-          <h1 style={{ margin: 0, fontFamily: "'Syne', sans-serif", fontSize: '1.35rem', fontWeight: 800, color: '#f7f9ff' }}>
+          <h1 style={{ margin: 0, fontFamily: "'Syne', sans-serif", fontSize: '1.35rem', fontWeight: 800, color: '#f7f9ff', lineHeight: 1 }}>
             Archie<span style={{ color: '#8fb4ff' }}>.</span>
           </h1>
         </div>

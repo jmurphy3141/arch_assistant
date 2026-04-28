@@ -20,7 +20,17 @@ export function HealthIndicator() {
   return (
     <div
       data-testid="health-indicator"
-      style={{ fontSize: '0.72rem', color: '#8892a4', fontFamily: "'JetBrains Mono', monospace" }}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: '0.2rem 0.55rem',
+        minWidth: 0,
+        fontSize: '0.72rem',
+        lineHeight: 1.35,
+        color: '#8892a4',
+        fontFamily: "'JetBrains Mono', monospace",
+      }}
     >
       <span>{dot}</span>{' '}
       {loading && <span>checking…</span>}
@@ -32,7 +42,7 @@ export function HealthIndicator() {
         </span>
       )}
       {lastChecked && (
-        <span style={{ marginLeft: '0.75rem', color: '#454d64' }}>
+        <span style={{ color: '#454d64' }}>
           checked {fmt(lastChecked)}
         </span>
       )}
