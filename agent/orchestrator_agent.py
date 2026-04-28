@@ -458,7 +458,9 @@ async def run_turn(
                             scenario_label=scenario_label,
                             scenario_text=scenario_text,
                             user_message=user_message,
-                        )
+                        ),
+                        "_bom_context_source": "scenario_request",
+                        "_bom_grounded_from_context": True,
                     }
                     call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
                     last_bom_call = call
@@ -536,7 +538,9 @@ async def run_turn(
                     scenario_label=scenario_label,
                     scenario_text=scenario_text,
                     user_message=user_message,
-                )
+                ),
+                "_bom_context_source": "scenario_request",
+                "_bom_grounded_from_context": True,
             }
             bom_summary, bom_artifact_key, bom_result_data = await _execute_tool(
                 "generate_bom",
@@ -1653,6 +1657,9 @@ def _prepare_bom_tool_args(
     prompt = str(payload.get("prompt", "") or "").strip() or str(user_message or "").strip()
     payload["prompt"] = prompt or "Generate a BOM from current request context."
     payload["_bom_context_source"] = str(payload.get("_bom_context_source", "") or "direct_request")
+
+    if bool(payload.get("_bom_grounded_from_context")):
+        return payload
 
     if not _is_bom_deictic_followup(prompt, user_message):
         return payload

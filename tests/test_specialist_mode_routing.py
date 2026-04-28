@@ -511,6 +511,71 @@ def test_orchestrator_runs_bom_diagram_pairs_per_scenario(monkeypatch):
     ]
 
 
+def test_bom_diagram_pair_does_not_treat_scenario_prompt_as_ungrounded_followup(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_execute_tool_core(tool_name, args, **kwargs):
+        _ = kwargs
+        calls.append((tool_name, dict(args)))
+        if tool_name == "generate_bom":
+            return (
+                "Final BOM prepared. Review line items.",
+                "",
+                {
+                    "type": "final",
+                    "reply": "Final BOM prepared for scenario.",
+                    "bom_payload": {
+                        "line_items": [{"sku": "B94176", "description": "Compute", "quantity": 2}],
+                        "totals": {"estimated_monthly_cost": 500},
+                    },
+                },
+            )
+        return (
+            "Diagram generated. Key: diagram.drawio",
+            "diagram.drawio",
+            {"render_manifest": {"node_count": 4}},
+        )
+
+    def _text_runner(_prompt: str, _system_message: str) -> str:
+        raise AssertionError("Scenario workflow should not call the planner LLM")
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
+    monkeypatch.setattr(
+        orchestrator_agent.critic_agent,
+        "evaluate_tool_result",
+        lambda **_kwargs: {"overall_status": "pass", "overall_pass": True},
+    )
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message=(
+                "I want to do two things. 1. Full lift and shift to OCI, so get off of VMware. "
+                "2. Direct migration using their stack but running on OCI. I need BOM and Diagram for each."
+            ),
+            store=InMemoryObjectStore(),
+            text_runner=_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=3,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert [tool for tool, _args in calls] == [
+        "generate_bom",
+        "generate_diagram",
+        "generate_bom",
+        "generate_diagram",
+    ]
+    first_bom_args = calls[0][1]
+    assert first_bom_args["_bom_context_source"] == "scenario_request"
+    assert first_bom_args["_bom_grounded_from_context"] is True
+    assert "_bom_direct_reply" not in first_bom_args
+    assert "Architecture diagram: skipped" not in result["reply"]
+
+
 def test_orchestrator_blocks_completion_when_postflight_fails(monkeypatch):
     calls = {"count": 0}
     store = InMemoryObjectStore()
