@@ -29,6 +29,13 @@ Use for architecture topology creation or update from BOM/context/change request
 - Security boundaries are explicit.
 - No contradictory placement or impossible paths.
 
+## Critic Evaluation Guidance
+- Accept only if the diagram intent has OCI-valid services, subnet placement, traffic flow, and trust boundaries matching the request.
+- Verify public ingress, private app/data tiers, DRG/LB/WAF/NSG placement, and managed service dependencies when requested.
+- Treat missing mandatory components, impossible routing, or ungrounded generic boxes as fail conditions.
+- Example pass: represents WAF -> public load balancer -> private OKE/app tier -> private database/Object Storage controls.
+- Example fail: places a database in a public subnet when the request requires private data tier isolation.
+
 ## Failure Questions
 - Which OCI services and traffic paths are mandatory?
 - Any HA/DR target (single AD, multi-AD, multi-region)?

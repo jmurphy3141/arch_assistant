@@ -29,6 +29,13 @@ Use for converting architecture intent and customer constraints into a delivery-
 - Explicit ownership and decision points.
 - Minimal ambiguity in execution steps.
 
+## Critic Evaluation Guidance
+- Accept only if milestones, owners, dependencies, dates/durations, and acceptance criteria are explicit enough to execute.
+- Verify the JEP reflects OCI architecture prerequisites, environment readiness, validation steps, and customer decision gates.
+- Flag missing scope boundaries, unsupported success criteria, or plans that skip discovery/security prerequisites.
+- Example pass: separates network foundation, workload deployment, validation, and executive readout with owners and exit criteria.
+- Example fail: lists generic phases without OCI services, dependencies, measurable success criteria, or customer responsibilities.
+
 ## Failure Questions
 - What is in scope vs explicitly out of scope?
 - Who owns each milestone?
