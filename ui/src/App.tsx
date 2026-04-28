@@ -26,6 +26,8 @@ import {
 
 type Mode = 'chat' | 'generate' | 'bom' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
+const TEAM_MARK_SRC = '/favicon.png';
+
 function getLastCustomerId(): string {
   try { return localStorage.getItem('last_customer_id') ?? ''; } catch { return ''; }
 }
@@ -410,9 +412,24 @@ export function App() {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem' }}>
-        <h1 style={{ margin: 0, fontFamily: "'Syne', sans-serif", fontSize: '1.35rem', fontWeight: 800, color: '#f7f9ff' }}>
-          Archie<span style={{ color: '#8fb4ff' }}>.</span>
-        </h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', minWidth: 0 }}>
+          <img
+            src={TEAM_MARK_SRC}
+            alt=""
+            aria-hidden="true"
+            onError={(event) => { event.currentTarget.style.display = 'none'; }}
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 6,
+              objectFit: 'cover',
+              flex: '0 0 auto',
+            }}
+          />
+          <h1 style={{ margin: 0, fontFamily: "'Syne', sans-serif", fontSize: '1.35rem', fontWeight: 800, color: '#f7f9ff' }}>
+            Archie<span style={{ color: '#8fb4ff' }}>.</span>
+          </h1>
+        </div>
         <HealthIndicator />
       </div>
 
