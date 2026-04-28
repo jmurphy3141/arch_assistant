@@ -51,6 +51,7 @@ def test_run_turn_refinement_flow_0_to_3(monkeypatch, fail_count: int):
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes present")
+    monkeypatch.setattr(orchestrator_agent, "_pov_has_sufficient_context", lambda **_kwargs: True)
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",

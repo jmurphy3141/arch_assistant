@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlparse
+
 from fastapi.testclient import TestClient
 
 import drawing_agent_server
@@ -81,3 +83,31 @@ def test_root_serves_no_store_headers() -> None:
         assert resp.headers["pragma"] == "no-cache"
         assert resp.headers["expires"] == "0"
         assert resp.headers["x-app-version"] == drawing_agent_server.AGENT_VERSION
+
+
+def test_login_uses_oci_identity_domain_authorize_endpoint(monkeypatch) -> None:
+    issuer = "https://idcs-example.identity.oraclecloud.com"
+    monkeypatch.setattr(drawing_agent_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(drawing_agent_server, "OIDC_CLIENT_ID", "client-id")
+    monkeypatch.setattr(drawing_agent_server, "OIDC_REDIRECT_URI", "https://app.example.com/oauth2/callback")
+    monkeypatch.setattr(drawing_agent_server, "OIDC_SCOPE", "openid profile email")
+    monkeypatch.setattr(
+        drawing_agent_server,
+        "OIDC_AUTHORIZATION_ENDPOINT",
+        drawing_agent_server._join_oidc_url(issuer, "/oauth2/v1/authorize"),
+    )
+
+    try:
+        with TestClient(app, raise_server_exceptions=True) as client:
+            resp = client.get("/login", follow_redirects=False)
+            assert resp.status_code == 307
+            parsed = urlparse(resp.headers["location"])
+            assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == f"{issuer}/oauth2/v1/authorize"
+            params = parse_qs(parsed.query)
+            assert params["client_id"] == ["client-id"]
+            assert params["redirect_uri"] == ["https://app.example.com/oauth2/callback"]
+            assert params["response_type"] == ["code"]
+            assert params["scope"] == ["openid profile email"]
+            assert params["state"][0]
+    finally:
+        monkeypatch.setattr(drawing_agent_server, "AUTH_ENABLED", False)

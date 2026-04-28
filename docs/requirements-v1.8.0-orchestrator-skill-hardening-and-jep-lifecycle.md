@@ -4,7 +4,7 @@
 - Date: April 22, 2026
 - Owner: Jason Murphy
 - Version target: v1.8.0
-- Status: In progress (JEP lifecycle contract + revision-request flow implemented; orchestrator hardening remains baseline)
+- Status: Delivered (JEP lifecycle contract + revision-request flow implemented; orchestrator hardening baseline retained)
 
 ## 1) Objective
 

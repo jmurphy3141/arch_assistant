@@ -229,20 +229,41 @@ TERRAFORM_EXAMPLE_REPOS = _terraform_cfg.get("example_repos", [])
 
 # ── Auth / session config — all from environment, matching BOM agent pattern ──
 # Set these in .env (dev) or as systemd EnvironmentFile / OCI Vault (prod).
-# Auth is automatically enabled when the four required OIDC vars are present.
-OIDC_CLIENT_ID              = os.environ.get("OIDC_CLIENT_ID", "")
-OIDC_CLIENT_SECRET          = os.environ.get("OIDC_CLIENT_SECRET", "")
-OIDC_AUTHORIZATION_ENDPOINT = os.environ.get("OIDC_AUTHORIZATION_ENDPOINT", "")
-OIDC_TOKEN_ENDPOINT         = os.environ.get("OIDC_TOKEN_ENDPOINT", "")
-OIDC_USERINFO_ENDPOINT      = os.environ.get("OIDC_USERINFO_ENDPOINT", "")
-OIDC_REDIRECT_URI           = os.environ.get("OIDC_REDIRECT_URI", "")
-OIDC_LOGOUT_ENDPOINT        = os.environ.get("OIDC_LOGOUT_ENDPOINT", "")
-OIDC_REQUIRED_GROUP         = os.environ.get("OIDC_REQUIRED_GROUP", "")
-OIDC_SCOPE                  = os.environ.get("OIDC_SCOPE", "openid profile email")
-_SESSION_SECRET             = os.environ.get("SESSION_SECRET", "dev-secret-change-in-prod")
+# OCI Identity Domain endpoints may be set explicitly, or derived from
+# OIDC_ISSUER / OCI_IDENTITY_DOMAIN_URL, for example:
+# https://idcs-<domain>.identity.oraclecloud.com
 
-AUTH_ENABLED = all([OIDC_CLIENT_ID, OIDC_CLIENT_SECRET,
-                    OIDC_AUTHORIZATION_ENDPOINT, OIDC_TOKEN_ENDPOINT])
+def _env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default).strip()
+
+
+def _join_oidc_url(base: str, path: str) -> str:
+    if not base:
+        return ""
+    return f"{base.rstrip('/')}/{path.lstrip('/')}"
+
+
+OIDC_CLIENT_ID              = _env("OIDC_CLIENT_ID")
+OIDC_CLIENT_SECRET          = _env("OIDC_CLIENT_SECRET")
+OIDC_REDIRECT_URI           = _env("OIDC_REDIRECT_URI")
+OIDC_ISSUER                 = _env("OIDC_ISSUER") or _env("OCI_IDENTITY_DOMAIN_URL")
+OIDC_AUTHORIZATION_ENDPOINT = _env("OIDC_AUTHORIZATION_ENDPOINT") or _join_oidc_url(OIDC_ISSUER, "/oauth2/v1/authorize")
+OIDC_TOKEN_ENDPOINT         = _env("OIDC_TOKEN_ENDPOINT") or _join_oidc_url(OIDC_ISSUER, "/oauth2/v1/token")
+OIDC_USERINFO_ENDPOINT      = _env("OIDC_USERINFO_ENDPOINT") or _join_oidc_url(OIDC_ISSUER, "/oauth2/v1/userinfo")
+OIDC_LOGOUT_ENDPOINT        = _env("OIDC_LOGOUT_ENDPOINT") or _join_oidc_url(OIDC_ISSUER, "/oauth2/v1/userlogout")
+OIDC_REQUIRED_GROUP         = _env("OIDC_REQUIRED_GROUP")
+OIDC_SCOPE                  = _env("OIDC_SCOPE", "openid profile email")
+_SESSION_SECRET             = _env("SESSION_SECRET", "dev-secret-change-in-prod")
+SESSION_COOKIE_SECURE       = _env("SESSION_COOKIE_SECURE", "auto").lower()
+
+AUTH_ENABLED = all([
+    OIDC_CLIENT_ID,
+    OIDC_CLIENT_SECRET,
+    OIDC_REDIRECT_URI,
+    OIDC_AUTHORIZATION_ENDPOINT,
+    OIDC_TOKEN_ENDPOINT,
+    OIDC_USERINFO_ENDPOINT,
+])
 
 # ── Fleet identity ───────────────────────────────────────────────────────────
 AGENT_ID    = _cfg.get("agent_id", "agent3-oci-drawing")
@@ -265,7 +286,17 @@ DIAGRAM_EDIT_SYSTEM = (
 )
 
 # ── Session middleware (must be added before first request) ───────────────────
-app.add_middleware(SessionMiddleware, secret_key=_SESSION_SECRET, https_only=False)
+_session_https_only = (
+    OIDC_REDIRECT_URI.startswith("https://")
+    if SESSION_COOKIE_SECURE == "auto"
+    else SESSION_COOKIE_SECURE in {"1", "true", "yes", "on"}
+)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_SESSION_SECRET,
+    https_only=_session_https_only,
+    same_site="lax",
+)
 
 # ── Global mutable state ───────────────────────────────────────────────────────
 _oci_agent: Optional[Any] = None          # real OCI Agent, set in startup

@@ -76,6 +76,7 @@
 - `DONE`: Terraform artifact persistence + list/latest/download APIs.
 - `DONE`: BOM advisory + generation backend surface and shared service integration.
 - `DONE`: Existing endpoint compatibility preserved.
+- `DONE`: OCI Identity Domain OAuth deployment on systemd with issuer-derived endpoints, secure HTTPS callback cookies, and tracked service template.
 
 ### 3.2 UI Requirements
 - `DONE`: Chat-first baseline implemented and merged.
@@ -100,10 +101,12 @@
 - `DONE`: Recursive prompt-static and prompt-judge suites with scorecard/failure artifacts and pushback-quality coverage.
 - `DONE`: Live LLM scenario suite migrated to configured OCI inference path.
 - `DONE`: Live server suite pre-validates `AGENT_BASE_URL` reachability and skip-gates invalid hosts.
+- `DONE`: Auth/login regression coverage validates OCI Identity Domain authorize redirects.
 
 ### 3.4 Explicitly Deferred
 - `DEFERRED`: Telegram integration for orchestrator notifications.
   - Rationale: not required for current release goals; keep webhook/bot wiring out of scope until post-v1.9.
+- `BACKLOG`: Further provider-specific notification channels beyond the existing logging stub.
 
 ## 4) Merge Gate (Current)
 
