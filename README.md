@@ -522,6 +522,10 @@ RUN_LIVE_LLM_TESTS=1 pytest tests/test_llm_live.py -v -s
 
 # Run live server smoke/integration tests (requires reachable server base URL)
 AGENT_BASE_URL=http://127.0.0.1:8080 pytest tests/test_server_live.py -v -s
+
+# Fetch pinned external OCI architecture fixtures, then validate the local corpus
+python3 scripts/fetch_external_oci_arch_skill_fixtures.py
+pytest tests/test_external_oci_arch_corpus.py -v
 ```
 
 Test strategy reference:

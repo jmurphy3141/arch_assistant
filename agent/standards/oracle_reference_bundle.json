@@ -1,0 +1,212 @@
+{
+  "bundle_id": "oracle-oci-reference-bundle",
+  "bundle_version": "2026.04.24",
+  "policy": "curated_snapshot",
+  "runtime_live_fetch": false,
+  "approved_sources": [
+    {
+      "id": "oci-diagram-toolkit",
+      "title": "OCI Architecture Diagram Toolkit",
+      "publisher": "Oracle",
+      "type": "diagram_assets",
+      "url": "https://docs.oracle.com/iaas/Content/General/Reference/graphicsfordiagrams.htm"
+    },
+    {
+      "id": "oracle-architecture-center",
+      "title": "Oracle Architecture Center Assets",
+      "publisher": "Oracle",
+      "type": "reference_architectures",
+      "url": "https://docs.oracle.com/en/solutions/arch-center-assets/index.html"
+    },
+    {
+      "id": "oci-best-practices",
+      "title": "OCI Best Practices",
+      "publisher": "Oracle",
+      "type": "validation_rules",
+      "url": "https://docs.oracle.com/en/solutions/oci-best-practices/"
+    }
+  ],
+  "families": [
+    {
+      "id": "single_region_oke_app",
+      "label": "Single-Region OCI App / OKE",
+      "min_confidence": 0.72,
+      "required_tags": [
+        "oke"
+      ],
+      "preferred_tags": [
+        "waf",
+        "load_balancer",
+        "bastion",
+        "database",
+        "object_storage"
+      ],
+      "disallowed_tags": [
+        "remote_peering"
+      ],
+      "template": "single_region_oke_app",
+      "required_containers": [
+        "region",
+        "vcn",
+        "public_ingress",
+        "private_app",
+        "private_data"
+      ],
+      "optional_containers": [
+        "availability_domains"
+      ],
+      "connector_lanes": [
+        "internet_to_ingress",
+        "ingress_to_app",
+        "app_to_data",
+        "app_to_managed_services"
+      ],
+      "allowed_mutations": [
+        "label_changes",
+        "icon_substitutions",
+        "slot_population",
+        "slot_removal",
+        "connector_lane_reroute",
+        "ad_duplication"
+      ],
+      "quality_assertions": [
+        "public_ingress_subnet_present",
+        "private_app_subnet_present",
+        "private_data_subnet_present",
+        "igw_nat_sgw_present"
+      ]
+    },
+    {
+      "id": "multi_region_oke_saas",
+      "label": "Multi-Region OKE / SaaS",
+      "min_confidence": 0.76,
+      "required_tags": [
+        "oke"
+      ],
+      "preferred_tags": [
+        "load_balancer",
+        "database",
+        "object_storage"
+      ],
+      "disallowed_tags": [],
+      "template": "multi_region_oke_saas",
+      "required_containers": [
+        "primary_region",
+        "secondary_region",
+        "public_ingress",
+        "private_app",
+        "private_data"
+      ],
+      "optional_containers": [
+        "availability_domains"
+      ],
+      "connector_lanes": [
+        "internet_to_ingress",
+        "ingress_to_app",
+        "app_to_data",
+        "inter_region_replication"
+      ],
+      "allowed_mutations": [
+        "label_changes",
+        "icon_substitutions",
+        "slot_population",
+        "slot_removal",
+        "connector_lane_reroute",
+        "region_duplication"
+      ],
+      "quality_assertions": [
+        "secondary_region_present",
+        "public_private_separation",
+        "ha_dr_posture_explicit"
+      ]
+    },
+    {
+      "id": "classic_3tier_webapp",
+      "label": "Classic 3-Tier Web App",
+      "min_confidence": 0.74,
+      "required_tags": [
+        "compute",
+        "database",
+        "load_balancer"
+      ],
+      "preferred_tags": [
+        "waf",
+        "object_storage",
+        "bastion"
+      ],
+      "disallowed_tags": [
+        "oke"
+      ],
+      "template": "classic_3tier_webapp",
+      "required_containers": [
+        "region",
+        "vcn",
+        "public_ingress",
+        "private_app",
+        "private_data"
+      ],
+      "optional_containers": [
+        "availability_domains"
+      ],
+      "connector_lanes": [
+        "internet_to_ingress",
+        "ingress_to_app",
+        "app_to_data"
+      ],
+      "allowed_mutations": [
+        "label_changes",
+        "icon_substitutions",
+        "slot_population",
+        "slot_removal",
+        "connector_lane_reroute",
+        "ad_duplication"
+      ],
+      "quality_assertions": [
+        "public_ingress_subnet_present",
+        "private_app_subnet_present",
+        "private_data_subnet_present"
+      ]
+    },
+    {
+      "id": "hub_spoke_network",
+      "label": "Hub-and-Spoke Network",
+      "min_confidence": 0.7,
+      "required_tags": [
+        "drg"
+      ],
+      "preferred_tags": [
+        "load_balancer",
+        "compute",
+        "database"
+      ],
+      "disallowed_tags": [],
+      "template": "hub_spoke_network",
+      "required_containers": [
+        "region",
+        "hub_compartment",
+        "spoke_a",
+        "spoke_b"
+      ],
+      "optional_containers": [
+        "shared_services"
+      ],
+      "connector_lanes": [
+        "onprem_to_drg",
+        "hub_to_spoke_a",
+        "hub_to_spoke_b"
+      ],
+      "allowed_mutations": [
+        "label_changes",
+        "icon_substitutions",
+        "slot_population",
+        "slot_removal",
+        "connector_lane_reroute"
+      ],
+      "quality_assertions": [
+        "drg_present",
+        "hub_and_spokes_present",
+        "spokes_private_by_default"
+      ]
+    }
+  ]
+}
