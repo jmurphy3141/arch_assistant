@@ -976,6 +976,65 @@ def test_pending_specialist_answers_are_recorded_before_rerun(monkeypatch) -> No
     assert answers[-1]["final_answer"] == "OKE, Load Balancer, Database"
 
 
+def test_pending_specialist_answers_accept_loose_id_separators(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "archie-loose", "Archie Loose")
+    context_store.set_pending_checkpoint(
+        ctx,
+        {
+            "id": "pending-specialist",
+            "type": "specialist_questions",
+            "status": "pending",
+            "tool_name": "generate_diagram",
+            "tool_args": {"bom_text": "Create diagrams."},
+            "original_request": "Create diagrams.",
+            "questions": [
+                {
+                    "question_id": "components.scope",
+                    "question": "What major OCI components should be shown?",
+                },
+                {
+                    "question_id": "regions.mode",
+                    "question": "Should I assume single-region, multi-AD, or multi-region?",
+                },
+            ],
+            "prompt": "pending specialist questions",
+        },
+    )
+    context_store.write_context(store, "archie-loose", ctx)
+    captured = {}
+
+    async def _fake_execute_tool(tool_name, args, **_kwargs):
+        captured["tool_name"] = tool_name
+        captured["args"] = dict(args)
+        return (
+            "Diagram generated. Key: diagrams/archie-loose/v2/diagram.drawio",
+            "diagrams/archie-loose/v2/diagram.drawio",
+            {},
+        )
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="archie-loose",
+            customer_name="Archie Loose",
+            user_message="Components.scope. all\nregion.mode, single ad",
+            store=store,
+            text_runner=lambda _prompt, _system: "unused",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert result["reply"] == "Diagram generated. Key: diagrams/archie-loose/v2/diagram.drawio"
+    assert captured["tool_name"] == "generate_diagram"
+    assert "components.scope: all" in captured["args"]["bom_text"]
+    assert "regions.mode: single ad" in captured["args"]["bom_text"]
+    updated = context_store.read_context(store, "archie-loose", "Archie Loose")
+    assert updated["pending_checkpoint"] is None
+
+
 def test_recall_request_returns_persisted_context_without_regeneration() -> None:
     store = InMemoryObjectStore()
     ctx = context_store.read_context(store, "archie-recall", "Archie Recall")
