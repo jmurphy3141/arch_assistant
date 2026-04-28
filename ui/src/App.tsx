@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { HealthIndicator } from './components/HealthIndicator';
-import { UploadBom } from './components/UploadBom';
 import { GenerateForm } from './components/GenerateForm';
 import { ResponseDisplay } from './components/ResponseDisplay';
 import { ClarifyForm } from './components/ClarifyForm';
@@ -24,7 +23,7 @@ import {
   type OrchestrationResult,
 } from './api/client';
 
-type Mode = 'chat' | 'upload' | 'generate' | 'bom' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
+type Mode = 'chat' | 'generate' | 'bom' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
 function getLastCustomerId(): string {
   try { return localStorage.getItem('last_customer_id') ?? ''; } catch { return ''; }
@@ -148,7 +147,7 @@ export function App() {
 
   function switchMode(m: Mode) {
     setMode(m);
-    if (m === 'upload' || m === 'generate') {
+    if (m === 'generate') {
       setResult(null);
       setOrchestrationResult(null);
       setError(null);
@@ -272,9 +271,9 @@ export function App() {
       <header style={{ borderBottom: '1px solid #1c2030', paddingBottom: '0.75rem', marginBottom: '1.25rem' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
           <h1 style={{ margin: 0, fontFamily: "'Syne', sans-serif", fontSize: '1.4rem', fontWeight: 800, letterSpacing: '-0.03em', color: '#fff' }}>
-            OCI<span style={{ color: '#e8571a' }}>.</span>Agent Fleet
+            Archie<span style={{ color: '#e8571a' }}>.</span>
             <small style={{ fontWeight: 400, fontSize: '0.68rem', color: '#454d64', marginLeft: '0.75rem', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: "'JetBrains Mono', monospace" }}>
-              Drawing · POV · JEP · Terraform · WAF
+              Architecture · BOM · POV · JEP · Terraform · WAF
             </small>
           </h1>
           <HealthIndicator />
@@ -284,9 +283,8 @@ export function App() {
       {/* Tab bar */}
       <div style={{ marginBottom: '1.25rem', display: 'flex', gap: '0.3rem', flexWrap: 'wrap', alignItems: 'center' }}>
         <span style={{ fontSize: '0.62rem', color: '#454d64', marginRight: '0.2rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Chat:</span>
-        <button style={btnStyle(mode === 'chat')} onClick={() => switchMode('chat')}>SA Assistant</button>
+        <button style={btnStyle(mode === 'chat')} onClick={() => switchMode('chat')}>Archie</button>
         <span style={{ fontSize: '0.62rem', color: '#454d64', margin: '0 0.2rem 0 0.75rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Diagrams:</span>
-        <button style={btnStyle(mode === 'upload')}   onClick={() => switchMode('upload')}>Upload BOM</button>
         <button style={btnStyle(mode === 'generate')} onClick={() => switchMode('generate')}>Generate</button>
         <button style={btnStyle(mode === 'bom')} onClick={() => switchMode('bom')}>BOM</button>
         <span style={{ fontSize: '0.62rem', color: '#454d64', margin: '0 0.2rem 0 0.75rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Documents:</span>
@@ -352,18 +350,6 @@ export function App() {
       )}
 
       {/* Diagram modes */}
-      {mode === 'upload' && (
-        <UploadBom
-          clientId={clientId}
-          customerId={customerId}
-          diagramName={diagramName}
-          onCustomerIdChange={handleCustomerIdChange}
-          onDiagramNameChange={handleDiagramNameChange}
-          onResult={handleResult}
-          onError={handleError}
-        />
-      )}
-
       {mode === 'generate' && (
         <GenerateForm
           clientId={clientId}
@@ -376,7 +362,7 @@ export function App() {
 
       {mode === 'bom' && <BomAdvisor />}
 
-      {(mode === 'upload' || mode === 'generate') && (
+      {mode === 'generate' && (
         <>
           {error && (
             <div

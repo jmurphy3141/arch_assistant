@@ -1,7 +1,7 @@
 /**
  * agents/registry.ts
  * ------------------
- * Agent fleet registry. Start with Drawing Agent (Agent 3).
+ * Archie agent registry.
  * Structure supports chaining multiple agents in future flow steps.
  */
 
@@ -21,12 +21,12 @@ export interface AgentDefinition {
   };
 }
 
-const DRAWING_AGENT: AgentDefinition = {
-  id: 'drawing-agent',
-  name: 'OCI Drawing Agent',
+const ARCHIE_AGENT: AgentDefinition = {
+  id: 'archie',
+  name: 'Archie',
   version: '1.5.0',
   description:
-    'Generates OCI architecture draw.io diagrams from a Bill of Materials (BOM) Excel file.',
+    'Coordinates OCI architecture diagrams, BOMs, documents, Terraform, and WAF review.',
   endpoints: {
     generate: '/generate',
     uploadBom: '/upload-bom',
@@ -39,7 +39,7 @@ const DRAWING_AGENT: AgentDefinition = {
 
 /** All registered agents, ordered by fleet number. */
 export const AGENT_REGISTRY: AgentDefinition[] = [
-  DRAWING_AGENT,
+  ARCHIE_AGENT,
   // Future agents (2–7) will be added here as they are implemented.
   // { id: 'sizing-agent', name: 'BOM Sizing + Pricing Agent', ... },
 ];
@@ -48,4 +48,4 @@ export function getAgent(id: string): AgentDefinition | undefined {
   return AGENT_REGISTRY.find((a) => a.id === id);
 }
 
-export const CURRENT_AGENT = DRAWING_AGENT;
+export const CURRENT_AGENT = ARCHIE_AGENT;

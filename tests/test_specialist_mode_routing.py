@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from drawing_agent_server import _run_orchestrator_turn, OrchestratorChatRequest
+from agent import context_store
 from agent.persistence_objectstore import InMemoryObjectStore
 import agent.orchestrator_agent as orchestrator_agent
 from agent import skill_loader
@@ -13,6 +14,15 @@ from agent import skill_loader
 def _dummy_text_runner(prompt: str, system_message: str) -> str:
     _ = (prompt, system_message)
     return '{"ok": false, "output": "", "questions": ["Need module boundaries."]}'
+
+
+def _seed_pov_context(store: InMemoryObjectStore, customer_id: str = "acme", customer_name: str = "ACME Corp") -> None:
+    ctx = context_store.read_context(store, customer_id, customer_name)
+    context_store.set_archie_engagement_summary(
+        ctx,
+        "Retail customer modernizing to private OKE with WAF and Autonomous Database.",
+    )
+    context_store.write_context(store, customer_id, ctx)
 
 
 def test_execute_tool_routes_to_langgraph_specialists(monkeypatch):
@@ -49,6 +59,64 @@ def test_execute_tool_routes_to_langgraph_specialists(monkeypatch):
     assert result[1] == "artifact-key"
     assert result[2].get("skill_preflight", {}).get("status") == "allow"
     assert result[2].get("skill_postflight", {}).get("status") == "allow"
+
+
+def test_diagram_graph_uses_a2a_task_endpoint(monkeypatch):
+    from agent.graphs import diagram_graph
+
+    captured = {}
+
+    class _FakeResponse:
+        def json(self):
+            return {
+                "task_id": "orch-1",
+                "status": "ok",
+                "outputs": {
+                    "object_key": "agent3/acme/arch/v1/diagram.drawio",
+                    "render_manifest": {"node_count": 6},
+                    "node_to_resource_map": {
+                        "oke_1": {"oci_type": "container engine", "layer": "compute", "label": "OKE"}
+                    },
+                    "draw_dict": {"boxes": [{"id": "app", "box_type": "_subnet_box", "tier": "app"}]},
+                    "spec": {"deployment_type": "single_ad"},
+                },
+            }
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            _ = (args, kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+        async def post(self, url, json):
+            captured["url"] = url
+            captured["json"] = json
+            return _FakeResponse()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    summary, key, result_data = asyncio.run(
+        diagram_graph.run(
+            args={"bom_text": "Generate an OKE diagram", "_standards_bundle_version": "2026.04.24"},
+            customer_id="acme",
+            a2a_base_url="http://localhost:8080",
+        )
+    )
+
+    assert captured["url"] == "http://localhost:8080/api/a2a/task"
+    assert captured["json"]["skill"] == "generate_diagram"
+    assert captured["json"]["inputs"]["notes"] == "Generate an OKE diagram"
+    assert summary == "Diagram generated. Key: agent3/acme/arch/v1/diagram.drawio"
+    assert key == "agent3/acme/arch/v1/diagram.drawio"
+    assert result_data["render_manifest"]["node_count"] == 6
+    assert "node_to_resource_map" in result_data
 
 
 def test_run_orchestrator_turn_passes_specialist_mode(monkeypatch):
@@ -369,6 +437,8 @@ def test_orchestrator_runs_pov_jep_in_parallel(monkeypatch):
 
 def test_orchestrator_blocks_completion_when_postflight_fails(monkeypatch):
     calls = {"count": 0}
+    store = InMemoryObjectStore()
+    _seed_pov_context(store)
 
     async def _fake_execute_tool_core(*_args, **_kwargs):
         calls["count"] += 1
@@ -385,7 +455,7 @@ def test_orchestrator_blocks_completion_when_postflight_fails(monkeypatch):
             customer_id="acme",
             customer_name="ACME Corp",
             user_message="Please draft POV",
-            store=InMemoryObjectStore(),
+            store=store,
             text_runner=_text_runner,
             a2a_base_url="http://localhost:8080",
             max_tool_iterations=1,
@@ -488,6 +558,8 @@ def test_runner_for_tool_uses_profile_aware_runner():
 
 def test_orchestrator_critic_refines_once(monkeypatch):
     calls = {"count": 0}
+    store = InMemoryObjectStore()
+    _seed_pov_context(store)
 
     async def _fake_execute_tool_core(tool_name, args, **_kwargs):
         calls["count"] += 1
@@ -531,7 +603,7 @@ def test_orchestrator_critic_refines_once(monkeypatch):
             {"feedback": "initial pass"},
             customer_id="acme",
             customer_name="ACME Corp",
-            store=InMemoryObjectStore(),
+            store=store,
             text_runner=_dummy_text_runner,
             a2a_base_url="http://localhost:8080",
             specialist_mode="legacy",
@@ -560,8 +632,130 @@ def test_skill_injection_applies_for_diagram():
     assert isinstance(injected.get("_skill_sections"), dict)
 
 
+def test_execute_tool_blocks_diagram_without_selected_standards_bundle(monkeypatch):
+    monkeypatch.setattr(
+        orchestrator_agent,
+        "_build_expert_mode_metadata",
+        lambda **_kwargs: {"enabled": True, "reference_mode": "reference-backed"},
+    )
+
+    summary, key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_diagram",
+            {"bom_text": "VCN with private subnet and LB"},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Generate diagram",
+        )
+    )
+
+    assert "no Oracle standards bundle is selected" in summary
+    assert key == ""
+    assert data["reference_mode"] == "blocked"
+
+
+def test_execute_tool_diagram_trace_includes_reference_metadata(monkeypatch):
+    async def _fake_execute_tool_core(tool_name, args, **_kwargs):
+        _ = (tool_name, args)
+        return ("Diagram generated. Key: diagrams/acme/v1/diagram.drawio", "diagrams/acme/v1/diagram.drawio", {})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+    monkeypatch.setattr(
+        orchestrator_agent,
+        "_build_expert_mode_metadata",
+        lambda **_kwargs: {
+            "enabled": True,
+            "tool_name": "generate_diagram",
+            "mandatory_skill_injection": True,
+            "standards_bundle_version": "2026.04.24",
+            "reference_family": "classic_3tier_webapp",
+            "reference_confidence": 0.88,
+            "reference_mode": "reference-backed",
+            "family_constraints": {"connector_lanes": ["internet_to_ingress"]},
+        },
+    )
+
+    summary, key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_diagram",
+            {"bom_text": "Load balancer, compute, database"},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Generate diagram",
+        )
+    )
+
+    assert "Diagram generated" in summary
+    assert key.endswith("diagram.drawio")
+    assert data["trace"]["standards_bundle_version"] == "2026.04.24"
+    assert data["trace"]["reference_family"] == "classic_3tier_webapp"
+    assert data["trace"]["reference_mode"] == "reference-backed"
+    assert data["trace"]["reference_confidence"] == 0.88
+
+
+def test_execute_tool_diagram_trace_preserves_backend_error_metadata(monkeypatch):
+    async def _fake_execute_tool_core(tool_name, args, **_kwargs):
+        _ = (tool_name, args)
+        return (
+            "I could not complete the diagram because the drawing backend rejected the current topology inputs.\n"
+            "Backend failure: Cross-region invariant violation: active-active with a single writable database is unsupported.",
+            "",
+            {
+                "backend_error_message": (
+                    "Cross-region invariant violation: active-active with a single writable database is unsupported."
+                ),
+                "diagram_recovery_status": "backend_error",
+                "diagram_final_disposition": "backend_error",
+                "assumptions_used": [
+                    {
+                        "id": "diagram_multi_region_posture_default",
+                        "statement": "Multi-region posture not specified; assume active-passive HA/DR across two OCI regions.",
+                        "reason": "default",
+                        "risk": "medium",
+                    }
+                ],
+                "recovery_attempt_count": 1,
+            },
+        )
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+
+    summary, key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_diagram",
+            {"bom_text": "Generate an active-active multi-region OKE diagram."},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Generate diagram",
+        )
+    )
+
+    assert key == ""
+    assert "backend rejected" in summary.lower()
+    assert data["trace"]["backend_error_message"].startswith("Cross-region invariant violation")
+    assert data["trace"]["diagram_recovery_status"] == "backend_error"
+    assert data["trace"]["recovery_attempt_count"] == 1
+    assert data["trace"]["final_disposition"] == "backend_error"
+
+
 def test_orchestrator_critic_respects_max_refinements(monkeypatch):
     calls = {"count": 0}
+    store = InMemoryObjectStore()
+    _seed_pov_context(store)
 
     async def _fake_execute_tool_core(tool_name, args, **_kwargs):
         calls["count"] += 1
@@ -603,7 +797,7 @@ def test_orchestrator_critic_respects_max_refinements(monkeypatch):
             {"feedback": "initial pass"},
             customer_id="acme",
             customer_name="ACME Corp",
-            store=InMemoryObjectStore(),
+            store=store,
             text_runner=_dummy_text_runner,
             a2a_base_url="http://localhost:8080",
             specialist_mode="legacy",
@@ -618,6 +812,9 @@ def test_orchestrator_critic_respects_max_refinements(monkeypatch):
 
 
 def test_orchestrator_critic_fail_open_on_error(monkeypatch):
+    store = InMemoryObjectStore()
+    _seed_pov_context(store)
+
     async def _fake_execute_tool_core(tool_name, args, **_kwargs):
         _ = (tool_name, args)
         return ("POV v1 saved. Key: pov/acme/v1.md", "pov/acme/v1.md", {})
@@ -636,7 +833,7 @@ def test_orchestrator_critic_fail_open_on_error(monkeypatch):
             {"feedback": "initial pass"},
             customer_id="acme",
             customer_name="ACME Corp",
-            store=InMemoryObjectStore(),
+            store=store,
             text_runner=_dummy_text_runner,
             a2a_base_url="http://localhost:8080",
             specialist_mode="legacy",

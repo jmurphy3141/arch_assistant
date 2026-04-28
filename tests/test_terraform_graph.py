@@ -7,6 +7,12 @@ from pathlib import Path
 from agent.graphs import terraform_graph
 
 
+BOUNDED_TERRAFORM_PROMPT = (
+    "Build secure Terraform for an OKE networking module with local state, "
+    "private subnets, NSGs, and public load balancer ingress."
+)
+
+
 def test_terraform_graph_success_path():
     def fake_text_runner(prompt: str, _system_message: str) -> str:
         if "STAGE: plan-eng-review" in prompt:
@@ -20,7 +26,7 @@ def test_terraform_graph_success_path():
     skill_root = Path(__file__).resolve().parents[1] / "gstack_skills"
     summary, artifact_key, result_data = asyncio.run(
         terraform_graph.run(
-            args={"prompt": "Build secure Terraform for OKE and networking"},
+            args={"prompt": BOUNDED_TERRAFORM_PROMPT},
             skill_root=skill_root,
             text_runner=fake_text_runner,
         )
@@ -48,7 +54,7 @@ def test_terraform_graph_blocked_on_failed_stage():
     skill_root = Path(__file__).resolve().parents[1] / "gstack_skills"
     summary, artifact_key, result_data = asyncio.run(
         terraform_graph.run(
-            args={"prompt": "Build secure Terraform for OKE and networking"},
+            args={"prompt": BOUNDED_TERRAFORM_PROMPT},
             skill_root=skill_root,
             text_runner=fake_text_runner,
         )
@@ -68,7 +74,7 @@ def test_terraform_graph_blocks_on_non_json_stage_output():
     skill_root = Path(__file__).resolve().parents[1] / "gstack_skills"
     summary, artifact_key, result_data = asyncio.run(
         terraform_graph.run(
-            args={"prompt": "Build Terraform"},
+            args={"prompt": BOUNDED_TERRAFORM_PROMPT},
             skill_root=skill_root,
             text_runner=fake_text_runner,
         )
@@ -87,7 +93,7 @@ def test_terraform_graph_blocks_on_invalid_stage_json_shape():
     skill_root = Path(__file__).resolve().parents[1] / "gstack_skills"
     summary, artifact_key, result_data = asyncio.run(
         terraform_graph.run(
-            args={"prompt": "Build Terraform"},
+            args={"prompt": BOUNDED_TERRAFORM_PROMPT},
             skill_root=skill_root,
             text_runner=fake_text_runner,
         )
@@ -139,7 +145,7 @@ resource "oci_core_subnet" "good" {
     skill_root = Path(__file__).resolve().parents[1] / "gstack_skills"
     summary, artifact_key, result_data = asyncio.run(
         terraform_graph.run(
-            args={"prompt": "Build Terraform"},
+            args={"prompt": BOUNDED_TERRAFORM_PROMPT},
             skill_root=skill_root,
             text_runner=fake_text_runner,
         )

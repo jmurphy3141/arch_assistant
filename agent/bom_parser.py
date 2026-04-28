@@ -93,6 +93,7 @@ DESC_MAP: dict[str, tuple] = {
     "heatwave":               ("database",         "data"),     # MySQL HeatWave
     "mysql":                  ("database",         "data"),
     "postgresql":             ("database",         "data"),
+    "database":               ("database",         "data"),
     "nosql":                  ("database",         "data"),
     "exadata":                ("database",         "data"),
     "base database":          ("database",         "data"),

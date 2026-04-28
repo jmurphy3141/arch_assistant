@@ -41,6 +41,20 @@ logger = logging.getLogger(__name__)
 CONTEXT_SCHEMA_VERSION = "1.0"
 
 
+def _empty_archie_state() -> dict[str, Any]:
+    return {
+        "engagement_summary": "",
+        "latest_notes_summary": "",
+        "latest_approved_constraints": {},
+        "latest_approved_assumptions": [],
+        "open_questions": [],
+        "resolved_questions": [],
+        "change_history": [],
+        "update_batches": [],
+        "pending_update": None,
+    }
+
+
 def _context_key(customer_id: str) -> str:
     return f"customers/{customer_id}/context/context.json"
 
@@ -56,6 +70,7 @@ def _empty_context(customer_id: str, customer_name: str = "") -> dict:
         "customer_name":  customer_name,
         "last_updated":   "",
         "agents":         {},
+        "archie":         _empty_archie_state(),
         "latest_decision_context": {},
         "decision_log":   [],
         "pending_checkpoint": None,
@@ -181,6 +196,140 @@ def record_agent_run(
     return context
 
 
+def get_archie_state(context: dict[str, Any]) -> dict[str, Any]:
+    archie = context.get("archie")
+    if not isinstance(archie, dict):
+        archie = _empty_archie_state()
+        context["archie"] = archie
+    for key, value in _empty_archie_state().items():
+        archie.setdefault(key, value() if callable(value) else value)
+    return archie
+
+
+def set_archie_engagement_summary(
+    context: dict[str, Any],
+    summary: str,
+    *,
+    note_summary: str = "",
+) -> dict[str, Any]:
+    archie = get_archie_state(context)
+    summary_text = str(summary or "").strip()
+    if summary_text:
+        archie["engagement_summary"] = summary_text
+    note_text = str(note_summary or "").strip()
+    if note_text:
+        archie["latest_notes_summary"] = note_text
+    return context
+
+
+def set_archie_decision_state(
+    context: dict[str, Any],
+    *,
+    constraints: dict[str, Any] | None = None,
+    assumptions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    archie = get_archie_state(context)
+    if isinstance(constraints, dict):
+        archie["latest_approved_constraints"] = dict(constraints)
+    if isinstance(assumptions, list):
+        archie["latest_approved_assumptions"] = [dict(item) for item in assumptions if isinstance(item, dict)]
+    return context
+
+
+def set_open_questions(
+    context: dict[str, Any],
+    questions: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    archie = get_archie_state(context)
+    archie["open_questions"] = [dict(item) for item in (questions or []) if isinstance(item, dict)]
+    return context
+
+
+def record_resolved_question(
+    context: dict[str, Any],
+    record: dict[str, Any],
+    *,
+    limit: int = 100,
+) -> dict[str, Any]:
+    archie = get_archie_state(context)
+    resolved = archie.get("resolved_questions", [])
+    if not isinstance(resolved, list):
+        resolved = []
+    question_id = str(record.get("question_id", "") or "")
+    prior_id = ""
+    if question_id:
+        for item in reversed(resolved):
+            if str(item.get("question_id", "") or "") == question_id:
+                prior_id = str(item.get("id", "") or "")
+                if prior_id and not item.get("superseded_by"):
+                    item["superseded_by"] = str(record.get("id", "") or "")
+                break
+    enriched = dict(record)
+    if prior_id and not enriched.get("supersedes"):
+        enriched["supersedes"] = prior_id
+    resolved.append(enriched)
+    archie["resolved_questions"] = resolved[-limit:]
+    open_questions = [
+        item for item in list(archie.get("open_questions", []) or [])
+        if str(item.get("question_id", item.get("id", "")) or "") != question_id
+    ]
+    archie["open_questions"] = open_questions
+    return context
+
+
+def append_change_record(
+    context: dict[str, Any],
+    record: dict[str, Any],
+    *,
+    limit: int = 50,
+) -> dict[str, Any]:
+    archie = get_archie_state(context)
+    current = archie.get("change_history", [])
+    if not isinstance(current, list):
+        current = []
+    current.append(dict(record or {}))
+    archie["change_history"] = current[-limit:]
+    return context
+
+
+def append_update_batch(
+    context: dict[str, Any],
+    batch: dict[str, Any],
+    *,
+    limit: int = 25,
+) -> dict[str, Any]:
+    archie = get_archie_state(context)
+    current = archie.get("update_batches", [])
+    if not isinstance(current, list):
+        current = []
+    current.append(dict(batch or {}))
+    archie["update_batches"] = current[-limit:]
+    return context
+
+
+def set_pending_update(
+    context: dict[str, Any],
+    payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    archie = get_archie_state(context)
+    archie["pending_update"] = dict(payload) if isinstance(payload, dict) else None
+    return context
+
+
+def get_pending_update(context: dict[str, Any]) -> dict[str, Any] | None:
+    archie = get_archie_state(context)
+    pending = archie.get("pending_update")
+    if not isinstance(pending, dict):
+        return None
+    return pending
+
+
+def clear_pending_update(context: dict[str, Any]) -> dict[str, Any]:
+    archie = get_archie_state(context)
+    archie["pending_update"] = None
+    return context
+
+
 def set_latest_decision_context(context: dict, decision_context: dict[str, Any]) -> dict:
     context["latest_decision_context"] = dict(decision_context or {})
     return context
@@ -226,19 +375,63 @@ def build_context_summary(context: dict) -> str:
     full engagement state without reading every output in full.
     """
     agents = context.get("agents", {})
-    if not agents:
+    archie = get_archie_state(context)
+    has_archie_state = any(
+        archie.get(key)
+        for key in (
+            "engagement_summary",
+            "latest_notes_summary",
+            "latest_approved_constraints",
+            "latest_approved_assumptions",
+            "open_questions",
+            "resolved_questions",
+            "change_history",
+        )
+    )
+    if not agents and not has_archie_state:
         return ""
 
     lines = ["Prior agent outputs (use as engagement context):"]
+    engagement_summary = str(archie.get("engagement_summary", "") or "").strip()
+    latest_notes_summary = str(archie.get("latest_notes_summary", "") or "").strip()
+    if engagement_summary:
+        lines.append(f"  • Archie Engagement Summary: {engagement_summary}")
+    elif latest_notes_summary:
+        lines.append(f"  • Archie Notes Summary: {latest_notes_summary}")
 
     if "diagram" in agents:
         d = agents["diagram"]
-        lines.append(
-            f"  • Architecture Diagram (v{d.get('version', '?')}): "
-            f"{d.get('node_count', '?')} nodes, "
-            f"diagram_name={d.get('diagram_name', '?')!r}, "
-            f"key={d.get('diagram_key', 'not yet generated')}"
+        diagram_bits = [
+            f"  • Architecture Diagram (v{d.get('version', '?')}): ",
+            f"{d.get('node_count', '?')} nodes, ",
+            f"diagram_name={d.get('diagram_name', '?')!r}, ",
+            f"key={d.get('diagram_key', 'not yet generated')}",
+        ]
+        deployment_summary = str(d.get("deployment_summary", "") or "").strip()
+        if deployment_summary:
+            diagram_bits.append(f", deployment={deployment_summary}")
+        reference_family = str(d.get("reference_family", "") or "").strip()
+        if reference_family:
+            reference_mode = str(d.get("reference_mode", "") or "best-effort").strip()
+            diagram_bits.append(f", reference={reference_family} ({reference_mode})")
+        assumption_count = len(d.get("assumptions_used", []) or [])
+        if assumption_count:
+            diagram_bits.append(f", assumptions={assumption_count}")
+        lines.append("".join(diagram_bits))
+
+    if "bom" in agents:
+        b = agents["bom"]
+        summary = str(b.get("summary", "") or "").strip()
+        line = (
+            f"  • BOM (v{b.get('version', '?')}): "
+            f"type={b.get('result_type', '?')}, "
+            f"estimated_monthly_cost={b.get('estimated_monthly_cost', 'unknown')}, "
+            f"line_items={b.get('line_item_count', '?')}, "
+            f"payload_ref={b.get('payload_ref', b.get('trace_id', '?'))}"
         )
+        if summary:
+            line += f", summary={summary!r}"
+        lines.append(line)
 
     if "pov" in agents:
         p = agents["pov"]
@@ -286,6 +479,46 @@ def build_context_summary(context: dict) -> str:
             f"assumptions={len(assumptions)}"
         )
 
+    approved_constraints = archie.get("latest_approved_constraints", {}) or {}
+    approved_assumptions = archie.get("latest_approved_assumptions", []) or []
+    if approved_constraints or approved_assumptions:
+        lines.append(
+            "  • Archie Approved State: "
+            f"constraints={json.dumps(approved_constraints, ensure_ascii=True, sort_keys=True)[:220]}, "
+            f"assumptions={len(list(approved_assumptions or []))}"
+        )
+
+    resolved_questions = archie.get("resolved_questions", []) or []
+    if resolved_questions:
+        latest = resolved_questions[-3:]
+        rendered = []
+        for item in latest:
+            question_id = str(item.get("question_id", "") or item.get("id", "") or "question")
+            answer = str(item.get("final_answer", "") or item.get("final_user_answer", "") or item.get("suggested_answer", "") or "").strip()
+            if answer:
+                rendered.append(f"{question_id}={answer}")
+        if rendered:
+            lines.append("  • Archie Resolved Questions: " + "; ".join(rendered))
+
+    open_questions = archie.get("open_questions", []) or []
+    if open_questions:
+        prompts = []
+        for item in open_questions[:3]:
+            prompt = str(item.get("question", "") or item.get("prompt", "") or "").strip()
+            if prompt:
+                prompts.append(prompt)
+        if prompts:
+            lines.append("  • Archie Open Questions: " + " | ".join(prompts))
+
+    change_history = archie.get("change_history", []) or []
+    if change_history:
+        latest_change = change_history[-1]
+        lines.append(
+            "  • Archie Latest Change Batch: "
+            f"status={latest_change.get('status', 'recorded')}, "
+            f"request={str(latest_change.get('change_request', '') or '')[:180]}"
+        )
+
     pending_checkpoint = get_pending_checkpoint(context)
     if pending_checkpoint:
         lines.append(
@@ -305,6 +538,12 @@ def _normalize_context(context: dict[str, Any], customer_id: str, customer_name:
     normalized.setdefault("customer_name", customer_name)
     normalized.setdefault("last_updated", "")
     normalized.setdefault("agents", {})
+    archie = normalized.get("archie")
+    if not isinstance(archie, dict):
+        archie = _empty_archie_state()
+    for key, value in _empty_archie_state().items():
+        archie.setdefault(key, value() if callable(value) else value)
+    normalized["archie"] = archie
     normalized.setdefault("latest_decision_context", {})
     normalized.setdefault("decision_log", [])
     normalized.setdefault("pending_checkpoint", None)

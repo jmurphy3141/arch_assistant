@@ -9,9 +9,13 @@ import yaml
 
 
 _TOOL_SKILL_MAP = {
+    "generate_diagram": "diagram_for_oci",
     "generate_pov": "oci_customer_pov_writer",
+    "generate_jep": "oci_jep_writer",
+    "generate_waf": "oci_waf_reviewer",
     "generate_terraform": "terraform_for_oci",
     "generate_bom": "oci_bom_expert",
+    "get_document": "orchestrator",
 }
 
 _TOOL_HINTS = {

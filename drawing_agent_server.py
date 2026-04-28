@@ -86,6 +86,10 @@ from agent.bom_parser import (
 from agent.layout_engine import spec_to_draw_dict
 from agent.drawio_generator import generate_drawio
 from agent.oci_standards import get_catalogue_summary
+from agent.reference_architecture import (
+    render_reference_architecture,
+    select_reference_architecture,
+)
 from agent.persistence_objectstore import (
     ObjectStoreBase,
     InMemoryObjectStore,
@@ -229,20 +233,41 @@ TERRAFORM_EXAMPLE_REPOS = _terraform_cfg.get("example_repos", [])
 
 # ── Auth / session config — all from environment, matching BOM agent pattern ──
 # Set these in .env (dev) or as systemd EnvironmentFile / OCI Vault (prod).
-# Auth is automatically enabled when the four required OIDC vars are present.
-OIDC_CLIENT_ID              = os.environ.get("OIDC_CLIENT_ID", "")
-OIDC_CLIENT_SECRET          = os.environ.get("OIDC_CLIENT_SECRET", "")
-OIDC_AUTHORIZATION_ENDPOINT = os.environ.get("OIDC_AUTHORIZATION_ENDPOINT", "")
-OIDC_TOKEN_ENDPOINT         = os.environ.get("OIDC_TOKEN_ENDPOINT", "")
-OIDC_USERINFO_ENDPOINT      = os.environ.get("OIDC_USERINFO_ENDPOINT", "")
-OIDC_REDIRECT_URI           = os.environ.get("OIDC_REDIRECT_URI", "")
-OIDC_LOGOUT_ENDPOINT        = os.environ.get("OIDC_LOGOUT_ENDPOINT", "")
-OIDC_REQUIRED_GROUP         = os.environ.get("OIDC_REQUIRED_GROUP", "")
-OIDC_SCOPE                  = os.environ.get("OIDC_SCOPE", "openid profile email")
-_SESSION_SECRET             = os.environ.get("SESSION_SECRET", "dev-secret-change-in-prod")
+# OCI Identity Domain endpoints may be set explicitly, or derived from
+# OIDC_ISSUER / OCI_IDENTITY_DOMAIN_URL, for example:
+# https://idcs-<domain>.identity.oraclecloud.com
 
-AUTH_ENABLED = all([OIDC_CLIENT_ID, OIDC_CLIENT_SECRET,
-                    OIDC_AUTHORIZATION_ENDPOINT, OIDC_TOKEN_ENDPOINT])
+def _env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default).strip()
+
+
+def _join_oidc_url(base: str, path: str) -> str:
+    if not base:
+        return ""
+    return f"{base.rstrip('/')}/{path.lstrip('/')}"
+
+
+OIDC_CLIENT_ID              = _env("OIDC_CLIENT_ID")
+OIDC_CLIENT_SECRET          = _env("OIDC_CLIENT_SECRET")
+OIDC_REDIRECT_URI           = _env("OIDC_REDIRECT_URI")
+OIDC_ISSUER                 = _env("OIDC_ISSUER") or _env("OCI_IDENTITY_DOMAIN_URL")
+OIDC_AUTHORIZATION_ENDPOINT = _env("OIDC_AUTHORIZATION_ENDPOINT") or _join_oidc_url(OIDC_ISSUER, "/oauth2/v1/authorize")
+OIDC_TOKEN_ENDPOINT         = _env("OIDC_TOKEN_ENDPOINT") or _join_oidc_url(OIDC_ISSUER, "/oauth2/v1/token")
+OIDC_USERINFO_ENDPOINT      = _env("OIDC_USERINFO_ENDPOINT") or _join_oidc_url(OIDC_ISSUER, "/oauth2/v1/userinfo")
+OIDC_LOGOUT_ENDPOINT        = _env("OIDC_LOGOUT_ENDPOINT") or _join_oidc_url(OIDC_ISSUER, "/oauth2/v1/userlogout")
+OIDC_REQUIRED_GROUP         = _env("OIDC_REQUIRED_GROUP")
+OIDC_SCOPE                  = _env("OIDC_SCOPE", "openid profile email")
+_SESSION_SECRET             = _env("SESSION_SECRET", "dev-secret-change-in-prod")
+SESSION_COOKIE_SECURE       = _env("SESSION_COOKIE_SECURE", "auto").lower()
+
+AUTH_ENABLED = all([
+    OIDC_CLIENT_ID,
+    OIDC_CLIENT_SECRET,
+    OIDC_REDIRECT_URI,
+    OIDC_AUTHORIZATION_ENDPOINT,
+    OIDC_TOKEN_ENDPOINT,
+    OIDC_USERINFO_ENDPOINT,
+])
 
 # ── Fleet identity ───────────────────────────────────────────────────────────
 AGENT_ID    = _cfg.get("agent_id", "agent3-oci-drawing")
@@ -265,7 +290,17 @@ DIAGRAM_EDIT_SYSTEM = (
 )
 
 # ── Session middleware (must be added before first request) ───────────────────
-app.add_middleware(SessionMiddleware, secret_key=_SESSION_SECRET, https_only=False)
+_session_https_only = (
+    OIDC_REDIRECT_URI.startswith("https://")
+    if SESSION_COOKIE_SECURE == "auto"
+    else SESSION_COOKIE_SECURE in {"1", "true", "yes", "on"}
+)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_SESSION_SECRET,
+    https_only=_session_https_only,
+    same_site="lax",
+)
 
 # ── Global mutable state ───────────────────────────────────────────────────────
 _oci_agent: Optional[Any] = None          # real OCI Agent, set in startup
@@ -796,6 +831,8 @@ async def run_pipeline(
     request_id: str,
     input_hash: str,
     deployment_hints: Optional[dict] = None,
+    reference_context_text: str = "",
+    reference_selection_hint: Optional[dict] = None,
 ) -> dict:
     """
     Call LLM → layout engine → drawio generator.
@@ -808,8 +845,29 @@ async def run_pipeline(
     """
     if deployment_hints is None:
         deployment_hints = {}
+    reference_selection = select_reference_architecture(
+        text=reference_context_text,
+        items=items,
+        deployment_hints=deployment_hints,
+        orchestrator_hint=reference_selection_hint,
+    )
+    reference_metadata = reference_selection.as_dict()
+    render_mode = str(reference_metadata.get("reference_mode", "best-effort-generic") or "best-effort-generic")
 
-    spec = await call_llm(prompt, client_id)
+    if render_mode == "reference-backed":
+        if reference_metadata.get("multi_region_mode") and not deployment_hints.get("multi_region_mode"):
+            deployment_hints = dict(deployment_hints)
+            deployment_hints["multi_region_mode"] = reference_metadata["multi_region_mode"]
+        spec, reference_metadata = await anyio.to_thread.run_sync(
+            functools.partial(
+                render_reference_architecture,
+                selection=reference_metadata,
+                items=items,
+                deployment_hints=deployment_hints,
+            )
+        )
+    else:
+        spec = await call_llm(prompt, client_id)
 
     # ── Clarification requested by LLM ───────────────────────────────────────
     if spec.get("status") == "need_clarification":
@@ -934,6 +992,11 @@ async def run_pipeline(
         "node_count":        len(draw_dict.get("nodes", [])),
         "edge_count":        len(draw_dict.get("edges", [])),
         "multi_region_mode": mr_mode,
+        "standards_bundle_version": str(reference_metadata.get("standards_bundle_version", "") or ""),
+        "reference_family": str(reference_metadata.get("reference_family", "") or ""),
+        "reference_confidence": float(reference_metadata.get("reference_confidence", 0) or 0),
+        "reference_mode": str(reference_metadata.get("reference_mode", render_mode) or render_mode),
+        "family_fit_score": float(reference_metadata.get("family_fit_score", 0) or 0),
     }
 
     # ── Node-to-resource map ──────────────────────────────────────────────────
@@ -1011,6 +1074,7 @@ async def run_pipeline(
         "spec":                  spec,
         "draw_dict":             draw_dict,
         "render_manifest":       render_manifest,
+        "reference_architecture": reference_metadata,
         "node_to_resource_map":  node_to_resource_map,
         "download": {
             "url": (
@@ -1562,8 +1626,15 @@ async def upload_bom(
             await anyio.to_thread.run_sync(functools.partial(os.unlink, bom_path))
             logger.info("BOM parsed: %d services | context: %d chars", len(items), len(context_text))
 
-            result = await run_pipeline(items, prompt, diagram_name, client_id,
-                                        request_id, input_hash)
+            result = await run_pipeline(
+                items,
+                prompt,
+                diagram_name,
+                client_id,
+                request_id,
+                input_hash,
+                reference_context_text=context_text,
+            )
 
             if result["status"] == "ok" and not auto_waf:
                 IDEMPOTENCY_CACHE[cache_key] = result
@@ -1742,6 +1813,7 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
                     request_id       = request_id,
                     input_hash       = input_hash,
                     deployment_hints = deployment_hints,
+                    reference_context_text=req_snapshot.answers,
                 )
 
             if result["status"] == "ok":
@@ -2051,6 +2123,7 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
                 request_id       = request_id,
                 input_hash       = input_hash,
                 deployment_hints = deployment_hints,
+                reference_context_text=req.feedback,
             )
 
             # Restore original (un-enriched) prompt so subsequent refinements
@@ -2126,6 +2199,7 @@ async def generate_from_resources(req: GenerateRequest, _user: dict = Depends(re
             request_id,
             input_hash,
             deployment_hints=deployment_hints,
+            reference_context_text=context_total,
         )
 
         if result["status"] == "ok":
@@ -2351,6 +2425,7 @@ async def _run_freeform_diagram_pipeline(
         request_id=request_id,
         input_hash=input_hash,
         deployment_hints=deployment_hints,
+        reference_context_text="\n\n".join(part for part in (notes, context, questionnaire) if part and part.strip()),
     )
 
 
@@ -3318,6 +3393,7 @@ async def _a2a_generate_diagram(task: A2ATask) -> dict:
     diagram_name = inp.get("diagram_name", "oci_architecture")
     request_id   = str(uuid.uuid4())
     deployment_hints = inp.get("deployment_hints") or {}
+    reference_selection_hint = dict(inp.get("reference_architecture") or {})
 
     # ── Resolve resources ────────────────────────────────────────────────────
     raw_resources = None
@@ -3387,8 +3463,17 @@ async def _a2a_generate_diagram(task: A2ATask) -> dict:
     cache_key = (task.client_id, diagram_name, input_hash)
     if cache_key in IDEMPOTENCY_CACHE:
         return IDEMPOTENCY_CACHE[cache_key]
-    result = await run_pipeline(items, prompt, diagram_name, task.client_id,
-                                request_id, input_hash, deployment_hints=deployment_hints)
+    result = await run_pipeline(
+        items,
+        prompt,
+        diagram_name,
+        task.client_id,
+        request_id,
+        input_hash,
+        deployment_hints=deployment_hints,
+        reference_context_text=context_total or notes,
+        reference_selection_hint=reference_selection_hint,
+    )
     if result["status"] == "ok":
         IDEMPOTENCY_CACHE[cache_key] = result
     return result
@@ -3435,8 +3520,15 @@ async def _a2a_upload_bom(task: A2ATask) -> dict:
     )
     await anyio.to_thread.run_sync(functools.partial(os.unlink, bom_path))
 
-    result = await run_pipeline(items, prompt, diagram_name, task.client_id,
-                                request_id, input_hash)
+    result = await run_pipeline(
+        items,
+        prompt,
+        diagram_name,
+        task.client_id,
+        request_id,
+        input_hash,
+        reference_context_text=context,
+    )
     if result["status"] == "ok":
         IDEMPOTENCY_CACHE[cache_key] = result
         # Mirror diagram back alongside the source BOM so it's easy to find.
@@ -3507,6 +3599,7 @@ async def _a2a_clarify(task: A2ATask) -> dict:
         result = await run_pipeline(
             pending["items"], enriched, diagram_name,
             task.client_id, request_id, input_hash,
+            reference_context_text=answers,
         )
     if result["status"] == "ok":
         PENDING_CLARIFY.pop(task.client_id, None)

@@ -191,3 +191,104 @@ def test_preflight_and_postflight_decisions_cover_all_paths(tmp_path: Path) -> N
         artifacts={"artifact_key": ""},
         context_summary="",
     ).status == "allow"
+
+
+def test_diagram_postflight_blocks_incomplete_requested_topology(tmp_path: Path) -> None:
+    _build_skill_pack(tmp_path)
+    engine = OrchestratorSkillEngine(skill_root=tmp_path)
+
+    decision = engine.postflight_check(
+        path_id="diagram",
+        tool_result="Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio",
+        artifacts={"artifact_key": "diagrams/acme/oci_architecture/v1/diagram.drawio"},
+        context_summary="",
+        tool_args={
+            "bom_text": (
+                "Generate an OCI architecture diagram for a single-region OKE application. "
+                "Include WAF, a public load balancer, bastion, an OKE cluster, a database, "
+                "and Object Storage. Keep ingress public and keep app and data tiers private."
+            )
+        },
+        result_data={
+            "node_to_resource_map": {
+                "waf_1": {"oci_type": "waf", "label": "WAF", "layer": "ingress"},
+                "lb_1": {"oci_type": "load balancer", "label": "Public LB", "layer": "ingress"},
+                "db_1": {"oci_type": "database", "label": "ATP", "layer": "data"},
+            },
+            "draw_dict": {
+                "boxes": [
+                    {"id": "pub_sub_box", "box_type": "_subnet_box", "tier": "public_ingress"},
+                ]
+            },
+        },
+    )
+
+    assert decision.status == "block"
+    assert any("oke" in reason.lower() for reason in decision.reasons)
+    assert any("object storage" in reason.lower() for reason in decision.reasons)
+    assert any("app subnet" in reason.lower() for reason in decision.reasons)
+
+
+def test_diagram_postflight_allows_complete_private_tier_topology(tmp_path: Path) -> None:
+    _build_skill_pack(tmp_path)
+    engine = OrchestratorSkillEngine(skill_root=tmp_path)
+
+    decision = engine.postflight_check(
+        path_id="diagram",
+        tool_result="Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio",
+        artifacts={"artifact_key": "diagrams/acme/oci_architecture/v1/diagram.drawio"},
+        context_summary="",
+        tool_args={
+            "bom_text": (
+                "Generate an OCI architecture diagram for a single-region OKE application. "
+                "Include WAF, a public load balancer, bastion, an OKE cluster, a database, "
+                "and Object Storage. Keep ingress public and keep app and data tiers private."
+            )
+        },
+        result_data={
+            "node_to_resource_map": {
+                "waf_1": {"oci_type": "waf", "label": "WAF", "layer": "ingress"},
+                "lb_1": {"oci_type": "load balancer", "label": "Public LB", "layer": "ingress"},
+                "bastion_1": {"oci_type": "bastion", "label": "Bastion", "layer": "ingress"},
+                "oke_1": {"oci_type": "container engine", "label": "OKE Cluster", "layer": "compute"},
+                "db_1": {"oci_type": "database", "label": "ATP", "layer": "data"},
+                "obj_1": {"oci_type": "object storage", "label": "Object Storage", "layer": "data"},
+            },
+            "draw_dict": {
+                "boxes": [
+                    {"id": "pub_sub_box", "box_type": "_subnet_box", "tier": "public_ingress"},
+                    {"id": "app_sub_box", "box_type": "_subnet_box", "tier": "app"},
+                    {"id": "db_sub_box", "box_type": "_subnet_box", "tier": "db"},
+                ]
+            },
+        },
+    )
+
+    assert decision.status == "allow"
+
+
+def test_diagram_postflight_surfaces_backend_error_details(tmp_path: Path) -> None:
+    _build_skill_pack(tmp_path)
+    engine = OrchestratorSkillEngine(skill_root=tmp_path)
+
+    decision = engine.postflight_check(
+        path_id="diagram",
+        tool_result=(
+            "I could not complete the diagram because the requested topology still violates a backend layout invariant.\n"
+            "Backend failure: Cross-region invariant violation: active-active with a single writable database is unsupported."
+        ),
+        artifacts={"artifact_key": ""},
+        context_summary="",
+        tool_args={"bom_text": "Generate an active-active multi-region OKE architecture."},
+        result_data={
+            "diagram_recovery_status": "backend_error",
+            "backend_error_message": (
+                "Cross-region invariant violation: active-active with a single writable database is unsupported."
+            ),
+            "diagram_next_steps": ["Revise the conflicting topology requirement and retry generate_diagram."],
+        },
+    )
+
+    assert decision.status == "block"
+    assert "single writable database is unsupported" in decision.reasons[0].lower()
+    assert "specialist result did not meet completion requirements" not in decision.pushback_message.lower()

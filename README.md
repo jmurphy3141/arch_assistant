@@ -99,32 +99,24 @@ sleep 3 && curl -s http://localhost:8080/health
 
 ## systemd Service (recommended for production)
 
-Create `/etc/systemd/system/oci-agent.service`:
+Review and install the tracked unit template:
 
-```ini
-[Unit]
-Description=OCI Architecture Assistant
-After=network.target
-
-[Service]
-User=opc
-WorkingDirectory=/home/opc/drawing-agent
-EnvironmentFile=/home/opc/.drawing-agent.env
-ExecStart=/usr/bin/python3.11 -m uvicorn drawing_agent_server:app \
-    --host 0.0.0.0 --port 8080
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo cp deploy/oci-agent.service /etc/systemd/system/oci-agent.service
 ```
 
 Create `/home/opc/.drawing-agent.env` (mode `600`):
 
 ```
 SESSION_SECRET=<your-64-char-hex>
+OIDC_CLIENT_ID=<oci-integrated-app-client-id>
+OIDC_CLIENT_SECRET=<oci-integrated-app-client-secret>
+OIDC_REDIRECT_URI=https://<instance-ip-or-hostname>/oauth2/callback
+OIDC_ISSUER=https://idcs-<identity-domain>.identity.oraclecloud.com
+```
+
+```bash
+chmod 600 /home/opc/.drawing-agent.env
 ```
 
 Enable and start:
@@ -134,6 +126,13 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now oci-agent
 sudo systemctl status oci-agent
 journalctl -u oci-agent -f   # follow logs
+```
+
+Verify auth redirection:
+
+```bash
+curl -k -D - https://127.0.0.1/
+curl -k -D - https://127.0.0.1/login
 ```
 
 ---
@@ -304,15 +303,19 @@ via systemd `EnvironmentFile` or OCI Vault instead.
 | `SESSION_SECRET` | ✅ | Long random string for signing session cookies. Generate: `openssl rand -hex 32`. Keep stable across restarts. |
 | `OIDC_CLIENT_ID` | for auth | Confidential app client ID from OCI Identity Domain |
 | `OIDC_CLIENT_SECRET` | for auth | Confidential app client secret |
-| `OIDC_AUTHORIZATION_ENDPOINT` | for auth | Identity Domain OAuth authorize URL |
-| `OIDC_TOKEN_ENDPOINT` | for auth | Identity Domain OAuth token URL |
-| `OIDC_USERINFO_ENDPOINT` | for auth | Identity Domain OIDC userinfo URL |
 | `OIDC_REDIRECT_URI` | for auth | Callback URL registered in the Identity Domain app |
+| `OIDC_ISSUER` | for auth | Identity Domain base URL, for example `https://idcs-...identity.oraclecloud.com`. `OCI_IDENTITY_DOMAIN_URL` is also accepted. |
+| `OIDC_AUTHORIZATION_ENDPOINT` | optional | Explicit Identity Domain OAuth authorize URL; overrides derived `OIDC_ISSUER` URL |
+| `OIDC_TOKEN_ENDPOINT` | optional | Explicit Identity Domain OAuth token URL; overrides derived `OIDC_ISSUER` URL |
+| `OIDC_USERINFO_ENDPOINT` | optional | Explicit Identity Domain OIDC userinfo URL; overrides derived `OIDC_ISSUER` URL |
 | `OIDC_LOGOUT_ENDPOINT` | optional | Identity Domain logout URL |
 | `OIDC_REQUIRED_GROUP` | optional | Require membership in this Identity Domain group |
+| `SESSION_COOKIE_SECURE` | optional | `auto` by default; sends Secure cookies when `OIDC_REDIRECT_URI` uses HTTPS |
 
-Auth is automatically enabled when the four required OIDC vars are set.
-Leave them unset to run without authentication.
+Auth is automatically enabled when `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`,
+`OIDC_REDIRECT_URI`, and either `OIDC_ISSUER`/`OCI_IDENTITY_DOMAIN_URL` or the
+explicit endpoint variables are set. Leave them unset to run without
+authentication.
 
 ---
 
@@ -519,6 +522,10 @@ RUN_LIVE_LLM_TESTS=1 pytest tests/test_llm_live.py -v -s
 
 # Run live server smoke/integration tests (requires reachable server base URL)
 AGENT_BASE_URL=http://127.0.0.1:8080 pytest tests/test_server_live.py -v -s
+
+# Fetch pinned external OCI architecture fixtures, then validate the local corpus
+python3 scripts/fetch_external_oci_arch_skill_fixtures.py
+pytest tests/test_external_oci_arch_corpus.py -v
 ```
 
 Test strategy reference:

@@ -9,7 +9,7 @@ import pytest
 from pathlib import Path
 from agent.bom_parser import (
     parse_bom, build_llm_prompt, bom_to_llm_input, ServiceItem,
-    _normalize_desc, _infer_from_tokens, DESC_MAP,
+    _normalize_desc, _infer_from_tokens, DESC_MAP, freeform_arch_text_to_llm_input,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -188,6 +188,15 @@ class TestTokenInference:
 
     def test_bandwidth_is_skipped(self):
         assert _infer_from_tokens("outbound data transfer - bandwidth") == (None, None)
+
+
+class TestFreeformArchitectureInference:
+    def test_plain_database_keyword_maps_to_database_service(self):
+        items, _prompt = freeform_arch_text_to_llm_input(
+            "Generate a single-region OKE application with WAF, load balancer, bastion, a database, and Object Storage."
+        )
+        types = {item.oci_type for item in items}
+        assert "database" in types
 
     def test_storage_gb_is_skipped(self):
         assert _infer_from_tokens("block volume storage - gb per month") == (None, None)

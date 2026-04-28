@@ -144,18 +144,20 @@ def test_sparse_notes_bom_and_diagram_request_runs_both_and_merges_checkpoint(mo
                 "Final BOM prepared. Ballpark monthly estimate captured.",
                 "",
                 {
-                    "governor": {"overall_status": "checkpoint_required"},
-                    "checkpoint": {
-                        "prompt": (
-                            "Discovery checkpoint required before final acceptance.\n"
-                            "- Tool: generate_bom\n"
-                            "- Why: Best-effort BOM is assumption-heavy.\n"
-                            "Assumptions applied:\n"
-                            "- Region not specified; assume primary OCI region from current tenancy preference. (risk: medium)\n"
-                            "- Availability target assumed at 99.9%. (risk: low)\n"
-                            "- No explicit monthly budget cap provided. (risk: high)\n"
-                            "- Reply `approve checkpoint` to accept this draft direction or revise the request and rerun."
-                        )
+                    "decision_context": {
+                        "assumptions": [
+                            {
+                                "id": "region_default",
+                                "statement": "Region not specified; assume primary OCI region from current tenancy preference.",
+                                "risk": "medium",
+                            },
+                            {
+                                "id": "availability_default",
+                                "statement": "Availability target assumed at 99.9%.",
+                                "risk": "low",
+                            },
+                        ],
+                        "missing_inputs": ["preferred OCI region"],
                     },
                 },
             )
@@ -196,7 +198,7 @@ def test_sparse_notes_bom_and_diagram_request_runs_both_and_merges_checkpoint(mo
         in result["reply"]
     )
     assert "Assumptions applied:" in result["reply"]
-    assert "Discovery checkpoint required before final acceptance." in result["reply"]
+    assert "Missing inputs to tighten the next pass:" in result["reply"]
     assert llm_calls["count"] == 0
 
 
@@ -328,6 +330,7 @@ def test_call_generate_diagram_surfaces_clarification_questions(monkeypatch) -> 
     assert "clarification required" in summary.lower()
     assert "How many OCI regions should this cover?" in summary
     assert result_data["questions"][0]["id"] == "regions.count"
+    assert result_data["diagram_recovery_status"] == "needs_clarification"
 
 
 def test_call_generate_diagram_strips_injected_guidance_from_notes(monkeypatch) -> None:
@@ -386,5 +389,212 @@ def test_call_generate_diagram_strips_injected_guidance_from_notes(monkeypatch) 
     assert "load balancer database internet" not in seen["payload"]["inputs"]["notes"]
     assert "Assumption mode requested" in seen["payload"]["inputs"]["context"]
     assert key == "agent3/acme/arch/v1/diagram.drawio"
-    assert result_data == {}
+    assert result_data["diagram_recovery_status"] == "none"
+    assert result_data["backend_error_message"] == ""
     assert summary == "Diagram generated. Key: agent3/acme/arch/v1/diagram.drawio"
+
+
+def test_call_generate_diagram_retries_with_assumptions_and_preserves_backend_error(monkeypatch) -> None:
+    seen_payloads = []
+    responses = iter(
+        [
+            {
+                "task_id": "task-1",
+                "status": "error",
+                "error_message": "Need multi-region posture, replication approach, and region pair.",
+            },
+            {
+                "task_id": "task-1-retry",
+                "status": "ok",
+                "outputs": {
+                    "object_key": "agent3/acme/arch/v2/diagram.drawio",
+                    "render_manifest": {"node_count": 9},
+                },
+            },
+        ]
+    )
+
+    class _FakeResponse:
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout):
+            assert timeout == 180
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json):
+            assert url == "http://localhost:8080/api/a2a/task"
+            seen_payloads.append(json)
+            return _FakeResponse(next(responses))
+
+    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
+
+    summary, key, result_data = asyncio.run(
+        orchestrator_agent._call_generate_diagram(
+            {
+                "bom_text": "Generate a multi-region OKE SaaS diagram across two regions with replication.",
+                "_decision_context": {
+                    "goal": "Generate a multi-region OKE SaaS diagram.",
+                    "constraints": {},
+                    "assumptions": [],
+                    "success_criteria": [],
+                    "missing_inputs": [],
+                    "requires_user_confirmation": False,
+                },
+            },
+            "retry-customer",
+            "http://localhost:8080",
+        )
+    )
+
+    assert len(seen_payloads) == 2
+    assert "bounded architect assumptions" in seen_payloads[1]["inputs"]["context"]
+    assert key == "agent3/acme/arch/v2/diagram.drawio"
+    assert summary == "Diagram generated. Key: agent3/acme/arch/v2/diagram.drawio"
+    assert result_data["backend_error_message"] == "Need multi-region posture, replication approach, and region pair."
+    assert result_data["diagram_recovery_status"] == "retried_with_assumptions"
+    assert result_data["diagram_final_disposition"] == "completed_with_assumptions"
+    assert result_data["recovery_attempt_count"] == 1
+    assumptions = {item["id"]: item for item in result_data["assumptions_used"]}
+    assert "diagram_multi_region_posture_default" in assumptions
+    assert "diagram_region_pair_default" in assumptions
+    assert "diagram_replication_default" in assumptions
+
+
+def test_call_generate_diagram_turns_unrecoverable_error_into_actionable_reply(monkeypatch) -> None:
+    class _FakeResponse:
+        def json(self):
+            return {
+                "task_id": "task-2",
+                "status": "error",
+                "error_message": "Cross-region invariant violation: active-active with a single writable database is unsupported.",
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout):
+            assert timeout == 180
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json):
+            assert url == "http://localhost:8080/api/a2a/task"
+            assert "active-active" in json["inputs"]["notes"].lower()
+            return _FakeResponse()
+
+    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
+
+    summary, key, result_data = asyncio.run(
+        orchestrator_agent._call_generate_diagram(
+            {
+                "bom_text": "Generate an active-active multi-region OKE diagram with one writable database.",
+            },
+            "backend-error-customer",
+            "http://localhost:8080",
+        )
+    )
+
+    assert key == ""
+    assert "backend layout invariant" in summary.lower()
+    assert "single writable database is unsupported" in summary.lower()
+    assert result_data["diagram_recovery_status"] == "backend_error"
+    assert result_data["backend_error_message"].startswith("Cross-region invariant violation")
+
+
+def test_call_generate_diagram_error_can_request_concrete_clarification(monkeypatch) -> None:
+    class _FakeResponse:
+        def json(self):
+            return {
+                "task_id": "task-clarify-after-error",
+                "status": "error",
+                "error_message": "Insufficient topology detail to build the diagram.",
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout):
+            assert timeout == 180
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json):
+            assert url == "http://localhost:8080/api/a2a/task"
+            assert json["inputs"]["notes"] == "Need a diagram."
+            return _FakeResponse()
+
+    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
+
+    summary, key, result_data = asyncio.run(
+        orchestrator_agent._call_generate_diagram(
+            {"bom_text": "Need a diagram."},
+            "clarify-after-error",
+            "http://localhost:8080",
+        )
+    )
+
+    assert key == ""
+    assert "Questions:" in summary
+    assert "major OCI components" in summary
+    assert result_data["diagram_recovery_status"] == "needs_clarification"
+    assert result_data["questions"][0]["id"] == "workload.components"
+
+
+def test_single_diagram_reply_includes_assumptions_from_result_data(monkeypatch) -> None:
+    async def _fake_execute_tool(tool_name: str, args: dict, **_kwargs):
+        _ = args
+        assert tool_name == "generate_diagram"
+        return (
+            "Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio",
+            "diagrams/acme/oci_architecture/v1/diagram.drawio",
+            {
+                "diagram_recovery_status": "retried_with_assumptions",
+                "diagram_final_disposition": "completed_with_assumptions",
+                "assumptions_used": [
+                    {
+                        "id": "diagram_multi_region_posture_default",
+                        "statement": "Multi-region posture not specified; assume active-passive HA/DR across two OCI regions.",
+                        "reason": "missing posture",
+                        "risk": "medium",
+                    }
+                ],
+                "decision_context": {
+                    "goal": "Generate a diagram.",
+                    "constraints": {},
+                    "assumptions": [],
+                    "success_criteria": [],
+                    "missing_inputs": [],
+                    "requires_user_confirmation": False,
+                },
+            },
+        )
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="diagram-assumption-reply",
+            customer_name="Diagram Assumption Reply",
+            user_message="Generate a multi-region OKE diagram across two regions.",
+            store=InMemoryObjectStore(),
+            text_runner=lambda *_args: "Diagram response should not come from free text.",
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "Assumptions applied:" in result["reply"]
+    assert "active-passive ha/dr" in result["reply"].lower()

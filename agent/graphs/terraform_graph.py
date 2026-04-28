@@ -45,6 +45,60 @@ If blocked or uncertain, return:
 """
 
 
+def _render_architect_brief(architect_brief: dict | None) -> str:
+    brief = dict(architect_brief or {})
+    if not brief:
+        return ""
+    lines = ["[Architect Brief]"]
+    goal = str(brief.get("goal", "") or "").strip()
+    if goal:
+        lines.append(f"Goal: {goal}")
+    user_notes = str(brief.get("user_notes", "") or "").strip()
+    if user_notes:
+        lines.append(f"User request: {user_notes}")
+    architect_context = str(brief.get("architect_context", "") or "").strip()
+    if architect_context:
+        lines.append("Architect context:")
+        lines.append(architect_context)
+    assumptions = brief.get("assumptions", []) or []
+    if assumptions:
+        lines.append("Assumptions:")
+        lines.extend(
+            f"- {item.get('statement', '').strip()} (risk: {item.get('risk', 'low')})"
+            for item in assumptions
+            if isinstance(item, dict) and str(item.get("statement", "")).strip()
+        )
+    missing_inputs = [str(item).strip() for item in brief.get("missing_inputs", []) or [] if str(item).strip()]
+    if missing_inputs:
+        lines.append("Missing inputs:")
+        lines.extend(f"- {item}" for item in missing_inputs)
+    lines.append("[End Architect Brief]")
+    return "\n".join(lines)
+
+
+def _missing_terraform_inputs(prompt: str, architect_brief: dict | None) -> list[str]:
+    combined = " ".join(
+        part for part in (prompt, _render_architect_brief(architect_brief)) if str(part).strip()
+    ).lower()
+    missing: list[str] = []
+    if not any(marker in combined for marker in ("module", "network", "vcn", "oke", "database", "load balancer", "full stack")):
+        missing.append("terraform.module_scope")
+    if not any(marker in combined for marker in ("remote state", "state backend", "object storage backend", "terraform cloud", "local state")):
+        missing.append("terraform.state_backend")
+    if not any(marker in combined for marker in ("private", "public", "nsg", "security list", "kms", "vault", "iam", "tagging")):
+        missing.append("terraform.security_controls")
+    return missing
+
+
+def _targeted_terraform_questions(missing_ids: list[str]) -> list[str]:
+    mapping = {
+        "terraform.module_scope": "Which Terraform module boundary should be drafted first: networking foundation, compute/app tier, database tier, or the full stack?",
+        "terraform.state_backend": "What should the Terraform state backend be: OCI Object Storage, Terraform Cloud, or local state for a draft?",
+        "terraform.security_controls": "What security defaults must be enforced in code: private-only networking, specific NSGs/security lists, KMS/Vault usage, or IAM/tagging guardrails?",
+    }
+    return [mapping[item] for item in missing_ids if item in mapping]
+
+
 def _make_stage_runner(text_runner: Callable[[str, str], str]) -> Callable[[str, str, str], dict]:
     def _invalid(stage_name: str, reason: str) -> dict:
         return {
@@ -215,9 +269,25 @@ async def run(
     """
     LangGraph-compatible Terraform specialist entrypoint.
     """
-    prompt = (args.get("prompt") or "").strip() or (
+    clean_prompt = (args.get("_user_request_text") or args.get("prompt") or "").strip() or (
         "Generate Terraform for the current customer architecture."
     )
+    architect_brief = dict(args.get("_architect_brief", {}) or {})
+    missing_inputs = _missing_terraform_inputs(clean_prompt, architect_brief)
+    if missing_inputs:
+        return (
+            "Terraform generation blocked until the implementation scope is clearer. Clarifications required:\n"
+            + "\n".join(f"- {question}" for question in _targeted_terraform_questions(missing_inputs)),
+            "",
+            {
+                "ok": False,
+                "stages": [],
+                "blocking_questions": _targeted_terraform_questions(missing_inputs),
+            },
+        )
+    prompt = "\n\n".join(
+        part for part in (clean_prompt, _render_architect_brief(architect_brief)) if str(part).strip()
+    ).strip()
     run_stage = _make_stage_runner(text_runner)
     result = run_terraform_gstack_chain(
         prompt=prompt,

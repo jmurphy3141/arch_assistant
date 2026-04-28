@@ -1,0 +1,22 @@
+{
+  "repo": "aruanurag/oci-architecture-codex-skill",
+  "commit": "4f1aca871969900d645b8bb5f9261277f732cc52",
+  "skill_root": ".agents/skills/oci-architecture-generator",
+  "documents": [
+    "references/style-guide.md",
+    "references/diagram-spec.md",
+    "references/reference-architectures.md"
+  ],
+  "assets": [
+    "assets/drawio/oci-library.xml"
+  ],
+  "references": [
+    "assets/reference-architectures/oracle/oke-architecture-diagram.drawio",
+    "assets/reference-architectures/oracle/hub-spoke-oci.drawio"
+  ],
+  "examples": [
+    "oke-genai-rag",
+    "multi-region-oke-saas",
+    "mushop-oke-ecommerce"
+  ]
+}
