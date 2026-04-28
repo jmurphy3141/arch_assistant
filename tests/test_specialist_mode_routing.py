@@ -435,6 +435,80 @@ def test_orchestrator_runs_pov_jep_in_parallel(monkeypatch):
     assert len(result["tool_calls"]) == 2
 
 
+def test_orchestrator_runs_bom_diagram_pairs_per_scenario(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_execute_tool(tool_name, args, **kwargs):
+        _ = kwargs
+        calls.append((tool_name, dict(args)))
+        if tool_name == "generate_bom":
+            scenario = "Scenario 1" if len([c for c in calls if c[0] == "generate_bom"]) == 1 else "Scenario 2"
+            return (
+                f"Final BOM prepared for {scenario}. Review line items, then export JSON or XLSX.",
+                "",
+                {
+                    "type": "final",
+                    "reply": f"Review line items for {scenario}.",
+                    "trace_id": f"trace-{scenario[-1]}",
+                    "bom_payload": {
+                        "line_items": [
+                            {"sku": "B94176", "description": f"{scenario} compute", "quantity": 4}
+                        ],
+                        "assumptions": [f"{scenario} assumption"],
+                        "totals": {"estimated_monthly_cost": 1000},
+                    },
+                },
+            )
+        return (
+            f"Diagram generated for {args['bom_text'].split(':', 1)[0]}.",
+            f"agent3/acme/arch-{len([c for c in calls if c[0] == 'generate_diagram'])}/v1/diagram.drawio",
+            {"render_manifest": {"node_count": 4}},
+        )
+
+    def _text_runner(_prompt: str, _system_message: str) -> str:
+        raise AssertionError("Paired BOM/diagram workflow should not call the planner LLM")
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message=(
+                "I want to do two things. 1. Full lift and shift to OCI, get off VMware. "
+                "2. Direct migration using their stack but running on OCI. "
+                "I need BOM and Diagram for each."
+            ),
+            store=InMemoryObjectStore(),
+            text_runner=_text_runner,
+            a2a_base_url="http://localhost:8080",
+            max_tool_iterations=3,
+            specialist_mode="langgraph",
+        )
+    )
+
+    assert [tool for tool, _args in calls] == [
+        "generate_bom",
+        "generate_diagram",
+        "generate_bom",
+        "generate_diagram",
+    ]
+    first_diagram_text = calls[1][1]["bom_text"]
+    second_diagram_text = calls[3][1]["bom_text"]
+    assert "Full lift and shift to OCI" in first_diagram_text
+    assert "Final BOM prepared for Scenario 1" in first_diagram_text
+    assert "B94176" in first_diagram_text
+    assert "Direct migration using their stack" in second_diagram_text
+    assert "Final BOM prepared for Scenario 2" in second_diagram_text
+    assert "upload or paste bom" not in result["reply"].lower()
+    assert [call["scenario_label"] for call in result["tool_calls"]] == [
+        "Scenario 1",
+        "Scenario 1",
+        "Scenario 2",
+        "Scenario 2",
+    ]
+
+
 def test_orchestrator_blocks_completion_when_postflight_fails(monkeypatch):
     calls = {"count": 0}
     store = InMemoryObjectStore()

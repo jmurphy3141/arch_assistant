@@ -388,6 +388,108 @@ async def run_turn(
             "Reply `confirm update all` to execute, or `cancel update`."
         )
 
+    paired_bom_diagram_plan = _bom_diagram_pair_plan_for_message(user_message)
+    if paired_bom_diagram_plan:
+        for scenario in paired_bom_diagram_plan:
+            scenario_label = str(scenario.get("label", "") or "Scenario").strip()
+            scenario_text = str(scenario.get("text", "") or user_message).strip()
+            bom_args = {
+                "prompt": _build_scenario_bom_prompt(
+                    scenario_label=scenario_label,
+                    scenario_text=scenario_text,
+                    user_message=user_message,
+                )
+            }
+            bom_summary, bom_artifact_key, bom_result_data = await _execute_tool(
+                "generate_bom",
+                bom_args,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                store=store,
+                text_runner=text_runner,
+                a2a_base_url=a2a_base_url,
+                specialist_mode=specialist_mode,
+                user_message=user_message,
+                max_refinements=max_refinements,
+                decision_context=decision_context,
+            )
+            notify("tool:generate_bom", customer_id, bom_summary)
+            bom_call = {
+                "tool": "generate_bom",
+                "args": bom_args,
+                "result_summary": bom_summary,
+                "result_data": bom_result_data,
+                "scenario_label": scenario_label,
+                "artifact_key": bom_artifact_key,
+            }
+            tool_calls.append(bom_call)
+            new_turns.append(
+                {
+                    "role": "tool",
+                    "tool": "generate_bom",
+                    "result_summary": bom_summary,
+                    "timestamp": _now(),
+                    "scenario_label": scenario_label,
+                }
+            )
+            if bom_artifact_key:
+                artifacts["generate_bom"] = bom_artifact_key
+
+            if not _bom_result_can_feed_diagram(bom_summary, bom_result_data):
+                continue
+
+            diagram_args = {
+                "bom_text": _build_diagram_bom_text_from_bom_result(
+                    scenario_label=scenario_label,
+                    scenario_text=scenario_text,
+                    user_message=user_message,
+                    bom_summary=bom_summary,
+                    bom_result_data=bom_result_data,
+                )
+            }
+            diagram_summary, diagram_artifact_key, diagram_result_data = await _execute_tool(
+                "generate_diagram",
+                diagram_args,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                store=store,
+                text_runner=text_runner,
+                a2a_base_url=a2a_base_url,
+                specialist_mode=specialist_mode,
+                user_message=user_message,
+                max_refinements=max_refinements,
+                decision_context=decision_context,
+            )
+            notify("tool:generate_diagram", customer_id, diagram_summary)
+            diagram_call = {
+                "tool": "generate_diagram",
+                "args": diagram_args,
+                "result_summary": diagram_summary,
+                "result_data": diagram_result_data,
+                "scenario_label": scenario_label,
+                "artifact_key": diagram_artifact_key,
+            }
+            tool_calls.append(diagram_call)
+            new_turns.append(
+                {
+                    "role": "tool",
+                    "tool": "generate_diagram",
+                    "result_summary": diagram_summary,
+                    "timestamp": _now(),
+                    "scenario_label": scenario_label,
+                }
+            )
+            if diagram_artifact_key:
+                artifacts["generate_diagram"] = diagram_artifact_key
+
+        return _finalize_turn(
+            _build_paired_bom_diagram_reply(
+                paired_bom_diagram_plan,
+                tool_calls,
+                decision_context=decision_context,
+            )
+        )
+
     # Safe parallel fast-path:
     # When the SA explicitly asks for both POV and JEP in one request, these
     # document generations are independent and can run concurrently.
@@ -3952,6 +4054,186 @@ def _build_parallel_reply(
         lines.append("")
         lines.append(str(followup.get("message", "")).strip())
     return "\n".join(lines)
+
+
+def _bom_diagram_pair_plan_for_message(user_message: str) -> list[dict[str, str]]:
+    requested = _requested_generation_tools(user_message)
+    if not {"generate_bom", "generate_diagram"} <= requested:
+        return []
+    if _request_references_existing_bom(user_message):
+        return []
+
+    scenarios = _extract_numbered_scenarios(user_message)
+    if not scenarios:
+        scenarios = [{"label": "Scenario 1", "text": str(user_message or "").strip()}]
+    return scenarios
+
+
+def _extract_numbered_scenarios(user_message: str) -> list[dict[str, str]]:
+    text = str(user_message or "").strip()
+    if not text:
+        return []
+    matches = list(re.finditer(r"(?:^|[\n\r]|\s)(\d{1,2})[.)]\s+", text))
+    if len(matches) < 2:
+        return []
+
+    scenarios: list[dict[str, str]] = []
+    for idx, match in enumerate(matches):
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        scenario_text = text[start:end].strip(" \t\r\n.;")
+        if not scenario_text:
+            continue
+        number = match.group(1)
+        scenarios.append({"label": f"Scenario {number}", "text": scenario_text})
+    return scenarios
+
+
+def _build_scenario_bom_prompt(
+    *,
+    scenario_label: str,
+    scenario_text: str,
+    user_message: str,
+) -> str:
+    lines = [
+        f"{scenario_label}: generate the OCI BOM for this architecture option.",
+        f"Scenario: {scenario_text.strip()}",
+        "Create the BOM first because the diagram will be generated from this BOM result.",
+        "Original request:",
+        str(user_message or "").strip(),
+    ]
+    return "\n".join(line for line in lines if line.strip()).strip()
+
+
+def _bom_result_can_feed_diagram(result_summary: str, result_data: dict[str, Any] | None) -> bool:
+    data = dict(result_data or {})
+    if _extract_blocking_skill_decision(data):
+        return False
+    if isinstance(data.get("archie_question_bundle"), dict):
+        return False
+    if str(data.get("type", "") or "").strip().lower() == "question":
+        return False
+    if str(data.get("error_code", "") or "").strip():
+        return False
+    summary = str(result_summary or "").strip().lower()
+    if not summary:
+        return False
+    return "clarification required" not in summary and "not ready" not in summary
+
+
+def _compact_bom_payload_for_diagram(result_data: dict[str, Any] | None) -> str:
+    data = dict(result_data or {})
+    payload = data.get("bom_payload", {}) if isinstance(data.get("bom_payload"), dict) else {}
+    if not payload:
+        return ""
+    lines = ["[Generated BOM Context]"]
+    line_items = list(payload.get("line_items", []) or [])
+    if line_items:
+        lines.append("Line items:")
+        for idx, item in enumerate(line_items[:20], start=1):
+            if not isinstance(item, dict):
+                continue
+            sku = str(item.get("sku", "") or item.get("part_number", "") or "").strip()
+            desc = str(item.get("description", "") or item.get("name", "") or item.get("service", "") or "").strip()
+            qty = item.get("quantity", item.get("qty", ""))
+            bits = [f"{idx}."]
+            if sku:
+                bits.append(sku)
+            if desc:
+                bits.append(desc)
+            if qty not in ("", None):
+                bits.append(f"qty={qty}")
+            lines.append(" ".join(str(bit) for bit in bits if str(bit).strip()))
+    totals = payload.get("totals", {}) if isinstance(payload.get("totals"), dict) else {}
+    if totals:
+        lines.append("Totals: " + json.dumps(totals, ensure_ascii=True, sort_keys=True))
+    assumptions = [str(item).strip() for item in payload.get("assumptions", []) or [] if str(item).strip()]
+    if assumptions:
+        lines.append("Assumptions: " + "; ".join(assumptions[:8]))
+    lines.append("[End Generated BOM Context]")
+    return "\n".join(lines).strip()
+
+
+def _build_diagram_bom_text_from_bom_result(
+    *,
+    scenario_label: str,
+    scenario_text: str,
+    user_message: str,
+    bom_summary: str,
+    bom_result_data: dict[str, Any] | None,
+) -> str:
+    lines = [
+        f"{scenario_label}: generate the OCI architecture diagram for this architecture option.",
+        f"Scenario: {scenario_text.strip()}",
+        "Use the generated BOM below as the source of truth for diagram components.",
+        "Represent the core OCI topology: VCN/subnets, connectivity, compute/app tier, data/storage tier, and security controls as supported by the BOM.",
+        "Original request:",
+        str(user_message or "").strip(),
+        "",
+        "[Generated BOM Summary]",
+        str(bom_summary or "").strip(),
+        "[End Generated BOM Summary]",
+    ]
+    payload_context = _compact_bom_payload_for_diagram(bom_result_data)
+    if payload_context:
+        lines.extend(["", payload_context])
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
+def _build_paired_bom_diagram_reply(
+    scenarios: list[dict[str, str]],
+    tool_calls: list[dict[str, Any]],
+    *,
+    decision_context: dict[str, Any] | None = None,
+) -> str:
+    lines = ["Completed the requested BOM-to-diagram workflow:"]
+    calls_by_scenario: dict[str, list[dict[str, Any]]] = {}
+    for call in tool_calls:
+        calls_by_scenario.setdefault(str(call.get("scenario_label", "") or "Scenario"), []).append(call)
+
+    for scenario in scenarios:
+        label = str(scenario.get("label", "") or "Scenario").strip()
+        text = str(scenario.get("text", "") or "").strip()
+        lines.append("")
+        lines.append(f"{label}: {text}")
+        scenario_calls = calls_by_scenario.get(label, [])
+        if not scenario_calls:
+            lines.append("- No tools executed.")
+            continue
+        diagram_ran = False
+        for call in scenario_calls:
+            tool_name = str(call.get("tool", "") or "requested_tool")
+            summary = str(call.get("result_summary", "") or "").strip()
+            if tool_name == "generate_diagram":
+                diagram_ran = True
+            lines.append(f"- `{tool_name}`: {summary or 'completed.'}")
+        if not diagram_ran:
+            lines.append("- `generate_diagram`: skipped until the BOM clarification above is resolved.")
+
+    merged_assumptions = _merge_assumption_lists(
+        list((decision_context or {}).get("assumptions", []) or []),
+        [],
+    )
+    for call in tool_calls:
+        data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+        merged_assumptions = _merge_assumption_lists(
+            merged_assumptions,
+            list((data.get("decision_context", {}) or {}).get("assumptions", []) or []),
+        )
+        merged_assumptions = _merge_assumption_lists(
+            merged_assumptions,
+            list(data.get("assumptions_used", []) or []),
+        )
+    assumptions = [
+        f"{str(item.get('statement', '') or '').strip()} (risk: {str(item.get('risk', '') or 'low').strip().lower() or 'low'})"
+        for item in merged_assumptions
+        if str(item.get("statement", "") or "").strip()
+    ]
+    if assumptions:
+        lines.append("")
+        lines.append("Assumptions applied:")
+        lines.extend(f"- {assumption}" for assumption in assumptions)
+    return "\n".join(lines).strip()
 
 
 def _parallel_plan_for_message(user_message: str) -> list[dict]:

@@ -3053,27 +3053,45 @@ def _build_artifact_manifest(customer_id: str, result: dict) -> dict:
     Build UI-friendly artifact metadata from orchestrator result.
     """
     manifest: dict[str, list[dict]] = {"downloads": []}
+    seen_diagram_keys: set[str] = set()
+
+    def _append_diagram_download(artifact_key: str, *, tool_name: str, scenario_label: str = "") -> None:
+        if not artifact_key or artifact_key in seen_diagram_keys:
+            return
+        seen_diagram_keys.add(artifact_key)
+        parts = [part for part in str(artifact_key or "").split("/") if part]
+        version_index = next((idx for idx, part in enumerate(parts) if re.fullmatch(r"v\d+", part)), -1)
+        artifact_filename = parts[-1] if parts else "diagram.drawio"
+        artifact_client_id = parts[version_index - 2] if version_index >= 2 else customer_id
+        diagram_name = parts[version_index - 1] if version_index >= 1 else "oci_architecture"
+        item = {
+            "type": "diagram",
+            "tool": tool_name,
+            "key": artifact_key,
+            "filename": artifact_filename,
+            "download_url": (
+                f"/api/download/{urllib.parse.quote(artifact_filename)}"
+                f"?client_id={urllib.parse.quote(artifact_client_id)}"
+                f"&diagram_name={urllib.parse.quote(diagram_name)}"
+            ),
+        }
+        if scenario_label:
+            item["label"] = scenario_label
+        manifest["downloads"].append(item)
+
+    for tool_call in result.get("tool_calls", []) or []:
+        if tool_call.get("tool") != "generate_diagram":
+            continue
+        _append_diagram_download(
+            str(tool_call.get("artifact_key", "") or ""),
+            tool_name="generate_diagram",
+            scenario_label=str(tool_call.get("scenario_label", "") or ""),
+        )
+
     artifacts = result.get("artifacts", {}) or {}
     for tool_name, artifact_key in artifacts.items():
         if tool_name == "generate_diagram":
-            parts = [part for part in str(artifact_key or "").split("/") if part]
-            version_index = next((idx for idx, part in enumerate(parts) if re.fullmatch(r"v\d+", part)), -1)
-            artifact_filename = parts[-1] if parts else "diagram.drawio"
-            artifact_client_id = parts[version_index - 2] if version_index >= 2 else customer_id
-            diagram_name = parts[version_index - 1] if version_index >= 1 else "oci_architecture"
-            manifest["downloads"].append(
-                {
-                    "type": "diagram",
-                    "tool": tool_name,
-                    "key": artifact_key,
-                    "filename": artifact_filename,
-                    "download_url": (
-                        f"/api/download/{urllib.parse.quote(artifact_filename)}"
-                        f"?client_id={urllib.parse.quote(artifact_client_id)}"
-                        f"&diagram_name={urllib.parse.quote(diagram_name)}"
-                    ),
-                }
-            )
+            _append_diagram_download(str(artifact_key or ""), tool_name=tool_name)
 
     for tool_call in result.get("tool_calls", []) or []:
         if tool_call.get("tool") != "generate_terraform":

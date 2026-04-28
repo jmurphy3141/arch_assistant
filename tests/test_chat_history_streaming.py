@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from drawing_agent_server import app
+from drawing_agent_server import app, _build_artifact_manifest
 from agent.persistence_objectstore import InMemoryObjectStore
 from agent.document_store import save_conversation_turns, save_project_engagement
 
@@ -325,6 +325,34 @@ def test_api_chat_includes_artifact_manifest(monkeypatch, client):
     downloads = body["artifact_manifest"]["downloads"]
     assert any(item["type"] == "diagram" for item in downloads)
     assert any(item["type"] == "terraform" and item["filename"] == "main.tf" for item in downloads)
+
+
+def test_artifact_manifest_includes_multiple_diagram_tool_call_keys():
+    manifest = _build_artifact_manifest(
+        "acme",
+        {
+            "tool_calls": [
+                {
+                    "tool": "generate_diagram",
+                    "scenario_label": "Scenario 1",
+                    "artifact_key": "agent3/acme/lift-shift/v1/diagram.drawio",
+                },
+                {
+                    "tool": "generate_diagram",
+                    "scenario_label": "Scenario 2",
+                    "artifact_key": "agent3/acme/oci-native/v1/diagram.drawio",
+                },
+            ],
+            "artifacts": {"generate_diagram": "agent3/acme/oci-native/v1/diagram.drawio"},
+        },
+    )
+
+    downloads = [item for item in manifest["downloads"] if item["type"] == "diagram"]
+    assert [item["key"] for item in downloads] == [
+        "agent3/acme/lift-shift/v1/diagram.drawio",
+        "agent3/acme/oci-native/v1/diagram.drawio",
+    ]
+    assert [item["label"] for item in downloads] == ["Scenario 1", "Scenario 2"]
 
 
 def test_chat_stream_chunked_mode(monkeypatch, client):
