@@ -272,6 +272,8 @@ class OrchestratorSkillEngine:
         tool_result: str,
         artifacts: dict[str, Any],
         context_summary: str,
+        tool_args: dict[str, Any] | None = None,
+        result_data: dict[str, Any] | None = None,
     ) -> OrchestratorSkillDecision:
         try:
             self._ensure_loaded()
@@ -292,6 +294,91 @@ class OrchestratorSkillEngine:
             )
 
         summary = (tool_result or "").lower()
+        artifact_key = str(artifacts.get("artifact_key", "") or "")
+
+        if path_id in {"pov", "jep", "waf"}:
+            fail_markers = (
+                "failed",
+                "error",
+                "unknown tool",
+                "not yet enabled",
+                "cannot",
+            )
+            if any(marker in summary for marker in fail_markers):
+                return self._block(
+                    path_id=path_id,
+                    phase="postflight",
+                    reasons=["Tool result indicates failure or non-completion."],
+                    pushback_message="The specialist result did not meet completion requirements.",
+                    retry_instructions=["Address the reported failure and retry this path."],
+                )
+            if "saved" not in summary or not artifact_key:
+                return self._block(
+                    path_id=path_id,
+                    phase="postflight",
+                    reasons=["Expected persisted document artifact is missing."],
+                    pushback_message=(
+                        "I could not verify a persisted document artifact for this result."
+                    ),
+                    retry_instructions=[
+                        "Retry the generation and ensure the result includes a saved key.",
+                    ],
+                )
+
+        if path_id == "diagram":
+            result_data = result_data or {}
+            recovery_status = str(result_data.get("diagram_recovery_status", "none") or "none")
+            if recovery_status == "backend_error":
+                backend_error = str(result_data.get("backend_error_message", "") or "")
+                reasons = []
+                if backend_error:
+                    reasons.append(backend_error)
+                if not reasons:
+                    reasons.append("Diagram backend returned an unrecoverable error.")
+                return self._block(
+                    path_id=path_id,
+                    phase="postflight",
+                    reasons=reasons,
+                    pushback_message=str(tool_result or "I could not complete the diagram."),
+                    retry_instructions=list(result_data.get("diagram_next_steps", []) or [
+                        "Revise the blocking topology decision or retry once the backend issue is resolved.",
+                    ]),
+                )
+            has_success_signal = (
+                bool(artifact_key)
+                or "started" in summary
+                or "poll" in summary
+                or "clarification" in summary
+                or recovery_status in {"retried_with_assumptions", "needs_clarification"}
+            )
+            if not has_success_signal:
+                return self._block(
+                    path_id=path_id,
+                    phase="postflight",
+                    reasons=["Diagram output contract not satisfied (no artifact or accepted async status)."],
+                    pushback_message="Diagram generation did not return a verifiable result.",
+                    retry_instructions=[
+                        "Retry generate_diagram with BOM input.",
+                        "If asynchronous, poll task status and provide the completion result.",
+                    ],
+                )
+            diagram_gap_reasons = _diagram_completion_gaps(tool_args=tool_args, result_data=result_data)
+            if diagram_gap_reasons:
+                return self._block(
+                    path_id=path_id,
+                    phase="postflight",
+                    reasons=diagram_gap_reasons,
+                    pushback_message=(
+                        "The generated diagram does not yet satisfy the requested OCI topology."
+                    ),
+                    retry_instructions=[
+                        "Retry generate_diagram and include the missing required services and subnet placement.",
+                        "Keep ingress services public and app/data tiers in private subnets when requested.",
+                    ],
+                )
+            return self._allow(path_id, "postflight")
+
+        summary = (tool_result or "").lower()
         fail_markers = (
             "failed",
             "error",
@@ -308,41 +395,6 @@ class OrchestratorSkillEngine:
                 retry_instructions=["Address the reported failure and retry this path."],
             )
 
-        artifact_key = str(artifacts.get("artifact_key", "") or "")
-
-        if path_id in {"pov", "jep", "waf"}:
-            if "saved" not in summary or not artifact_key:
-                return self._block(
-                    path_id=path_id,
-                    phase="postflight",
-                    reasons=["Expected persisted document artifact is missing."],
-                    pushback_message=(
-                        "I could not verify a persisted document artifact for this result."
-                    ),
-                    retry_instructions=[
-                        "Retry the generation and ensure the result includes a saved key.",
-                    ],
-                )
-
-        if path_id == "diagram":
-            has_success_signal = (
-                bool(artifact_key)
-                or "started" in summary
-                or "poll" in summary
-                or "clarification" in summary
-            )
-            if not has_success_signal:
-                return self._block(
-                    path_id=path_id,
-                    phase="postflight",
-                    reasons=["Diagram output contract not satisfied (no artifact or accepted async status)."],
-                    pushback_message="Diagram generation did not return a verifiable result.",
-                    retry_instructions=[
-                        "Retry generate_diagram with BOM input.",
-                        "If asynchronous, poll task status and provide the completion result.",
-                    ],
-                )
-
         if path_id == "summary_document" and "no " in summary and "found" in summary:
             return self._block(
                 path_id=path_id,
@@ -353,7 +405,12 @@ class OrchestratorSkillEngine:
             )
 
         if path_id == "bom":
-            if "final bom prepared" not in summary and "clarification" not in summary and "not ready" not in summary:
+            if (
+                "final bom prepared" not in summary
+                and "clarification" not in summary
+                and "not ready" not in summary
+                and "could not initialize the internal oci bom pricing data" not in summary
+            ):
                 return self._block(
                     path_id=path_id,
                     phase="postflight",
@@ -366,6 +423,122 @@ class OrchestratorSkillEngine:
 
         _ = context_summary  # reserved for richer semantic checks
         return self._allow(path_id, "postflight")
+
+
+_SERVICE_EXPECTATIONS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("OKE cluster", ("oke", "container engine", "kubernetes"), ("container engine", "oke", "kubernetes")),
+    ("WAF", ("waf", "web application firewall"), ("waf", "web application firewall")),
+    ("public load balancer", ("public load balancer", "load balancer", "lb"), ("load balancer", "lb")),
+    ("bastion", ("bastion",), ("bastion",)),
+    ("database", ("database", " db", "autonomous database", "postgres", "mysql", "oracle database"), ("database", "autonomous database", "postgres", "mysql", "oracle database", "db")),
+    ("Object Storage", ("object storage", "bucket"), ("object storage", "bucket")),
+)
+
+
+def _diagram_completion_gaps(
+    *,
+    tool_args: dict[str, Any] | None,
+    result_data: dict[str, Any] | None,
+) -> list[str]:
+    request_text = str((tool_args or {}).get("bom_text", "") or "").lower()
+    if not request_text or not _should_enforce_diagram_contract(request_text):
+        return []
+
+    node_map = (result_data or {}).get("node_to_resource_map")
+    if not isinstance(node_map, dict) or not node_map:
+        return ["Diagram metadata did not include a node/resource map for topology validation."]
+
+    node_values = [value for value in node_map.values() if isinstance(value, dict)]
+    actual_tokens = {
+        str(value.get(field, "") or "").lower()
+        for value in node_values
+        for field in ("oci_type", "label", "layer")
+        if str(value.get(field, "") or "").strip()
+    }
+
+    draw_dict = (result_data or {}).get("draw_dict")
+    boxes = draw_dict.get("boxes", []) if isinstance(draw_dict, dict) else []
+    subnet_tiers = {
+        str(box.get("tier", "") or "").lower()
+        for box in boxes
+        if isinstance(box, dict) and str(box.get("box_type", "") or "") == "_subnet_box"
+    }
+
+    reasons: list[str] = []
+    for display_name, request_markers, match_markers in _SERVICE_EXPECTATIONS:
+        if not any(marker in request_text for marker in request_markers):
+            continue
+        if any(any(marker in token for marker in match_markers) for token in actual_tokens):
+            continue
+        reasons.append(f"Required component missing from generated diagram: {display_name}.")
+
+    if _requests_public_ingress(request_text):
+        ingress_types = {"waf", "load balancer", "bastion"}
+        if not any(
+            str(value.get("layer", "") or "").lower() == "ingress"
+            and any(marker in str(value.get("oci_type", "") or "").lower() for marker in ingress_types)
+            for value in node_values
+        ):
+            reasons.append("Requested public ingress was not represented in an ingress/public subnet tier.")
+
+    if _requests_private_app_tier(request_text):
+        if "app" not in subnet_tiers:
+            reasons.append("Requested private app tier is missing an App Subnet/private subnet container.")
+        if not any(str(value.get("layer", "") or "").lower() == "compute" for value in node_values):
+            reasons.append("Requested private app tier is missing compute/OKE workload placement.")
+
+    if _requests_private_data_tier(request_text):
+        if "db" not in subnet_tiers:
+            reasons.append("Requested private data tier is missing a DB Subnet/private subnet container.")
+        if not any(str(value.get("layer", "") or "").lower() == "data" for value in node_values):
+            reasons.append("Requested private data tier is missing database/object storage placement.")
+
+    return reasons
+
+
+def _should_enforce_diagram_contract(request_text: str) -> bool:
+    explicit_intent_markers = (
+        "include ",
+        "must include",
+        "keep ingress public",
+        "keep app and data tiers private",
+        "private tier",
+        "private subnet",
+        "public ingress",
+        "single-region oke",
+    )
+    return any(marker in request_text for marker in explicit_intent_markers)
+
+
+def _requests_public_ingress(request_text: str) -> bool:
+    return "public ingress" in request_text or "ingress public" in request_text
+
+
+def _requests_private_app_tier(request_text: str) -> bool:
+    return any(
+        marker in request_text
+        for marker in (
+            "private app",
+            "private application tier",
+            "app tier private",
+            "application tier private",
+            "private subnet",
+            "app and data tiers private",
+        )
+    )
+
+
+def _requests_private_data_tier(request_text: str) -> bool:
+    return any(
+        marker in request_text
+        for marker in (
+            "private data",
+            "data tier private",
+            "database tier private",
+            "private subnet",
+            "app and data tiers private",
+        )
+    )
 
 
 def decision_to_dict(decision: OrchestratorSkillDecision) -> dict[str, Any]:

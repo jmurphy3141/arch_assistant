@@ -18,8 +18,6 @@ from agent.persistence_objectstore import ObjectStoreBase
 import agent.context_store as context_store
 import agent.document_store as document_store
 from agent.graphs import diagram_graph, jep_graph, pov_graph, terraform_graph, waf_graph
-from agent.bom_service import get_shared_bom_service, new_trace_id
-
 logger = logging.getLogger(__name__)
 
 
@@ -71,12 +69,12 @@ async def execute_tool(
         return summary, key, {}
 
     if tool_name == "generate_diagram":
-        summary, key = await diagram_graph.run(
+        summary, key, result_data = await diagram_graph.run(
             args=args,
             customer_id=customer_id,
             a2a_base_url=a2a_base_url,
         )
-        return summary, key, {}
+        return summary, key, result_data
 
     if tool_name == "generate_waf":
         summary, key = await waf_graph.run(
@@ -98,24 +96,14 @@ async def execute_tool(
         return summary, key, {}
 
     if tool_name == "generate_bom":
-        prompt = str(args.get("prompt", "") or "").strip() or "Generate a BOM from current request context."
-        service = get_shared_bom_service()
-        result = await asyncio.to_thread(
-            service.chat,
-            message=prompt,
-            conversation=[],
-            trace_id=new_trace_id(),
-            model_id="langgraph-generate_bom",
+        from agent import orchestrator_agent
+
+        result = await orchestrator_agent._execute_bom_tool_request(
+            args=args,
             text_runner=text_runner,
+            model_id="langgraph-generate_bom",
         )
-        result_type = str(result.get("type", "normal"))
-        summary = str(result.get("reply", "")).strip() or "BOM response generated."
-        if result_type == "final":
-            summary = f"Final BOM prepared. {summary}"
-        elif result_type == "question":
-            summary = f"BOM clarification required. {summary}"
-        elif "not ready" in summary.lower():
-            summary = f"BOM data not ready. {summary}"
+        summary = orchestrator_agent._summarize_bom_tool_response(result)
         return summary, "", result
 
     if tool_name == "generate_terraform":
