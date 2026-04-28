@@ -41,6 +41,44 @@ describe('ChatInterface quick actions', () => {
     vi.restoreAllMocks();
   });
 
+  it('shows Archie hello and working messages', async () => {
+    let resolveStream: (value: {
+      reply: string;
+      tool_calls: unknown[];
+      artifacts: Record<string, unknown>;
+      artifact_manifest: { downloads: unknown[] };
+    }) => void = () => {};
+    clientMocks.apiChatStream.mockImplementation(() => new Promise(resolve => {
+      resolveStream = resolve;
+    }));
+
+    render(<ChatInterface />);
+
+    await userEvent.type(screen.getByTestId('chat-customer-id'), 'acme');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('archie-hello-message')).toHaveTextContent("Hi, I'm Archie.");
+    });
+
+    await userEvent.type(screen.getByTestId('chat-input'), 'hello archie');
+    await userEvent.click(screen.getByTestId('chat-send-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('archie-working-message')).toHaveTextContent(/Archie is|Archie here|Archie is on it/);
+    });
+
+    resolveStream({
+      reply: 'Hello. I can help.',
+      tool_calls: [],
+      artifacts: {},
+      artifact_manifest: { downloads: [] },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('archie-working-message')).not.toBeInTheDocument();
+    });
+  });
+
   it('renders checkpoint actions and sends the selected reply', async () => {
     clientMocks.apiChatStream
       .mockResolvedValueOnce({

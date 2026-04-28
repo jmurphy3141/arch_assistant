@@ -407,7 +407,7 @@ export async function apiA2AUploadBom(
   if (raw.status === 'error') {
     const err: ApiError = {
       status: 500,
-      detail: raw.error_message ?? 'Unknown error from drawing agent',
+      detail: raw.error_message ?? 'Unknown error from Archie',
     };
     throw err;
   }

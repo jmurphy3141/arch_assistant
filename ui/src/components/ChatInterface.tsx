@@ -27,6 +27,30 @@ interface QuickAction {
   tone: 'primary' | 'secondary';
 }
 
+const ARCHIE_HELLO_MESSAGES = [
+  "Hi, I'm Archie. Bring me a customer, a note dump, or a rough idea and I'll help turn it into useful architecture work.",
+  "Archie here. I can help sort notes, draft diagrams, prep BOMs, and keep the follow-up work moving.",
+  "Hello from Archie. Drop in what you know, even if it is messy, and I will help structure the next step.",
+  "Hi, I'm Archie. Ready when you are with meeting notes, architecture questions, or a half-formed plan.",
+];
+
+const ARCHIE_WORKING_MESSAGES = [
+  'Archie is reading the room and lining up the next steps...',
+  'Archie is working through the details now...',
+  'Archie is checking the architecture thread and drafting a useful answer...',
+  'Archie is connecting the dots across notes, tools, and artifacts...',
+  'Archie is on it. Give me a moment to make this tidy.',
+];
+
+function messageSeed(value: string): number {
+  return Array.from(value).reduce((acc, char) => acc + char.charCodeAt(0), 0);
+}
+
+function pickArchieMessage(messages: string[], seed: string): string {
+  if (messages.length === 0) return '';
+  return messages[messageSeed(seed) % messages.length];
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function getStoredCustomer(): { id: string; name: string } {
@@ -503,6 +527,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
   const [attachedFile,  setAttachedFile]  = useState<string | null>(null);
   const [attachLoading, setAttachLoading] = useState(false);
   const [streamingReply, setStreamingReply] = useState('');
+  const [archieWorkingMessage, setArchieWorkingMessage] = useState(ARCHIE_WORKING_MESSAGES[0]);
   const threadRef = useRef<HTMLDivElement>(null);
   const bottomRef   = useRef<HTMLDivElement>(null);
   const inputRef    = useRef<HTMLTextAreaElement>(null);
@@ -600,6 +625,9 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
     if (clearComposer) setInput('');
     setAttachedFile(null);
     setError(null);
+    setArchieWorkingMessage(
+      pickArchieMessage(ARCHIE_WORKING_MESSAGES, `${customerId}:${customerName}:${text}:${messages.length}`)
+    );
     setLoading(true);
     setStreamingReply('');
 
@@ -715,6 +743,10 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
   };
 
   const canSend = Boolean(customerId.trim() && input.trim()) && !loading;
+  const archieHelloMessage = pickArchieMessage(
+    ARCHIE_HELLO_MESSAGES,
+    `${customerId}:${customerName || customerId}`
+  );
 
   return (
     <div style={{ display: 'grid', gridTemplateRows: 'auto 1fr auto auto auto', gap: '0.75rem', minHeight: '72vh' }}>
@@ -770,8 +802,13 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
           <div style={{ color: '#454d64', fontSize: '0.72rem' }}>Loading history…</div>
         )}
         {historyLoaded && messages.length === 0 && (
-          <div style={{ color: '#454d64', fontSize: '0.78rem', textAlign: 'center', marginTop: '2rem' }}>
-            No messages yet. Say hello or paste your meeting notes to get started.
+          <div
+            data-testid="archie-hello-message"
+            style={{ color: '#717b94', fontSize: '0.78rem', textAlign: 'center', marginTop: '2rem', display: 'grid', gap: '0.35rem' }}
+          >
+            <div style={{ color: '#dde3f3', fontSize: '0.92rem', fontWeight: 700 }}>Hi, I&apos;m Archie.</div>
+            <div>{archieHelloMessage}</div>
+            <div style={{ color: '#454d64' }}>No messages yet. Say hello or paste your meeting notes to get started.</div>
           </div>
         )}
         {messages.map((msg, i) => (
@@ -809,8 +846,8 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
           </div>
         )}
         {loading && (
-          <div style={{ color: '#8b93a8', fontSize: '0.75rem', alignSelf: 'flex-start' }}>
-            Streaming response...
+          <div data-testid="archie-working-message" style={{ color: '#8b93a8', fontSize: '0.75rem', alignSelf: 'flex-start' }}>
+            {archieWorkingMessage}
           </div>
         )}
         <div ref={bottomRef} />
@@ -892,7 +929,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange }: ChatInt
             data-testid="chat-input"
             style={inputStyle}
             value={input}
-            placeholder="Message OCI Agent… (Enter to send, Shift+Enter for newline)"
+            placeholder="Message Archie... (Enter to send, Shift+Enter for newline)"
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={loading}
