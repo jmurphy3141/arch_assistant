@@ -2420,15 +2420,23 @@ def _parse_specialist_answers_from_user(
                 answers.append({**item, "final_answer": suggested})
         return answers
 
+    question_ids = [
+        str(item.get("question_id", "") or "").strip()
+        for item in questions
+        if str(item.get("question_id", "") or "").strip()
+    ]
+    question_id_map: dict[str, str] = {}
+    for question_id in question_ids:
+        for alias in _specialist_question_id_aliases(question_id):
+            question_id_map.setdefault(alias, question_id)
+
     overrides: dict[str, str] = {}
     for line in str(user_message or "").splitlines():
-        if ":" not in line:
+        parsed = _parse_specialist_answer_line(line, question_id_map)
+        if not parsed:
             continue
-        question_id, answer = line.split(":", 1)
-        qid = question_id.strip()
-        value = answer.strip()
-        if qid and value:
-            overrides[qid] = value
+        qid, value = parsed
+        overrides[qid] = value
 
     answers = []
     for item in questions:
@@ -2441,6 +2449,49 @@ def _parse_specialist_answers_from_user(
         if final_answer:
             answers.append({**item, "final_answer": final_answer})
     return answers
+
+
+def _normalize_specialist_question_id(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", ".", str(value or "").strip().lower()).strip(".")
+
+
+def _specialist_question_id_aliases(question_id: str) -> set[str]:
+    normalized = _normalize_specialist_question_id(question_id)
+    aliases = {normalized} if normalized else set()
+    parts = [part for part in normalized.split(".") if part]
+    if len(parts) >= 2:
+        first = parts[0]
+        tail = ".".join(parts[1:])
+        if first.endswith("s"):
+            aliases.add(".".join([first[:-1], tail]))
+        else:
+            aliases.add(".".join([first + "s", tail]))
+    return aliases
+
+
+def _parse_specialist_answer_line(
+    line: str,
+    question_id_map: dict[str, str],
+) -> tuple[str, str] | None:
+    text = str(line or "").strip()
+    if not text:
+        return None
+    for separator in (":", ","):
+        if separator in text:
+            raw_id, raw_answer = text.split(separator, 1)
+            canonical = question_id_map.get(_normalize_specialist_question_id(raw_id))
+            answer = raw_answer.strip()
+            if canonical and answer:
+                return canonical, answer
+
+    for alias in sorted(question_id_map, key=len, reverse=True):
+        display_alias = alias.replace(".", r"\s*\.\s*")
+        match = re.match(rf"^\s*{display_alias}\s*\.\s+(.+?)\s*$", text, flags=re.IGNORECASE)
+        if match:
+            answer = match.group(1).strip()
+            if answer:
+                return question_id_map[alias], answer
+    return None
 
 
 def _message_supersedes_pending_specialist_questions(
