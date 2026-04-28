@@ -35,11 +35,11 @@ const ARCHIE_HELLO_MESSAGES = [
 ];
 
 const ARCHIE_WORKING_MESSAGES = [
-  'Archie is reading the room and lining up the next steps...',
-  'Archie is working through the details now...',
-  'Archie is checking the architecture thread and drafting a useful answer...',
-  'Archie is connecting the dots across notes, tools, and artifacts...',
-  'Archie is on it. Give me a moment to make this tidy.',
+  'Archie is chewing on it...',
+  'Archie is pawing it over...',
+  'Archie is sniffing out the architecture trail...',
+  'Archie is padding through the details...',
+  'Archie is sorting the honey from the noise...',
 ];
 
 function messageSeed(value: string): number {
