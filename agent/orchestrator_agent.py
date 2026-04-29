@@ -26,7 +26,7 @@ import json
 import logging
 import re
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -136,6 +136,16 @@ _MANDATORY_SKILL_FALLBACKS = {
     "generate_terraform": ("terraform_for_oci", "orchestrator"),
     "get_document": ("orchestrator",),
 }
+
+
+@dataclass(frozen=True)
+class TurnIntent:
+    classification: str
+    target_artifact: str = ""
+    operation: str = ""
+    extracted_corrections: tuple[str, ...] = ()
+    confidence: float = 0.0
+    candidate_tool: str = ""
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -334,7 +344,12 @@ async def run_turn(
         note_key = await asyncio.to_thread(_save_context_note_only, user_message)
         return _finalize_turn(f"I saved those customer notes for later use. Key: {note_key}")
 
-    action_intent = _tool_backed_action_intent(user_message)
+    turn_intent = _classify_turn_intent(
+        user_message=user_message,
+        requested_tools=requested_tools,
+        context=context,
+    )
+    action_intent = _tool_backed_action_intent(user_message, turn_intent=turn_intent)
     if (
         action_intent
         and pending_checkpoint
@@ -345,6 +360,7 @@ async def run_turn(
     action_reply = _tool_backed_action_reply(
         user_message=user_message,
         action_intent=action_intent,
+        turn_intent=turn_intent,
         requested_tools=requested_tools,
         context=context,
         customer_id=customer_id,
@@ -1218,6 +1234,14 @@ async def _execute_tool(
     result_data["reference_family"] = str(enriched_args.get("_reference_family", "") or result_data.get("reference_family", "") or "")
     result_data["reference_confidence"] = float(enriched_args.get("_reference_confidence", result_data.get("reference_confidence", 0)) or 0)
     result_data["reference_mode"] = str(enriched_args.get("_reference_mode", result_data.get("reference_mode", "")) or "")
+    if tool_name == "generate_bom":
+        result_data["bom_context_source"] = str(
+            result_data.get("bom_context_source", "")
+            or enriched_args.get("_bom_context_source", "")
+            or "direct_request"
+        )
+        if enriched_args.get("_bom_grounding"):
+            result_data["_bom_grounding"] = str(enriched_args.get("_bom_grounding", "") or "")
     if preflight_decision:
         result_data["skill_preflight"] = asdict(preflight_decision)
 
@@ -1910,6 +1934,20 @@ def _is_bom_revision_request(prompt: str, user_message: str, context: dict[str, 
         return False
     msg = f" {str(user_message or prompt or '').lower()} "
     revision_markers = (
+        " feedback",
+        " pushback",
+        " customer asked",
+        " customer requested",
+        " asked for",
+        " only have",
+        " you have",
+        " missing",
+        " too low",
+        " too small",
+        " should have",
+        " should be",
+        " need more",
+        " needs more",
         " new bom",
         " new xlsx",
         " new workbook",
@@ -1977,6 +2015,11 @@ def _build_bom_revision_prompt(
     cleaned_prompt = _strip_injected_guidance_blocks(prompt or user_message).strip()
     if cleaned_prompt:
         lines.append(f"User revision request: {cleaned_prompt}")
+    turn_corrections = _extract_turn_corrections(user_message or prompt)
+    if turn_corrections:
+        lines.append("[Corrected Facts From Current Turn]")
+        lines.extend(f"- {item}" for item in turn_corrections)
+        lines.append("[End Corrected Facts From Current Turn]")
     if facts_summary:
         lines.append(f"Facts summary: {facts_summary}")
     if facts:
@@ -2950,6 +2993,19 @@ def _extract_used_total_capacity(text: str, markers: tuple[str, ...], *, default
     if total_match:
         total = _capacity_to_unit(float(total_match.group(1).replace(",", "")), total_match.group(2), default_unit)
         return {f"total_{default_unit.lower()}": total}
+
+    standalone_values: list[float] = []
+    standalone_patterns = (
+        rf"\b(\d+(?:[.,]\d+)?)\s*{unit_expr}\s*(?:of\s+)?(?:{marker_expr})\b",
+        rf"\b(?:{marker_expr})\b[^,\n.;]{{0,40}}?\b(\d+(?:[.,]\d+)?)\s*{unit_expr}\b",
+    )
+    for pattern in standalone_patterns:
+        for match in re.finditer(pattern, str(text or ""), flags=re.IGNORECASE):
+            value = _capacity_to_unit(float(match.group(1).replace(",", "")), match.group(2), default_unit)
+            if value > 0:
+                standalone_values.append(value)
+    if standalone_values:
+        return {f"total_{default_unit.lower()}": max(standalone_values)}
     return {}
 
 
@@ -6931,22 +6987,175 @@ _ACTION_ACCESS_MARKERS = (
 )
 _ACTION_VERIFY_MARKERS = (
     "in the bucket",
+    "in object storage",
     "uploaded",
-    "upload",
-    "object storage",
-    "bucket",
     "verify",
     "verify file",
     "verify files",
+    "check file",
+    "check files",
+    "check whether",
+    "check if",
+    "exists",
+    " exist ",
     "list files",
+    "list the files",
 )
 
 
-def _tool_backed_action_intent(user_message: str) -> dict[str, bool]:
+def _classify_turn_intent(
+    *,
+    user_message: str,
+    requested_tools: set[str],
+    context: dict[str, Any] | None,
+) -> TurnIntent:
+    text = str(user_message or "")
+    msg = f" {text.lower()} "
+    target_artifact = _infer_turn_target_artifact(text, requested_tools)
+    corrections = tuple(_extract_turn_corrections(text))
+    candidate_tool = _target_artifact_to_tool(target_artifact)
+
+    if target_artifact == "bom" and _is_bom_revision_request(text, text, context):
+        classification = "artifact_feedback" if any(
+            marker in msg for marker in (" feedback", " customer asked", " customer requested", " only have", " you have")
+        ) else "artifact_revision"
+        return TurnIntent(
+            classification=classification,
+            target_artifact=target_artifact,
+            operation="revise",
+            extracted_corrections=corrections,
+            confidence=0.92 if corrections else 0.82,
+            candidate_tool="generate_bom",
+        )
+
+    if _is_explicit_artifact_download_request(text, target_artifact, requested_tools):
+        return TurnIntent(
+            classification="artifact_download",
+            target_artifact=target_artifact,
+            operation="download",
+            confidence=0.9,
+            candidate_tool=candidate_tool,
+        )
+
+    if _is_explicit_artifact_verification_request(text, target_artifact):
+        return TurnIntent(
+            classification="artifact_verification",
+            target_artifact=target_artifact,
+            operation="verify",
+            confidence=0.9,
+            candidate_tool=candidate_tool,
+        )
+
+    if requested_tools:
+        selected_tool = _ordered_requested_tools(requested_tools)[0]
+        return TurnIntent(
+            classification="new_generation",
+            target_artifact=_tool_to_target_artifact(selected_tool),
+            operation="generate",
+            confidence=0.78,
+            candidate_tool=selected_tool,
+        )
+
+    return TurnIntent(classification="conversation_only", operation="answer", confidence=0.5)
+
+
+def _infer_turn_target_artifact(user_message: str, requested_tools: set[str]) -> str:
+    msg = str(user_message or "").lower()
+    if _mentions_operating_model(user_message):
+        return "operating_model"
+    if any(term in msg for term in ("bom", "bill of materials", "xlsx", "xlxs", "xlsc", "excel", "spreadsheet", "workbook", "pricing", "sku")):
+        return "bom"
+    if any(term in msg for term in ("diagram", "drawio", "draw.io", "topology file")):
+        return "diagram"
+    if "terraform" in msg or "iac" in msg:
+        return "terraform"
+    if "pov" in msg or "point of view" in msg:
+        return "pov"
+    if "jep" in msg or "joint execution plan" in msg:
+        return "jep"
+    if "waf" in msg or "well-architected" in msg or "well architected" in msg:
+        return "waf"
+    if len(requested_tools) == 1:
+        return _tool_to_target_artifact(next(iter(requested_tools)))
+    return ""
+
+
+def _tool_to_target_artifact(tool_name: str) -> str:
+    return {
+        "generate_bom": "bom",
+        "generate_diagram": "diagram",
+        "generate_terraform": "terraform",
+        "generate_pov": "pov",
+        "generate_jep": "jep",
+        "generate_waf": "waf",
+    }.get(str(tool_name or ""), "")
+
+
+def _target_artifact_to_tool(target_artifact: str) -> str:
+    return {
+        "bom": "generate_bom",
+        "diagram": "generate_diagram",
+        "terraform": "generate_terraform",
+        "pov": "generate_pov",
+        "jep": "generate_jep",
+        "waf": "generate_waf",
+    }.get(str(target_artifact or ""), "")
+
+
+def _is_explicit_artifact_download_request(
+    user_message: str,
+    target_artifact: str,
+    requested_tools: set[str],
+) -> bool:
+    msg = f" {str(user_message or '').lower()} "
+    if _is_pure_download_or_link_request(user_message) and (target_artifact or requested_tools):
+        return True
+    if any(marker in msg for marker in _ACTION_ACCESS_MARKERS) and (target_artifact or requested_tools):
+        return True
+    return bool(_is_export_only_request(user_message) and target_artifact == "bom")
+
+
+def _is_explicit_artifact_verification_request(user_message: str, target_artifact: str) -> bool:
+    msg = f" {str(user_message or '').lower()} "
+    explicit_verify = any(marker in msg for marker in (" verify", " check ", " exists", " exist ", " list "))
+    explicit_location = any(marker in msg for marker in (" in the bucket", " in object storage", " object-store", " persisted"))
+    file_terms = any(marker in msg for marker in (" file", " files", " artifact", " artifacts", " xlsx", " workbook", " bom", " diagram", " terraform"))
+    uploaded_state = any(marker in msg for marker in (" uploaded", " upload complete", " present"))
+    return bool((explicit_verify and (file_terms or target_artifact or explicit_location)) or (uploaded_state and (file_terms or target_artifact)))
+
+
+def _extract_turn_corrections(user_message: str) -> list[str]:
+    text = str(user_message or "").strip()
+    if not text:
+        return []
+    corrections: list[str] = []
+    for pattern, label in (
+        (r"\b\d+(?:[.,]\d+)?\s*(?:tb|tib)\s+(?:of\s+)?storage\b", "storage"),
+        (r"\b\d+(?:[.,]\d+)?\s*(?:gb|gib)\s+(?:of\s+)?(?:object\s+)?storage\b", "storage"),
+        (r"\b\d+(?:[.,]\d+)?\s*(?:tb|tib)\s+(?:of\s+)?memory\b", "memory"),
+        (r"\b\d+(?:[.,]\d+)?\s*(?:gb|gib)\s+(?:of\s+)?(?:ram|memory)\b", "memory"),
+        (r"\b\d+(?:[.,]\d+)?\s*(?:ocpu|ocpus|cpu|cpus|cores?)\b", "compute"),
+    ):
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            value = re.sub(r"\s+", " ", match.group(0)).strip()
+            item = f"{label}: {value}"
+            if item not in corrections:
+                corrections.append(item)
+    return corrections[:12]
+
+
+def _tool_backed_action_intent(user_message: str, *, turn_intent: TurnIntent | None = None) -> dict[str, bool]:
     msg = f" {str(user_message or '').lower()} "
     production = any(marker in msg for marker in _ACTION_PRODUCTION_MARKERS)
     access = any(marker in msg for marker in _ACTION_ACCESS_MARKERS)
-    verification = any(marker in msg for marker in _ACTION_VERIFY_MARKERS)
+    verification = bool(
+        (turn_intent and turn_intent.classification == "artifact_verification")
+        or any(marker in msg for marker in _ACTION_VERIFY_MARKERS)
+    )
+    if turn_intent and turn_intent.classification == "artifact_download":
+        access = True
+    if turn_intent and turn_intent.classification in {"artifact_feedback", "artifact_revision"}:
+        production = True
     if not any((production, access, verification)):
         return {}
     return {
@@ -7019,12 +7228,16 @@ def _tool_backed_action_reply(
     *,
     user_message: str,
     action_intent: dict[str, bool],
+    turn_intent: TurnIntent | None = None,
     requested_tools: set[str],
     context: dict[str, Any],
     customer_id: str,
     store: ObjectStoreBase,
 ) -> str | None:
     if not action_intent:
+        return None
+
+    if turn_intent and turn_intent.classification in {"artifact_feedback", "artifact_revision"}:
         return None
 
     if action_intent.get("operating_model") and any(
@@ -7036,11 +7249,6 @@ def _tool_backed_action_reply(
             "I can discuss the operating model in prose, or generate a supported BOM, diagram, POV, JEP, WAF, or Terraform artifact."
         )
 
-    if action_intent.get("verification") and not (
-        requested_tools and _has_generation_request_for_supported_artifact(user_message)
-    ):
-        return _build_artifact_verification_reply(context=context, customer_id=customer_id, store=store)
-
     if "generate_bom" in requested_tools and _bom_action_should_regenerate(
         user_message=user_message,
         action_intent=action_intent,
@@ -7050,7 +7258,19 @@ def _tool_backed_action_reply(
     ):
         return None
 
-    if action_intent.get("access") or _is_existing_artifact_access_request(user_message, requested_tools):
+    if (
+        (turn_intent and turn_intent.classification == "artifact_verification")
+        or action_intent.get("verification")
+    ) and not (
+        requested_tools and _has_generation_request_for_supported_artifact(user_message)
+    ):
+        return _build_artifact_verification_reply(context=context, customer_id=customer_id, store=store)
+
+    if (
+        (turn_intent and turn_intent.classification == "artifact_download")
+        or action_intent.get("access")
+        or _is_existing_artifact_access_request(user_message, requested_tools)
+    ):
         return _build_artifact_link_reply(context=context, customer_id=customer_id, store=store)
 
     if action_intent.get("production") and _is_export_only_request(user_message):

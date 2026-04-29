@@ -19,15 +19,17 @@ Use for any request that requires routing, sequencing, or coordinating multiple 
 - Any explicit constraints, prerequisites, or change requests
 
 ## Execution Pattern
-1. Classify intent and requested scope.
-2. Select only relevant specialist paths.
-3. Inject domain skill guidance before specialist execution.
-4. Enforce preflight/postflight guardrails.
-5. If output quality is weak, run bounded critique/refinement.
-6. Return a concise, user-facing architect summary.
+1. Reason over the current turn and canonical memory before choosing an action.
+2. Classify intent and requested scope; do not route from raw keywords alone.
+3. Select the smallest relevant specialist path or direct artifact action.
+4. Inject domain skill guidance before specialist execution.
+5. Enforce preflight/postflight guardrails.
+6. If output quality is weak, run bounded critique/refinement.
+7. Return a concise, user-facing architect summary.
 
 ## Quality Bar
 - Executes only requested/approved scope.
+- Generic terms like object storage, bucket, or XLSX are not sufficient by themselves to select verification, download, or generation.
 - Preserves prerequisite ordering (for example, architecture before Terraform).
 - Produces traceable decisions with clear outcomes.
 

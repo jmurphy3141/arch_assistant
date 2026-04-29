@@ -19,16 +19,18 @@ Use for BOM sizing, pricing estimate requests, SKU-level review, and export-read
 - Optional service inclusions (LB, object storage, database)
 
 ## Execution Pattern
-1. Classify request: advisory, clarification, or final BOM.
-2. Build SKU-backed line items from authoritative pricing cache.
-3. Validate unknown SKUs, non-positive pricing, and compute split rules.
-4. Repair invalid payloads within bounded retries.
-5. Return export-ready JSON/XLSX-compatible payload when valid.
+1. Classify request: advisory, clarification, final BOM, or revision feedback.
+2. For BOM feedback, compare the current turn against the prior BOM baseline and treat corrected sizing as authoritative.
+3. Build SKU-backed line items from authoritative pricing cache.
+4. Validate unknown SKUs, non-positive pricing, and compute split rules.
+5. Repair invalid payloads within bounded retries.
+6. Return export-ready JSON/XLSX-compatible payload when valid.
 
 ## Quality Bar
 - Unknown SKUs are rejected.
 - Non-positive unit prices are rejected.
 - Non-GPU compute split (OCPU + memory) is enforced.
+- Revisions preserve valid prior baseline items unless the current turn or canonical memory supersedes them.
 - Trace includes model/cache/repair metadata.
 
 ## Critic Evaluation Guidance

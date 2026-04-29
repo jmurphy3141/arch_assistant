@@ -2007,6 +2007,112 @@ def test_new_xlsx_with_incorrect_prior_bom_builds_revision_brief(monkeypatch) ->
     assert "SD-WAN connectivity" in prompt
 
 
+def test_bom_feedback_with_object_storage_mentions_regenerates_instead_of_verifying(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "bom-feedback", "BOM Feedback")
+    context_store.merge_archie_client_facts(
+        ctx,
+        {
+            "geography": "South Africa",
+            "platform": "VxRail / VMware ESXi",
+            "infrastructure": {
+                "cpu": {"logical_cores": 64},
+                "memory": {"total_gb": 1146.88},
+                "storage": {"total_tb": 44},
+            },
+        },
+    )
+    context_store.record_bom_work_product(
+        ctx,
+        bom_payload={
+            "line_items": [
+                {"sku": "B94176", "description": "Compute OCPU", "category": "compute", "quantity": 64},
+                {"sku": "B88514", "description": "Compute memory", "category": "compute", "quantity": 64},
+                {"sku": "B91628", "description": "Object storage", "category": "storage", "quantity": 204},
+            ],
+            "totals": {"estimated_monthly_cost": 1000},
+        },
+        context_source="direct_request",
+        grounding="generic",
+    )
+    bom_key = "customers/bom-feedback/bom/xlsx/old.xlsx"
+    store.put(bom_key, b"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    store.put(
+        f"{bom_key}.metadata.json",
+        b'{"tool":"generate_bom","status":"approved","checkpoint_required":false}',
+        "application/json",
+    )
+    context_store.record_agent_run(
+        ctx,
+        "bom",
+        [],
+        {
+            "version": 1,
+            "result_type": "final",
+            "xlsx_artifact_key": bom_key,
+            "xlsx_filename": "old.xlsx",
+            "bom_xlsx": {"key": bom_key, "filename": "old.xlsx"},
+        },
+    )
+    context_store.write_context(store, "bom-feedback", ctx)
+    calls: list[dict] = []
+
+    async def _fake_execute_core(tool_name, args, **_kwargs):
+        assert tool_name == "generate_bom"
+        calls.append(dict(args))
+        return (
+            "Final BOM prepared. Review line items.",
+            "",
+            {
+                "type": "final",
+                "reply": "Final BOM prepared. Review line items.",
+                "bom_payload": {
+                    "line_items": [
+                        {"sku": "B94176", "description": "Compute OCPU", "category": "compute", "quantity": 64},
+                        {"sku": "B88514", "description": "Compute memory", "category": "compute", "quantity": 1433.6},
+                        {"sku": "B91961", "description": "Block storage", "category": "storage", "quantity": 47104},
+                    ],
+                    "totals": {"estimated_monthly_cost": 2000},
+                },
+            },
+        )
+
+    async def _no_critic(**kwargs):
+        return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="bom-feedback",
+            customer_name="BOM Feedback",
+            user_message=(
+                "Feed back on the BOM, the customer asked for 46TB of storage, you only have "
+                "204GB of object storage. They had 1.4TB of memory in their pool but you have 64GB."
+            ),
+            store=store,
+            text_runner=lambda _prompt, _system: "should not verify artifacts",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert [call["tool"] for call in result["tool_calls"]] == ["generate_bom"]
+    assert "Artifact verification from persisted object-store state" not in result["reply"]
+    assert "BOM revision was performed from updated memory" in result["reply"]
+    prompt = calls[0]["prompt"]
+    assert "Revise the current BOM/XLSX work product" in prompt
+    assert "[Corrected Facts From Current Turn]" in prompt
+    assert "46" in prompt and "storage" in prompt.lower()
+    assert "1433.6" in prompt or "1.4TB" in prompt
+    updated = context_store.read_context(store, "bom-feedback", "BOM Feedback")
+    sizing = updated["archie"]["memory"]["client_facts"]["sizing"]
+    assert sizing["storage"]["total_tb"] == 46
+    assert sizing["memory"]["total_gb"] == 1433.6
+
+
 def test_bom_mixed_confidence_keeps_unresolved_checkpoint(monkeypatch) -> None:
     store = InMemoryObjectStore()
     ctx = context_store.read_context(store, "bom-mixed-confidence", "BOM Mixed")
@@ -2300,6 +2406,112 @@ def test_share_link_returns_only_manifest_backed_downloads() -> None:
     assert "/api/download/diagram.drawio?client_id=link-customer&diagram_name=oci_architecture" in result["reply"]
     assert "/api/bom/link-customer/download/oci-bom-test.xlsx" in result["reply"]
     assert "should not be used" not in result["reply"]
+
+
+def test_download_latest_bom_xlsx_returns_link_without_regeneration(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    customer_id = "download-bom"
+    bom_key = f"customers/{customer_id}/bom/xlsx/latest.xlsx"
+    store.put(bom_key, b"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    store.put(
+        f"{bom_key}.metadata.json",
+        b'{"tool":"generate_bom","status":"approved","checkpoint_required":false}',
+        "application/json",
+    )
+    ctx = context_store.read_context(store, customer_id, "Download BOM")
+    context_store.record_agent_run(
+        ctx,
+        "bom",
+        [],
+        {
+            "version": 3,
+            "result_type": "final",
+            "xlsx_artifact_key": bom_key,
+            "xlsx_filename": "latest.xlsx",
+            "bom_xlsx": {"key": bom_key, "filename": "latest.xlsx"},
+        },
+    )
+    context_store.write_context(store, customer_id, ctx)
+
+    async def _should_not_execute(*_args, **_kwargs):
+        raise AssertionError("download request should not regenerate the BOM")
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _should_not_execute)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id=customer_id,
+            customer_name="Download BOM",
+            user_message="download the latest BOM XLSX",
+            store=store,
+            text_runner=lambda _prompt, _system: "should not be used",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "/api/bom/download-bom/download/latest.xlsx" in result["reply"]
+    assert result["tool_calls"] == []
+    assert "should not be used" not in result["reply"]
+
+
+def test_verify_bom_xlsx_exists_in_object_storage_runs_verification() -> None:
+    store = InMemoryObjectStore()
+    customer_id = "verify-bom"
+    bom_key = f"customers/{customer_id}/bom/xlsx/latest.xlsx"
+    store.put(bom_key, b"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    store.put(
+        f"{bom_key}.metadata.json",
+        b'{"tool":"generate_bom","status":"approved","checkpoint_required":false}',
+        "application/json",
+    )
+    ctx = context_store.read_context(store, customer_id, "Verify BOM")
+    context_store.record_agent_run(
+        ctx,
+        "bom",
+        [],
+        {
+            "version": 1,
+            "result_type": "final",
+            "xlsx_artifact_key": bom_key,
+            "xlsx_filename": "latest.xlsx",
+            "bom_xlsx": {"key": bom_key, "filename": "latest.xlsx"},
+        },
+    )
+    context_store.write_context(store, customer_id, ctx)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id=customer_id,
+            customer_name="Verify BOM",
+            user_message="verify the BOM XLSX exists in object storage",
+            store=store,
+            text_runner=lambda _prompt, _system: "should not regenerate",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "Artifact verification from persisted object-store state" in result["reply"]
+    assert f"- bom: present ({bom_key})" in result["reply"]
+    assert result["tool_calls"] == []
+    assert "should not regenerate" not in result["reply"]
+
+
+def test_turn_intent_does_not_treat_generic_object_storage_as_verification() -> None:
+    intent = orchestrator_agent._classify_turn_intent(
+        user_message="Include Object Storage for archive data in the target architecture.",
+        requested_tools=set(),
+        context={},
+    )
+
+    action = orchestrator_agent._tool_backed_action_intent(
+        "Include Object Storage for archive data in the target architecture.",
+        turn_intent=intent,
+    )
+
+    assert intent.classification == "conversation_only"
+    assert action == {}
 
 
 def test_metadata_less_bom_xlsx_is_hidden_from_link_replies() -> None:
