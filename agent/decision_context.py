@@ -200,7 +200,20 @@ def summarize_decision_context(decision_context: dict[str, Any] | None) -> str:
 
 def _extract_region(text: str) -> str | None:
     match = _REGION_RE.search(text)
-    return match.group(0) if match else None
+    if match:
+        return match.group(0)
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+    squashed = normalized.replace(" ", "")
+    if (
+        "johannesburg" in normalized
+        or "south africa" in normalized
+        or "south africa region" in normalized
+        or "southafrica" in squashed
+        or "southaferica" in squashed
+        or "southafricaregion" in squashed
+    ):
+        return "af-johannesburg-1"
+    return None
 
 
 def _extract_availability(text: str) -> str | None:
