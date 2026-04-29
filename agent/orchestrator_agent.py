@@ -243,6 +243,7 @@ async def run_turn(
             specialist_reply, specialist_call, specialist_artifact = await _handle_pending_specialist_questions(
                 pending_checkpoint=pending_checkpoint,
                 user_message=user_message,
+                conversation_history=history,
                 context=context,
                 customer_id=customer_id,
                 customer_name=customer_name,
@@ -289,6 +290,7 @@ async def run_turn(
         user_message=user_message,
         context=context,
     )
+    _record_region_constraint_if_present(context, decision_context)
     context_store.set_latest_decision_context(context, decision_context)
     context_store.set_archie_decision_state(
         context,
@@ -1669,6 +1671,7 @@ def _prepare_bom_tool_args(
     prompt = str(payload.get("prompt", "") or "").strip() or str(user_message or "").strip()
     payload["prompt"] = prompt or "Generate a BOM from current request context."
     payload["_bom_context_source"] = str(payload.get("_bom_context_source", "") or "direct_request")
+    payload["prompt"] = _append_reusable_bom_inputs(payload["prompt"], context)
 
     if bool(payload.get("_bom_grounded_from_context")):
         return payload
@@ -1691,6 +1694,39 @@ def _prepare_bom_tool_args(
     payload["_bom_context_source"] = "unresolved_followup"
     payload["_bom_grounded_from_context"] = False
     return payload
+
+
+def _append_reusable_bom_inputs(prompt: str, context: dict[str, Any] | None) -> str:
+    if not isinstance(context, dict):
+        return str(prompt or "").strip()
+    archie = context_store.get_archie_state(context)
+    lines: list[str] = []
+    constraints = dict(archie.get("latest_approved_constraints", {}) or {})
+    region = str(constraints.get("region", "") or "").strip()
+    if region:
+        lines.append(f"- constraints.region: {region}")
+    resolved = archie.get("resolved_questions", []) if isinstance(archie.get("resolved_questions"), list) else []
+    seen: set[str] = set()
+    for item in reversed(resolved):
+        if not isinstance(item, dict):
+            continue
+        question_id = str(item.get("question_id", "") or item.get("id", "") or "").strip()
+        if question_id not in {"components.scope", "workload.components", "regions.mode", "region.mode", "topology.scope", "regions.count"}:
+            continue
+        canonical = "components.scope" if question_id in {"components.scope", "workload.components"} else "regions.mode"
+        if canonical in seen:
+            continue
+        answer = _coerce_specialist_answer(canonical, str(item.get("final_answer", "") or item.get("suggested_answer", "") or ""))
+        if answer:
+            lines.append(f"- {canonical}: {answer}")
+            seen.add(canonical)
+    if not lines:
+        return str(prompt or "").strip()
+    block = "[Archie Reusable Approved Inputs]\n" + "\n".join(lines) + "\n[End Archie Reusable Approved Inputs]"
+    cleaned = str(prompt or "").strip()
+    if block in cleaned:
+        return cleaned
+    return f"{cleaned}\n\n{block}".strip()
 
 
 def _summarize_note_text(note_text: str, *, limit: int = 280) -> str:
@@ -2154,8 +2190,126 @@ def _latest_resolved_answer_map(context: dict[str, Any] | None) -> dict[str, dic
             continue
         question_id = str(item.get("question_id", "") or "").strip()
         if question_id:
-            latest[question_id] = item
+            for alias in _specialist_question_id_aliases(question_id):
+                latest[alias] = item
     return latest
+
+
+def _resolved_answer_for_question(
+    resolved: dict[str, dict[str, Any]],
+    question_id: str,
+) -> tuple[dict[str, Any] | None, str]:
+    for alias in _specialist_question_id_aliases(question_id):
+        prior = resolved.get(alias)
+        if not isinstance(prior, dict):
+            continue
+        answer = str(prior.get("final_answer", "") or prior.get("suggested_answer", "") or "").strip()
+        if answer:
+            return prior, _coerce_specialist_answer(question_id, answer)
+    return None, ""
+
+
+def _standard_components_scope_answer() -> str:
+    return (
+        "all BOM-derived and standard reference architecture components: VCN, public/private subnets, "
+        "load balancer, application compute or OKE, database, Object Storage, DRG/connectivity, "
+        "WAF/security controls, Vault/KMS, logging, and monitoring"
+    )
+
+
+def _coerce_specialist_answer(question_id: str, answer: str) -> str:
+    qid = _normalize_specialist_question_id(question_id)
+    cleaned = str(answer or "").strip()
+    if qid in {"components.scope", "workload.components"} and cleaned.lower() == "all":
+        return _standard_components_scope_answer()
+    topology_aliases = {"regions.mode", "region.mode", "topology.scope", "regions.count"}
+    if qid in topology_aliases:
+        lowered = cleaned.lower()
+        if qid == "regions.count":
+            if any(token in lowered for token in ("multi-region", "multi region", "two regions", "2 regions")):
+                return "2"
+            if any(token in lowered for token in ("single", "one region", "1 region", "single ad", "single-ad")):
+                return "1"
+        elif qid in {"regions.mode", "region.mode", "topology.scope"}:
+            if lowered in {"1", "one", "one region"}:
+                return "single-region"
+            if lowered in {"2", "two", "two regions"}:
+                return "multi-region"
+    return cleaned
+
+
+def _record_region_constraint_if_present(context: dict[str, Any], decision_context: dict[str, Any]) -> None:
+    constraints = dict((decision_context or {}).get("constraints", {}) or {})
+    region = str(constraints.get("region", "") or "").strip()
+    if not region:
+        return
+    prior, prior_answer = _resolved_answer_for_question(_latest_resolved_answer_map(context), "constraints.region")
+    if isinstance(prior, dict) and prior_answer == region:
+        return
+    context_store.record_resolved_question(
+        context,
+        {
+            "id": str(uuid.uuid4()),
+            "question_id": "constraints.region",
+            "question": "Preferred OCI region",
+            "final_answer": region,
+            "source": "archie_region_normalization",
+            "confidence": "high",
+            "timestamp": _now(),
+        },
+    )
+
+
+def _component_labels_from_text(text: str) -> list[str]:
+    lowered = str(text or "").lower()
+    labels: list[str] = []
+    markers = (
+        ("oke", "OKE"),
+        ("kubernetes", "OKE"),
+        ("load balancer", "Load Balancer"),
+        ("lb", "Load Balancer"),
+        ("database", "Database"),
+        ("autonomous database", "Autonomous Database"),
+        ("adb", "Autonomous Database"),
+        ("postgres", "PostgreSQL"),
+        ("mysql", "MySQL"),
+        ("object storage", "Object Storage"),
+        ("bucket", "Object Storage"),
+        ("waf", "WAF"),
+        ("vcn", "VCN"),
+        ("subnet", "Subnets"),
+        ("drg", "DRG"),
+        ("fastconnect", "FastConnect"),
+        ("vpn", "VPN"),
+        ("vault", "Vault/KMS"),
+        ("kms", "Vault/KMS"),
+        ("monitoring", "Monitoring"),
+        ("logging", "Logging"),
+        ("compute", "Compute"),
+        ("app server", "Compute"),
+        ("web server", "Compute"),
+    )
+    for token, label in markers:
+        if token in lowered and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _infer_components_scope_from_context(context: dict[str, Any], text: str) -> tuple[str, str, str]:
+    labels = _component_labels_from_text(text)
+    agents = context.get("agents", {}) if isinstance(context, dict) else {}
+    bom = dict((agents or {}).get("bom", {}) or {})
+    diagram = dict((agents or {}).get("diagram", {}) or {})
+    if labels:
+        return ", ".join(labels), "current BOM, notes, or architecture context names these OCI components", "high"
+    if int(bom.get("line_item_count", 0) or 0) > 0:
+        return _standard_components_scope_answer(), "prior BOM line items are available for component scope", "high"
+    if int(diagram.get("node_count", 0) or 0) > 0 or str(diagram.get("deployment_summary", "") or "").strip():
+        return _standard_components_scope_answer(), "latest generated architecture state is available for component scope", "high"
+    lowered = str(text or "").lower()
+    if "small site" in lowered or "small-site" in lowered or "reference architecture" in lowered:
+        return _standard_components_scope_answer(), "standard small-site reference architecture provides the component scope", "medium"
+    return "", "", "needs_confirmation"
 
 
 def _suggest_answer_for_question(
@@ -2167,11 +2321,9 @@ def _suggest_answer_for_question(
     question_id = str(question.get("question_id", "") or "").strip()
     prompt = str(question.get("question", "") or "").strip()
     resolved = _latest_resolved_answer_map(context)
-    prior = resolved.get(question_id)
-    if isinstance(prior, dict):
-        answer = str(prior.get("final_answer", "") or prior.get("suggested_answer", "") or "").strip()
-        if answer:
-            return answer, "prior Archie-approved decision", "high"
+    prior, answer = _resolved_answer_for_question(resolved, question_id)
+    if isinstance(prior, dict) and answer:
+        return answer, "prior Archie-approved decision", "high"
 
     archie = context_store.get_archie_state(context)
     latest_decision_context = dict(context.get("latest_decision_context", {}) or {})
@@ -2188,7 +2340,7 @@ def _suggest_answer_for_question(
         if str(part).strip()
     ).lower()
 
-    if question_id in {"regions.count", "topology.scope"} or "region" in prompt.lower():
+    if question_id in {"regions.count", "topology.scope", "regions.mode", "region.mode"} or "region" in prompt.lower():
         if any(token in text for token in ("multi-region", "multi region", "two regions", "2 regions")):
             if question_id == "regions.count":
                 return "2", "current Archie context mentions a multi-region topology", "high"
@@ -2209,21 +2361,10 @@ def _suggest_answer_for_question(
         if has_public:
             return "public", "notes mention public or internet ingress", "high"
 
-    if question_id == "workload.components" or "major oci components" in prompt.lower():
-        components: list[str] = []
-        markers = (
-            ("oke", "OKE"),
-            ("load balancer", "Load Balancer"),
-            ("database", "Database"),
-            ("object storage", "Object Storage"),
-            ("waf", "WAF"),
-            ("vcn", "VCN"),
-        )
-        for token, label in markers:
-            if token in text and label not in components:
-                components.append(label)
+    if question_id in {"workload.components", "components.scope"} or "major oci components" in prompt.lower():
+        components, basis, confidence = _infer_components_scope_from_context(context, text)
         if components:
-            return ", ".join(components), "latest notes already mention these OCI components", "medium"
+            return components, basis, confidence
 
     if question_id == "data.tier" or "data tier" in prompt.lower():
         if "autonomous database" in text or "adb" in text:
@@ -2254,6 +2395,7 @@ def _apply_resolved_answers_to_tool_args(
         question_id = str(item.get("question_id", "") or item.get("id", "") or "question").strip()
         answer = str(item.get("final_answer", "") or item.get("suggested_answer", "") or "").strip()
         if question_id and answer:
+            answer = _coerce_specialist_answer(question_id, answer)
             lines.append(f"- {question_id}: {answer}")
     lines.append("[End Archie Resolved Specialist Inputs]")
     block = "\n".join(lines)
@@ -2294,6 +2436,8 @@ async def _mediate_specialist_questions(
     )
     if not questions:
         return result_summary, artifact_key, result_data
+    if isinstance(decision_context, dict) and decision_context:
+        context_store.set_latest_decision_context(context, decision_context)
 
     auto_answered: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
@@ -2423,23 +2567,10 @@ def _parse_specialist_answers_from_user(
                 answers.append({**item, "final_answer": suggested})
         return answers
 
-    question_ids = [
-        str(item.get("question_id", "") or "").strip()
-        for item in questions
-        if str(item.get("question_id", "") or "").strip()
-    ]
-    question_id_map: dict[str, str] = {}
-    for question_id in question_ids:
-        for alias in _specialist_question_id_aliases(question_id):
-            question_id_map.setdefault(alias, question_id)
-
-    overrides: dict[str, str] = {}
-    for line in str(user_message or "").splitlines():
-        parsed = _parse_specialist_answer_line(line, question_id_map)
-        if not parsed:
-            continue
-        qid, value = parsed
-        overrides[qid] = value
+    overrides = _parse_explicit_specialist_answers(
+        pending_checkpoint=pending_checkpoint,
+        user_message=user_message,
+    )
 
     answers = []
     for item in questions:
@@ -2450,8 +2581,39 @@ def _parse_specialist_answers_from_user(
         if not final_answer:
             final_answer = str(item.get("suggested_answer", "") or "").strip()
         if final_answer:
+            final_answer = _coerce_specialist_answer(question_id, final_answer)
             answers.append({**item, "final_answer": final_answer})
     return answers
+
+
+def _specialist_question_id_map(questions: list[dict[str, Any]]) -> dict[str, str]:
+    question_ids = [
+        str(item.get("question_id", "") or "").strip()
+        for item in questions
+        if str(item.get("question_id", "") or "").strip()
+    ]
+    question_id_map: dict[str, str] = {}
+    for question_id in question_ids:
+        for alias in _specialist_question_id_aliases(question_id):
+            question_id_map.setdefault(alias, question_id)
+    return question_id_map
+
+
+def _parse_explicit_specialist_answers(
+    *,
+    pending_checkpoint: dict[str, Any],
+    user_message: str,
+) -> dict[str, str]:
+    questions = [dict(item) for item in list(pending_checkpoint.get("questions", []) or []) if isinstance(item, dict)]
+    question_id_map = _specialist_question_id_map(questions)
+    overrides: dict[str, str] = {}
+    for line in str(user_message or "").splitlines():
+        parsed = _parse_specialist_answer_line(line, question_id_map)
+        if not parsed:
+            continue
+        qid, value = parsed
+        overrides[qid] = value
+    return overrides
 
 
 def _normalize_specialist_question_id(value: str) -> str:
@@ -2461,6 +2623,14 @@ def _normalize_specialist_question_id(value: str) -> str:
 def _specialist_question_id_aliases(question_id: str) -> set[str]:
     normalized = _normalize_specialist_question_id(question_id)
     aliases = {normalized} if normalized else set()
+    alias_groups = (
+        {"components.scope", "workload.components"},
+        {"regions.mode", "region.mode", "topology.scope", "regions.count"},
+        {"constraints.region", "region", "preferred.region"},
+    )
+    for group in alias_groups:
+        if normalized in group:
+            aliases.update(group)
     parts = [part for part in normalized.split(".") if part]
     if len(parts) >= 2:
         first = parts[0]
@@ -2506,19 +2676,91 @@ def _message_supersedes_pending_specialist_questions(
         return False
     if _is_specialist_question_approve_message(user_message) or _is_checkpoint_reject_message(user_message):
         return False
-    lowered = str(user_message or "").lower()
-    questions = [dict(item) for item in list(pending_checkpoint.get("questions", []) or []) if isinstance(item, dict)]
-    for item in questions:
-        question_id = str(item.get("question_id", "") or "").strip().lower()
-        if question_id and f"{question_id}:" in lowered:
-            return False
+    if _parse_explicit_specialist_answers(
+        pending_checkpoint=pending_checkpoint,
+        user_message=user_message,
+    ):
+        return False
     return True
+
+
+def _is_specialist_question_retry_message(user_message: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(user_message or "").lower()).strip()
+    if not normalized:
+        return False
+    retry_messages = {
+        "try again",
+        "please try again",
+        "try again please",
+        "retry",
+        "rerun",
+        "run again",
+        "continue",
+        "go ahead",
+        "proceed",
+        "please continue",
+        "please retry",
+        "try it again",
+        "run it again",
+    }
+    retry_phrases = ("try again", "retry", "rerun", "run again", "continue", "proceed")
+    return normalized in retry_messages or any(phrase in normalized for phrase in retry_phrases)
+
+
+def _recover_specialist_answers_from_history(
+    *,
+    pending_checkpoint: dict[str, Any],
+    conversation_history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    questions = [dict(item) for item in list(pending_checkpoint.get("questions", []) or []) if isinstance(item, dict)]
+    required_ids = {
+        str(item.get("question_id", "") or "").strip()
+        for item in questions
+        if str(item.get("question_id", "") or "").strip()
+    }
+    if not required_ids:
+        return []
+
+    prompt = str(pending_checkpoint.get("prompt", "") or "").strip()
+    start_index = -1
+    if prompt:
+        for idx, turn in enumerate(conversation_history or []):
+            if str(turn.get("role", "") or "") != "assistant":
+                continue
+            content = str(turn.get("content", "") or "")
+            if content.strip() == prompt or prompt in content:
+                start_index = idx
+
+    candidate_turns = [
+        turn
+        for turn in list(conversation_history or [])[start_index + 1 :]
+        if str(turn.get("role", "") or "") == "user"
+    ]
+    for turn in reversed(candidate_turns):
+        overrides = _parse_explicit_specialist_answers(
+            pending_checkpoint=pending_checkpoint,
+            user_message=str(turn.get("content", "") or ""),
+        )
+        if required_ids <= set(overrides):
+            return [
+                {
+                    **item,
+                    "final_answer": _coerce_specialist_answer(
+                        str(item.get("question_id", "") or "").strip(),
+                        overrides[str(item.get("question_id", "") or "").strip()],
+                    ),
+                }
+                for item in questions
+                if str(item.get("question_id", "") or "").strip() in overrides
+            ]
+    return []
 
 
 async def _handle_pending_specialist_questions(
     *,
     pending_checkpoint: dict[str, Any],
     user_message: str,
+    conversation_history: list[dict[str, Any]],
     context: dict[str, Any],
     customer_id: str,
     customer_name: str,
@@ -2538,10 +2780,23 @@ async def _handle_pending_specialist_questions(
             "",
         )
 
-    answers = _parse_specialist_answers_from_user(
-        pending_checkpoint=pending_checkpoint,
-        user_message=user_message,
-    )
+    answers: list[dict[str, Any]] = []
+    if (
+        not _parse_explicit_specialist_answers(
+            pending_checkpoint=pending_checkpoint,
+            user_message=user_message,
+        )
+        and _is_specialist_question_retry_message(user_message)
+    ):
+        answers = _recover_specialist_answers_from_history(
+            pending_checkpoint=pending_checkpoint,
+            conversation_history=conversation_history,
+        )
+    if not answers:
+        answers = _parse_specialist_answers_from_user(
+            pending_checkpoint=pending_checkpoint,
+            user_message=user_message,
+        )
     if not answers:
         return pending_checkpoint.get("prompt", ""), None, ""
 
@@ -3379,10 +3634,14 @@ def _checkpoint_from_result(
         "id": str(uuid.uuid4()),
         "type": checkpoint_type,
         "status": "pending",
+        "tool_name": tool_name,
         "prompt": prompt,
         "recommended_action": "approve or revise input",
         "options": ["approve checkpoint", "revise input"],
         "decision_context_hash": _decision_context_hash(decision_context),
+        "decision_context": dict(decision_context or {}),
+        "constraints": dict((decision_context or {}).get("constraints", {}) or {}),
+        "assumptions": list((decision_context or {}).get("assumptions", []) or []),
     }
 
 
@@ -3427,6 +3686,8 @@ def _resolve_pending_checkpoint(context: dict[str, Any], *, resolution: str, not
     if not pending:
         return
     pending["status"] = resolution
+    if resolution == "approved":
+        _record_approved_checkpoint_inputs(context, pending)
     context_store.append_decision_log(
         context,
         {
@@ -3444,6 +3705,69 @@ def _resolve_pending_checkpoint(context: dict[str, Any], *, resolution: str, not
         },
     )
     context_store.clear_pending_checkpoint(context)
+
+
+def _record_approved_checkpoint_inputs(context: dict[str, Any], checkpoint: dict[str, Any]) -> None:
+    decision_context = checkpoint.get("decision_context", {}) if isinstance(checkpoint.get("decision_context"), dict) else {}
+    constraints = dict(checkpoint.get("constraints", {}) or {})
+    if not constraints and isinstance(decision_context, dict):
+        constraints = dict(decision_context.get("constraints", {}) or {})
+    assumptions = list(checkpoint.get("assumptions", []) or [])
+    if not assumptions and isinstance(decision_context, dict):
+        assumptions = list(decision_context.get("assumptions", []) or [])
+
+    if constraints or assumptions:
+        context_store.set_archie_decision_state(context, constraints=constraints, assumptions=assumptions)
+
+    region = str(constraints.get("region", "") or "").strip()
+    if region:
+        context_store.record_resolved_question(
+            context,
+            {
+                "id": str(uuid.uuid4()),
+                "question_id": "constraints.region",
+                "question": "Approved checkpoint region",
+                "final_answer": region,
+                "source": "approved_checkpoint",
+                "confidence": "high",
+                "timestamp": _now(),
+            },
+        )
+
+    for item in assumptions:
+        if not isinstance(item, dict):
+            continue
+        statement = str(item.get("statement", "") or "").strip()
+        if not statement:
+            continue
+        lowered = statement.lower()
+        question_id = ""
+        final_answer = ""
+        if "region" in lowered and region:
+            question_id = "constraints.region"
+            final_answer = region
+        elif "single-region" in lowered or "single region" in lowered:
+            question_id = "regions.mode"
+            final_answer = "single-region"
+        elif "multi-region" in lowered or "multi region" in lowered:
+            question_id = "regions.mode"
+            final_answer = "multi-region"
+        elif any(token in lowered for token in ("component", "workload", "bom", "architecture")):
+            question_id = "components.scope"
+            final_answer = _standard_components_scope_answer()
+        if question_id and final_answer:
+            context_store.record_resolved_question(
+                context,
+                {
+                    "id": str(uuid.uuid4()),
+                    "question_id": question_id,
+                    "question": statement,
+                    "final_answer": final_answer,
+                    "source": "approved_checkpoint",
+                    "confidence": "medium",
+                    "timestamp": _now(),
+                },
+            )
 
 
 def _checkpoint_resolution_reply(checkpoint: dict[str, Any], *, approved: bool) -> str:

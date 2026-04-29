@@ -6,6 +6,7 @@ import pytest
 
 import agent.orchestrator_agent as orchestrator_agent
 from agent import context_store
+from agent import document_store
 from agent.persistence_objectstore import InMemoryObjectStore
 
 
@@ -1029,10 +1030,350 @@ def test_pending_specialist_answers_accept_loose_id_separators(monkeypatch) -> N
 
     assert result["reply"] == "Diagram generated. Key: diagrams/archie-loose/v2/diagram.drawio"
     assert captured["tool_name"] == "generate_diagram"
-    assert "components.scope: all" in captured["args"]["bom_text"]
+    assert "components.scope: all BOM-derived and standard reference architecture components" in captured["args"]["bom_text"]
     assert "regions.mode: single ad" in captured["args"]["bom_text"]
     updated = context_store.read_context(store, "archie-loose", "Archie Loose")
     assert updated["pending_checkpoint"] is None
+
+
+def test_pending_specialist_retry_recovers_prior_loose_answers(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "global-small-site", "Global Small Site")
+    prompt = "pending specialist questions"
+    context_store.set_pending_checkpoint(
+        ctx,
+        {
+            "id": "pending-specialist",
+            "type": "specialist_questions",
+            "status": "pending",
+            "tool_name": "generate_bom",
+            "tool_args": {"prompt": "Create a BOM for Global Small Site."},
+            "original_request": "Create a BOM for Global Small Site.",
+            "questions": [
+                {
+                    "question_id": "components.scope",
+                    "question": "What major OCI components should be included?",
+                },
+                {
+                    "question_id": "regions.mode",
+                    "question": "Should I assume single-region, multi-AD, or multi-region?",
+                },
+            ],
+            "prompt": prompt,
+        },
+    )
+    context_store.set_open_questions(ctx, ctx["pending_checkpoint"]["questions"])
+    context_store.write_context(store, "global-small-site", ctx)
+    document_store.save_conversation_turns(
+        store,
+        "global-small-site",
+        [
+            {"role": "assistant", "content": prompt, "timestamp": "2026-04-29T00:00:00Z"},
+            {
+                "role": "user",
+                "content": "Components.scope. all\nregion.mode, single ad",
+                "timestamp": "2026-04-29T00:01:00Z",
+            },
+        ],
+    )
+    captured = {}
+
+    async def _fake_execute_tool(tool_name, args, **_kwargs):
+        captured["tool_name"] = tool_name
+        captured["args"] = dict(args)
+        return (
+            "Final BOM prepared. Review line items.",
+            "",
+            {
+                "type": "final",
+                "bom_payload": {
+                    "line_items": [{"sku": "B94176", "description": "Compute", "quantity": 2}],
+                    "totals": {"estimated_monthly_cost": 500},
+                },
+            },
+        )
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="global-small-site",
+            customer_name="Global Small Site",
+            user_message="Try again",
+            store=store,
+            text_runner=lambda _prompt, _system: "unused",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert result["reply"] == "Final BOM prepared. Review line items."
+    assert captured["tool_name"] == "generate_bom"
+    assert "components.scope: all BOM-derived and standard reference architecture components" in captured["args"]["prompt"]
+    assert "regions.mode: single ad" in captured["args"]["prompt"]
+    updated = context_store.read_context(store, "global-small-site", "Global Small Site")
+    assert updated["pending_checkpoint"] is None
+    assert updated["archie"]["open_questions"] == []
+    assert updated["archie"]["resolved_questions"][-2]["final_answer"].startswith(
+        "all BOM-derived and standard reference architecture components"
+    )
+    assert updated["archie"]["resolved_questions"][-1]["final_answer"] == "single ad"
+
+
+def test_pending_specialist_loose_answer_ids_do_not_supersede_checkpoint(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "archie-loose-supersede", "Archie Loose")
+    context_store.set_pending_checkpoint(
+        ctx,
+        {
+            "id": "pending-specialist",
+            "type": "specialist_questions",
+            "status": "pending",
+            "tool_name": "generate_bom",
+            "tool_args": {"prompt": "Create BOM."},
+            "original_request": "Create BOM.",
+            "questions": [
+                {"question_id": "components.scope", "question": "What components?"},
+                {"question_id": "regions.mode", "question": "What region mode?"},
+            ],
+            "prompt": "pending specialist questions",
+        },
+    )
+    context_store.write_context(store, "archie-loose-supersede", ctx)
+    captured = {}
+
+    async def _fake_execute_tool(tool_name, args, **_kwargs):
+        captured["tool_name"] = tool_name
+        captured["args"] = dict(args)
+        return ("Final BOM prepared.", "", {"type": "final", "bom_payload": {"line_items": []}})
+
+    def _text_runner(_prompt: str, _system_message: str) -> str:
+        raise AssertionError("Loose specialist answers should handle the pending checkpoint directly")
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="archie-loose-supersede",
+            customer_name="Archie Loose",
+            user_message="Generate BOM.\nComponents.scope. all\nregion.mode, single ad",
+            store=store,
+            text_runner=_text_runner,
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert result["reply"] == "Final BOM prepared."
+    assert captured["tool_name"] == "generate_bom"
+    assert "components.scope: all BOM-derived and standard reference architecture components" in captured["args"]["prompt"]
+
+
+def test_south_africa_region_intent_is_normalized_and_reused() -> None:
+    ctx = context_store.read_context(InMemoryObjectStore(), "za-region", "ZA Region")
+    for phrase in ("South Africa", "Johannesburg", "south aferica"):
+        decision = orchestrator_agent.decision_context_builder.build_decision_context(
+            user_message=f"Generate a diagram in {phrase}.",
+            context=ctx,
+        )
+        assert decision["constraints"]["region"] == "af-johannesburg-1"
+        assert "preferred OCI region" not in decision["missing_inputs"]
+
+    context_store.set_archie_decision_state(
+        ctx,
+        constraints={"region": "af-johannesburg-1"},
+        assumptions=[],
+    )
+    followup = orchestrator_agent.decision_context_builder.build_decision_context(
+        user_message="Now generate the BOM.",
+        context=ctx,
+    )
+    assert followup["constraints"]["region"] == "af-johannesburg-1"
+    assert "preferred OCI region" not in followup["missing_inputs"]
+
+
+def test_components_scope_and_region_aliases_auto_fill_from_context() -> None:
+    ctx = context_store.read_context(InMemoryObjectStore(), "scope-alias", "Global Small Site")
+    context_store.set_archie_engagement_summary(
+        ctx,
+        "Global Small Site standard reference architecture with a prior BOM draft.",
+    )
+    context_store.record_agent_run(
+        ctx,
+        "bom",
+        [],
+        {"version": 1, "result_type": "final", "line_item_count": 4, "summary": "BOM draft"},
+    )
+    context_store.record_resolved_question(
+        ctx,
+        {
+            "id": "region-mode-1",
+            "question_id": "region.mode",
+            "question": "Regional topology",
+            "final_answer": "single ad",
+        },
+    )
+
+    component_answer, component_basis, component_confidence = orchestrator_agent._suggest_answer_for_question(
+        {"question_id": "components.scope", "question": "What major OCI components should be shown?"},
+        context=ctx,
+        user_message="Use all components.",
+    )
+    region_answer, _region_basis, region_confidence = orchestrator_agent._suggest_answer_for_question(
+        {"question_id": "regions.mode", "question": "Should I assume single-region, multi-AD, or multi-region?"},
+        context=ctx,
+        user_message="Create the diagram.",
+    )
+
+    assert component_answer.startswith("all BOM-derived and standard reference architecture components")
+    assert "BOM" in component_basis
+    assert component_confidence == "high"
+    assert region_answer == "single ad"
+    assert region_confidence == "high"
+
+
+def test_missing_bom_sizing_leaves_one_targeted_question(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "sizing-only", "Global Small Site")
+    context_store.set_archie_engagement_summary(ctx, "Global Small Site in South Africa with standard components.")
+    context_store.set_archie_decision_state(ctx, constraints={"region": "af-johannesburg-1"}, assumptions=[])
+    context_store.write_context(store, "sizing-only", ctx)
+
+    async def _fake_execute_core(*_args, **_kwargs):
+        return (
+            "BOM clarification required.",
+            "",
+            {
+                "type": "question",
+                "questions": [
+                    {"id": "components.scope", "question": "What major OCI components should be included?"},
+                    {"id": "regions.mode", "question": "Single-region, multi-AD, or multi-region?"},
+                    {"id": "workload.sizing", "question": "What OCPU, memory, storage, and quantity sizing should I use?"},
+                ],
+            },
+        )
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
+
+    summary, _key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_bom",
+            {"prompt": "Now I need the BOM."},
+            customer_id="sizing-only",
+            customer_name="Global Small Site",
+            store=store,
+            text_runner=lambda _prompt, _system: "unused",
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Now I need the BOM.",
+            decision_context=orchestrator_agent.decision_context_builder.build_decision_context(
+                user_message="Now I need the BOM.",
+                context=ctx,
+            ),
+        )
+    )
+
+    assert "Question ID: workload.sizing" in summary
+    assert "Question ID: components.scope" in summary
+    assert "Suggested answer: all BOM-derived and standard reference architecture components" in summary
+    assert data["archie_question_bundle"]["type"] == "specialist_questions"
+    pending = context_store.read_context(store, "sizing-only", "Global Small Site")["pending_checkpoint"]
+    unresolved = [item for item in pending["questions"] if not item.get("final_answer")]
+    assert [item["question_id"] for item in unresolved] == ["workload.sizing"]
+
+
+def test_approved_checkpoint_inputs_are_reused_for_followup_bom(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "checkpoint-bom", "Checkpoint BOM")
+    context_store.set_pending_checkpoint(
+        ctx,
+        {
+            "id": "checkpoint-1",
+            "type": "assumption_review",
+            "status": "pending",
+            "tool_name": "generate_bom",
+            "prompt": "Discovery checkpoint required before final acceptance.",
+            "decision_context_hash": "hash",
+            "decision_context": {
+                "constraints": {"region": "af-johannesburg-1"},
+                "assumptions": [
+                    {
+                        "id": "small_site_components",
+                        "statement": "Use the standard small-site architecture components.",
+                        "risk": "medium",
+                    },
+                    {
+                        "id": "single_region",
+                        "statement": "Use a single-region deployment.",
+                        "risk": "medium",
+                    },
+                ],
+            },
+            "constraints": {"region": "af-johannesburg-1"},
+            "assumptions": [
+                {
+                    "id": "small_site_components",
+                    "statement": "Use the standard small-site architecture components.",
+                    "risk": "medium",
+                },
+                {
+                    "id": "single_region",
+                    "statement": "Use a single-region deployment.",
+                    "risk": "medium",
+                },
+            ],
+        },
+    )
+    context_store.write_context(store, "checkpoint-bom", ctx)
+
+    approve = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="checkpoint-bom",
+            customer_name="Checkpoint BOM",
+            user_message="approve checkpoint",
+            store=store,
+            text_runner=lambda _prompt, _system: "unused",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+    assert "Checkpoint approved" in approve["reply"]
+    approved_ctx = context_store.read_context(store, "checkpoint-bom", "Checkpoint BOM")
+    assert approved_ctx["pending_checkpoint"] is None
+    assert approved_ctx["archie"]["latest_approved_constraints"]["region"] == "af-johannesburg-1"
+    assert any(item["question_id"] == "components.scope" for item in approved_ctx["archie"]["resolved_questions"])
+
+    captured = {}
+
+    async def _fake_bom_request(*, args, **_kwargs):
+        captured["prompt"] = args["prompt"]
+        return {
+            "type": "final",
+            "reply": "Review line items.",
+            "bom_payload": {
+                "line_items": [{"sku": "B94176", "description": "Compute", "quantity": 2}],
+                "totals": {"estimated_monthly_cost": 500},
+            },
+            "trace": {},
+        }
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_bom_tool_request", _fake_bom_request)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="checkpoint-bom",
+            customer_name="Checkpoint BOM",
+            user_message="Now I need the BOM.",
+            store=store,
+            text_runner=lambda _prompt, _system: '{"tool": "generate_bom", "args": {"prompt": "Now I need the BOM."}}',
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "Final BOM prepared" in result["reply"]
+    assert "af-johannesburg-1" in captured["prompt"]
+    assert "all BOM-derived and standard reference architecture components" in captured["prompt"]
 
 
 def test_recall_request_returns_persisted_context_without_regeneration() -> None:
