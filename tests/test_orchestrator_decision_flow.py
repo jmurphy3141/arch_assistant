@@ -190,6 +190,34 @@ def test_checkpoint_from_result_skips_sparse_draft_checkpoint_without_high_risk_
     assert checkpoint is None
 
 
+def test_checkpoint_from_result_skips_bom_cost_checkpoint_without_budget_target() -> None:
+    checkpoint = orchestrator_agent._checkpoint_from_result(
+        tool_name="generate_bom",
+        decision_context={
+            "goal": "Generate a BOM and XLSX.",
+            "constraints": {"region": "us-ashburn-1", "cost_max_monthly": None},
+            "assumptions": [],
+            "missing_inputs": [],
+            "requires_user_confirmation": False,
+        },
+        result_data={
+            "governor": {
+                "overall_status": "checkpoint_required",
+                "decision_summary": "Cost checkpoint requested without a budget target.",
+                "cost": {
+                    "status": "checkpoint_required",
+                    "estimated_monthly_cost": 2083.09,
+                    "budget_target": None,
+                    "variance": None,
+                    "findings": [],
+                },
+            }
+        },
+    )
+
+    assert checkpoint is None
+
+
 def test_checkpoint_from_result_keeps_assumption_review_for_high_risk_signal() -> None:
     checkpoint = orchestrator_agent._checkpoint_from_result(
         tool_name="generate_terraform",
@@ -715,6 +743,85 @@ def test_save_notes_then_bom_request_hydrates_archie_context(monkeypatch) -> Non
     assert "Autonomous Database" in fake_service.chat_messages[0]
     ctx = context_store.read_context(store, "notes-bom", "Notes BOM")
     assert "private OKE platform" in ctx["archie"]["engagement_summary"]
+
+
+def test_note_capture_only_does_not_generate_bom_and_followup_uses_notes(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+
+    first = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="context-bom",
+            customer_name="Context BOM",
+            user_message=(
+                "Customer notes: the customer asked us to estimate OCI monthly cost and produce a BOM/XLSX "
+                "for a workload requiring 48 OCPU, 768 GB RAM, and 42 TB block storage in us-ashburn-1. "
+                "Do not build it yet; just remember these notes."
+            ),
+            store=store,
+            text_runner=lambda _prompt, _system: "should not be used",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "saved those customer notes" in first["reply"]
+    assert first["tool_calls"] == []
+
+    recall = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="context-bom",
+            customer_name="Context BOM",
+            user_message="What did the customer ask for?",
+            store=store,
+            text_runner=lambda _prompt, _system: "should not be used",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+    assert "48 OCPU" in recall["reply"]
+    assert "768 GB RAM" in recall["reply"]
+    assert "42 TB block storage" in recall["reply"]
+
+    fake_service = _FakeBomService(
+        [
+            {
+                "type": "final",
+                "reply": "Review line items, then export JSON or XLSX.",
+                "trace_id": "trace-context",
+                "trace": {"cache_ready": True, "cache_source": "fallback"},
+                "bom_payload": {
+                    "line_items": [
+                        {"sku": "B94176", "description": "Compute E4 OCPU", "category": "compute", "quantity": 48},
+                        {"sku": "B94177", "description": "Compute E4 Memory GB", "category": "compute", "quantity": 768},
+                        {"sku": "B91961", "description": "Block Volume Capacity GB", "category": "storage", "quantity": 43008},
+                    ],
+                    "assumptions": [],
+                    "totals": {"estimated_monthly_cost": 1859.424},
+                },
+            }
+        ]
+    )
+    monkeypatch.setattr(orchestrator_agent, "get_shared_bom_service", lambda: fake_service)
+
+    final = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="context-bom",
+            customer_name="Context BOM",
+            user_message="Use that information from the notes and conversation to create the BOM and XLSX now.",
+            store=store,
+            text_runner=lambda _prompt, _system: '{"overall_status":"pass"}',
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+    data = final["tool_calls"][0]["result_data"]
+
+    assert final["reply"].startswith("Final BOM prepared.")
+    assert "48 OCPU" in fake_service.chat_messages[0]
+    assert "768 GB RAM" in fake_service.chat_messages[0]
+    assert "42 TB block storage" in fake_service.chat_messages[0]
+    assert data["trace"]["bom_context_source"] == "persisted_notes"
+    assert data["trace"]["review_verdict"] == "pass"
 
 
 def test_save_notes_then_diagram_request_hydrates_archie_context(monkeypatch) -> None:
@@ -1253,7 +1360,38 @@ def test_missing_bom_sizing_leaves_one_targeted_question(monkeypatch) -> None:
             },
         )
 
+    async def _no_critic(**kwargs):
+        return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
+
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        orchestrator_agent._SKILL_ENGINE,
+        "postflight_check",
+        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
+            path_id=kwargs.get("path_id", ""),
+            phase="postflight",
+            status="allow",
+            reasons=[],
+            pushback_message="",
+            retry_instructions=[],
+        ),
+    )
+    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        orchestrator_agent._SKILL_ENGINE,
+        "postflight_check",
+        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
+            path_id=kwargs.get("path_id", ""),
+            phase="postflight",
+            status="allow",
+            reasons=[],
+            pushback_message="",
+            retry_instructions=[],
+        ),
+    )
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -1280,6 +1418,642 @@ def test_missing_bom_sizing_leaves_one_targeted_question(monkeypatch) -> None:
     pending = context_store.read_context(store, "sizing-only", "Global Small Site")["pending_checkpoint"]
     unresolved = [item for item in pending["questions"] if not item.get("final_answer")]
     assert [item["question_id"] for item in unresolved] == ["workload.sizing"]
+
+
+def test_bom_clarification_auto_answers_retry_and_exposes_resolved_inputs(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "bom-auto-answer", "BOM Auto Answer")
+    context_store.write_context(store, "bom-auto-answer", ctx)
+    calls: list[dict] = []
+
+    async def _fake_execute_core(tool_name, args, **_kwargs):
+        assert tool_name == "generate_bom"
+        calls.append(dict(args))
+        if not args.get("_archie_question_retry"):
+            return (
+                "BOM clarification required.",
+                "",
+                {
+                    "type": "question",
+                    "questions": [
+                        "Before finalizing, please confirm target region.",
+                        "Should this use GPU or non-GPU compute?",
+                        "How many OCPU should be included?",
+                        "How much memory should be included?",
+                        "How much block storage should be included?",
+                        "What Block Volume VPU setting should be used?",
+                        "Should a load balancer be included?",
+                        "Should Object Storage be included?",
+                        "What connectivity should be included?",
+                        "What monthly budget cap should I use?",
+                    ],
+                },
+            )
+        assert "[Archie Resolved Specialist Inputs]" in args["prompt"]
+        return (
+            "Final BOM prepared. Review line items.",
+            "",
+            {
+                "type": "final",
+                "reply": "Final BOM prepared. Review line items.",
+                "bom_payload": {
+                    "line_items": [{"sku": "B94176", "description": "Compute", "quantity": 48}],
+                    "totals": {"estimated_monthly_cost": 4500},
+                },
+            },
+        )
+
+    async def _no_critic(**kwargs):
+        return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        orchestrator_agent._SKILL_ENGINE,
+        "postflight_check",
+        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
+            path_id=kwargs.get("path_id", ""),
+            phase="postflight",
+            status="allow",
+            reasons=[],
+            pushback_message="",
+            retry_instructions=[],
+        ),
+    )
+    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        orchestrator_agent._SKILL_ENGINE,
+        "postflight_check",
+        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
+            path_id=kwargs.get("path_id", ""),
+            phase="postflight",
+            status="allow",
+            reasons=[],
+            pushback_message="",
+            retry_instructions=[],
+        ),
+    )
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="bom-auto-answer",
+            customer_name="BOM Auto Answer",
+            user_message=(
+                "Generate a BOM in us-ashburn-1 for non-GPU compute: 48 OCPU, 768 GB RAM, "
+                "42 TB block storage, Balanced 10 VPU/GB, load balancer, Object Storage, "
+                "FastConnect, under $5000 monthly."
+            ),
+            store=store,
+            text_runner=lambda _prompt, _system: (
+                '{"tool": "generate_bom", "args": {"prompt": "Generate a BOM in us-ashburn-1 for non-GPU compute: '
+                '48 OCPU, 768 GB RAM, 42 TB block storage, Balanced 10 VPU/GB, load balancer, Object Storage, '
+                'FastConnect, under $5000 monthly."}}'
+            ),
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert len(calls) == 2
+    assert "constraints.region: us-ashburn-1" in calls[1]["prompt"]
+    assert "bom.compute.ocpu: 48 OCPU" in calls[1]["prompt"]
+    assert "bom.compute.memory: 768 GB RAM" in calls[1]["prompt"]
+    assert "bom.storage.block: 42 TB block storage" in calls[1]["prompt"]
+    assert "bom.network.connectivity: FastConnect connectivity" in calls[1]["prompt"]
+    assert "Archie used these answers:" in result["reply"]
+    assert "- bom.compute.ocpu: 48 OCPU" in result["reply"]
+    tool_data = result["tool_calls"][0]["result_data"]
+    resolved_inputs = tool_data["bom_payload"]["resolved_inputs"]
+    assert len(resolved_inputs) == 9
+    assert {item["question_id"] for item in resolved_inputs} >= {
+        "constraints.region",
+        "bom.compute.gpu",
+        "bom.compute.ocpu",
+        "bom.compute.memory",
+        "bom.storage.block",
+        "bom.storage.vpu",
+        "bom.network.load_balancer",
+        "bom.storage.object",
+        "bom.network.connectivity",
+    }
+    assert {item["question_id"] for item in resolved_inputs}.isdisjoint({"bom.budget"})
+
+
+def test_chat_discovery_profile_hydrates_followup_bom(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    calls: list[dict] = []
+
+    discovery = (
+        "RGA discovery notes: platform VMware ESXi on VxRail. CPU: 96 logical cores, "
+        "4 sockets, 24 cores per socket, processor model Intel Xeon Gold 6248R, "
+        "used 1200 GHz, total 2400 GHz. Memory used: 768 GB total: 1024 GB. "
+        "Storage used: 42 TB total: 100 TB. Connectivity: internet bandwidth 200 Mbps, "
+        "MPLS and SD-WAN. DR: cross-region restore with 24h SLA. Workloads include "
+        "2 DCs, SQL DBs, Oracle DBs, custom apps, patch repo, and file servers."
+    )
+
+    async def _fake_execute_core(tool_name, args, **_kwargs):
+        assert tool_name == "generate_bom"
+        calls.append(dict(args))
+        if not args.get("_archie_question_retry"):
+            return (
+                "BOM clarification required.",
+                "",
+                {
+                    "type": "question",
+                    "questions": [
+                        "Before finalizing, please confirm target region.",
+                        "Should this use GPU or non-GPU compute?",
+                        "How many OCPU should be included?",
+                        "How much memory should be included?",
+                        "How much block storage should be included?",
+                        "What connectivity should be included?",
+                    ],
+                },
+            )
+        return (
+            "Final BOM prepared. Review line items.",
+            "",
+            {
+                "type": "final",
+                "reply": "Final BOM prepared. Review line items.",
+                "bom_payload": {
+                    "line_items": [{"sku": "B94176", "description": "Compute OCPU", "quantity": 96}],
+                    "totals": {"estimated_monthly_cost": 9000},
+                },
+            },
+        )
+
+    async def _no_critic(**kwargs):
+        return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+
+    first = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="rga-profile",
+            customer_name="RGA Profile",
+            user_message=discovery,
+            store=store,
+            text_runner=lambda _prompt, _system: "Captured the discovery details.",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+    assert first["tool_calls"] == []
+
+    ctx = context_store.read_context(store, "rga-profile", "RGA Profile")
+    profile = ctx["archie"]["infrastructure_profile"]
+    assert profile["platform"] == "VxRail / VMware ESXi"
+    assert profile["cpu"]["logical_cores"] == 96
+    assert profile["cpu"]["sockets"] == 4
+    assert profile["cpu"]["cores_per_socket"] == 24
+    assert profile["memory"]["used_gb"] == 768
+    assert profile["storage"]["used_tb"] == 42
+    assert profile["connectivity"]["internet_bandwidth"] == "200 Mbps"
+    assert profile["connectivity"]["mpls"] is True
+    assert profile["connectivity"]["sd_wan"] is True
+    assert profile["dr"]["cross_region_restore"] is True
+    assert profile["dr"]["sla_hours"] == 24
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="rga-profile",
+            customer_name="RGA Profile",
+            user_message="lets assume VMware and build BOM",
+            store=store,
+            text_runner=lambda _prompt, _system: "unused",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert [call["tool"] for call in result["tool_calls"]] == ["generate_bom"]
+    assert "Archie needs confirmation" not in result["reply"]
+    updated = context_store.read_context(store, "rga-profile", "RGA Profile")
+    assert updated["pending_checkpoint"] is None
+    assert "preferred OCI region" not in updated["latest_decision_context"]["missing_inputs"]
+    assert any(
+        item["id"] == "bom_region_pricing_consistent"
+        for item in updated["latest_decision_context"]["assumptions"]
+    )
+    assert len(calls) == 2
+    retry_prompt = calls[1]["prompt"]
+    assert "VxRail / VMware ESXi" in retry_prompt
+    assert "logical cores=96" in retry_prompt
+    assert "memory: used_gb=768" in retry_prompt
+    assert "storage: used_tb=42" in retry_prompt
+    assert "internet bandwidth 200 Mbps" in retry_prompt
+    assert "SD-WAN" in retry_prompt
+    assert "sla_hours=24" in retry_prompt
+    assert "bom.compute.gpu: non-GPU compute" in retry_prompt
+    assert "bom.compute.ocpu: 96 OCPU equivalent" in retry_prompt
+    assert "bom.compute.memory: 1024 GB RAM" in retry_prompt
+    assert "bom.storage.block: 100 TB block storage" in retry_prompt
+    assert "pricing-only estimate; treat OCI pricing as region-consistent" in retry_prompt
+
+
+def test_discovery_facts_allow_later_xlsx_request_to_generate_bom(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    calls: list[dict] = []
+    discovery = (
+        "KR1 discovery: South Africa customer on VxRail VMware ESXi. "
+        "96 logical cores, memory used: 768 GB total: 1024 GB, storage used: 42 TB total: 100 TB. "
+        "100Mbps internet, MPLS and SD-WAN, WAF and bastion required, single AD, 24h DR. "
+        "Workloads include domain controllers, SQL DBs, Oracle DBs, custom apps, patch repo, and file servers."
+    )
+
+    async def _fake_execute_core(tool_name, args, **_kwargs):
+        assert tool_name == "generate_bom"
+        calls.append(dict(args))
+        return (
+            "Final BOM prepared. Review line items.",
+            "",
+            {
+                "type": "final",
+                "reply": "Final BOM prepared. Review line items.",
+                "bom_payload": {
+                    "line_items": [{"sku": "B94176", "description": "Compute OCPU", "quantity": 96}],
+                    "totals": {"estimated_monthly_cost": 9000},
+                },
+            },
+        )
+
+    async def _no_critic(**kwargs):
+        return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+
+    first = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="kr1-xlsx",
+            customer_name="KR1",
+            user_message=discovery,
+            store=store,
+            text_runner=lambda _prompt, _system: "Captured.",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+    assert first["tool_calls"] == []
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="kr1-xlsx",
+            customer_name="KR1",
+            user_message="I need the XLSX now",
+            store=store,
+            text_runner=lambda _prompt, _system: "should not plan",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert [call["tool"] for call in result["tool_calls"]] == ["generate_bom"]
+    assert calls
+    prompt = calls[0]["prompt"]
+    assert "accumulated_client_facts" in prompt
+    assert "VxRail / VMware ESXi" in prompt
+    assert "af-johannesburg-1" in prompt
+    assert "waf=True" in prompt or '"waf": true' in prompt
+    assert "budget" not in result["reply"].lower()
+
+
+def test_kr1_bom_request_injects_canonical_memory_without_sizing_clarification(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    calls: list[dict] = []
+    discovery = (
+        "KR1 discovery: VxRail VMware preference in South Africa. "
+        "Workloads: SQL Server, Oracle databases, Linux servers, Windows servers. "
+        "96 logical cores, memory used 768 GB total 1024 GB, storage used 42 TB total 100 TB. "
+        "100Mbps internet, MPLS, SD-WAN, cross-region restore, 24hr SLA."
+    )
+
+    async def _fake_execute_core(tool_name, args, **_kwargs):
+        assert tool_name == "generate_bom"
+        calls.append(dict(args))
+        assert isinstance(args.get("_memory_snapshot"), dict)
+        assert args.get("_memory_snapshot_hash")
+        assert "[Archie Canonical Memory]" in args["prompt"]
+        assert "Use the provided memory as the source of truth" in args["prompt"]
+        return (
+            "Final BOM prepared. Review line items.",
+            "",
+            {
+                "type": "final",
+                "reply": "Final BOM prepared. Review line items.",
+                "bom_payload": {
+                    "line_items": [
+                        {"sku": "B94176", "description": "Compute OCPU", "category": "compute", "quantity": 96},
+                        {"sku": "B88514", "description": "Compute memory", "category": "compute", "quantity": 1024},
+                        {"sku": "B91961", "description": "Block storage", "category": "storage", "quantity": 102400},
+                    ],
+                    "totals": {"estimated_monthly_cost": 9000},
+                },
+            },
+        )
+
+    async def _no_critic(**kwargs):
+        return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        orchestrator_agent._SKILL_ENGINE,
+        "postflight_check",
+        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
+            path_id=kwargs.get("path_id", ""),
+            phase="postflight",
+            status="allow",
+            reasons=[],
+            pushback_message="",
+            retry_instructions=[],
+        ),
+    )
+
+    first = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="kr1-memory",
+            customer_name="KR1",
+            user_message=discovery,
+            store=store,
+            text_runner=lambda _prompt, _system: "Captured.",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+    assert first["tool_calls"] == []
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="kr1-memory",
+            customer_name="KR1",
+            user_message="we only need a BOM and estimated cost to start",
+            store=store,
+            text_runner=lambda _prompt, _system: "unused",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert [call["tool"] for call in result["tool_calls"]] == ["generate_bom"]
+    assert "Archie needs confirmation" not in result["reply"]
+    assert "Facts Used from Memory" in result["reply"]
+    memory = calls[0]["_memory_snapshot"]
+    assert memory["client_facts"]["platform"] == "VxRail / VMware"
+    assert memory["client_facts"]["sizing"]["memory"]["total_gb"] == 1024
+    assert "SQL Server" in memory["client_facts"]["databases"]
+    assert "Linux" in memory["client_facts"]["os_mix"]
+    trace = result["tool_calls"][0]["result_data"]["trace"]
+    assert trace["memory_snapshot_hash"] == calls[0]["_memory_snapshot_hash"]
+    assert "client_facts" in trace["memory_sections_injected"]
+
+
+def test_specialist_memory_contract_applies_to_all_generation_tools(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "memory-all-tools", "Memory All Tools")
+    context_store.merge_archie_client_facts(
+        ctx,
+        {
+            "region": "us-ashburn-1",
+            "platform": "VMware",
+            "workloads": ["web", "database"],
+            "infrastructure": {"cpu": {"logical_cores": 8}, "memory": {"total_gb": 128}, "storage": {"total_tb": 4}},
+            "connectivity": {"vpn": True},
+            "security": {"waf": True},
+        },
+    )
+    context_store.record_agent_run(
+        ctx,
+        "diagram",
+        [],
+        {
+            "version": 1,
+            "diagram_key": "diagrams/memory-all-tools/v1/diagram.drawio",
+            "summary": "VCN, public load balancer, app subnet, database subnet, WAF.",
+            "node_count": 5,
+        },
+    )
+    context_store.write_context(store, "memory-all-tools", ctx)
+    captured: dict[str, dict] = {}
+
+    async def _fake_execute_core(tool_name, args, **_kwargs):
+        captured[tool_name] = dict(args)
+        return (
+            f"{tool_name} completed",
+            "artifact-key" if tool_name != "generate_bom" else "",
+            {
+                "type": "final",
+                "reply": f"{tool_name} completed",
+                "bom_payload": {"line_items": [{"sku": "B94176", "description": "Compute OCPU", "category": "compute", "quantity": 8}], "totals": {}}
+                if tool_name == "generate_bom"
+                else {},
+                "render_manifest": {"node_count": 5} if tool_name == "generate_diagram" else {},
+            },
+        )
+
+    async def _no_critic(**kwargs):
+        return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        orchestrator_agent._SKILL_ENGINE,
+        "postflight_check",
+        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
+            path_id=kwargs.get("path_id", ""),
+            phase="postflight",
+            status="allow",
+            reasons=[],
+            pushback_message="",
+            retry_instructions=[],
+        ),
+    )
+
+    requests = {
+        "generate_bom": {"prompt": "Generate BOM"},
+        "generate_diagram": {"bom_text": "Generate diagram"},
+        "generate_waf": {"feedback": "Review WAF"},
+        "generate_terraform": {"prompt": "Generate networking module with Object Storage remote state and private NSG security controls"},
+        "generate_pov": {"feedback": "Draft POV for business modernization and private OKE architecture"},
+        "generate_jep": {"feedback": "Draft JEP from current engagement context"},
+    }
+    for tool_name, args in requests.items():
+        asyncio.run(
+            orchestrator_agent._execute_tool(
+                tool_name,
+                args,
+                customer_id="memory-all-tools",
+                customer_name="Memory All Tools",
+                store=store,
+                text_runner=lambda _prompt, _system: '{"overall_status":"pass","security":{"status":"pass","findings":[],"required_actions":[]},"cost":{"status":"pass","estimated_monthly_cost":null,"budget_target":null,"variance":null,"findings":[]},"quality":{"status":"pass","issues":[],"suggestions":[],"confidence":95,"summary":"ok","severity":"low"},"decision_summary":"ok","reason_codes":[]}',
+                a2a_base_url="http://localhost:8080",
+                specialist_mode="legacy",
+                user_message=args.get("prompt") or args.get("feedback") or args.get("bom_text") or "",
+                decision_context={"goal": "test", "constraints": {"region": "us-ashburn-1"}, "assumptions": [], "missing_inputs": []},
+            )
+        )
+
+    for tool_name, args in captured.items():
+        primary = orchestrator_agent._tool_primary_input_key(tool_name)
+        assert isinstance(args.get("_memory_snapshot"), dict), tool_name
+        assert args.get("_memory_snapshot_hash"), tool_name
+        assert primary and "[Archie Canonical Memory]" in args[primary], tool_name
+
+
+def test_new_xlsx_with_incorrect_prior_bom_builds_revision_brief(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "revision-bom", "Revision BOM")
+    context_store.merge_archie_client_facts(
+        ctx,
+        {
+            "geography": "South Africa",
+            "platform": "VxRail / VMware ESXi",
+            "security": {"waf": True, "bastion": True},
+            "connectivity": {"mpls": True, "sd_wan": True},
+            "dr": {"sla_hours": 24},
+        },
+    )
+    prior_payload = {
+        "currency": "USD",
+        "line_items": [
+            {"sku": "B94176", "description": "Generic compute", "category": "compute", "quantity": 4}
+        ],
+        "totals": {"estimated_monthly_cost": 500},
+    }
+    context_store.record_bom_work_product(
+        ctx,
+        bom_payload=prior_payload,
+        context_source="direct_request",
+        grounding="generic",
+    )
+    bom_key = "customers/revision-bom/bom/xlsx/old.xlsx"
+    store.put(bom_key, b"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    store.put(
+        f"{bom_key}.metadata.json",
+        b'{"tool":"generate_bom","status":"approved","checkpoint_required":false}',
+        "application/json",
+    )
+    context_store.record_agent_run(
+        ctx,
+        "bom",
+        [],
+        {
+            "version": 1,
+            "result_type": "final",
+            "xlsx_artifact_key": bom_key,
+            "xlsx_filename": "old.xlsx",
+            "bom_xlsx": {"key": bom_key, "filename": "old.xlsx"},
+        },
+    )
+    context_store.write_context(store, "revision-bom", ctx)
+    calls: list[dict] = []
+
+    async def _fake_execute_core(tool_name, args, **_kwargs):
+        assert tool_name == "generate_bom"
+        calls.append(dict(args))
+        return (
+            "Final BOM prepared. Review line items.",
+            "",
+            {
+                "type": "final",
+                "reply": "Final BOM prepared. Review line items.",
+                "bom_payload": {
+                    "line_items": [
+                        {"sku": "B94176", "description": "Compute OCPU", "category": "compute", "quantity": 96},
+                        {"sku": "WAF", "description": "Web Application Firewall", "category": "security", "quantity": 1},
+                    ],
+                    "totals": {"estimated_monthly_cost": 9500},
+                },
+            },
+        )
+
+    async def _no_critic(**kwargs):
+        return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="revision-bom",
+            customer_name="Revision BOM",
+            user_message="The previous BOM is incorrect. Build a new XLSX version with the new data.",
+            store=store,
+            text_runner=lambda _prompt, _system: "should not return old link",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert [call["tool"] for call in result["tool_calls"]] == ["generate_bom"]
+    assert "/api/bom/revision-bom/download/old.xlsx" not in result["reply"]
+    prompt = calls[0]["prompt"]
+    assert "Revise the current BOM/XLSX work product" in prompt
+    assert "[Prior BOM Baseline]" in prompt
+    assert "WAF is required" in prompt
+    assert "bastion is required" in prompt
+    assert "SD-WAN connectivity" in prompt
+
+
+def test_bom_mixed_confidence_keeps_unresolved_checkpoint(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "bom-mixed-confidence", "BOM Mixed")
+    context_store.write_context(store, "bom-mixed-confidence", ctx)
+
+    async def _fake_execute_core(*_args, **_kwargs):
+        return (
+            "BOM clarification required.",
+            "",
+            {
+                "type": "question",
+                "questions": [
+                    "How many OCPU should be included?",
+                    "How much memory should be included?",
+                    "What database license model should be used?",
+                ],
+            },
+        )
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
+
+    summary, _key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_bom",
+            {"prompt": "Generate BOM for 8 OCPU and 128 GB RAM."},
+            customer_id="bom-mixed-confidence",
+            customer_name="BOM Mixed",
+            store=store,
+            text_runner=lambda _prompt, _system: "unused",
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Generate BOM for 8 OCPU and 128 GB RAM.",
+            decision_context=orchestrator_agent.decision_context_builder.build_decision_context(
+                user_message="Generate BOM for 8 OCPU and 128 GB RAM.",
+                context=ctx,
+            ),
+        )
+    )
+
+    assert "Question ID: bom.compute.ocpu" in summary
+    assert "Suggested answer: 8 OCPU" in summary
+    assert "Question ID: bom.compute.memory" in summary
+    assert "Suggested answer: 128 GB RAM" in summary
+    assert "Question ID: generate_bom.q3" in summary
+    pending_questions = data["archie_question_bundle"]["questions"]
+    unresolved = [item for item in pending_questions if not item.get("final_answer")]
+    assert [item["question_id"] for item in unresolved] == ["generate_bom.q3"]
 
 
 def test_approved_checkpoint_inputs_are_reused_for_followup_bom(monkeypatch) -> None:
@@ -1415,6 +2189,363 @@ def test_recall_request_returns_persisted_context_without_regeneration() -> None
     assert "Private OKE platform with WAF and BOM draft." in result["reply"]
     assert "Architecture Diagram (v2)" in result["reply"]
     assert "Management Summary" not in result["reply"]
+    assert llm_calls["count"] == 0
+
+
+def test_export_xlsx_without_manifest_returns_no_artifact_blocker() -> None:
+    llm_calls = {"count": 0}
+
+    def _text_runner(_prompt: str, _system_message: str) -> str:
+        llm_calls["count"] += 1
+        return "I exported the workbook."
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="export-empty",
+            customer_name="Export Empty",
+            user_message="export the BOM to xlsx",
+            store=InMemoryObjectStore(),
+            text_runner=_text_runner,
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "I don't have a generated artifact/link for that yet" in result["reply"]
+    assert result["tool_calls"] == []
+    assert llm_calls["count"] == 0
+
+
+def test_workbook_only_followup_does_not_generate_default_bom(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    calls: list[str] = []
+
+    async def _fake_execute_tool(tool_name, args, **_kwargs):
+        calls.append(tool_name)
+        return ("default BOM should not run", "", {})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="workbook-only",
+            customer_name="Workbook Only",
+            user_message="build the xlsc",
+            store=store,
+            text_runner=lambda _prompt, _system: "should not call planner",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "I don't have a generated artifact/link for that yet" in result["reply"]
+    assert result["tool_calls"] == []
+    assert calls == []
+
+
+def test_share_link_returns_only_manifest_backed_downloads() -> None:
+    store = InMemoryObjectStore()
+    diagram_key = "agent3/link-customer/oci_architecture/v1/diagram.drawio"
+    bom_key = "customers/link-customer/bom/xlsx/oci-bom-test.xlsx"
+    bom_metadata = {
+        "schema_version": "1.0",
+        "tool": "generate_bom",
+        "status": "approved",
+        "checkpoint_required": False,
+        "filename": "oci-bom-test.xlsx",
+        "key": bom_key,
+    }
+    store.put(diagram_key, b"<mxGraphModel />", "text/xml")
+    store.put(bom_key, b"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    store.put(f"{bom_key}.metadata.json", b'{"tool":"generate_bom","status":"approved","checkpoint_required":false}', "application/json")
+    ctx = context_store.read_context(store, "link-customer", "Link Customer")
+    context_store.record_agent_run(
+        ctx,
+        "diagram",
+        [],
+        {
+            "version": 1,
+            "diagram_key": diagram_key,
+            "diagram_name": "oci_architecture",
+            "node_count": 4,
+        },
+    )
+    context_store.record_agent_run(
+        ctx,
+        "bom",
+        [],
+        {
+            "version": 1,
+            "result_type": "final",
+            "xlsx_artifact_key": bom_key,
+            "xlsx_filename": "oci-bom-test.xlsx",
+            "xlsx_metadata": bom_metadata,
+            "bom_xlsx": {"key": bom_key, "filename": "oci-bom-test.xlsx", "metadata": bom_metadata},
+        },
+    )
+    context_store.write_context(store, "link-customer", ctx)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="link-customer",
+            customer_name="Link Customer",
+            user_message="share link for the generated files",
+            store=store,
+            text_runner=lambda _prompt, _system: "should not be used",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "/api/download/diagram.drawio?client_id=link-customer&diagram_name=oci_architecture" in result["reply"]
+    assert "/api/bom/link-customer/download/oci-bom-test.xlsx" in result["reply"]
+    assert "should not be used" not in result["reply"]
+
+
+def test_metadata_less_bom_xlsx_is_hidden_from_link_replies() -> None:
+    store = InMemoryObjectStore()
+    bom_key = "customers/old-bom/bom/xlsx/old.xlsx"
+    store.put(bom_key, b"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    ctx = context_store.read_context(store, "old-bom", "Old BOM")
+    context_store.record_agent_run(
+        ctx,
+        "bom",
+        [],
+        {
+            "version": 1,
+            "result_type": "final",
+            "xlsx_artifact_key": bom_key,
+            "xlsx_filename": "old.xlsx",
+            "bom_xlsx": {"key": bom_key, "filename": "old.xlsx"},
+        },
+    )
+    context_store.write_context(store, "old-bom", ctx)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="old-bom",
+            customer_name="Old BOM",
+            user_message="share link for the xlsx",
+            store=store,
+            text_runner=lambda _prompt, _system: "I found old.xlsx",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "I don't have a generated artifact/link for that yet" in result["reply"]
+    assert "old.xlsx" not in result["reply"]
+
+
+def test_bucket_verification_uses_store_head_not_chat_history() -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "verify-customer", "Verify Customer")
+    context_store.record_agent_run(
+        ctx,
+        "diagram",
+        [],
+        {
+            "version": 1,
+            "diagram_key": "agent3/verify-customer/oci_architecture/v1/diagram.drawio",
+            "node_count": 4,
+        },
+    )
+    context_store.write_context(store, "verify-customer", ctx)
+    document_store.save_conversation_turns(
+        store,
+        "verify-customer",
+        [{"role": "assistant", "content": "The file was uploaded successfully."}],
+    )
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="verify-customer",
+            customer_name="Verify Customer",
+            user_message="are these files in the bucket?",
+            store=store,
+            text_runner=lambda _prompt, _system: "yes, uploaded",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "not found" in result["reply"]
+    assert "persisted keys only" in result["reply"]
+    assert result["tool_calls"] == []
+
+
+def test_pending_assumption_checkpoint_blocks_export_until_approval() -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "checkpoint-export", "Checkpoint Export")
+    context_store.set_pending_checkpoint(
+        ctx,
+        {
+            "id": "checkpoint-1",
+            "type": "assumption_review",
+            "status": "pending",
+            "tool_name": "generate_bom",
+            "prompt": "Discovery checkpoint required before final acceptance.",
+            "decision_context_hash": "hash",
+        },
+    )
+    context_store.write_context(store, "checkpoint-export", ctx)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="checkpoint-export",
+            customer_name="Checkpoint Export",
+            user_message="export xlsx",
+            store=store,
+            text_runner=lambda _prompt, _system: "exported",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "while this checkpoint is pending" in result["reply"]
+    assert "approve checkpoint" in result["reply"]
+    assert result["tool_calls"] == []
+
+
+def test_operating_model_is_advisory_but_export_is_blocked() -> None:
+    store = InMemoryObjectStore()
+    advisory = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="om-customer",
+            customer_name="OM Customer",
+            user_message="OM for lift and shift",
+            store=store,
+            text_runner=lambda _prompt, _system: "Use a migration factory operating model with workstream owners.",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+    assert "migration factory operating model" in advisory["reply"]
+
+    export = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="om-customer",
+            customer_name="OM Customer",
+            user_message="export OM XLSX for lift and shift",
+            store=store,
+            text_runner=lambda _prompt, _system: "I created the operating model workbook.",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+    assert "Operating Model export is not a supported Archie artifact path yet" in export["reply"]
+    assert "I created the operating model workbook" not in export["reply"]
+
+
+def test_key_specs_diagram_request_after_reset_routes_to_diagram(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "rga", "RGA")
+    ctx["latest_decision_context"] = {"goal": "export operating model"}
+    ctx["pending_checkpoint"] = {"id": "old-checkpoint"}
+    context_store.set_archie_engagement_summary(ctx, "Old Operating Model export workflow.")
+    context_store.write_context(store, "rga", ctx)
+    context_store.reset_context(store, "rga")
+    calls: list[str] = []
+
+    async def _fake_execute_tool(tool_name, args, **_kwargs):
+        calls.append(tool_name)
+        return (f"{tool_name} completed", "diagrams/rga/v1/diagram.drawio", {})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="rga",
+            customer_name="RGA",
+            user_message=(
+                "Build a diagram for this Key Specs: us-ashburn-1, hub and spoke VCN, "
+                "private OKE, Autonomous Database, and Object Storage."
+            ),
+            store=store,
+            text_runner=lambda _prompt, _system: "I created an Operating Model export.",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert calls == ["generate_diagram"]
+    assert [call["tool"] for call in result["tool_calls"]] == ["generate_diagram"]
+    assert "Operating Model export is not a supported Archie artifact path yet" not in result["reply"]
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_tool"),
+    [
+        ("build me the xlxs bom", "generate_bom"),
+        ("generate a draw.io topology file", "generate_diagram"),
+        ("generate terraform for the latest diagram with Resource Manager remote state and private networking", "generate_terraform"),
+        ("generate a POV for the workshop", "generate_pov"),
+        ("generate a JEP for the workshop", "generate_jep"),
+        ("run a WAF review for the latest architecture", "generate_waf"),
+    ],
+)
+def test_deliverable_requests_invoke_only_matching_specialist(monkeypatch, message, expected_tool) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "specialist-only", "Specialist Only")
+    context_store.set_archie_engagement_summary(
+        ctx,
+        "Retail customer migrating ecommerce to private OKE with WAF and Autonomous Database.",
+    )
+    context_store.record_agent_run(
+        ctx,
+        "diagram",
+        [],
+        {
+            "version": 1,
+            "diagram_key": "diagrams/specialist-only/v1/diagram.drawio",
+            "node_count": 6,
+            "deployment_summary": "private OKE architecture",
+        },
+    )
+    context_store.write_context(store, "specialist-only", ctx)
+    calls: list[str] = []
+
+    async def _fake_execute_tool(tool_name, args, **_kwargs):
+        calls.append(tool_name)
+        return (f"{tool_name} completed", f"{tool_name}/artifact" if tool_name != "generate_bom" else "", {})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(orchestrator_agent, "_terraform_scope_details_are_bounded", lambda **_kwargs: True)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="specialist-only",
+            customer_name="Specialist Only",
+            user_message=message,
+            store=store,
+            text_runner=lambda _prompt, _system: "I free-wrote the deliverable.",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert calls == [expected_tool]
+    assert [call["tool"] for call in result["tool_calls"]] == [expected_tool]
+    assert "I free-wrote the deliverable" not in result["reply"]
+
+
+def test_migration_target_question_uses_persisted_context_only() -> None:
+    llm_calls = {"count": 0}
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="no-target",
+            customer_name="No Target",
+            user_message="what system are we migrating?",
+            store=InMemoryObjectStore(),
+            text_runner=lambda _prompt, _system: llm_calls.__setitem__("count", llm_calls["count"] + 1) or "Invented ERP",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "I don't have a verified migration target recorded" in result["reply"]
+    assert "Invented ERP" not in result["reply"]
     assert llm_calls["count"] == 0
 
 

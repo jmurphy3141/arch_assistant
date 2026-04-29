@@ -41,7 +41,7 @@ from agent.orchestrator_skill_engine import (
     OrchestratorSkillEngine,
 )
 from agent.skill_loader import discover_skills, select_skills_for_call
-from agent.bom_service import get_shared_bom_service, new_trace_id
+from agent.bom_service import CPU_SKU_TO_MEM_SKU, get_shared_bom_service, new_trace_id
 from agent.reference_architecture import (
     build_reference_context_lines,
     select_reference_architecture,
@@ -78,6 +78,8 @@ Internal execution policy (not user-visible):
 - Never run unrelated generation paths in the same turn.
 
 Change/update workflow policy:
+- Use accumulated client facts and work products unless the user supersedes them.
+- Updated/new deliverables are revisions; compare current facts against the latest work product before deciding.
 - If user indicates a change like "we forgot/missed/add/update element," first inspect what already exists.
 - Propose impacted outputs in order, in plain language.
 - Ask for explicit confirmation before broad multi-output updates.
@@ -116,6 +118,14 @@ _ARCHITECTURE_TOOLS = {
     "generate_waf",
     "generate_terraform",
     "get_document",
+}
+_MEMORY_CONTRACT_TOOLS = {
+    "generate_diagram",
+    "generate_bom",
+    "generate_pov",
+    "generate_jep",
+    "generate_waf",
+    "generate_terraform",
 }
 _MANDATORY_SKILL_FALLBACKS = {
     "generate_diagram": ("diagram_for_oci", "orchestrator"),
@@ -185,6 +195,24 @@ async def run_turn(
             "artifacts": artifacts,
             "history_length": len(history) + len(new_turns),
         }
+
+    def _save_context_note_only(note_text: str) -> str:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        note_key = document_store.save_note(
+            store,
+            customer_id,
+            f"note_{ts}.md",
+            note_text.encode("utf-8"),
+        )
+        _record_saved_note_context(
+            store=store,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            note_key=note_key,
+            note_text=note_text,
+            decision_context=decision_context,
+        )
+        return note_key
 
     async def _run_generation_step(
         tool_name: str,
@@ -286,18 +314,45 @@ async def run_turn(
         await asyncio.to_thread(context_store.write_context, store, customer_id, context)
         return _finalize_turn(_checkpoint_resolution_reply(pending_checkpoint, approved=False))
 
+    persisted_context_summary_before_turn = context_store.build_context_summary(context).strip()
     decision_context = decision_context_builder.build_decision_context(
         user_message=user_message,
         context=context,
     )
     _record_region_constraint_if_present(context, decision_context)
+    _record_infrastructure_profile_if_present(context, user_message)
     context_store.set_latest_decision_context(context, decision_context)
     context_store.set_archie_decision_state(
         context,
         constraints=dict(decision_context.get("constraints", {}) or {}),
         assumptions=list(decision_context.get("assumptions", []) or []),
     )
+    context_store.refresh_archie_memory(context)
     await asyncio.to_thread(context_store.write_context, store, customer_id, context)
+
+    if _is_note_capture_only_request(user_message):
+        note_key = await asyncio.to_thread(_save_context_note_only, user_message)
+        return _finalize_turn(f"I saved those customer notes for later use. Key: {note_key}")
+
+    action_intent = _tool_backed_action_intent(user_message)
+    if (
+        action_intent
+        and pending_checkpoint
+        and str(pending_checkpoint.get("type", "") or "") in {"assumption_review", "cost_override"}
+    ):
+        return _finalize_turn(_checkpoint_blocks_artifact_action_reply(pending_checkpoint))
+
+    action_reply = _tool_backed_action_reply(
+        user_message=user_message,
+        action_intent=action_intent,
+        requested_tools=requested_tools,
+        context=context,
+        customer_id=customer_id,
+        store=store,
+    )
+    if action_reply is not None:
+        return _finalize_turn(action_reply)
+
     prompt = _build_prompt(
         history,
         summary,
@@ -307,6 +362,8 @@ async def run_turn(
     )
 
     if _is_recall_intent(user_message) and not requested_tools:
+        if _is_migration_target_recall_intent(user_message) and not persisted_context_summary_before_turn:
+            return _finalize_turn("I don't have a verified migration target recorded for this customer yet.")
         return _finalize_turn(_build_recall_reply(context))
 
     pending = context_store.get_pending_update(context) or _PENDING_UPDATE_WORKFLOWS.get(customer_id)
@@ -467,15 +524,27 @@ async def run_turn(
 
             for tool_name in sequence:
                 if tool_name == "generate_bom":
-                    tool_args = {
-                        "prompt": _build_scenario_bom_prompt(
-                            scenario_label=scenario_label,
-                            scenario_text=scenario_text,
-                            user_message=user_message,
-                        ),
-                        "_bom_context_source": "scenario_request",
-                        "_bom_grounded_from_context": True,
-                    }
+                    if _is_bom_revision_request(scenario_text, user_message, context) or (
+                        _mentions_bom_work_product(user_message) and _latest_bom_fact_mismatches(context)
+                    ):
+                        tool_args = {"prompt": user_message}
+                    elif _bom_followup_should_hydrate_from_context(
+                        prompt=scenario_text,
+                        user_message=user_message,
+                        context=context,
+                        decision_context=decision_context,
+                    ):
+                        tool_args = {"prompt": user_message}
+                    else:
+                        tool_args = {
+                            "prompt": _build_scenario_bom_prompt(
+                                scenario_label=scenario_label,
+                                scenario_text=scenario_text,
+                                user_message=user_message,
+                            ),
+                            "_bom_context_source": "scenario_request",
+                            "_bom_grounded_from_context": True,
+                        }
                     call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
                     last_bom_call = call
                     if (
@@ -759,21 +828,34 @@ async def run_turn(
             tool_call = _parse_tool_call(raw)
 
             if tool_call is None:
-                if "generate_diagram" in requested_tools:
-                    if any(call.get("tool") == "generate_diagram" for call in tool_calls):
-                        reply = _build_parallel_reply(tool_calls)
-                        logger.info(
-                            "Orchestrator rejected raw diagram text after tool execution customer=%s raw_preview=%s",
-                            customer_id,
-                            raw.strip()[:120],
-                        )
-                        break
-                    tool_call = {"tool": "generate_diagram", "args": {"bom_text": user_message.strip()}}
+                forced_tool = _single_requested_tool_to_force(requested_tools, tool_calls)
+                if forced_tool:
+                    tool_call = {
+                        "tool": forced_tool,
+                        "args": _default_generation_tool_args(forced_tool, user_message),
+                    }
                     logger.info(
-                        "Orchestrator forced diagram tool after non-tool reply customer=%s raw_preview=%s",
+                        "Orchestrator forced requested specialist tool after non-tool reply tool=%s customer=%s raw_preview=%s",
+                        forced_tool,
                         customer_id,
                         raw.strip()[:120],
                     )
+                elif requested_tools:
+                    reply = _deliverable_requires_specialist_reply(requested_tools)
+                    logger.info(
+                        "Orchestrator blocked requested deliverable after non-tool reply customer=%s raw_preview=%s",
+                        customer_id,
+                        raw.strip()[:120],
+                    )
+                    break
+                elif action_intent:
+                    reply = _tool_required_blocker_reply(user_message, action_intent)
+                    logger.info(
+                        "Orchestrator blocked tool-backed action after non-tool reply customer=%s raw_preview=%s",
+                        customer_id,
+                        raw.strip()[:120],
+                    )
+                    break
                 else:
                     reply = raw.strip()
                     break
@@ -923,6 +1005,11 @@ async def _execute_tool(
     Execute a tool call and return (result_summary, artifact_key).
     artifact_key is "" when no persistent artifact was produced.
     """
+    from agent.notifications import notify
+
+    if tool_name.startswith("generate_") or tool_name in {"save_notes", "get_summary", "get_document"}:
+        notify(f"tool_started:{tool_name}", customer_id, "")
+
     if tool_name == "generate_jep":
         policy_block = await asyncio.to_thread(
             jep_lifecycle.generate_policy_block_payload,
@@ -969,6 +1056,11 @@ async def _execute_tool(
             context=context,
             decision_context=decision_context,
             user_message=user_message,
+        )
+        args = _enforce_memory_contract_on_tool_args(
+            tool_name=tool_name,
+            args=args,
+            context=context,
         )
     if (
         tool_name == "generate_diagram"
@@ -1079,6 +1171,14 @@ async def _execute_tool(
         decision_context=decision_context,
         expert_mode=expert_mode,
     )
+    sanitized_tool_input = _postflight_tool_args(tool_name, enriched_args)
+    pre_execution_trace = _build_pre_execution_tool_trace(
+        tool_name=tool_name,
+        enriched_args=enriched_args,
+        sanitized_tool_input=sanitized_tool_input,
+        decision_context=decision_context,
+        context_summary=context_summary,
+    )
     tool_text_runner = _runner_for_tool(text_runner, enriched_args)
     result_summary, artifact_key, result_data = await _execute_tool_core(
         tool_name,
@@ -1092,6 +1192,10 @@ async def _execute_tool(
     )
 
     result_data = dict(result_data or {})
+    result_data["trace"] = {
+        **pre_execution_trace,
+        **(result_data.get("trace", {}) if isinstance(result_data.get("trace"), dict) else {}),
+    }
     merged_decision_context = _merge_decision_context(decision_context, result_data.get("decision_context"))
     merged_constraint_tags = decision_context_builder.derive_constraint_tags(merged_decision_context)
     applied_skills = list(enriched_args.get("_skill_injected", []) or [])
@@ -1100,6 +1204,12 @@ async def _execute_tool(
     result_data["skill_sections"] = dict(enriched_args.get("_skill_sections", {}) or {})
     result_data["skill_versions"] = dict(enriched_args.get("_skill_versions", {}) or {})
     result_data["skill_model_profile"] = str(enriched_args.get("_skill_model_profile", "") or "")
+    if tool_name in _MEMORY_CONTRACT_TOOLS:
+        result_data["memory_snapshot_hash"] = str(enriched_args.get("_memory_snapshot_hash", "") or "")
+        result_data["memory_sections_injected"] = list(enriched_args.get("_memory_sections_injected", []) or [])
+        result_data["memory_facts_used"] = list(enriched_args.get("_memory_facts_used", []) or [])
+        result_data["memory_unresolved_facts"] = list(enriched_args.get("_memory_unresolved_facts", []) or [])
+        result_data["memory_latest_baseline_used"] = dict(enriched_args.get("_memory_latest_baseline_used", {}) or {})
     result_data["decision_context"] = merged_decision_context
     result_data["constraint_tags"] = merged_constraint_tags or list(enriched_args.get("_constraint_tags", []) or [])
     result_data["expert_mode"] = dict(enriched_args.get("_expert_mode", {}) or {})
@@ -1206,6 +1316,24 @@ async def _execute_tool(
             decision_context=merged_decision_context,
         )
 
+    result_summary, artifact_key, result_data = await _archie_expert_review_if_needed(
+        tool_name=tool_name,
+        args=enriched_args,
+        sanitized_tool_input=sanitized_tool_input,
+        customer_id=customer_id,
+        customer_name=customer_name,
+        store=store,
+        text_runner=text_runner,
+        a2a_base_url=a2a_base_url,
+        specialist_mode=specialist_mode,
+        user_message=user_message,
+        result_summary=result_summary,
+        artifact_key=artifact_key,
+        result_data=result_data,
+        context_summary=context_summary,
+        decision_context=merged_decision_context,
+    )
+
     _record_tool_decision_state(
         store=store,
         customer_id=customer_id,
@@ -1288,7 +1416,8 @@ async def _execute_tool_core(
     if tool_name == "generate_pov":
         from agent import pov_agent
 
-        feedback = str(args.get("_user_request_text", "") or args.get("feedback", "") or "")
+        raw_feedback = str(args.get("feedback", "") or "")
+        feedback = raw_feedback if "[Archie Canonical Memory]" in raw_feedback else str(args.get("_user_request_text", "") or raw_feedback or "")
         result = await asyncio.to_thread(
             pov_agent.generate_pov,
             customer_id,
@@ -1432,7 +1561,8 @@ async def _execute_bom_tool_request(
             "bom_context_source": context_source,
         }
 
-    clean_request = str(args.get("_user_request_text", "") or args.get("prompt", "") or "").strip()
+    raw_prompt = str(args.get("prompt", "") or "").strip()
+    clean_request = raw_prompt if "[Archie Canonical Memory]" in raw_prompt else str(args.get("_user_request_text", "") or raw_prompt or "").strip()
     architect_brief = dict(args.get("_architect_brief", {}) or {})
     prompt = _compose_specialist_request_text(
         clean_request=clean_request or "Generate a BOM from current request context.",
@@ -1546,8 +1676,16 @@ _BOM_DEICTIC_MARKERS: tuple[str, ...] = (
     "from this",
     "use this",
     "use that",
+    "use that information",
+    "use that info",
+    "that information",
+    "that info",
     "for that",
     "from that",
+    "from the notes",
+    "from saved notes",
+    "from the conversation",
+    "what it has",
     "this diagram",
     "that diagram",
     "previous diagram",
@@ -1676,6 +1814,20 @@ def _prepare_bom_tool_args(
     if bool(payload.get("_bom_grounded_from_context")):
         return payload
 
+    if _is_bom_revision_request(prompt, user_message, context) or (
+        _mentions_bom_work_product(user_message) and _latest_bom_fact_mismatches(context)
+    ):
+        payload["prompt"] = _build_bom_revision_prompt(
+            prompt=prompt,
+            user_message=user_message,
+            context=context,
+            decision_context=decision_context,
+        )
+        payload["_bom_context_source"] = "bom_revision"
+        payload["_bom_grounded_from_context"] = True
+        payload["_bom_grounding"] = "revision-grounded"
+        return payload
+
     if not _is_bom_deictic_followup(prompt, user_message):
         return payload
 
@@ -1690,10 +1842,209 @@ def _prepare_bom_tool_args(
         payload["_bom_grounded_from_context"] = True
         return payload
 
+    archie_context = _build_archie_specialist_context(context, decision_context=decision_context)
+    if _text_has_bom_sizing(archie_context):
+        payload["prompt"] = _build_bom_context_followup_prompt(
+            prompt=prompt,
+            archie_context=archie_context,
+            decision_context=decision_context,
+        )
+        payload["_bom_context_source"] = "persisted_notes"
+        payload["_bom_grounded_from_context"] = True
+        return payload
+
     payload["_bom_direct_reply"] = _format_bom_followup_clarification()
     payload["_bom_context_source"] = "unresolved_followup"
     payload["_bom_grounded_from_context"] = False
     return payload
+
+
+def _text_has_bom_sizing(text: str) -> bool:
+    lowered = str(text or "").lower()
+    has_compute = "ocpu" in lowered or re.search(r"\b\d+(?:\.\d+)?\s*(?:cpu|cores?)\b", lowered) is not None
+    has_memory = "ram" in lowered or "memory" in lowered
+    has_storage = "storage" in lowered or "block volume" in lowered or re.search(r"\b\d+(?:\.\d+)?\s*tb\b", lowered) is not None
+    return has_compute and has_memory and has_storage
+
+
+def _bom_followup_should_hydrate_from_context(
+    *,
+    prompt: str,
+    user_message: str,
+    context: dict[str, Any] | None,
+    decision_context: dict[str, Any] | None,
+) -> bool:
+    if not _is_bom_deictic_followup(prompt, user_message):
+        return False
+    archie_context = _build_archie_specialist_context(context, decision_context=decision_context)
+    return _text_has_bom_sizing(archie_context)
+
+
+def _build_bom_context_followup_prompt(
+    *,
+    prompt: str,
+    archie_context: str,
+    decision_context: dict[str, Any] | None,
+) -> str:
+    lines = [
+        "Generate BOM from the persisted customer notes and conversation context.",
+        "Use explicit sizing values from the context; do not fall back to default sizing when OCPU, RAM, or storage are present.",
+    ]
+    cleaned_prompt = _strip_injected_guidance_blocks(prompt).strip()
+    if cleaned_prompt:
+        lines.append(f"User follow-up: {cleaned_prompt}")
+    lines.append("[Persisted Customer Context]")
+    lines.append(archie_context)
+    if _has_meaningful_decision_context(decision_context):
+        lines.append(
+            f"Current decision context: {decision_context_builder.summarize_decision_context(decision_context)}"
+        )
+    lines.append("[End Persisted Customer Context]")
+    return "\n".join(lines).strip()
+
+
+def _is_bom_revision_request(prompt: str, user_message: str, context: dict[str, Any] | None) -> bool:
+    if not _mentions_bom_work_product(" ".join([str(prompt or ""), str(user_message or "")])):
+        return False
+    if _is_pure_download_or_link_request(user_message):
+        return False
+    msg = f" {str(user_message or prompt or '').lower()} "
+    revision_markers = (
+        " new bom",
+        " new xlsx",
+        " new workbook",
+        " new version",
+        " updated bom",
+        " updated xlsx",
+        " update bom",
+        " update the bom",
+        " update xlsx",
+        " current bom",
+        " current xlsx",
+        " regenerate",
+        " rebuild",
+        " revise",
+        " revision",
+        " incorrect",
+        " wrong",
+        " not correct",
+        " fix the bom",
+        " replace the bom",
+    )
+    if any(marker in msg for marker in revision_markers):
+        return True
+    latest = context_store.latest_bom_work_product(context or {}) if isinstance(context, dict) else None
+    return latest is not None and _latest_bom_fact_mismatches(context)
+
+
+def _mentions_bom_work_product(text: str) -> bool:
+    msg = str(text or "").lower()
+    return any(
+        marker in msg
+        for marker in (
+            "bom",
+            "bill of materials",
+            "xlsx",
+            "xlxs",
+            "xlsc",
+            "excel",
+            "spreadsheet",
+            "workbook",
+            "pricing",
+            "priced",
+            "sku",
+        )
+    )
+
+
+def _build_bom_revision_prompt(
+    *,
+    prompt: str,
+    user_message: str,
+    context: dict[str, Any] | None,
+    decision_context: dict[str, Any] | None,
+) -> str:
+    archie = context_store.get_archie_state(context or {}) if isinstance(context, dict) else {}
+    facts = archie.get("client_facts", {}) if isinstance(archie.get("client_facts"), dict) else {}
+    facts_summary = str(archie.get("facts_summary", "") or "").strip()
+    latest = context_store.latest_bom_work_product(context or {}) if isinstance(context, dict) else None
+    mismatches = _latest_bom_fact_mismatches(context, as_list=True)
+    lines = [
+        "Revise the current BOM/XLSX work product from accumulated client facts.",
+        "Treat newer client facts as authoritative over the prior BOM baseline.",
+        "Update missing or incorrect items and return a final structured bom_payload.",
+    ]
+    cleaned_prompt = _strip_injected_guidance_blocks(prompt or user_message).strip()
+    if cleaned_prompt:
+        lines.append(f"User revision request: {cleaned_prompt}")
+    if facts_summary:
+        lines.append(f"Facts summary: {facts_summary}")
+    if facts:
+        lines.append("[Accumulated Client Facts]")
+        lines.append(json.dumps(facts, ensure_ascii=True, sort_keys=True, indent=2)[:4000])
+        lines.append("[End Accumulated Client Facts]")
+    archie_context = _build_archie_specialist_context(context, decision_context=decision_context)
+    if archie_context:
+        lines.append("[Current Archie Context]")
+        lines.append(archie_context)
+        lines.append("[End Current Archie Context]")
+    if latest:
+        baseline = latest.get("baseline", {}) if isinstance(latest.get("baseline"), dict) else {}
+        lines.append("[Prior BOM Baseline]")
+        lines.append(json.dumps(baseline, ensure_ascii=True, sort_keys=True, indent=2)[:4000])
+        lines.append("[End Prior BOM Baseline]")
+    if mismatches:
+        lines.append("Explicit deltas/mismatches to correct:")
+        lines.extend(f"- {item}" for item in mismatches)
+    if _has_meaningful_decision_context(decision_context):
+        lines.append(
+            f"Current decision context: {decision_context_builder.summarize_decision_context(decision_context)}"
+        )
+    return "\n".join(lines).strip()
+
+
+def _latest_bom_fact_mismatches(context: dict[str, Any] | None, *, as_list: bool = False) -> list[str] | bool:
+    if not isinstance(context, dict):
+        return [] if as_list else False
+    archie = context_store.get_archie_state(context)
+    facts = archie.get("client_facts", {}) if isinstance(archie.get("client_facts"), dict) else {}
+    latest = context_store.latest_bom_work_product(context)
+    if not facts or not latest:
+        return [] if as_list else False
+    baseline = latest.get("baseline", {}) if isinstance(latest.get("baseline"), dict) else {}
+    searchable = json.dumps(baseline, ensure_ascii=True, sort_keys=True).lower()
+    mismatches: list[str] = []
+
+    fact_region = str(facts.get("region", "") or facts.get("geography", "") or "").strip()
+    baseline_region = str(baseline.get("region", "") or "").strip()
+    if fact_region and baseline_region and fact_region.lower() != baseline_region.lower():
+        mismatches.append(f"region changed from {baseline_region} to {fact_region}")
+    if fact_region and not baseline_region:
+        mismatches.append(f"region/geography fact is {fact_region} but prior BOM has no region baseline")
+
+    platform = str(facts.get("platform", "") or "").strip()
+    if platform and all(token not in searchable for token in ("vmware", "vxrail", "esxi")):
+        mismatches.append(f"platform is {platform}; prior BOM baseline does not reflect VMware/VxRail source context")
+
+    security = facts.get("security", {}) if isinstance(facts.get("security"), dict) else {}
+    if security.get("waf") and "waf" not in searchable and "web application firewall" not in searchable:
+        mismatches.append("WAF is required in current facts but missing from prior BOM baseline")
+    if security.get("bastion") and "bastion" not in searchable:
+        mismatches.append("bastion is required in current facts but missing from prior BOM baseline")
+
+    connectivity = facts.get("connectivity", {}) if isinstance(facts.get("connectivity"), dict) else {}
+    for key, label in (("mpls", "MPLS"), ("sd_wan", "SD-WAN"), ("fastconnect", "FastConnect"), ("vpn", "VPN")):
+        if connectivity.get(key) and label.lower() not in searchable.replace("_", "-"):
+            mismatches.append(f"{label} connectivity is in current facts but not represented in prior BOM baseline")
+
+    dr = facts.get("dr", {}) if isinstance(facts.get("dr"), dict) else {}
+    if dr and all(token not in searchable for token in ("dr", "disaster", "restore", "backup")):
+        mismatches.append("DR/restore requirements are in current facts but missing from prior BOM baseline")
+
+    exclusions = facts.get("scope_exclusions") if isinstance(facts.get("scope_exclusions"), list) else []
+    if exclusions:
+        mismatches.append("scope exclusions to honor: " + ", ".join(str(item) for item in exclusions))
+    return mismatches if as_list else bool(mismatches)
 
 
 def _append_reusable_bom_inputs(prompt: str, context: dict[str, Any] | None) -> str:
@@ -1701,6 +2052,10 @@ def _append_reusable_bom_inputs(prompt: str, context: dict[str, Any] | None) -> 
         return str(prompt or "").strip()
     archie = context_store.get_archie_state(context)
     lines: list[str] = []
+    facts_summary = str(archie.get("facts_summary", "") or "").strip()
+    if facts_summary:
+        lines.append(f"- accumulated_client_facts: {facts_summary}")
+    lines.extend(_infrastructure_profile_context_lines(context))
     constraints = dict(archie.get("latest_approved_constraints", {}) or {})
     region = str(constraints.get("region", "") or "").strip()
     if region:
@@ -1754,6 +2109,7 @@ def _record_saved_note_context(
         context_store.set_archie_engagement_summary(context, _summarize_note_text(merged, limit=480), note_summary=note_summary)
     elif note_summary:
         context_store.set_archie_engagement_summary(context, prior_summary or note_summary, note_summary=note_summary)
+    _record_infrastructure_profile_if_present(context, note_text)
     context_store.set_archie_decision_state(
         context,
         constraints=dict((decision_context or {}).get("constraints", {}) or {}),
@@ -1771,6 +2127,7 @@ def _record_saved_note_context(
             "impacted_tools": [],
         },
     )
+    context_store.refresh_archie_memory(context)
     context_store.write_context(store, customer_id, context)
 
 
@@ -1789,6 +2146,10 @@ def _build_archie_specialist_context(
     latest_notes_summary = str(archie.get("latest_notes_summary", "") or "").strip()
     if latest_notes_summary and latest_notes_summary != engagement_summary:
         lines.append(f"Latest notes: {latest_notes_summary}")
+    facts_summary = str(archie.get("facts_summary", "") or "").strip()
+    if facts_summary:
+        lines.append(f"Accumulated client facts: {facts_summary}")
+    lines.extend(_infrastructure_profile_context_lines(context))
     resolved = archie.get("resolved_questions", []) if isinstance(archie.get("resolved_questions"), list) else []
     if resolved:
         lines.append("Resolved Archie decisions:")
@@ -1926,6 +2287,64 @@ def _append_archie_context_block(text: str, archie_context: str) -> str:
     return f"{text.strip()}\n\n{block}".strip()
 
 
+def _enforce_memory_contract_on_tool_args(
+    *,
+    tool_name: str,
+    args: dict[str, Any] | None,
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = dict(args or {})
+    if tool_name not in _MEMORY_CONTRACT_TOOLS:
+        return payload
+
+    memory = context_store.get_archie_memory(context or {})
+    memory_block = context_store.render_archie_memory(memory)
+    memory_hash = context_store.archie_memory_hash(memory)
+    payload["_memory_snapshot"] = memory
+    payload["_memory_snapshot_hash"] = memory_hash
+    payload["_memory_sections_injected"] = [
+        key for key in ("client_facts", "architecture_state", "work_products", "assumptions") if isinstance(memory.get(key), dict)
+    ]
+    payload["_memory_facts_used"] = _memory_facts_used(memory)
+    payload["_memory_unresolved_facts"] = list(((memory.get("assumptions", {}) or {}).get("unresolved_gaps", []) or []))
+    payload["_memory_latest_baseline_used"] = _memory_latest_baseline_used(memory, tool_name)
+
+    primary_key = _tool_primary_input_key(tool_name)
+    if primary_key:
+        current = _strip_injected_guidance_blocks(str(payload.get(primary_key, "") or "")).strip()
+        if "[Archie Canonical Memory]" not in current:
+            current = f"{current}\n\n{memory_block}".strip() if current else memory_block
+        payload[primary_key] = current
+    return payload
+
+
+def _memory_facts_used(memory: dict[str, Any]) -> list[str]:
+    facts = memory.get("client_facts", {}) if isinstance(memory.get("client_facts"), dict) else {}
+    used: list[str] = []
+    for key in ("region_geography", "platform", "sizing", "workloads", "connectivity", "dr", "security", "exclusions"):
+        value = facts.get(key)
+        if value not in (None, "", [], {}):
+            used.append(key)
+    return used
+
+
+def _memory_latest_baseline_used(memory: dict[str, Any], tool_name: str) -> dict[str, Any]:
+    work_products = memory.get("work_products", {}) if isinstance(memory.get("work_products"), dict) else {}
+    if tool_name == "generate_bom":
+        return dict(work_products.get("latest_bom", {}) or {})
+    if tool_name == "generate_diagram":
+        return dict(work_products.get("latest_bom", {}) or work_products.get("latest_diagram", {}) or {})
+    if tool_name == "generate_waf":
+        return dict(work_products.get("latest_diagram", {}) or {})
+    if tool_name == "generate_terraform":
+        return dict(work_products.get("latest_diagram", {}) or work_products.get("latest_bom", {}) or {})
+    if tool_name == "generate_pov":
+        return dict(work_products.get("latest_diagram", {}) or work_products.get("latest_bom", {}) or {})
+    if tool_name == "generate_jep":
+        return dict(work_products.get("latest_pov", {}) or work_products.get("latest_bom", {}) or {})
+    return {}
+
+
 def _hydrate_tool_args_from_context(
     *,
     tool_name: str,
@@ -1967,18 +2386,76 @@ def _normalize_specialist_question(
         question = str(raw_question.get("question", "") or raw_question.get("prompt", "") or "").strip()
         if not question:
             return None
+        raw_id = str(raw_question.get("id", "") or raw_question.get("question_id", "") or "").strip()
         return {
-            "question_id": str(raw_question.get("id", "") or f"{tool_name}.q{index}"),
+            "question_id": _stable_specialist_question_id(
+                tool_name=tool_name,
+                question=question,
+                raw_id=raw_id,
+                index=index,
+            ),
             "question": question,
             "blocking": bool(raw_question.get("blocking", True)),
         }
     if isinstance(raw_question, str) and raw_question.strip():
+        question = raw_question.strip()
         return {
-            "question_id": f"{tool_name}.q{index}",
-            "question": raw_question.strip(),
+            "question_id": _stable_specialist_question_id(
+                tool_name=tool_name,
+                question=question,
+                raw_id="",
+                index=index,
+            ),
+            "question": question,
             "blocking": True,
         }
     return None
+
+
+def _stable_specialist_question_id(
+    *,
+    tool_name: str,
+    question: str,
+    raw_id: str,
+    index: int,
+) -> str:
+    fallback = str(raw_id or f"{tool_name}.q{index}").strip()
+    normalized = _normalize_specialist_question_id(fallback)
+    if tool_name != "generate_bom":
+        return fallback
+    if normalized and not re.fullmatch(r"(generate\.bom\.)?q\d+", normalized):
+        return fallback
+    inferred = _infer_bom_question_id(question)
+    return inferred or fallback
+
+
+def _infer_bom_question_id(question: str) -> str:
+    lowered = str(question or "").lower()
+    if "region" in lowered:
+        if any(token in lowered for token in ("single-region", "multi-region", "multi ad", "multi-ad", "topology")):
+            return "regions.mode"
+        return "constraints.region"
+    if "gpu" in lowered or "non-gpu" in lowered or "accelerator" in lowered:
+        return "bom.compute.gpu"
+    if "ocpu" in lowered:
+        return "bom.compute.ocpu"
+    if "memory" in lowered or "ram" in lowered:
+        return "bom.compute.memory"
+    if "vpu" in lowered or "performance unit" in lowered:
+        return "bom.storage.vpu"
+    if "object storage" in lowered or "bucket" in lowered:
+        return "bom.storage.object"
+    if "load balancer" in lowered or re.search(r"\blb\b", lowered):
+        return "bom.network.load_balancer"
+    if "fastconnect" in lowered or "vpn" in lowered or "connectivity" in lowered or "on-prem" in lowered or "on prem" in lowered:
+        return "bom.network.connectivity"
+    if "budget" in lowered or "monthly" in lowered or "cost cap" in lowered or "spend" in lowered:
+        return "bom.budget"
+    if "storage" in lowered or "block volume" in lowered or "block" in lowered:
+        return "bom.storage.block"
+    if any(token in lowered for token in ("sizing", "quantity", "quantities")):
+        return "workload.sizing"
+    return ""
 
 
 def _has_architecture_definition(context: dict[str, Any] | None) -> bool:
@@ -2174,9 +2651,18 @@ def _specialist_question_bundle_from_result(
     bundle: list[dict[str, Any]] = []
     for idx, raw in enumerate(raw_questions, start=1):
         normalized = _normalize_specialist_question(tool_name, raw, index=idx)
+        if _should_ignore_specialist_question(tool_name, normalized):
+            continue
         if normalized:
             bundle.append(normalized)
     return bundle
+
+
+def _should_ignore_specialist_question(tool_name: str, question: dict[str, Any] | None) -> bool:
+    if tool_name != "generate_bom" or not isinstance(question, dict):
+        return False
+    question_id = str(question.get("question_id", "") or "").strip()
+    return bool(question_id) and question_id in _specialist_question_id_aliases("bom.budget")
 
 
 def _latest_resolved_answer_map(context: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
@@ -2243,6 +2729,7 @@ def _record_region_constraint_if_present(context: dict[str, Any], decision_conte
     region = str(constraints.get("region", "") or "").strip()
     if not region:
         return
+    context_store.merge_archie_client_facts(context, {"region": region})
     prior, prior_answer = _resolved_answer_for_question(_latest_resolved_answer_map(context), "constraints.region")
     if isinstance(prior, dict) and prior_answer == region:
         return
@@ -2258,6 +2745,392 @@ def _record_region_constraint_if_present(context: dict[str, Any], decision_conte
             "timestamp": _now(),
         },
     )
+
+
+def _record_infrastructure_profile_if_present(context: dict[str, Any], text: str) -> None:
+    profile = _extract_infrastructure_profile(text)
+    if profile:
+        context_store.merge_archie_infrastructure_profile(context, profile)
+    facts = _extract_client_facts(text, profile=profile)
+    if facts:
+        context_store.merge_archie_client_facts(context, facts)
+
+
+def _extract_client_facts(text: str, *, profile: dict[str, Any] | None = None) -> dict[str, Any]:
+    raw = str(text or "")
+    lower = raw.lower()
+    facts: dict[str, Any] = {}
+    infra = profile if isinstance(profile, dict) else {}
+    if infra:
+        facts["infrastructure"] = infra
+        if infra.get("platform"):
+            facts["platform"] = infra.get("platform")
+        if isinstance(infra.get("connectivity"), dict):
+            facts["connectivity"] = dict(infra.get("connectivity", {}) or {})
+        if isinstance(infra.get("dr"), dict):
+            facts["dr"] = dict(infra.get("dr", {}) or {})
+        workloads = infra.get("workload_notes")
+        if isinstance(workloads, list) and workloads:
+            facts["workloads"] = list(workloads)
+
+    region = _extract_region_or_geography(raw)
+    if region:
+        if region.startswith("oci:"):
+            facts["region"] = region.removeprefix("oci:")
+        else:
+            facts["geography"] = region
+
+    security: dict[str, Any] = {}
+    if "waf" in lower or "web application firewall" in lower:
+        security["waf"] = True
+    if "bastion" in lower:
+        security["bastion"] = True
+    if "single ad" in lower or "single availability domain" in lower:
+        security["identity_topology"] = "single AD"
+    if "active directory" in lower or re.search(r"\bad\b", lower):
+        security.setdefault("directory", "Active Directory")
+    if security:
+        facts["security"] = security
+
+    os_mix = []
+    if "linux" in lower:
+        os_mix.append("Linux")
+    if "windows" in lower:
+        os_mix.append("Windows")
+    if os_mix:
+        facts["os_mix"] = os_mix
+
+    databases = []
+    if "sql" in lower or "sql server" in lower:
+        databases.append("SQL Server")
+    if "oracle db" in lower or "oracle database" in lower:
+        databases.append("Oracle Database")
+    if databases:
+        facts["databases"] = databases
+
+    exclusions = []
+    exclusion_patterns = (
+        (r"\b(?:exclude|excluding|out of scope|no)\s+gpu\b", "GPU"),
+        (r"\b(?:exclude|excluding|out of scope|no)\s+database\b", "database"),
+        (r"\b(?:exclude|excluding|out of scope|no)\s+dr\b", "DR"),
+        (r"\b(?:exclude|excluding|out of scope|no)\s+waf\b", "WAF"),
+    )
+    for pattern, label in exclusion_patterns:
+        if re.search(pattern, lower):
+            exclusions.append(label)
+    if exclusions:
+        facts["scope_exclusions"] = exclusions
+    return facts
+
+
+def _extract_region_or_geography(text: str) -> str:
+    raw = str(text or "")
+    region = _extract_oci_region(raw)
+    if region:
+        return f"oci:{region}"
+    lower = raw.lower()
+    if "south africa" in lower or "za-" in lower:
+        return "South Africa"
+    if "united kingdom" in lower or " uk " in f" {lower} ":
+        return "United Kingdom"
+    if "europe" in lower or "emea" in lower:
+        return "Europe/EMEA"
+    return ""
+
+
+def _extract_oci_region(text: str) -> str:
+    match = re.search(r"\b([a-z]{2,}-[a-z]+-\d+)\b", str(text or ""), flags=re.IGNORECASE)
+    return match.group(1).lower() if match else ""
+
+
+def _extract_infrastructure_profile(text: str) -> dict[str, Any]:
+    raw = str(text or "")
+    lower = raw.lower()
+    profile: dict[str, Any] = {}
+
+    platforms: list[str] = []
+    if "vxrail" in lower or "vx rail" in lower:
+        platforms.append("VxRail")
+    if "vmware esxi" in lower or re.search(r"\besxi\b", lower):
+        platforms.append("VMware ESXi")
+    elif "vmware" in lower:
+        platforms.append("VMware")
+    if platforms:
+        profile["platform"] = " / ".join(dict.fromkeys(platforms))
+
+    cpu: dict[str, Any] = {}
+    _set_number(cpu, "logical_cores", _extract_number(raw, r"\b(\d+(?:[.,]\d+)?)\s*(?:logical\s+)?(?:cpu\s+)?cores?\b"))
+    _set_number(cpu, "sockets", _extract_number(raw, r"\b(\d+(?:[.,]\d+)?)\s*sockets?\b"))
+    _set_number(cpu, "cores_per_socket", _extract_number(raw, r"\b(\d+(?:[.,]\d+)?)\s*cores?\s*per\s*socket\b"))
+    _set_number(cpu, "used_ghz", _extract_number(raw, r"\b(?:used|consumed|utili[sz]ed)\s*(?:cpu\s*)?(?:capacity\s*)?[:=]?\s*(\d+(?:[.,]\d+)?)\s*ghz\b"))
+    _set_number(cpu, "total_ghz", _extract_number(raw, r"\b(?:total|installed|available)\s*(?:cpu\s*)?(?:capacity\s*)?[:=]?\s*(\d+(?:[.,]\d+)?)\s*ghz\b"))
+    model = _extract_processor_model(raw)
+    if model:
+        cpu["processor_model"] = model
+    if cpu:
+        profile["cpu"] = cpu
+
+    memory = _extract_used_total_capacity(raw, ("memory", "ram"), default_unit="gb")
+    if memory:
+        profile["memory"] = memory
+
+    storage = _extract_used_total_capacity(raw, ("storage", "datastore", "disk", "capacity"), default_unit="tb")
+    if storage:
+        profile["storage"] = storage
+
+    connectivity = _extract_connectivity_profile(raw)
+    if connectivity:
+        profile["connectivity"] = connectivity
+
+    dr = _extract_dr_profile(raw)
+    if dr:
+        profile["dr"] = dr
+
+    workload_notes = _extract_workload_notes(raw)
+    if workload_notes:
+        profile["workload_notes"] = workload_notes
+
+    if profile:
+        profile["source"] = "chat_discovery"
+        profile["updated_at"] = _now()
+    return profile
+
+
+def _set_number(target: dict[str, Any], key: str, value: float | None) -> None:
+    if value is None or value <= 0:
+        return
+    target[key] = int(value) if float(value).is_integer() else value
+
+
+def _extract_number(text: str, pattern: str) -> float | None:
+    match = re.search(pattern, str(text or ""), flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return float(str(match.group(1)).replace(",", ""))
+    except Exception:
+        return None
+
+
+def _extract_processor_model(text: str) -> str:
+    patterns = (
+        r"\b(?:processor|cpu)\s*model\s*[:=-]\s*([^\n;,]+)",
+        r"\b((?:intel\s+)?xeon[^\n;,]{0,80})",
+        r"\b((?:amd\s+)?epyc[^\n;,]{0,80})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, str(text or ""), flags=re.IGNORECASE)
+        if match:
+            return re.sub(r"\s+", " ", match.group(1)).strip(" .")
+    return ""
+
+
+def _extract_used_total_capacity(text: str, markers: tuple[str, ...], *, default_unit: str) -> dict[str, Any]:
+    marker_expr = "|".join(re.escape(marker) for marker in markers)
+    unit_expr = r"(tb|tib|gb|gib)"
+    patterns = (
+        rf"\b(?:{marker_expr})\b[^\n]{{0,80}}?\b(?:used|consumed|utili[sz]ed)\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*{unit_expr}[^\n]{{0,80}}?\b(?:total|installed|available|capacity)\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*{unit_expr}",
+        rf"\b(?:used|consumed|utili[sz]ed)\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*{unit_expr}[^\n]{{0,80}}?\b(?:total|installed|available|capacity)\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*{unit_expr}[^\n]{{0,40}}?\b(?:{marker_expr})\b",
+        rf"\b(?:{marker_expr})\b[^\n]{{0,80}}?\b(\d+(?:[.,]\d+)?)\s*{unit_expr}\s*(?:used|consumed|utili[sz]ed)[^\n]{{0,80}}?\b(\d+(?:[.,]\d+)?)\s*{unit_expr}\s*(?:total|installed|available|capacity)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, str(text or ""), flags=re.IGNORECASE)
+        if not match:
+            continue
+        used = _capacity_to_unit(float(match.group(1).replace(",", "")), match.group(2), default_unit)
+        total = _capacity_to_unit(float(match.group(3).replace(",", "")), match.group(4), default_unit)
+        suffix = default_unit.lower()
+        return {f"used_{suffix}": used, f"total_{suffix}": total}
+
+    total_match = re.search(
+        rf"\b(?:{marker_expr})\b[^\n]{{0,80}}?\b(?:total|installed|available|capacity)\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*{unit_expr}",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    )
+    if total_match:
+        total = _capacity_to_unit(float(total_match.group(1).replace(",", "")), total_match.group(2), default_unit)
+        return {f"total_{default_unit.lower()}": total}
+    return {}
+
+
+def _capacity_to_unit(value: float, unit: str, target_unit: str) -> float:
+    source = str(unit or "").lower()
+    target = str(target_unit or "").lower()
+    value_gb = value * 1024.0 if source in {"tb", "tib"} else value
+    converted = value_gb / 1024.0 if target == "tb" else value_gb
+    return int(converted) if float(converted).is_integer() else round(converted, 2)
+
+
+def _extract_connectivity_profile(text: str) -> dict[str, Any]:
+    lower = str(text or "").lower()
+    connectivity: dict[str, Any] = {}
+    internet = re.search(r"\binternet(?:\s+bandwidth)?\s*[:=-]?\s*(\d+(?:[.,]\d+)?)\s*(gbps|mbps)\b", text, flags=re.IGNORECASE)
+    if internet:
+        unit = "Gbps" if internet.group(2).lower() == "gbps" else "Mbps"
+        connectivity["internet_bandwidth"] = f"{internet.group(1).replace(',', '')} {unit}"
+    if "mpls" in lower:
+        connectivity["mpls"] = True
+    if "sd-wan" in lower or "sd wan" in lower:
+        connectivity["sd_wan"] = True
+    if "fastconnect" in lower:
+        connectivity["fastconnect"] = True
+    if "vpn" in lower:
+        connectivity["vpn"] = True
+    return connectivity
+
+
+def _extract_dr_profile(text: str) -> dict[str, Any]:
+    lower = str(text or "").lower()
+    dr: dict[str, Any] = {}
+    if "cross-region" in lower or "cross region" in lower:
+        dr["cross_region_restore"] = "restore" in lower or "dr" in lower or "disaster recovery" in lower
+    sla = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(?:hour|hr|h)\s*(?:sla|rto|restore|recovery)\b", text, flags=re.IGNORECASE)
+    if not sla:
+        sla = re.search(r"\b(?:sla|rto|restore|recovery)\s*(?:of|within|<=|:)?\s*(\d+(?:[.,]\d+)?)\s*(?:hour|hr|h)s?\b", text, flags=re.IGNORECASE)
+    if sla:
+        hours = float(sla.group(1).replace(",", ""))
+        dr["sla_hours"] = int(hours) if hours.is_integer() else hours
+    elif "24h" in lower or "24 h" in lower or "24-hour" in lower:
+        dr["sla_hours"] = 24
+    return dr
+
+
+def _extract_workload_notes(text: str) -> list[str]:
+    lower = str(text or "").lower()
+    markers = (
+        ("dc", "domain controllers"),
+        ("domain controller", "domain controllers"),
+        ("sql", "SQL databases"),
+        ("oracle db", "Oracle databases"),
+        ("oracle database", "Oracle databases"),
+        ("custom app", "custom applications"),
+        ("patch repo", "patch repository"),
+        ("file server", "file servers"),
+    )
+    notes: list[str] = []
+    for token, label in markers:
+        if token in lower and label not in notes:
+            notes.append(label)
+    return notes
+
+
+def _infrastructure_profile_context_lines(context: dict[str, Any] | None) -> list[str]:
+    if not isinstance(context, dict):
+        return []
+    archie = context_store.get_archie_state(context)
+    profile = archie.get("infrastructure_profile", {}) if isinstance(archie.get("infrastructure_profile"), dict) else {}
+    if not profile:
+        return []
+    lines = ["Infrastructure profile:"]
+    platform = str(profile.get("platform", "") or "").strip()
+    if platform:
+        lines.append(f"- platform: {platform}")
+    cpu = profile.get("cpu", {}) if isinstance(profile.get("cpu"), dict) else {}
+    if cpu:
+        bits = []
+        for key, label in (
+            ("logical_cores", "logical cores"),
+            ("sockets", "sockets"),
+            ("cores_per_socket", "cores/socket"),
+            ("processor_model", "processor"),
+            ("used_ghz", "used GHz"),
+            ("total_ghz", "total GHz"),
+        ):
+            if cpu.get(key) not in (None, "", [], {}):
+                bits.append(f"{label}={cpu.get(key)}")
+        if bits:
+            lines.append("- CPU: " + ", ".join(bits))
+    memory = profile.get("memory", {}) if isinstance(profile.get("memory"), dict) else {}
+    if memory:
+        lines.append("- memory: " + ", ".join(f"{key}={value}" for key, value in memory.items() if value not in (None, "", [], {})))
+    storage = profile.get("storage", {}) if isinstance(profile.get("storage"), dict) else {}
+    if storage:
+        lines.append("- storage: " + ", ".join(f"{key}={value}" for key, value in storage.items() if value not in (None, "", [], {})))
+    connectivity = profile.get("connectivity", {}) if isinstance(profile.get("connectivity"), dict) else {}
+    if connectivity:
+        lines.append("- connectivity: " + ", ".join(f"{key}={value}" for key, value in connectivity.items() if value not in (None, "", [], {})))
+    dr = profile.get("dr", {}) if isinstance(profile.get("dr"), dict) else {}
+    if dr:
+        lines.append("- DR: " + ", ".join(f"{key}={value}" for key, value in dr.items() if value not in (None, "", [], {})))
+    workload_notes = [str(item).strip() for item in profile.get("workload_notes", []) or [] if str(item).strip()]
+    if workload_notes:
+        lines.append("- workload notes: " + ", ".join(workload_notes))
+    return lines
+
+
+def _first_profile_value(section: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    if not isinstance(section, dict):
+        return None
+    for key in keys:
+        value = section.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def _largest_profile_value(section: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    if not isinstance(section, dict):
+        return None
+    numeric = [section.get(key) for key in keys if isinstance(section.get(key), (int, float))]
+    if numeric:
+        return max(numeric)
+    return _first_profile_value(section, keys)
+
+
+def _infrastructure_profile_ocpu_answer(profile: dict[str, Any]) -> str:
+    cpu = profile.get("cpu", {}) if isinstance(profile, dict) and isinstance(profile.get("cpu"), dict) else {}
+    value = _first_profile_value(cpu, ("logical_cores", "cores", "ocpu"))
+    if value in (None, "", [], {}):
+        return ""
+    return f"{value:g} OCPU equivalent" if isinstance(value, (int, float)) else f"{value} OCPU equivalent"
+
+
+def _infrastructure_profile_memory_answer(profile: dict[str, Any]) -> str:
+    memory = profile.get("memory", {}) if isinstance(profile, dict) and isinstance(profile.get("memory"), dict) else {}
+    value = _largest_profile_value(memory, ("used_gb", "total_gb"))
+    if value in (None, "", [], {}):
+        return ""
+    return f"{value:g} GB RAM" if isinstance(value, (int, float)) else f"{value} GB RAM"
+
+
+def _infrastructure_profile_storage_answer(profile: dict[str, Any]) -> str:
+    storage = profile.get("storage", {}) if isinstance(profile, dict) and isinstance(profile.get("storage"), dict) else {}
+    value = _largest_profile_value(storage, ("used_tb", "total_tb"))
+    if value not in (None, "", [], {}):
+        return f"{value:g} TB block storage" if isinstance(value, (int, float)) else f"{value} TB block storage"
+    gb_value = _largest_profile_value(storage, ("used_gb", "total_gb"))
+    if gb_value not in (None, "", [], {}):
+        return f"{gb_value:g} GB block storage" if isinstance(gb_value, (int, float)) else f"{gb_value} GB block storage"
+    return ""
+
+
+def _infrastructure_profile_connectivity_answer(profile: dict[str, Any]) -> str:
+    connectivity = profile.get("connectivity", {}) if isinstance(profile, dict) and isinstance(profile.get("connectivity"), dict) else {}
+    if not connectivity:
+        return ""
+    parts: list[str] = []
+    bandwidth = str(connectivity.get("internet_bandwidth", "") or "").strip()
+    if bandwidth:
+        parts.append(f"internet bandwidth {bandwidth}")
+    if connectivity.get("mpls"):
+        parts.append("MPLS")
+    if connectivity.get("sd_wan"):
+        parts.append("SD-WAN")
+    if connectivity.get("fastconnect"):
+        parts.append("FastConnect connectivity")
+    if connectivity.get("vpn"):
+        parts.append("site-to-site VPN")
+    return ", ".join(parts)
+
+
+def _infrastructure_profile_sizing_answer(profile: dict[str, Any]) -> str:
+    parts = [
+        _infrastructure_profile_ocpu_answer(profile),
+        _infrastructure_profile_memory_answer(profile),
+        _infrastructure_profile_storage_answer(profile),
+    ]
+    rendered = [part for part in parts if part]
+    return ", ".join(rendered) if len(rendered) >= 2 else ""
 
 
 def _component_labels_from_text(text: str) -> list[str]:
@@ -2300,15 +3173,101 @@ def _infer_components_scope_from_context(context: dict[str, Any], text: str) -> 
     agents = context.get("agents", {}) if isinstance(context, dict) else {}
     bom = dict((agents or {}).get("bom", {}) or {})
     diagram = dict((agents or {}).get("diagram", {}) or {})
-    if labels:
-        return ", ".join(labels), "current BOM, notes, or architecture context names these OCI components", "high"
     if int(bom.get("line_item_count", 0) or 0) > 0:
         return _standard_components_scope_answer(), "prior BOM line items are available for component scope", "high"
     if int(diagram.get("node_count", 0) or 0) > 0 or str(diagram.get("deployment_summary", "") or "").strip():
         return _standard_components_scope_answer(), "latest generated architecture state is available for component scope", "high"
+    if labels:
+        return ", ".join(labels), "current BOM, notes, or architecture context names these OCI components", "high"
     lowered = str(text or "").lower()
     if "small site" in lowered or "small-site" in lowered or "reference architecture" in lowered:
         return _standard_components_scope_answer(), "standard small-site reference architecture provides the component scope", "medium"
+    return "", "", "needs_confirmation"
+
+
+def _extract_first_number(text: str, pattern: str) -> float | None:
+    match = re.search(pattern, str(text or ""), flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return float(str(match.group(1)).replace(",", ""))
+    except Exception:
+        return None
+
+
+def _format_quantity(value: float, unit: str) -> str:
+    rendered = f"{value:g}"
+    return f"{rendered} {unit}"
+
+
+def _extract_ocpu_answer(text: str) -> str:
+    value = _extract_first_number(text, r"\b(\d+(?:[.,]\d+)?)\s*ocpus?\b")
+    return _format_quantity(value, "OCPU") if value is not None and value > 0 else ""
+
+
+def _extract_memory_answer(text: str) -> str:
+    capacities = _extract_used_total_capacity(text, ("memory", "ram"), default_unit="gb")
+    capacity_values = [value for key, value in capacities.items() if key.endswith("_gb") and isinstance(value, (int, float))]
+    if capacity_values:
+        return _format_quantity(max(capacity_values), "GB RAM")
+    value = _extract_first_number(text, r"\b(\d+(?:[.,]\d+)?)\s*(?:gb|gib)\s*(?:memory|ram)\b")
+    if value is None:
+        value = _extract_first_number(text, r"\b(?:memory|ram)\s*(?:of|:|=)?\s*(\d+(?:[.,]\d+)?)\s*(?:gb|gib)\b")
+    return _format_quantity(value, "GB RAM") if value is not None and value > 0 else ""
+
+
+def _extract_block_storage_answer(text: str) -> str:
+    capacities = _extract_used_total_capacity(text, ("storage", "datastore", "disk", "capacity"), default_unit="tb")
+    tb_values = [value for key, value in capacities.items() if key.endswith("_tb") and isinstance(value, (int, float))]
+    if tb_values:
+        return _format_quantity(max(tb_values), "TB block storage")
+    tb = _extract_first_number(text, r"\b(\d+(?:[.,]\d+)?)\s*(?:tb|tib)\s*(?:block|block volume|volume|storage)\b")
+    if tb is not None and tb > 0:
+        return _format_quantity(tb, "TB block storage")
+    gb = _extract_first_number(text, r"\b(\d+(?:[.,]\d+)?)\s*(?:gb|gib)\s*(?:block|block volume|volume|storage)\b")
+    if gb is None:
+        gb = _extract_first_number(text, r"\b(?:block|block volume|volume|storage)\s*(?:of|:|=)?\s*(\d+(?:[.,]\d+)?)\s*(?:gb|gib)\b")
+    return _format_quantity(gb, "GB block storage") if gb is not None and gb > 0 else ""
+
+
+def _extract_object_storage_answer(text: str) -> str:
+    tb = _extract_first_number(text, r"\b(\d+(?:[.,]\d+)?)\s*(?:tb|tib)\s*object storage\b")
+    if tb is not None and tb > 0:
+        return _format_quantity(tb, "TB Object Storage")
+    gb = _extract_first_number(text, r"\b(\d+(?:[.,]\d+)?)\s*(?:gb|gib)\s*object storage\b")
+    if gb is not None and gb > 0:
+        return _format_quantity(gb, "GB Object Storage")
+    lowered = str(text or "").lower()
+    if "object storage" in lowered or "bucket" in lowered:
+        return "include Object Storage"
+    return ""
+
+
+def _extract_vpu_answer(text: str) -> tuple[str, str]:
+    value = _extract_first_number(text, r"\b(\d+(?:[.,]\d+)?)\s*vpus?\s*/?\s*(?:gb|gib)?\b")
+    if value is not None and value > 0:
+        return _format_quantity(value, "VPU/GB"), "current request provides Block Volume performance units"
+    lowered = str(text or "").lower()
+    if "balanced" in lowered and ("block" in lowered or "volume" in lowered or "storage" in lowered):
+        return "Balanced Block Volume performance, 10 VPU/GB", "current request names Balanced Block Volume performance"
+    return "", ""
+
+
+def _combined_bom_sizing_answer(text: str) -> tuple[str, str, str]:
+    parts: list[str] = []
+    ocpu = _extract_ocpu_answer(text)
+    memory = _extract_memory_answer(text)
+    storage = _extract_block_storage_answer(text)
+    if ocpu:
+        parts.append(ocpu)
+    if memory:
+        parts.append(memory)
+    if storage:
+        parts.append(storage)
+    if len(parts) >= 2:
+        return ", ".join(parts), "current request/context provides multiple BOM sizing inputs", "high"
+    if parts:
+        return parts[0], "current request/context provides partial BOM sizing input", "medium"
     return "", "", "needs_confirmation"
 
 
@@ -2326,6 +3285,7 @@ def _suggest_answer_for_question(
         return answer, "prior Archie-approved decision", "high"
 
     archie = context_store.get_archie_state(context)
+    infrastructure_profile = archie.get("infrastructure_profile", {}) if isinstance(archie.get("infrastructure_profile"), dict) else {}
     latest_decision_context = dict(context.get("latest_decision_context", {}) or {})
     constraints = dict(latest_decision_context.get("constraints", {}) or {})
     text = " ".join(
@@ -2339,8 +3299,25 @@ def _suggest_answer_for_question(
         )
         if str(part).strip()
     ).lower()
+    qid = _normalize_specialist_question_id(question_id)
+    prompt_lc = prompt.lower()
 
-    if question_id in {"regions.count", "topology.scope", "regions.mode", "region.mode"} or "region" in prompt.lower():
+    if qid in _specialist_question_id_aliases("constraints.region") or (
+        "region" in prompt_lc and not any(token in prompt_lc for token in ("single-region", "multi-region", "multi ad", "multi-ad", "topology"))
+    ):
+        region = str(constraints.get("region", "") or "").strip()
+        if region:
+            return region, "latest decision context already has the target OCI region", "high"
+        if "bom" in str(user_message or "").lower() or "pricing" in str(user_message or "").lower():
+            return (
+                "pricing-only estimate; treat OCI pricing as region-consistent for this draft",
+                "BOM pricing-only flow does not require a pinned OCI deployment region",
+                "medium",
+            )
+
+    if qid in _specialist_question_id_aliases("regions.mode") or any(
+        token in prompt_lc for token in ("single-region", "multi-region", "multi ad", "multi-ad", "topology")
+    ):
         if any(token in text for token in ("multi-region", "multi region", "two regions", "2 regions")):
             if question_id == "regions.count":
                 return "2", "current Archie context mentions a multi-region topology", "high"
@@ -2351,7 +3328,78 @@ def _suggest_answer_for_question(
                 return "1", "latest decision context has a single primary region", "medium"
             return "single-region", "latest decision context has a single primary region", "medium"
 
-    if question_id == "network.exposure" or "public, private, or both" in prompt.lower():
+    if qid in _specialist_question_id_aliases("bom.compute.gpu"):
+        if any(token in text for token in ("non-gpu", "non gpu", "no gpu", "without gpu", "cpu-only", "cpu only")):
+            return "non-GPU compute", "current request/context explicitly excludes GPU compute", "high"
+        if "gpu" in text or "accelerator" in text:
+            return "GPU compute", "current request/context mentions GPU or accelerator compute", "high"
+        if infrastructure_profile:
+            return "non-GPU compute", "no GPU or accelerator requirement is present in the saved infrastructure profile", "medium"
+
+    if qid in _specialist_question_id_aliases("bom.compute.ocpu"):
+        answer = _extract_ocpu_answer(text)
+        if answer:
+            return answer, "current request/context provides OCPU sizing", "high"
+        answer = _infrastructure_profile_ocpu_answer(infrastructure_profile)
+        if answer:
+            return answer, "saved infrastructure profile provides CPU sizing", "high"
+
+    if qid in _specialist_question_id_aliases("bom.compute.memory"):
+        answer = _extract_memory_answer(text)
+        if answer:
+            return answer, "current request/context provides memory sizing", "high"
+        answer = _infrastructure_profile_memory_answer(infrastructure_profile)
+        if answer:
+            return answer, "saved infrastructure profile provides memory sizing", "high"
+
+    if qid in _specialist_question_id_aliases("bom.storage.block"):
+        answer = _extract_block_storage_answer(text)
+        if answer:
+            return answer, "current request/context provides block storage sizing", "high"
+        answer = _infrastructure_profile_storage_answer(infrastructure_profile)
+        if answer:
+            return answer, "saved infrastructure profile provides storage sizing", "high"
+
+    if qid in _specialist_question_id_aliases("bom.storage.vpu"):
+        answer, basis = _extract_vpu_answer(text)
+        if answer:
+            return answer, basis, "high"
+        if _extract_block_storage_answer(text):
+            return "Balanced Block Volume performance, 10 VPU/GB", "current BOM service default for block storage performance", "medium"
+
+    if qid in _specialist_question_id_aliases("bom.network.load_balancer"):
+        if any(token in text for token in ("no load balancer", "without load balancer", "no lb", "without lb")):
+            return "do not include a load balancer", "current request/context excludes a load balancer", "high"
+        if any(token in text for token in ("load balancer", "flexible lb", " lb ", "ingress", "public web", "external users", "internet")):
+            return "include one OCI Flexible Load Balancer", "current request/context indicates ingress or load balancing", "high"
+
+    if qid in _specialist_question_id_aliases("bom.storage.object"):
+        if any(token in text for token in ("no object storage", "without object storage", "no bucket")):
+            return "do not include Object Storage", "current request/context excludes Object Storage", "high"
+        answer = _extract_object_storage_answer(text)
+        if answer:
+            return answer, "current request/context includes Object Storage or bucket scope", "high"
+
+    if qid in _specialist_question_id_aliases("bom.network.connectivity"):
+        answer = _infrastructure_profile_connectivity_answer(infrastructure_profile)
+        if answer:
+            return answer, "saved infrastructure profile provides connectivity facts", "high"
+        if "fastconnect" in text:
+            return "FastConnect connectivity", "current request/context mentions FastConnect", "high"
+        if "vpn" in text:
+            return "site-to-site VPN connectivity", "current request/context mentions VPN", "high"
+        if any(token in text for token in ("on-prem", "on prem", "onprem", "drg")):
+            return "private connectivity through DRG", "current request/context mentions on-premises connectivity or DRG", "medium"
+
+    if qid in _specialist_question_id_aliases("workload.sizing"):
+        answer, basis, confidence = _combined_bom_sizing_answer(text)
+        if answer:
+            return answer, basis, confidence
+        answer = _infrastructure_profile_sizing_answer(infrastructure_profile)
+        if answer:
+            return answer, "saved infrastructure profile provides CPU, memory, and storage footprint", "high"
+
+    if qid in _specialist_question_id_aliases("network.exposure") or "public, private, or both" in prompt_lc:
         has_private = "private" in text
         has_public = "public" in text or "internet" in text
         if has_private and has_public:
@@ -2361,12 +3409,12 @@ def _suggest_answer_for_question(
         if has_public:
             return "public", "notes mention public or internet ingress", "high"
 
-    if question_id in {"workload.components", "components.scope"} or "major oci components" in prompt.lower():
+    if question_id in {"workload.components", "components.scope"} or "major oci components" in prompt_lc:
         components, basis, confidence = _infer_components_scope_from_context(context, text)
         if components:
             return components, basis, confidence
 
-    if question_id == "data.tier" or "data tier" in prompt.lower():
+    if question_id == "data.tier" or "data tier" in prompt_lc:
         if "autonomous database" in text or "adb" in text:
             return "Autonomous Database", "notes mention Autonomous Database", "high"
         if "postgres" in text:
@@ -2376,7 +3424,7 @@ def _suggest_answer_for_question(
         if "database" in text or "data tier" in text:
             return "generic database node", "notes imply a data tier without a pinned engine", "medium"
 
-    if "budget" in prompt.lower() or "monthly" in prompt.lower():
+    if qid in _specialist_question_id_aliases("bom.budget") or "budget" in prompt_lc or "monthly" in prompt_lc:
         if constraints.get("cost_max_monthly") is not None:
             return str(constraints.get("cost_max_monthly")), "latest decision context already has a monthly budget", "high"
 
@@ -2409,6 +3457,48 @@ def _apply_resolved_answers_to_tool_args(
     elif tool_name == "generate_terraform":
         payload["prompt"] = f"{payload.get('prompt', '')}\n\n{block}".strip()
     return payload
+
+
+def _resolved_inputs_from_answers(answers: list[dict[str, Any]]) -> list[dict[str, str]]:
+    resolved_inputs: list[dict[str, str]] = []
+    for item in answers:
+        question_id = str(item.get("question_id", "") or item.get("id", "") or "question").strip()
+        answer = str(item.get("final_answer", "") or item.get("suggested_answer", "") or "").strip()
+        if not question_id or not answer:
+            continue
+        resolved_inputs.append(
+            {
+                "question_id": question_id,
+                "question": str(item.get("question", "") or "").strip(),
+                "answer": _coerce_specialist_answer(question_id, answer),
+                "basis": str(item.get("basis", "") or "").strip(),
+                "confidence": str(item.get("confidence", "") or "").strip(),
+            }
+        )
+    return resolved_inputs
+
+
+def _attach_bom_resolved_inputs(
+    result_data: dict[str, Any],
+    answers: list[dict[str, Any]],
+) -> None:
+    if not isinstance(result_data, dict):
+        return
+    payload = result_data.get("bom_payload")
+    if not isinstance(payload, dict):
+        return
+    resolved_inputs = _resolved_inputs_from_answers(answers)
+    if not resolved_inputs:
+        return
+    existing = payload.get("resolved_inputs") if isinstance(payload.get("resolved_inputs"), list) else []
+    by_id: dict[str, dict[str, str]] = {
+        str(item.get("question_id", "") or ""): dict(item)
+        for item in existing
+        if isinstance(item, dict) and str(item.get("question_id", "") or "").strip()
+    }
+    for item in resolved_inputs:
+        by_id[item["question_id"]] = item
+    payload["resolved_inputs"] = list(by_id.values())
 
 
 async def _mediate_specialist_questions(
@@ -2500,6 +3590,8 @@ async def _mediate_specialist_questions(
     )
     rerun_data = dict(rerun_data or {})
     rerun_data["archie_auto_answers"] = auto_answered
+    if tool_name == "generate_bom":
+        _attach_bom_resolved_inputs(rerun_data, auto_answered)
     return rerun_summary, rerun_key, rerun_data
 
 
@@ -2627,6 +3719,16 @@ def _specialist_question_id_aliases(question_id: str) -> set[str]:
         {"components.scope", "workload.components"},
         {"regions.mode", "region.mode", "topology.scope", "regions.count"},
         {"constraints.region", "region", "preferred.region"},
+        {"bom.compute.gpu", "compute.gpu", "gpu", "gpu.mode", "compute.type"},
+        {"bom.compute.ocpu", "compute.ocpu", "ocpu", "workload.ocpu"},
+        {"bom.compute.memory", "compute.memory", "memory", "ram", "workload.memory"},
+        {"bom.storage.block", "storage.block", "block.storage", "block.volume", "storage"},
+        {"bom.storage.vpu", "storage.vpu", "vpu", "block.vpu"},
+        {"bom.network.load.balancer", "network.load.balancer", "load.balancer", "lb"},
+        {"bom.storage.object", "storage.object", "object.storage", "bucket"},
+        {"bom.network.connectivity", "network.connectivity", "connectivity", "on.prem.connectivity"},
+        {"bom.budget", "budget", "monthly.budget", "cost.max.monthly"},
+        {"workload.sizing", "bom.sizing", "sizing"},
     )
     for group in alias_groups:
         if normalized in group:
@@ -3081,6 +4183,424 @@ def _runner_for_tool(text_runner: Callable, args: dict) -> Callable[[str, str], 
     )
 
 
+def _build_pre_execution_tool_trace(
+    *,
+    tool_name: str,
+    enriched_args: dict[str, Any],
+    sanitized_tool_input: dict[str, Any],
+    decision_context: dict[str, Any] | None,
+    context_summary: str,
+) -> dict[str, Any]:
+    expert_mode = dict(enriched_args.get("_expert_mode", {}) or {})
+    return {
+        "archie_lens": _archie_lens_for_tool(tool_name, expert_mode),
+        "selected_archie_lens": _archie_lens_for_tool(tool_name, expert_mode),
+        "sent_to_specialist": sanitized_tool_input,
+        "sanitized_tool_input": sanitized_tool_input,
+        "skill_guidance_injected": bool(enriched_args.get("_skill_guidance_block")),
+        "injected_skill_guidance": {
+            "applied_skills": list(enriched_args.get("_skill_injected", []) or []),
+            "skill_versions": dict(enriched_args.get("_skill_versions", {}) or {}),
+            "model_profile": str(enriched_args.get("_skill_model_profile", "") or ""),
+        },
+        "memory_snapshot_hash": str(enriched_args.get("_memory_snapshot_hash", "") or ""),
+        "memory_sections_injected": list(enriched_args.get("_memory_sections_injected", []) or []),
+        "memory_facts_used": list(enriched_args.get("_memory_facts_used", []) or []),
+        "memory_unresolved_facts": list(enriched_args.get("_memory_unresolved_facts", []) or []),
+        "memory_latest_baseline_used": dict(enriched_args.get("_memory_latest_baseline_used", {}) or {}),
+        "decision_context": dict(decision_context or {}),
+        "context_source": _infer_tool_context_source(tool_name, enriched_args, context_summary),
+        "review_verdict": "pending",
+        "review_findings": [],
+        "refinement_history": [],
+    }
+
+
+def _archie_lens_for_tool(tool_name: str, expert_mode: dict[str, Any] | None = None) -> str:
+    labels = {
+        "generate_diagram": "OCI architecture diagram reviewer",
+        "generate_bom": "OCI BOM sizing and pricing reviewer",
+        "generate_pov": "OCI customer POV reviewer",
+        "generate_jep": "OCI joint execution plan reviewer",
+        "generate_waf": "OCI Well-Architected reviewer",
+        "generate_terraform": "OCI Terraform implementation reviewer",
+        "get_summary": "Archie context truthfulness reviewer",
+        "get_document": "Archie document existence reviewer",
+    }
+    label = labels.get(tool_name, "Archie tool result reviewer")
+    family = str((expert_mode or {}).get("reference_family", "") or "").strip()
+    if family:
+        return f"{label} ({family})"
+    return label
+
+
+def _infer_tool_context_source(tool_name: str, args: dict[str, Any], context_summary: str) -> str:
+    if tool_name == "generate_bom":
+        return str(args.get("_bom_context_source", "") or "direct_request")
+    if bool(args.get("_bom_grounded_from_context")):
+        return "latest_diagram"
+    if str(context_summary or "").strip():
+        return "persisted_context"
+    return "direct_request"
+
+
+async def _archie_expert_review_if_needed(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    sanitized_tool_input: dict[str, Any],
+    customer_id: str,
+    customer_name: str,
+    store: ObjectStoreBase,
+    text_runner: Callable,
+    a2a_base_url: str,
+    specialist_mode: str,
+    user_message: str,
+    result_summary: str,
+    artifact_key: str,
+    result_data: dict[str, Any],
+    context_summary: str,
+    decision_context: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    if not (tool_name.startswith("generate_") or tool_name in {"get_summary", "get_document"}):
+        return result_summary, artifact_key, result_data
+
+    current_summary = result_summary
+    current_key = artifact_key
+    current_data = dict(result_data or {})
+    review = _archie_expert_review(
+        tool_name=tool_name,
+        sanitized_tool_input=sanitized_tool_input,
+        user_message=user_message,
+        result_summary=current_summary,
+        artifact_key=current_key,
+        result_data=current_data,
+        context_summary=context_summary,
+        decision_context=decision_context,
+    )
+    current_data["archie_expert_review"] = review
+    _merge_archie_review_trace(current_data, review)
+
+    if (
+        tool_name == "generate_bom"
+        and review.get("verdict") == "revise_required"
+        and _bom_review_retry_is_safe(current_data)
+    ):
+        feedback = _build_archie_bom_review_feedback(review)
+        if feedback:
+            retry_args = dict(args)
+            retry_args["prompt"] = f"{retry_args.get('prompt', '')}\n\n[Archie Deterministic Review Feedback]\n{feedback}".strip()
+            retry_args["_archie_expert_review_retry"] = True
+            retry_runner = _runner_for_tool(text_runner, retry_args)
+            retry_summary, retry_key, retry_data = await _execute_tool_core(
+                tool_name,
+                retry_args,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                store=store,
+                text_runner=retry_runner,
+                a2a_base_url=a2a_base_url,
+                specialist_mode=specialist_mode,
+            )
+            retry_data = dict(retry_data or {})
+            retry_data["decision_context"] = dict(decision_context or {})
+            retry_data["constraint_tags"] = list(args.get("_constraint_tags", []) or [])
+            retry_trace = {
+                **(current_data.get("trace", {}) if isinstance(current_data.get("trace"), dict) else {}),
+                **(retry_data.get("trace", {}) if isinstance(retry_data.get("trace"), dict) else {}),
+            }
+            retry_trace["refinement_history"] = [
+                *list(retry_trace.get("refinement_history", []) or []),
+                {"attempt": 1, "review_feedback": feedback},
+            ]
+            retry_data["trace"] = retry_trace
+            retry_review = _archie_expert_review(
+                tool_name=tool_name,
+                sanitized_tool_input=_postflight_tool_args(tool_name, retry_args),
+                user_message=user_message,
+                result_summary=retry_summary,
+                artifact_key=retry_key,
+                result_data=retry_data,
+                context_summary=context_summary,
+                decision_context=decision_context,
+            )
+            if retry_review.get("verdict") == "revise_required":
+                retry_review = {
+                    **retry_review,
+                    "verdict": "blocked",
+                    "retry_allowed": False,
+                    "findings": [
+                        *list(retry_review.get("findings", []) or []),
+                        "BOM deterministic review retry did not satisfy the requested sizing.",
+                    ],
+                }
+            retry_data["archie_expert_review"] = retry_review
+            _merge_archie_review_trace(retry_data, retry_review)
+            current_summary, current_key, current_data = retry_summary, retry_key, retry_data
+            review = retry_review
+
+    if review.get("verdict") in {"revise_required", "blocked"}:
+        findings = [str(item).strip() for item in review.get("findings", []) if str(item).strip()]
+        if findings:
+            current_summary = "Archie expert review blocked this tool result.\n\nFindings:\n" + "\n".join(
+                f"- {finding}" for finding in findings
+            )
+        else:
+            current_summary = "Archie expert review blocked this tool result."
+        current_key = ""
+        current_data["checkpoint_required"] = True
+        current_data["best_effort"] = False
+
+    return current_summary, current_key, current_data
+
+
+def _merge_archie_review_trace(result_data: dict[str, Any], review: dict[str, Any]) -> None:
+    trace = result_data.get("trace", {}) if isinstance(result_data.get("trace"), dict) else {}
+    trace["review_verdict"] = str(review.get("verdict", "") or "")
+    trace["review_findings"] = list(review.get("findings", []) or [])
+    trace["review_required_actions"] = list(review.get("required_actions", []) or [])
+    trace["review_requirements"] = dict(review.get("requirements", {}) or {})
+    trace["review_produced"] = dict(review.get("produced", {}) or {})
+    trace["archie_expert_review"] = review
+    result_data["trace"] = trace
+
+
+def _archie_expert_review(
+    *,
+    tool_name: str,
+    sanitized_tool_input: dict[str, Any],
+    user_message: str,
+    result_summary: str,
+    artifact_key: str,
+    result_data: dict[str, Any],
+    context_summary: str,
+    decision_context: dict[str, Any],
+) -> dict[str, Any]:
+    findings: list[str] = []
+    required_actions: list[str] = []
+    verdict = "pass"
+
+    if tool_name in {"get_summary", "get_document"}:
+        if tool_name == "get_document" and str(result_summary or "").lower().startswith("no "):
+            findings.append("Requested document does not exist in persisted document storage.")
+            verdict = "blocked"
+        elif not str(result_summary or "").strip():
+            findings.append("Read-only tool returned an empty result.")
+            verdict = "blocked"
+        return {
+            "verdict": verdict,
+            "findings": findings,
+            "required_actions": required_actions,
+            "retry_allowed": False,
+            "review_type": "read_only_truthfulness",
+        }
+
+    if tool_name.startswith("generate_") and not (str(result_summary or "").strip() or result_data):
+        findings.append("Generation tool returned no summary or structured result data.")
+        verdict = "blocked"
+
+    if tool_name.startswith("generate_") and artifact_key:
+        # Generation artifacts must be backed by an actual key before Archie exposes them.
+        # Some in-process document stores return logical keys that are not directly head-able,
+        # so missing object metadata is a finding only for download-producing paths.
+        if tool_name in {"generate_diagram", "generate_terraform"} and not artifact_key:
+            findings.append("Generated artifact key is missing.")
+            verdict = "blocked"
+
+    if tool_name == "generate_bom":
+        bom_review = _review_bom_sizing_consistency(
+            sanitized_tool_input=sanitized_tool_input,
+            user_message=user_message,
+            result_data=result_data,
+            context_summary=context_summary,
+            decision_context=decision_context,
+        )
+        findings.extend(bom_review["findings"])
+        required_actions.extend(bom_review["required_actions"])
+        if bom_review["findings"]:
+            verdict = "revise_required" if _bom_review_retry_is_safe(result_data) else "blocked"
+        return {
+            "verdict": verdict,
+            "findings": findings,
+            "required_actions": required_actions,
+            "retry_allowed": verdict == "revise_required",
+            "review_type": "generation_acceptance",
+            "requirements": bom_review["requirements"],
+            "produced": bom_review["produced"],
+        }
+
+    return {
+        "verdict": verdict,
+        "findings": findings,
+        "required_actions": required_actions,
+        "retry_allowed": False,
+        "review_type": "generation_acceptance",
+    }
+
+
+def _bom_review_retry_is_safe(result_data: dict[str, Any]) -> bool:
+    if not isinstance(result_data, dict):
+        return False
+    if result_data.get("_archie_expert_review_retry") is True:
+        return False
+    if isinstance(result_data.get("archie_question_bundle"), dict):
+        return False
+    if str(result_data.get("type", "") or "").lower() not in {"", "final"}:
+        return False
+    return True
+
+
+def _build_archie_bom_review_feedback(review: dict[str, Any]) -> str:
+    findings = [str(item).strip() for item in review.get("findings", []) if str(item).strip()]
+    actions = [str(item).strip() for item in review.get("required_actions", []) if str(item).strip()]
+    lines = [
+        "Revise the BOM so produced line item quantities meet or exceed the explicit customer sizing requirements.",
+    ]
+    lines.extend(f"- {item}" for item in findings)
+    lines.extend(f"- Required action: {item}" for item in actions)
+    return "\n".join(lines).strip()
+
+
+def _review_bom_sizing_consistency(
+    *,
+    sanitized_tool_input: dict[str, Any],
+    user_message: str,
+    result_data: dict[str, Any],
+    context_summary: str,
+    decision_context: dict[str, Any],
+) -> dict[str, Any]:
+    source_text = _bom_review_source_text(
+        sanitized_tool_input=sanitized_tool_input,
+        user_message=user_message,
+        context_summary=context_summary,
+        decision_context=decision_context,
+    )
+    requirements = _extract_bom_sizing_requirements(source_text)
+    produced = _extract_bom_produced_sizing(result_data.get("bom_payload", {}))
+    findings: list[str] = []
+    actions: list[str] = []
+
+    comparisons = (
+        ("ocpu", "OCPU", "ocpu"),
+        ("ram_gb", "RAM GB", "ram_gb"),
+        ("storage_gb", "storage GB", "storage_gb"),
+    )
+    for key, label, produced_key in comparisons:
+        required_value = requirements.get(key)
+        if required_value is None:
+            continue
+        produced_value = float(produced.get(produced_key, 0.0) or 0.0)
+        if produced_value + 0.0001 < float(required_value):
+            findings.append(
+                f"BOM sizing mismatch for {label}: requested {required_value:g}, produced {produced_value:g}."
+            )
+            actions.append(f"Increase BOM {label} quantity to at least {required_value:g}.")
+
+    region = str(requirements.get("region", "") or "").strip()
+    if region:
+        payload_region = str((result_data.get("bom_payload", {}) or {}).get("region", "") or "").strip()
+        if payload_region and payload_region.lower() != region.lower():
+            findings.append(f"BOM region mismatch: requested {region}, produced {payload_region}.")
+            actions.append(f"Use requested region {region} or state that regional pricing is unavailable.")
+
+    return {
+        "requirements": requirements,
+        "produced": produced,
+        "findings": findings,
+        "required_actions": actions,
+    }
+
+
+def _bom_review_source_text(
+    *,
+    sanitized_tool_input: dict[str, Any],
+    user_message: str,
+    context_summary: str,
+    decision_context: dict[str, Any],
+) -> str:
+    input_text = json.dumps(sanitized_tool_input, ensure_ascii=True, sort_keys=True)
+    return "\n".join(
+        part
+        for part in (
+            user_message,
+            input_text,
+            context_summary,
+            decision_context_builder.summarize_decision_context(decision_context),
+        )
+        if str(part or "").strip()
+    )
+
+
+def _extract_bom_sizing_requirements(text: str) -> dict[str, Any]:
+    cleaned = str(text or "")
+    lower = cleaned.lower()
+    requirements: dict[str, Any] = {}
+    ocpu_values = [
+        float(match.group(1) or match.group(2))
+        for match in re.finditer(r"(\d+(?:\.\d+)?)\s*o\s*cpu|\b(\d+(?:\.\d+)?)\s*ocpu\b", lower)
+    ]
+    ocpu_values = [value for value in ocpu_values if value > 0]
+    if ocpu_values:
+        requirements["ocpu"] = max(ocpu_values)
+
+    ram_values = [
+        _capacity_to_gb(float(match.group(1)), match.group(2))
+        for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(tb|gb)\s*(?:of\s+)?(?:ram|memory)\b", lower)
+    ]
+    if ram_values:
+        requirements["ram_gb"] = max(ram_values)
+
+    storage_values: list[float] = []
+    for match in re.finditer(
+        r"(\d+(?:\.\d+)?)\s*(tb|gb)\s*(?:of\s+)?(?:block\s+storage|object\s+storage|storage|block\s+volume|volume|vol)\b",
+        lower,
+    ):
+        start = max(0, match.start() - 24)
+        if "egress" in lower[start : match.end() + 16]:
+            continue
+        storage_values.append(_capacity_to_gb(float(match.group(1)), match.group(2)))
+    if storage_values:
+        requirements["storage_gb"] = max(storage_values)
+
+    region_match = re.search(r"\b(?:region|oci region)\s*[:=]\s*([a-z]{2,}-[a-z]+-\d)\b", lower)
+    if region_match:
+        requirements["region"] = region_match.group(1)
+    return requirements
+
+
+def _capacity_to_gb(value: float, unit: str) -> float:
+    return value * 1024.0 if str(unit).lower() == "tb" else value
+
+
+def _extract_bom_produced_sizing(payload: Any) -> dict[str, float]:
+    if not isinstance(payload, dict):
+        return {"ocpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0}
+    cpu_skus = {sku.upper() for sku in CPU_SKU_TO_MEM_SKU.keys()}
+    mem_skus = {sku.upper() for sku in CPU_SKU_TO_MEM_SKU.values()}
+    produced = {"ocpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0, "block_storage_gb": 0.0, "object_storage_gb": 0.0}
+    for row in payload.get("line_items", []) or []:
+        if not isinstance(row, dict):
+            continue
+        sku = str(row.get("sku", "") or "").strip().upper()
+        desc = str(row.get("description", "") or "").lower()
+        category = str(row.get("category", "") or "").lower()
+        try:
+            quantity = float(row.get("quantity") or 0.0)
+        except Exception:
+            quantity = 0.0
+        if sku in cpu_skus or ("ocpu" in desc and category == "compute"):
+            produced["ocpu"] += quantity
+        elif sku in mem_skus or ("memory" in desc and category == "compute"):
+            produced["ram_gb"] += quantity
+        elif category == "storage" or "storage" in desc or "volume" in desc:
+            produced["storage_gb"] += quantity
+            if "object" in desc:
+                produced["object_storage_gb"] += quantity
+            else:
+                produced["block_storage_gb"] += quantity
+    return produced
+
+
 async def _critic_refine_if_needed(
     *,
     tool_name: str,
@@ -3299,6 +4819,15 @@ def _persist_tool_metadata(
         "reference_family": str(result_data.get("reference_family", "") or ""),
         "reference_confidence": float(result_data.get("reference_confidence", 0) or 0),
         "reference_mode": str(result_data.get("reference_mode", "") or ""),
+        "archie_expert_review": dict(result_data.get("archie_expert_review", {}) or {}),
+        "review_verdict": str(
+            (
+                result_data.get("archie_expert_review", {})
+                if isinstance(result_data.get("archie_expert_review"), dict)
+                else {}
+            ).get("verdict", "")
+            or ""
+        ),
     }
     if tool_name == "generate_pov":
         document_store.merge_latest_doc_metadata(store, "pov", customer_id, metadata)
@@ -3490,6 +5019,12 @@ def _record_shared_agent_state(
             "decision_context_hash": _decision_context_hash(decision_context),
         }
         context_store.record_agent_run(context, "bom", [], record)
+        context_store.record_bom_work_product(
+            context,
+            bom_payload=payload,
+            context_source=record["context_source"],
+            grounding=str(result_data.get("_bom_grounding", "") or ""),
+        )
 
 
 def _record_tool_decision_state(
@@ -3537,6 +5072,7 @@ def _record_tool_decision_state(
         decision_context=decision_context,
         result_data=result_data,
     )
+    context_store.refresh_archie_memory(context)
     context_store.write_context(store, customer_id, context)
     result_data["decision_log"] = decision_log
 
@@ -3550,13 +5086,12 @@ def _checkpoint_needed_for_result(
     constraints = dict((decision_context or {}).get("constraints", {}) or {})
     assumptions = list((decision_context or {}).get("assumptions", []) or [])
     cost = dict(governor.get("cost", {}) or {})
-    has_budget_signal = any(value is not None for value in (
+    has_budget_checkpoint_signal = any(value is not None for value in (
         constraints.get("cost_max_monthly"),
         cost.get("budget_target"),
-        cost.get("estimated_monthly_cost"),
         cost.get("variance"),
     ))
-    if has_budget_signal and str(cost.get("status", "pass") or "pass") == "checkpoint_required":
+    if has_budget_checkpoint_signal and str(cost.get("status", "pass") or "pass") == "checkpoint_required":
         return True
 
     security = dict(governor.get("security", {}) or {})
@@ -3594,8 +5129,8 @@ def _checkpoint_from_result(
     variance = cost.get("variance")
     decision_summary = str(governor.get("decision_summary", "") or "").strip()
     assumptions = _render_assumptions(decision_context, limit=3)
-    has_cost_signal = any(value is not None for value in (estimated, budget, variance))
-    if has_cost_signal:
+    has_cost_checkpoint_signal = any(value is not None for value in (budget, variance))
+    if has_cost_checkpoint_signal:
         lines = [
             "Cost checkpoint required before final acceptance.",
             f"- Tool: {tool_name}",
@@ -3985,6 +5520,7 @@ async def _call_generate_diagram(
 
 _INJECTED_GUIDANCE_BLOCKS: tuple[tuple[str, str], ...] = (
     ("[Decision Context]", "[End Decision Context]"),
+    ("[Archie Canonical Memory]", "[End Archie Canonical Memory]"),
     ("[Skill Injection Contract]", "[End Skill Injection Contract]"),
     ("[Injected Skill Guidance]", "[End Skill Guidance]"),
 )
@@ -4469,6 +6005,39 @@ def _build_single_diagram_reply(
     return "\n".join([summary, "", "Assumptions applied:", *[f"- {item}" for item in assumptions]])
 
 
+def _bom_resolved_inputs_reply_section(result_data: dict[str, Any]) -> list[str]:
+    payload = result_data.get("bom_payload", {}) if isinstance(result_data.get("bom_payload"), dict) else {}
+    resolved_inputs = payload.get("resolved_inputs") if isinstance(payload.get("resolved_inputs"), list) else []
+    memory_facts = [str(item).strip() for item in result_data.get("memory_facts_used", []) or [] if str(item).strip()]
+    baseline = result_data.get("memory_latest_baseline_used", {}) if isinstance(result_data.get("memory_latest_baseline_used"), dict) else {}
+    if not resolved_inputs and not memory_facts and not baseline:
+        return []
+    lines = []
+    if memory_facts or baseline:
+        lines.extend(["", "Facts Used from Memory:"])
+        if memory_facts:
+            lines.append("- " + ", ".join(memory_facts))
+        if baseline:
+            version = str(baseline.get("version", "") or "").strip()
+            grounding = str(baseline.get("grounding", "") or baseline.get("context_source", "") or "").strip()
+            lines.append(
+                "- latest BOM baseline: "
+                + (f"v{version}" if version else "available")
+                + (f" ({grounding})" if grounding else "")
+            )
+    if not resolved_inputs:
+        return lines
+    lines.extend(["", "Archie used these answers:"])
+    for item in resolved_inputs[:8]:
+        if not isinstance(item, dict):
+            continue
+        question_id = str(item.get("question_id", "") or "").strip()
+        answer = str(item.get("answer", "") or item.get("final_answer", "") or "").strip()
+        if question_id and answer:
+            lines.append(f"- {question_id}: {answer}")
+    return lines if len(lines) > 2 else []
+
+
 def _call_result_is_successful_generation(call: dict[str, Any]) -> bool:
     tool_name = str(call.get("tool", "") or "")
     if not tool_name.startswith("generate_"):
@@ -4505,6 +6074,12 @@ def _fallback_applied_skills(tool_name: str) -> list[str]:
 
 
 def _governor_critic_summary(data: dict[str, Any]) -> str:
+    if (
+        str(data.get("type", "") or "").lower() == "final"
+        and isinstance(data.get("bom_payload"), dict)
+        and str((data.get("archie_expert_review", {}) or {}).get("verdict", "") or "") == "pass"
+    ):
+        return "Archie deterministic review passed for the generated BOM payload."
     governor = data.get("governor", {}) if isinstance(data.get("governor"), dict) else {}
     quality = governor.get("quality", {}) if isinstance(governor.get("quality"), dict) else {}
     last_critique = data.get("last_critique", {}) if isinstance(data.get("last_critique"), dict) else {}
@@ -4843,6 +6418,13 @@ def _build_parallel_reply(
                 decision_context=decision_context,
             )
         summary = str(call.get("result_summary", "") or "").strip()
+        if str(call.get("tool", "") or "") == "generate_bom":
+            data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+            if _bom_call_was_memory_revision(data) and "BOM revision was performed" not in summary:
+                summary = f"BOM revision was performed from updated memory.\n\n{summary}".strip()
+            section = _bom_resolved_inputs_reply_section(data)
+            if section:
+                summary = "\n".join([summary or "Final BOM prepared.", *section]).strip()
         return _append_management_summary(
             summary or f"Completed `{call.get('tool', 'requested_tool')}`.",
             tool_calls,
@@ -4858,6 +6440,11 @@ def _build_parallel_reply(
             lines.append(f"- {label}: {summary}")
         else:
             lines.append(f"- {label} completed.")
+        if tool_name == "generate_bom":
+            data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+            if _bom_call_was_memory_revision(data) and "BOM revision was performed" not in lines[-1]:
+                lines.append("  BOM revision was performed from updated memory.")
+            lines.extend(_bom_resolved_inputs_reply_section(data))
     merged_assumptions = _merge_assumption_lists(
         list((decision_context or {}).get("assumptions", []) or []),
         [],
@@ -4903,6 +6490,11 @@ def _build_parallel_reply(
         tool_calls,
         decision_context=decision_context,
     )
+
+
+def _bom_call_was_memory_revision(result_data: dict[str, Any]) -> bool:
+    trace = result_data.get("trace", {}) if isinstance(result_data.get("trace"), dict) else {}
+    return str(trace.get("bom_context_source", result_data.get("bom_context_source", "")) or "") == "bom_revision"
 
 
 def _bom_diagram_pair_plan_for_message(user_message: str) -> list[dict[str, str]]:
@@ -5130,6 +6722,14 @@ def _generation_workflow_plan_for_message(
         }
 
     if requested_tools <= {"generate_pov", "generate_jep"}:
+        if len(requested_tools) == 1:
+            tool_name = next(iter(requested_tools))
+            return {
+                "status": "sequence",
+                "sequence": [tool_name],
+                "scenarios": [{"label": "Scenario 1", "text": str(user_message or "").strip()}],
+                "bom_feeds_diagram": False,
+            }
         return None
 
     has_architecture = _has_architecture_definition(context)
@@ -5306,6 +6906,400 @@ def _workflow_followup_from_calls(tool_calls: list[dict[str, Any]]) -> dict[str,
     return pending_followup
 
 
+_ACTION_PRODUCTION_MARKERS = (
+    "export",
+    "xlsx",
+    "xlxs",
+    "xlsc",
+    "excel",
+    "spreadsheet",
+    "workbook",
+    "download",
+    "generate file",
+    "save file",
+    "pricing export",
+    "price export",
+)
+_ACTION_ACCESS_MARKERS = (
+    "share link",
+    "download link",
+    " link ",
+    " url",
+    "url ",
+    "presigned",
+    "pre-signed",
+)
+_ACTION_VERIFY_MARKERS = (
+    "in the bucket",
+    "uploaded",
+    "upload",
+    "object storage",
+    "bucket",
+    "verify",
+    "verify file",
+    "verify files",
+    "list files",
+)
+
+
+def _tool_backed_action_intent(user_message: str) -> dict[str, bool]:
+    msg = f" {str(user_message or '').lower()} "
+    production = any(marker in msg for marker in _ACTION_PRODUCTION_MARKERS)
+    access = any(marker in msg for marker in _ACTION_ACCESS_MARKERS)
+    verification = any(marker in msg for marker in _ACTION_VERIFY_MARKERS)
+    if not any((production, access, verification)):
+        return {}
+    return {
+        "production": production,
+        "access": access,
+        "verification": verification,
+        "operating_model": _mentions_operating_model(user_message),
+    }
+
+
+def _mentions_operating_model(user_message: str) -> bool:
+    msg = f" {str(user_message or '').lower()} "
+    return " operating model " in msg or re.search(r"\bom\b", msg) is not None
+
+
+def _is_export_only_request(user_message: str) -> bool:
+    msg = f" {str(user_message or '').lower()} "
+    if not any(marker in msg for marker in _ACTION_PRODUCTION_MARKERS):
+        return False
+    if _is_workbook_only_request(user_message):
+        return True
+    if _has_generation_request_for_supported_artifact(user_message):
+        return False
+    generation_markers = (
+        "build a bom",
+        "build the bom",
+        "create a bom",
+        "create the bom",
+        "generate a bom",
+        "generate the bom",
+        "draft a bom",
+        "price this",
+        "size this",
+    )
+    return not any(marker in msg for marker in generation_markers)
+
+
+def _has_generation_request_for_supported_artifact(user_message: str) -> bool:
+    msg = str(user_message or "").lower()
+    generation_verbs = ("build", "create", "generate", "draft", "make")
+    artifact_terms = (
+        "bom",
+        "bill of materials",
+        "diagram",
+        "drawio",
+        "draw.io",
+        "terraform",
+        "pov",
+        "point of view",
+        "jep",
+        "joint execution plan",
+        "waf",
+        "well-architected",
+        "well architected",
+    )
+    return any(verb in msg for verb in generation_verbs) and any(term in msg for term in artifact_terms)
+
+
+def _is_workbook_only_request(user_message: str) -> bool:
+    msg = str(user_message or "").lower()
+    workbook_terms = ("xlsx", "xlxs", "xlsc", "excel", "spreadsheet", "workbook")
+    if not any(term in msg for term in workbook_terms):
+        return False
+    substantive_bom_terms = ("bom", "bill of materials", "pricing", "priced", "sku", "skus")
+    sizing_terms = ("ocpu", "cpu", "ram", "memory", "storage", "block volume", "tb", "gb")
+    return not any(term in msg for term in substantive_bom_terms) and not any(term in msg for term in sizing_terms)
+
+
+def _tool_backed_action_reply(
+    *,
+    user_message: str,
+    action_intent: dict[str, bool],
+    requested_tools: set[str],
+    context: dict[str, Any],
+    customer_id: str,
+    store: ObjectStoreBase,
+) -> str | None:
+    if not action_intent:
+        return None
+
+    if action_intent.get("operating_model") and any(
+        action_intent.get(key) for key in ("production", "access", "verification")
+    ):
+        return (
+            "I don't have a generated artifact/link for that yet.\n"
+            "Operating Model export is not a supported Archie artifact path yet. "
+            "I can discuss the operating model in prose, or generate a supported BOM, diagram, POV, JEP, WAF, or Terraform artifact."
+        )
+
+    if action_intent.get("verification") and not (
+        requested_tools and _has_generation_request_for_supported_artifact(user_message)
+    ):
+        return _build_artifact_verification_reply(context=context, customer_id=customer_id, store=store)
+
+    if "generate_bom" in requested_tools and _bom_action_should_regenerate(
+        user_message=user_message,
+        action_intent=action_intent,
+        context=context,
+        store=store,
+        customer_id=customer_id,
+    ):
+        return None
+
+    if action_intent.get("access") or _is_existing_artifact_access_request(user_message, requested_tools):
+        return _build_artifact_link_reply(context=context, customer_id=customer_id, store=store)
+
+    if action_intent.get("production") and _is_export_only_request(user_message):
+        return _build_artifact_link_reply(context=context, customer_id=customer_id, store=store)
+
+    return None
+
+
+def _bom_action_should_regenerate(
+    *,
+    user_message: str,
+    action_intent: dict[str, bool],
+    context: dict[str, Any],
+    store: ObjectStoreBase,
+    customer_id: str,
+) -> bool:
+    if _is_pure_download_or_link_request(user_message):
+        return False
+    if _is_bom_revision_request(user_message, user_message, context):
+        return True
+    archie = context_store.get_archie_state(context)
+    has_facts = bool(archie.get("client_facts") or archie.get("infrastructure_profile"))
+    latest_downloads = [
+        item for item in _artifact_downloads_from_context(context=context, customer_id=customer_id, store=store)
+        if item.get("type") == "bom"
+    ]
+    if action_intent.get("production") and _mentions_bom_work_product(user_message) and has_facts and not latest_downloads:
+        return True
+    return bool(_mentions_bom_work_product(user_message) and _latest_bom_fact_mismatches(context))
+
+
+def _is_pure_download_or_link_request(user_message: str) -> bool:
+    msg = f" {str(user_message or '').lower()} "
+    if not any(marker in msg for marker in ("download", "share", "link", "url", "presigned", "pre-signed")):
+        return False
+    revision_markers = (
+        " new ",
+        " updated ",
+        " update ",
+        " regenerate",
+        " rebuild",
+        " revise",
+        " revision",
+        " incorrect",
+        " wrong",
+        " not correct",
+        " fix ",
+        " replace ",
+        " current bom",
+        " current xlsx",
+        " current workbook",
+    )
+    if any(marker in msg for marker in revision_markers):
+        return False
+    generation_verbs = ("build", "create", "generate", "draft", "make")
+    if any(verb in msg for verb in generation_verbs) and _mentions_bom_work_product(user_message):
+        return False
+    return True
+
+
+def _is_existing_artifact_access_request(user_message: str, requested_tools: set[str]) -> bool:
+    if requested_tools and _has_generation_request_for_supported_artifact(user_message):
+        return False
+    if not requested_tools:
+        return True
+    if requested_tools == {"generate_bom"} and _is_export_only_request(user_message):
+        return True
+    msg = str(user_message or "").lower()
+    if any(marker in msg for marker in ("share", "link", "download", "presigned", "pre-signed", "url")):
+        return True
+    return False
+
+
+def _checkpoint_blocks_artifact_action_reply(pending_checkpoint: dict[str, Any]) -> str:
+    prompt = str(pending_checkpoint.get("prompt", "") or "A checkpoint is pending.").strip()
+    return (
+        "I can't export, link, or verify artifacts while this checkpoint is pending.\n\n"
+        f"{prompt}\n\n"
+        "Reply `approve checkpoint` to proceed with the approved assumptions, or revise the request and rerun."
+    ).strip()
+
+
+def _tool_required_blocker_reply(user_message: str, action_intent: dict[str, bool]) -> str:
+    _ = user_message
+    if action_intent.get("verification"):
+        return "I can't verify bucket contents from conversation text. I need a persisted artifact manifest or object-store metadata."
+    return (
+        "I don't have a generated artifact/link for that yet. "
+        "Run the relevant specialist generation step first, then ask me for the download or verification."
+    )
+
+
+_BOM_XLSX_METADATA_SUFFIX = ".metadata.json"
+
+
+def _bom_xlsx_metadata_key(xlsx_key: str) -> str:
+    return f"{xlsx_key}{_BOM_XLSX_METADATA_SUFFIX}"
+
+
+def _valid_bom_xlsx_metadata(store: ObjectStoreBase, xlsx_key: str) -> bool:
+    meta_key = _bom_xlsx_metadata_key(xlsx_key)
+    if not xlsx_key.lower().endswith(".xlsx") or not store.head(xlsx_key) or not store.head(meta_key):
+        return False
+    try:
+        metadata = json.loads(store.get(meta_key).decode("utf-8"))
+    except Exception:
+        return False
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("tool") != "generate_bom":
+        return False
+    if str(metadata.get("status", "") or "").lower() not in {"approved", "final"}:
+        return False
+    if metadata.get("checkpoint_required") is True:
+        return False
+    if str(metadata.get("archie_review_verdict", "pass") or "pass").lower() != "pass":
+        return False
+    return True
+
+
+def _artifact_downloads_from_context(
+    *,
+    context: dict[str, Any],
+    customer_id: str,
+    store: ObjectStoreBase,
+) -> list[dict[str, str]]:
+    downloads: list[dict[str, str]] = []
+    agents = context.get("agents", {}) if isinstance(context, dict) else {}
+
+    diagram = dict((agents or {}).get("diagram", {}) or {})
+    diagram_key = str(diagram.get("diagram_key", "") or diagram.get("artifact_ref", "") or "").strip()
+    if diagram_key and store.head(diagram_key):
+        filename = diagram_key.split("/")[-1] or "diagram.drawio"
+        diagram_name = str(diagram.get("diagram_name", "") or _infer_diagram_name_from_key(diagram_key) or "oci_architecture")
+        downloads.append(
+            {
+                "type": "diagram",
+                "key": diagram_key,
+                "download_url": f"/api/download/{filename}?client_id={customer_id}&diagram_name={diagram_name}",
+            }
+        )
+
+    for key in sorted(store.list(f"customers/{customer_id}/bom/xlsx/"), reverse=True):
+        if not _valid_bom_xlsx_metadata(store, key):
+            continue
+        filename = key.split("/")[-1]
+        downloads.append(
+            {
+                "type": "bom",
+                "key": key,
+                "download_url": f"/api/bom/{customer_id}/download/{filename}",
+            }
+        )
+    bom = dict((agents or {}).get("bom", {}) or {})
+    bom_xlsx = bom.get("bom_xlsx") if isinstance(bom.get("bom_xlsx"), dict) else {}
+    context_bom_key = str(bom.get("xlsx_artifact_key") or bom_xlsx.get("key") or "").strip()
+    if context_bom_key and _valid_bom_xlsx_metadata(store, context_bom_key):
+        if all(item.get("key") != context_bom_key for item in downloads):
+            filename = str(bom.get("xlsx_filename") or bom_xlsx.get("filename") or context_bom_key.split("/")[-1]).strip()
+            downloads.append(
+                {
+                    "type": "bom",
+                    "key": context_bom_key,
+                    "download_url": f"/api/bom/{customer_id}/download/{filename}",
+                }
+            )
+
+    terraform = document_store.get_latest_terraform_bundle(store, customer_id)
+    if isinstance(terraform, dict):
+        files = terraform.get("files", {}) if isinstance(terraform.get("files"), dict) else {}
+        for filename, key in sorted(files.items()):
+            key_text = str(key or "").strip()
+            if key_text and store.head(key_text):
+                downloads.append(
+                    {
+                        "type": "terraform",
+                        "key": key_text,
+                        "download_url": f"/api/terraform/{customer_id}/download/{filename}",
+                    }
+                )
+    return downloads
+
+
+def _build_artifact_link_reply(
+    *,
+    context: dict[str, Any],
+    customer_id: str,
+    store: ObjectStoreBase,
+) -> str:
+    downloads = _artifact_downloads_from_context(context=context, customer_id=customer_id, store=store)
+    if not downloads:
+        return (
+            "I don't have a generated artifact/link for that yet. "
+            "Generate the relevant BOM, diagram, or Terraform artifact first, then ask for the download link."
+        )
+    lines = ["Available generated artifact links:"]
+    for item in downloads:
+        lines.append(f"- {item['type']}: {item['download_url']} (key: {item['key']})")
+    return "\n".join(lines)
+
+
+def _candidate_artifact_refs(context: dict[str, Any], customer_id: str, store: ObjectStoreBase) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    agents = context.get("agents", {}) if isinstance(context, dict) else {}
+    diagram = dict((agents or {}).get("diagram", {}) or {})
+    diagram_key = str(diagram.get("diagram_key", "") or diagram.get("artifact_ref", "") or "").strip()
+    if diagram_key:
+        refs.append({"type": "diagram", "key": diagram_key})
+    for key in sorted(store.list(f"customers/{customer_id}/bom/xlsx/"), reverse=True):
+        if _valid_bom_xlsx_metadata(store, key):
+            refs.append({"type": "bom", "key": key})
+    bom = dict((agents or {}).get("bom", {}) or {})
+    bom_xlsx = bom.get("bom_xlsx") if isinstance(bom.get("bom_xlsx"), dict) else {}
+    context_bom_key = str(bom.get("xlsx_artifact_key") or bom_xlsx.get("key") or "").strip()
+    if context_bom_key and _valid_bom_xlsx_metadata(store, context_bom_key) and all(item.get("key") != context_bom_key for item in refs):
+        refs.append({"type": "bom", "key": context_bom_key})
+    terraform = document_store.get_latest_terraform_bundle(store, customer_id)
+    if isinstance(terraform, dict):
+        files = terraform.get("files", {}) if isinstance(terraform.get("files"), dict) else {}
+        for _filename, key in sorted(files.items()):
+            if str(key or "").strip():
+                refs.append({"type": "terraform", "key": str(key).strip()})
+    return refs
+
+
+def _build_artifact_verification_reply(
+    *,
+    context: dict[str, Any],
+    customer_id: str,
+    store: ObjectStoreBase,
+) -> str:
+    refs = _candidate_artifact_refs(context, customer_id, store)
+    if not refs:
+        return (
+            "I don't have a persisted artifact manifest to verify yet. "
+            "Generate the relevant artifact first, then ask me to verify it."
+        )
+    lines = ["Artifact verification from persisted object-store state:"]
+    missing = False
+    for item in refs:
+        exists = store.head(item["key"])
+        missing = missing or not exists
+        status = "present" if exists else "not found"
+        lines.append(f"- {item['type']}: {status} ({item['key']})")
+    if missing:
+        lines.append("I did not infer missing files from chat history; the status above comes from persisted keys only.")
+    return "\n".join(lines)
+
+
 def _parallel_plan_for_message(user_message: str) -> list[dict]:
     """
     Plan safe concurrent tool calls from explicit SA intent.
@@ -5353,9 +7347,23 @@ def _requested_generation_tools(user_message: str) -> set[str]:
     """
     msg = (user_message or "").lower()
     requested: set[str] = set()
-    if "bom" in msg or "bill of materials" in msg:
+    generation_or_export = any(token in msg for token in ("build", "create", "generate", "draft", "make", "export", "download"))
+    bom_artifact_terms = (
+        "bom",
+        "bill of materials",
+        "xlsx",
+        "xlxs",
+        "xlsc",
+        "excel",
+        "spreadsheet",
+        "workbook",
+    )
+    bom_pricing_terms = ("pricing", "priced", "sku", "skus")
+    if any(term in msg for term in bom_artifact_terms) or (
+        generation_or_export and any(term in msg for term in bom_pricing_terms)
+    ):
         requested.add("generate_bom")
-    if "diagram" in msg or "drawio" in msg:
+    if _message_requests_diagram_generation(msg):
         requested.add("generate_diagram")
     if "terraform" in msg or "iac" in msg:
         requested.add("generate_terraform")
@@ -5366,6 +7374,45 @@ def _requested_generation_tools(user_message: str) -> set[str]:
     if "waf" in msg or "well-architected" in msg or "well architected" in msg:
         requested.add("generate_waf")
     return requested
+
+
+def _message_requests_diagram_generation(msg: str) -> bool:
+    if "drawio" in msg or "draw.io" in msg or "topology file" in msg:
+        return True
+    if "diagram" not in msg:
+        return False
+    if any(marker in msg for marker in ("generate diagram", "generate a diagram", "build diagram", "build a diagram", "create diagram", "create a diagram", "architecture diagram")):
+        return True
+    if "terraform" in msg and any(marker in msg for marker in ("latest diagram", "existing diagram", "current diagram", "approved diagram")):
+        return False
+    return True
+
+
+def _single_requested_tool_to_force(requested_tools: set[str], tool_calls: list[dict[str, Any]]) -> str:
+    if len(requested_tools) != 1:
+        return ""
+    tool_name = next(iter(requested_tools))
+    if any(call.get("tool") == tool_name for call in tool_calls):
+        return ""
+    return tool_name
+
+
+def _default_generation_tool_args(tool_name: str, user_message: str) -> dict[str, Any]:
+    text = str(user_message or "").strip()
+    if tool_name == "generate_diagram":
+        return {"bom_text": text}
+    if tool_name == "generate_bom":
+        return {"prompt": text}
+    if tool_name == "generate_terraform":
+        return {"prompt": text}
+    if tool_name in {"generate_pov", "generate_jep", "generate_waf"}:
+        return {"feedback": text}
+    return {}
+
+
+def _deliverable_requires_specialist_reply(requested_tools: set[str]) -> str:
+    label = ", ".join(_ordered_requested_tools(requested_tools)) or "requested deliverable"
+    return f"I can't generate that from Agent 0. This requires the `{label}` specialist path."
 
 
 def _is_architecture_chat_only_request(user_message: str, decision_context: dict[str, Any] | None) -> bool:
@@ -5448,6 +7495,30 @@ def _is_checkpoint_reject_message(user_message: str) -> bool:
     return "reject checkpoint" in msg or "revise input" in msg or "do not approve" in msg
 
 
+def _is_note_capture_only_request(user_message: str) -> bool:
+    msg = f" {str(user_message or '').lower()} "
+    capture_markers = (
+        "remember",
+        "save these notes",
+        "save this note",
+        "customer notes",
+        "record this",
+        "capture this",
+    )
+    defer_markers = (
+        "do not build",
+        "don't build",
+        "do not generate",
+        "don't generate",
+        "not build",
+        "not generate",
+        "later use",
+        "for later",
+        "just remember",
+    )
+    return any(marker in msg for marker in capture_markers) and any(marker in msg for marker in defer_markers)
+
+
 def _is_recall_intent(user_message: str) -> bool:
     msg = (user_message or "").lower()
     if _requested_generation_tools(user_message):
@@ -5457,11 +7528,31 @@ def _is_recall_intent(user_message: str) -> bool:
         for marker in (
             "what did we have before",
             "what did we decide",
+            "what did the customer ask for",
+            "what has the customer asked for",
+            "what did customer ask for",
             "what do you remember",
             "recall",
             "summarize the current state",
             "what's the current state",
             "what did we learn",
+            "what system are we migrating",
+            "what are we migrating",
+            "migration target",
+            "target system",
+        )
+    )
+
+
+def _is_migration_target_recall_intent(user_message: str) -> bool:
+    msg = (user_message or "").lower()
+    return any(
+        marker in msg
+        for marker in (
+            "what system are we migrating",
+            "what are we migrating",
+            "migration target",
+            "target system",
         )
     )
 
