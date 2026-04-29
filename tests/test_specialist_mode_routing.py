@@ -913,6 +913,33 @@ def test_react_prompt_includes_internal_orchestrator_self_guidance():
     assert "Relevant WAF pillars:" in prompt
 
 
+def test_react_followup_prompt_preserves_internal_orchestrator_self_guidance():
+    decision_context = {
+        "goal": "Generate OCI diagram",
+        "constraints": {"security_requirements": ["private subnets"]},
+        "assumptions": [],
+        "success_criteria": ["Draw.io artifact is generated"],
+    }
+    prompt = orchestrator_agent._build_prompt(
+        [],
+        "",
+        "Generate a diagram for private OKE.",
+        decision_context=decision_context,
+    )
+    prefix = prompt.split("[End Internal Orchestrator Self-Guidance]", 1)[0]
+
+    followup = orchestrator_agent._append_tool_result(
+        prompt,
+        "generate_diagram",
+        "Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio",
+    )
+
+    assert followup.startswith(prefix)
+    assert followup.count("[Internal Orchestrator Self-Guidance") == 1
+    assert "[Tool result: generate_diagram]" in followup
+    assert followup.rstrip().endswith("ASSISTANT:")
+
+
 def test_skill_injection_applies_for_terraform_prompt():
     injected = orchestrator_agent._inject_skill_into_tool_args(
         "generate_terraform",

@@ -4180,16 +4180,30 @@ def _fallback_applied_skills(tool_name: str) -> list[str]:
     return [name for name in _MANDATORY_SKILL_FALLBACKS.get(tool_name, ()) if name]
 
 
-def _render_management_summary(
+def _governor_critic_summary(data: dict[str, Any]) -> str:
+    governor = data.get("governor", {}) if isinstance(data.get("governor"), dict) else {}
+    quality = governor.get("quality", {}) if isinstance(governor.get("quality"), dict) else {}
+    last_critique = data.get("last_critique", {}) if isinstance(data.get("last_critique"), dict) else {}
+    for candidate in (
+        governor.get("decision_summary"),
+        quality.get("summary"),
+        last_critique.get("critique_summary"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return "No critic feedback available"
+
+
+def _synthesize_management_metadata(
     tool_calls: list[dict[str, Any]],
     *,
     decision_context: dict[str, Any] | None = None,
-) -> str:
+) -> dict[str, Any]:
     successful_calls = [call for call in tool_calls if _call_result_is_successful_generation(call)]
-    if not successful_calls:
-        return ""
-
     applied_skills: list[str] = []
+    artifact_refs: list[str] = []
+    governor_summaries: list[str] = []
     refinement_count = 0
     checkpoint_statuses: list[str] = []
     assumptions = _merge_assumption_lists(list((decision_context or {}).get("assumptions", []) or []), [])
@@ -4204,41 +4218,85 @@ def _render_management_summary(
         for skill in skills:
             if skill not in applied_skills:
                 applied_skills.append(skill)
+
+        artifact_key = str(call.get("artifact_key", "") or "").strip()
+        if artifact_key and artifact_key not in artifact_refs:
+            artifact_refs.append(artifact_key)
+        decision_log = data.get("decision_log", {}) if isinstance(data.get("decision_log"), dict) else {}
+        artifact_candidates = list(decision_log.get("artifact_refs", []) or []) + list(data.get("artifact_refs", []) or [])
+        for artifact_ref in artifact_candidates:
+            artifact_text = str(artifact_ref or "").strip()
+            if artifact_text and artifact_text not in artifact_refs:
+                artifact_refs.append(artifact_text)
+
         refinement_count += int(data.get("refinement_count", 0) or 0)
         assumptions = _merge_assumption_lists(
             assumptions,
             list((data.get("decision_context", {}) or {}).get("assumptions", []) or []),
         )
         assumptions = _merge_assumption_lists(assumptions, list(data.get("assumptions_used", []) or []))
+
         governor = data.get("governor", {}) if isinstance(data.get("governor"), dict) else {}
         for section in ("security", "cost", "quality"):
             section_data = governor.get(section, {}) if isinstance(governor.get(section), dict) else {}
             for key in ("findings", "issues", "suggestions"):
                 tradeoffs.extend(str(item).strip() for item in section_data.get(key, []) or [] if str(item).strip())
+
+        governor_summary = _governor_critic_summary(data)
+        if governor_summary not in governor_summaries:
+            governor_summaries.append(governor_summary)
+
         checkpoint = data.get("checkpoint")
         if isinstance(checkpoint, dict):
             checkpoint_statuses.append(str(checkpoint.get("status", "pending") or "pending"))
 
     deliverables = [_tool_goal_label(str(call.get("tool", "") or "requested_tool")) for call in successful_calls]
-    key_decision = "Generated " + ", ".join(deliverables) + " in requested prerequisite order."
     rendered_assumptions = [
         f"{str(item.get('statement', '') or '').strip()} (risk: {str(item.get('risk', '') or 'low').strip().lower() or 'low'})"
         for item in assumptions
         if isinstance(item, dict) and str(item.get("statement", "") or "").strip()
     ]
-    assumption_line = "; ".join(rendered_assumptions[:3]) if rendered_assumptions else "None beyond the supplied request/context."
-    tradeoff_line = "; ".join(dict.fromkeys(tradeoffs[:3])) if tradeoffs else "No blocking tradeoffs reported."
-    checkpoint_status = ", ".join(dict.fromkeys(checkpoint_statuses)) if checkpoint_statuses else "none"
-    skills_line = ", ".join(applied_skills) if applied_skills else "not reported"
+    return {
+        "successful_call_count": len(successful_calls),
+        "applied_skills": applied_skills,
+        "refinement_count": refinement_count,
+        "governor_critic_summary": "; ".join(governor_summaries) if governor_summaries else "No critic feedback available",
+        "key_decisions": (
+            "Generated " + ", ".join(deliverables) + " in requested prerequisite order."
+            if deliverables
+            else ""
+        ),
+        "assumptions": rendered_assumptions,
+        "key_tradeoffs": list(dict.fromkeys(tradeoffs)),
+        "artifact_refs": artifact_refs,
+        "checkpoint_status": ", ".join(dict.fromkeys(checkpoint_statuses)) if checkpoint_statuses else "none",
+    }
+
+
+def _render_management_summary(
+    tool_calls: list[dict[str, Any]],
+    *,
+    decision_context: dict[str, Any] | None = None,
+) -> str:
+    metadata = _synthesize_management_metadata(tool_calls, decision_context=decision_context)
+    if not metadata["successful_call_count"]:
+        return ""
+
+    assumption_line = "; ".join(metadata["assumptions"][:3]) if metadata["assumptions"] else "None beyond the supplied request/context."
+    tradeoff_line = "; ".join(metadata["key_tradeoffs"][:3]) if metadata["key_tradeoffs"] else "No blocking tradeoffs reported."
+    skills_line = ", ".join(metadata["applied_skills"]) if metadata["applied_skills"] else "not reported"
+    artifact_line = ", ".join(metadata["artifact_refs"][:3]) if metadata["artifact_refs"] else "none"
 
     return "\n".join(
         [
             "Management Summary",
             f"- Applied skills: {skills_line}",
-            f"- Refinement count: {refinement_count}",
-            f"- Key decisions: {key_decision}",
+            f"- Refinement count: {metadata['refinement_count']}",
+            f"- Governor/critic summary: {metadata['governor_critic_summary']}",
+            f"- Key decisions: {metadata['key_decisions']}",
             f"- Assumptions/tradeoffs: {assumption_line} Tradeoffs: {tradeoff_line}",
-            f"- Checkpoint status: {checkpoint_status}",
+            f"- Artifact refs: {artifact_line}",
+            f"- Checkpoint status: {metadata['checkpoint_status']}",
         ]
     )
 
@@ -4436,7 +4494,10 @@ def _relevant_waf_pillars(
 
 
 def _append_tool_result(prompt: str, tool_name: str, result_summary: str) -> str:
-    return prompt.rstrip("ASSISTANT:").rstrip() + (
+    base = prompt.rstrip()
+    if base.endswith("ASSISTANT:"):
+        base = base[: -len("ASSISTANT:")].rstrip()
+    return base + (
         f"\n\n[Tool result: {tool_name}] {result_summary}\n\nASSISTANT:"
     )
 
