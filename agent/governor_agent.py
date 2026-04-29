@@ -218,7 +218,7 @@ def _apply_deterministic_overrides(
     if estimated_cost is not None:
         payload["cost"]["estimated_monthly_cost"] = estimated_cost
 
-    if budget is not None and estimated_cost is not None and estimated_cost > budget:
+    if budget is not None and estimated_cost is not None and estimated_cost > budget * 1.10:
         variance = round(estimated_cost - budget, 2)
         payload["cost"]["status"] = "checkpoint_required"
         payload["cost"]["variance"] = variance
@@ -236,6 +236,65 @@ def _apply_deterministic_overrides(
                 "Cost checkpoint required before accepting this architecture recommendation."
             )
 
+    _apply_single_resource_budget_warning(payload=payload, budget=budget, estimated_cost=estimated_cost, result_data=result_data)
+    if _public_ingress_without_waf_or_justification(
+        tool_name=tool_name,
+        decision_context=decision_context,
+        result_data=result_data,
+        result_summary=result_summary,
+    ):
+        _require_checkpoint(
+            payload,
+            reason_code="public_ingress_without_waf",
+            finding="Public ingress for an application workload requires WAF coverage or explicit risk justification.",
+            summary="Security checkpoint required before accepting public ingress without WAF or explicit justification.",
+            section="security",
+        )
+    if _uses_root_compartment(decision_context=decision_context, result_data=result_data, result_summary=result_summary):
+        _require_checkpoint(
+            payload,
+            reason_code="root_compartment_usage",
+            finding="Root compartment usage requires an explicit architecture checkpoint.",
+            summary="Security checkpoint required before accepting root compartment placement.",
+            section="security",
+        )
+    if _has_missing_encryption_signal(result_data=result_data, result_summary=result_summary):
+        _require_checkpoint(
+            payload,
+            reason_code="missing_encryption",
+            finding="Block volume or database context is missing encryption.",
+            summary="Security checkpoint required before accepting unencrypted block volume or database resources.",
+            section="security",
+        )
+    if _has_high_risk_assumption_with_missing_input(decision_context):
+        _require_checkpoint(
+            payload,
+            reason_code="high_risk_assumption_missing_input",
+            finding="A high-risk assumption depends on missing required input.",
+            summary="Discovery checkpoint required before accepting high-risk assumptions with missing required inputs.",
+            section="quality",
+        )
+    contradiction = _detect_requirement_contradiction(
+        decision_context=decision_context,
+        result_data=result_data,
+        result_summary=result_summary,
+    )
+    if contradiction == "blocked":
+        _block_output(
+            payload,
+            reason_code="requirement_contradiction",
+            finding="Generated output directly contradicts a structured requirement.",
+            summary="Governor blocked this output because it contradicts a stated requirement.",
+        )
+    elif contradiction == "checkpoint_required":
+        _require_checkpoint(
+            payload,
+            reason_code="requirement_contradiction_unstructured",
+            finding="Generated output may contradict a stated requirement and requires confirmation.",
+            summary="Checkpoint required before accepting output with a possible requirement contradiction.",
+            section="quality",
+        )
+
     summary_lc = result_summary.lower()
     if tool_name == "generate_waf" and any(token in summary_lc for token in ("critical", "high risk", "failed")):
         payload["security"]["status"] = "blocked"
@@ -252,6 +311,237 @@ def _apply_deterministic_overrides(
     quality_status = payload["quality"]["status"]
     if payload["overall_status"] == "pass" and quality_status == "revise":
         payload["overall_status"] = "revise"
+
+
+def _require_checkpoint(
+    payload: dict[str, Any],
+    *,
+    reason_code: str,
+    finding: str,
+    summary: str,
+    section: str,
+) -> None:
+    if section == "security":
+        if finding not in payload["security"]["findings"]:
+            payload["security"]["findings"].append(finding)
+        if finding not in payload["security"]["required_actions"]:
+            payload["security"]["required_actions"].append(finding)
+    elif section == "cost":
+        if finding not in payload["cost"]["findings"]:
+            payload["cost"]["findings"].append(finding)
+        payload["cost"]["status"] = "checkpoint_required"
+    else:
+        if finding not in payload["quality"]["issues"]:
+            payload["quality"]["issues"].append(finding)
+    if reason_code not in payload["reason_codes"]:
+        payload["reason_codes"].append(reason_code)
+    if payload["overall_status"] != "blocked":
+        payload["overall_status"] = "checkpoint_required"
+    if not payload["decision_summary"]:
+        payload["decision_summary"] = summary
+
+
+def _block_output(
+    payload: dict[str, Any],
+    *,
+    reason_code: str,
+    finding: str,
+    summary: str,
+) -> None:
+    payload["security"]["status"] = "blocked"
+    if finding not in payload["security"]["findings"]:
+        payload["security"]["findings"].append(finding)
+    if finding not in payload["security"]["required_actions"]:
+        payload["security"]["required_actions"].append(finding)
+    if reason_code not in payload["reason_codes"]:
+        payload["reason_codes"].append(reason_code)
+    payload["overall_status"] = "blocked"
+    if not payload["decision_summary"]:
+        payload["decision_summary"] = summary
+
+
+def _apply_single_resource_budget_warning(
+    *,
+    payload: dict[str, Any],
+    budget: float | None,
+    estimated_cost: float | None,
+    result_data: dict[str, Any],
+) -> None:
+    threshold_base = budget if budget is not None else estimated_cost
+    if threshold_base is None or threshold_base <= 0:
+        return
+    threshold = threshold_base * 0.40
+    for item in _extract_cost_line_items(result_data):
+        monthly_cost = _to_float_or_none(
+            item.get("estimated_monthly_cost")
+            or item.get("monthly_cost")
+            or item.get("cost_monthly")
+            or item.get("monthly")
+            or item.get("total_monthly_cost")
+        )
+        if monthly_cost is None:
+            quantity = _to_float_or_none(item.get("quantity") or item.get("qty"))
+            unit_cost = _to_float_or_none(item.get("unit_monthly_cost") or item.get("unit_cost"))
+            if quantity is not None and unit_cost is not None:
+                monthly_cost = round(quantity * unit_cost, 2)
+        if monthly_cost is None or monthly_cost <= threshold:
+            continue
+        label = str(item.get("name") or item.get("description") or item.get("service") or "resource").strip()
+        finding = (
+            f"Cost concentration warning: {label} is {monthly_cost:.2f}, "
+            f"more than 40% of the comparison budget {threshold_base:.2f}."
+        )
+        if finding not in payload["cost"]["findings"]:
+            payload["cost"]["findings"].append(finding)
+        if "single_resource_budget_concentration" not in payload["reason_codes"]:
+            payload["reason_codes"].append("single_resource_budget_concentration")
+        return
+
+
+def _public_ingress_without_waf_or_justification(
+    *,
+    tool_name: str,
+    decision_context: dict[str, Any],
+    result_data: dict[str, Any],
+    result_summary: str,
+) -> bool:
+    if tool_name == "generate_waf":
+        return False
+    text = _searchable_text(decision_context, result_data, result_summary)
+    has_public_ingress = any(
+        token in text
+        for token in (
+            "public ingress",
+            "public load balancer",
+            "internet-facing",
+            "internet facing",
+            '"public_ingress": true',
+            '"ingress": "public"',
+            '"exposure": "public"',
+        )
+    )
+    has_app_workload = any(
+        token in text
+        for token in ("compute", "application", "app server", "oke", "kubernetes", "load balancer", "web")
+    )
+    has_negative_waf = any(token in text for token in ("without waf", "no waf", "waf disabled", "no web application firewall"))
+    has_waf = any(token in text for token in ("waf", "web application firewall")) and not has_negative_waf
+    has_justification = any(
+        token in text
+        for token in ("explicit justification", "accepted risk", "risk acceptance", "justification")
+    )
+    return has_public_ingress and has_app_workload and not has_waf and not has_justification
+
+
+def _uses_root_compartment(
+    *,
+    decision_context: dict[str, Any],
+    result_data: dict[str, Any],
+    result_summary: str,
+) -> bool:
+    for key, value in _walk_key_values({"decision_context": decision_context, "result_data": result_data}):
+        key_lc = key.lower()
+        value_lc = str(value).strip().lower()
+        if "compartment" in key_lc and value_lc in {"root", "root compartment", "tenancy root"}:
+            return True
+    text = _searchable_text(decision_context, result_data, result_summary)
+    return "root compartment" in text or "tenancy root" in text
+
+
+def _has_missing_encryption_signal(*, result_data: dict[str, Any], result_summary: str) -> bool:
+    text = _searchable_text(result_data, result_summary)
+    if "unencrypted" in text and any(token in text for token in ("block volume", "boot volume", "database", "db system")):
+        return True
+    for key, value in _walk_key_values(result_data):
+        key_lc = key.lower()
+        if key_lc in {"encryption", "encrypted", "is_encrypted"} and value is False:
+            return True
+        if "encryption" in key_lc and str(value).strip().lower() in {"false", "none", "disabled", "missing"}:
+            return True
+    return False
+
+
+def _has_high_risk_assumption_with_missing_input(decision_context: dict[str, Any]) -> bool:
+    if not isinstance(decision_context, dict):
+        return False
+    if not list(decision_context.get("missing_inputs", []) or []):
+        return False
+    assumptions = decision_context.get("assumptions", []) or []
+    return any(
+        isinstance(item, dict) and str(item.get("risk", "") or "").strip().lower() == "high"
+        for item in assumptions
+    )
+
+
+def _detect_requirement_contradiction(
+    *,
+    decision_context: dict[str, Any],
+    result_data: dict[str, Any],
+    result_summary: str,
+) -> str:
+    structured_keys = {
+        "contradictions",
+        "contradicted_requirements",
+        "requirement_conflicts",
+        "policy_conflicts",
+    }
+    for key, value in _walk_key_values(result_data):
+        if key.lower() in structured_keys and value:
+            return "blocked"
+
+    constraints = decision_context.get("constraints", {}) if isinstance(decision_context, dict) else {}
+    security_requirements = " ".join(
+        str(item).lower() for item in constraints.get("security_requirements", []) or []
+    )
+    if "private-only" in security_requirements or "private only" in security_requirements:
+        text = _searchable_text(result_data, result_summary)
+        if any(
+            token in text
+            for token in (
+                '"public_ingress": true',
+                '"ingress": "public"',
+                '"exposure": "public"',
+                "public ingress",
+                "public load balancer",
+            )
+        ):
+            return "blocked"
+
+    summary_lc = result_summary.lower()
+    if "contradict" in summary_lc and "requirement" in summary_lc:
+        return "checkpoint_required"
+    return ""
+
+
+def _extract_cost_line_items(result_data: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[Any] = []
+    bom_payload = result_data.get("bom_payload")
+    if isinstance(bom_payload, dict):
+        candidates.extend(list(bom_payload.get("line_items", []) or []))
+    candidates.extend(list(result_data.get("line_items", []) or []))
+    candidates.extend(list(result_data.get("resources", []) or []))
+    return [item for item in candidates if isinstance(item, dict)]
+
+
+def _walk_key_values(value: Any, prefix: str = ""):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = str(key)
+            yield key_text, child
+            yield from _walk_key_values(child, key_text)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_key_values(child, prefix)
+
+
+def _searchable_text(*parts: Any) -> str:
+    rendered: list[str] = []
+    for part in parts:
+        if isinstance(part, (dict, list)):
+            rendered.append(json.dumps(part, ensure_ascii=True, sort_keys=True))
+        else:
+            rendered.append(str(part or ""))
+    return "\n".join(rendered).lower()
 
 
 def _extract_estimated_monthly_cost(result_data: dict[str, Any]) -> float | None:

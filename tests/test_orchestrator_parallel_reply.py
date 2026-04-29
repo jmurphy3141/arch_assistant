@@ -616,3 +616,83 @@ def test_single_diagram_reply_includes_assumptions_from_result_data(monkeypatch)
 
     assert "Assumptions applied:" in result["reply"]
     assert "active-passive ha/dr" in result["reply"].lower()
+
+
+def test_synthesize_management_metadata_is_stable_and_complete() -> None:
+    tool_calls = [
+        {
+            "tool": "generate_pov",
+            "result_summary": "POV saved. Key: pov/acme/v2.md",
+            "artifact_key": "pov/acme/v2.md",
+            "result_data": {
+                "applied_skills": ["oci_customer_pov_writer", "orchestrator"],
+                "refinement_count": 2,
+                "decision_context": {
+                    "assumptions": [
+                        {
+                            "id": "region",
+                            "statement": "Region not specified; assume us-ashburn-1.",
+                            "risk": "low",
+                        }
+                    ]
+                },
+                "governor": {
+                    "decision_summary": "Meets customer outcome framing.",
+                    "security": {"findings": []},
+                    "cost": {"findings": ["Budget range should be validated in discovery."]},
+                    "quality": {"summary": "Quality fallback should not be used."},
+                },
+                "last_critique": {"critique_summary": "Critique fallback should not be used."},
+                "decision_log": {"artifact_refs": ["pov/acme/v2.md"]},
+            },
+        },
+        {
+            "tool": "generate_jep",
+            "result_summary": "JEP saved. Key: jep/acme/v1.md",
+            "artifact_key": "jep/acme/v1.md",
+            "result_data": {
+                "applied_skills": ["oci_jep_writer", "orchestrator"],
+                "governor": {
+                    "quality": {
+                        "summary": "Timeline is acceptable.",
+                        "suggestions": ["Confirm owner names."],
+                    }
+                },
+            },
+        },
+    ]
+
+    first = orchestrator_agent._synthesize_management_metadata(tool_calls)
+    second = orchestrator_agent._synthesize_management_metadata(tool_calls)
+
+    assert first == second
+    assert first["applied_skills"] == [
+        "oci_customer_pov_writer",
+        "orchestrator",
+        "oci_jep_writer",
+    ]
+    assert first["refinement_count"] == 2
+    assert first["governor_critic_summary"] == "Meets customer outcome framing.; Timeline is acceptable."
+    assert first["key_tradeoffs"] == ["Budget range should be validated in discovery.", "Confirm owner names."]
+    assert first["artifact_refs"] == ["pov/acme/v2.md", "jep/acme/v1.md"]
+    assert first["checkpoint_status"] == "none"
+
+
+def test_management_summary_renders_governor_summary_and_artifact_refs() -> None:
+    summary = orchestrator_agent._render_management_summary(
+        [
+            {
+                "tool": "generate_pov",
+                "result_summary": "POV saved. Key: pov/acme/v2.md",
+                "artifact_key": "pov/acme/v2.md",
+                "result_data": {
+                    "applied_skills": ["oci_customer_pov_writer", "orchestrator"],
+                    "governor": {"quality": {"summary": "Quality review passed."}},
+                },
+            }
+        ]
+    )
+
+    assert "Management Summary" in summary
+    assert "- Governor/critic summary: Quality review passed." in summary
+    assert "- Artifact refs: pov/acme/v2.md" in summary
