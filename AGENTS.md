@@ -1,11 +1,13 @@
 # AGENTS.md
 
-Last updated: 2026-04-29 for Archie OCI Architecture Assistant v1.9.2.
+Last updated: 2026-04-30 for Archie OCI Architecture Assistant v1.9.x.
 
-Read this first when working in this repository. This file is the practical AI
-onboarding guide and supersedes `CLAUDE.md` for day-to-day agent navigation.
-Keep `CLAUDE.md` and `SESSION_CHECKPOINT.md` as historical context unless a
-task explicitly asks for them.
+Read this file first, then read `PLAN.md` before touching any code.
+`PLAN.md` is the locked architecture plan. It defines the target state,
+the phase sequence, and what Codex must never do. If a task conflicts
+with `PLAN.md`, stop and flag it — do not improvise.
+
+`CLAUDE.md` is the codebase reference. `SESSION_CHECKPOINT.md` is stale — ignore it.
 
 ## Repo Snapshot
 
