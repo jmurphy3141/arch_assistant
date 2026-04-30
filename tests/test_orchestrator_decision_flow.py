@@ -30,6 +30,12 @@ class _FakeBomService:
             raise AssertionError("No fake BOM responses remaining")
         return self._responses.pop(0)
 
+    def generate_from_inputs(self, *, inputs: dict, **_kwargs):
+        self.chat_messages.append(f"structured:{inputs}")
+        if not self._responses:
+            raise AssertionError("No fake BOM responses remaining")
+        return self._responses.pop(0)
+
     def refresh_data(self) -> dict[str, object]:
         self.refresh_calls += 1
         if self.refresh_error is not None:
@@ -817,9 +823,9 @@ def test_note_capture_only_does_not_generate_bom_and_followup_uses_notes(monkeyp
     data = final["tool_calls"][0]["result_data"]
 
     assert final["reply"].startswith("Final BOM prepared.")
-    assert "48 OCPU" in fake_service.chat_messages[0]
-    assert "768 GB RAM" in fake_service.chat_messages[0]
-    assert "42 TB block storage" in fake_service.chat_messages[0]
+    assert "'ocpu': 48.0" in fake_service.chat_messages[0]
+    assert "'gb': 768.0" in fake_service.chat_messages[0]
+    assert "'block_tb': 42.0" in fake_service.chat_messages[0]
     assert data["trace"]["bom_context_source"] == "persisted_notes"
     assert data["trace"]["review_verdict"] == "pass"
 
@@ -1909,6 +1915,49 @@ def test_specialist_memory_contract_applies_to_all_generation_tools(monkeypatch)
         assert isinstance(args.get("_memory_snapshot"), dict), tool_name
         assert args.get("_memory_snapshot_hash"), tool_name
         assert primary and "[Archie Canonical Memory]" in args[primary], tool_name
+
+
+def test_bom_handoff_builds_structured_inputs_from_kr1_memory() -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "kr1-structured", "KR1")
+    context_store.merge_archie_client_facts(
+        ctx,
+        {
+            "region": "af-johannesburg-1",
+            "platform": "VxRail / VMware ESXi",
+            "workloads": ["SQL Server", "Oracle databases", "Linux servers", "Windows servers"],
+            "os_mix": ["Linux", "Windows"],
+            "infrastructure": {
+                "cpu": {"logical_cores": 64},
+                "memory": {"total_gb": 1146.88},
+                "storage": {"used_tb": 44},
+                "connectivity": {"internet_mbps": 100, "mpls": True, "sd_wan": True},
+                "dr": {"rto_hours": 24, "cross_region_restore": True},
+            },
+            "connectivity": {"internet_mbps": 100, "mpls": True, "sd_wan": True},
+            "dr": {"rto_hours": 24, "cross_region_restore": True},
+        },
+    )
+
+    prepared = orchestrator_agent._prepare_bom_tool_args(
+        args={"prompt": "Generate the BOM XLSX"},
+        user_message="Generate the BOM XLSX",
+        context=ctx,
+        decision_context={},
+    )
+
+    inputs = prepared["inputs"]
+    assert inputs["region"] == "af-johannesburg-1"
+    assert inputs["architecture_option"] == "OCI Dedicated VMware Solution"
+    assert inputs["compute"]["ocpu"] == 64
+    assert inputs["compute"]["gpu"] is False
+    assert inputs["memory"]["gb"] == 1146.88
+    assert inputs["storage"]["block_tb"] == 44
+    assert inputs["connectivity"] == {"internet_mbps": 100.0, "mpls": True, "sd_wan": True}
+    assert inputs["dr"] == {"rto_hours": 24.0, "cross_region_restore": True}
+    assert inputs["workloads"] == ["SQL Server", "Oracle databases", "Linux servers", "Windows servers"]
+    assert inputs["os_mix"] == ["Linux", "Windows"]
+    assert inputs["output_format"] == "xlsx"
 
 
 def test_new_xlsx_with_incorrect_prior_bom_builds_revision_brief(monkeypatch) -> None:

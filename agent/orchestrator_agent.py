@@ -1597,14 +1597,24 @@ async def _execute_bom_tool_request(
     service = get_shared_bom_service()
     cache_before = await asyncio.to_thread(service.health)
     cache_status_before_attempt = "ready" if cache_before.get("ready") else "not_ready"
-    response = await asyncio.to_thread(
-        service.chat,
-        message=prompt,
-        conversation=[],
-        trace_id=trace_id,
-        model_id=model_id,
-        text_runner=text_runner,
-    )
+    structured_inputs = args.get("inputs") if isinstance(args.get("inputs"), dict) else {}
+    use_structured_inputs = bool(structured_inputs)
+    if use_structured_inputs:
+        response = await asyncio.to_thread(
+            service.generate_from_inputs,
+            inputs=structured_inputs,
+            trace_id=trace_id,
+            model_id=model_id,
+        )
+    else:
+        response = await asyncio.to_thread(
+            service.chat,
+            message=prompt,
+            conversation=[],
+            trace_id=trace_id,
+            model_id=model_id,
+            text_runner=text_runner,
+        )
 
     refresh_attempted = False
     refresh_status = "not_attempted"
@@ -1620,14 +1630,22 @@ async def _execute_bom_tool_request(
             refresh_status = "failed"
         if refresh_status == "succeeded":
             retry_count = 1
-            response = await asyncio.to_thread(
-                service.chat,
-                message=prompt,
-                conversation=[],
-                trace_id=trace_id,
-                model_id=model_id,
-                text_runner=text_runner,
-            )
+            if use_structured_inputs:
+                response = await asyncio.to_thread(
+                    service.generate_from_inputs,
+                    inputs=structured_inputs,
+                    trace_id=trace_id,
+                    model_id=model_id,
+                )
+            else:
+                response = await asyncio.to_thread(
+                    service.chat,
+                    message=prompt,
+                    conversation=[],
+                    trace_id=trace_id,
+                    model_id=model_id,
+                    text_runner=text_runner,
+                )
             retry_succeeded = not _bom_response_needs_refresh(response)
         if refresh_status != "succeeded" or not retry_succeeded:
             response = {
@@ -1657,10 +1675,20 @@ async def _execute_bom_tool_request(
             "bom_context_source": context_source,
             "bom_retry_count": retry_count,
             "bom_retry_succeeded": retry_succeeded,
+            "bom_request_shape": "internal_a2a_generate_bom" if use_structured_inputs else "legacy_prompt",
+            "bom_trace_stages": [
+                "BOM hat selected",
+                "structured inputs built" if use_structured_inputs else "legacy prompt prepared",
+                "BOM agent called",
+                "payload reviewed" if response.get("bom_payload") else "payload pending clarification",
+            ],
         }
     )
     response["trace"] = trace
     response["bom_context_source"] = context_source
+    if use_structured_inputs:
+        response["structured_inputs"] = structured_inputs
+        response["structured_inputs_source"] = str(args.get("_bom_inputs_source", "") or "archie_memory_and_current_turn")
     return response
 
 
@@ -1836,7 +1864,7 @@ def _prepare_bom_tool_args(
     payload["prompt"] = _append_reusable_bom_inputs(payload["prompt"], context)
 
     if bool(payload.get("_bom_grounded_from_context")):
-        return payload
+        return _attach_structured_bom_inputs(payload, context=context, user_message=user_message)
 
     if _is_bom_revision_request(prompt, user_message, context) or (
         _mentions_bom_work_product(user_message) and _latest_bom_fact_mismatches(context)
@@ -1850,10 +1878,10 @@ def _prepare_bom_tool_args(
         payload["_bom_context_source"] = "bom_revision"
         payload["_bom_grounded_from_context"] = True
         payload["_bom_grounding"] = "revision-grounded"
-        return payload
+        return _attach_structured_bom_inputs(payload, context=context, user_message=user_message)
 
     if not _is_bom_deictic_followup(prompt, user_message):
-        return payload
+        return _attach_structured_bom_inputs(payload, context=context, user_message=user_message)
 
     diagram_ctx = dict(((context or {}).get("agents", {}) or {}).get("diagram", {}) or {})
     if _diagram_context_supports_bom(diagram_ctx, decision_context):
@@ -1864,7 +1892,7 @@ def _prepare_bom_tool_args(
         )
         payload["_bom_context_source"] = "latest_diagram"
         payload["_bom_grounded_from_context"] = True
-        return payload
+        return _attach_structured_bom_inputs(payload, context=context, user_message=user_message)
 
     archie_context = _build_archie_specialist_context(context, decision_context=decision_context)
     if _text_has_bom_sizing(archie_context):
@@ -1875,12 +1903,254 @@ def _prepare_bom_tool_args(
         )
         payload["_bom_context_source"] = "persisted_notes"
         payload["_bom_grounded_from_context"] = True
-        return payload
+        return _attach_structured_bom_inputs(payload, context=context, user_message=user_message)
 
     payload["_bom_direct_reply"] = _format_bom_followup_clarification()
     payload["_bom_context_source"] = "unresolved_followup"
     payload["_bom_grounded_from_context"] = False
     return payload
+
+
+def _attach_structured_bom_inputs(
+    payload: dict[str, Any],
+    *,
+    context: dict[str, Any] | None,
+    user_message: str,
+) -> dict[str, Any]:
+    structured_inputs = _build_structured_bom_inputs(
+        context=context,
+        user_message=user_message,
+        prompt=str(payload.get("prompt", "") or ""),
+    )
+    if structured_inputs:
+        payload["inputs"] = structured_inputs
+        payload["_bom_request_shape"] = "internal_a2a_generate_bom"
+        payload["_bom_inputs_source"] = "archie_memory_and_current_turn"
+    else:
+        payload.pop("inputs", None)
+        payload.pop("_bom_request_shape", None)
+        payload.pop("_bom_inputs_source", None)
+    return payload
+
+
+def _build_structured_bom_inputs(
+    *,
+    context: dict[str, Any] | None,
+    user_message: str,
+    prompt: str,
+) -> dict[str, Any]:
+    memory = context_store.get_archie_memory(context or {}) if isinstance(context, dict) else {}
+    facts = memory.get("client_facts", {}) if isinstance(memory.get("client_facts"), dict) else {}
+    sizing = facts.get("sizing", {}) if isinstance(facts.get("sizing"), dict) else {}
+    current_profile = _extract_infrastructure_profile(" ".join([str(prompt or ""), str(user_message or "")]))
+    profile = _merge_structured_bom_dicts(sizing, current_profile) if current_profile else dict(sizing)
+    combined_text = " ".join(
+        part
+        for part in (
+            str(user_message or ""),
+            str(prompt or ""),
+            json.dumps(facts, ensure_ascii=True, sort_keys=True) if facts else "",
+        )
+        if part
+    )
+
+    region = _structured_bom_region(facts, combined_text)
+    architecture_option = _structured_bom_architecture_option(facts, profile, combined_text)
+    ocpu = _structured_bom_ocpu(profile, combined_text)
+    memory_gb = _structured_bom_memory_gb(profile, combined_text)
+    block_tb = _structured_bom_block_tb(profile, combined_text)
+    connectivity = _structured_bom_connectivity(facts, profile, combined_text)
+    dr = _structured_bom_dr(facts, profile, combined_text)
+    workloads = _structured_list(facts.get("workloads"))
+    os_mix = _structured_list(facts.get("os_mix"))
+    if not os_mix:
+        lower = combined_text.lower()
+        os_mix = [label for marker, label in (("linux", "Linux"), ("windows", "Windows")) if marker in lower]
+
+    inputs: dict[str, Any] = {
+        "region": region,
+        "architecture_option": architecture_option,
+        "compute": {"ocpu": ocpu, "gpu": _structured_bom_gpu_requested(facts, combined_text)},
+        "memory": {"gb": memory_gb},
+        "storage": {"block_tb": block_tb},
+        "connectivity": connectivity,
+        "dr": dr,
+        "workloads": workloads,
+        "os_mix": os_mix,
+        "output_format": "xlsx" if re.search(r"\b(?:xlsx|excel|spreadsheet|workbook)\b", combined_text, re.I) else "json",
+    }
+    has_any_sizing = any(value not in (None, "", [], {}) for value in (ocpu, memory_gb, block_tb))
+    has_complete_sizing = all(value not in (None, "", [], {}) for value in (ocpu, memory_gb, block_tb))
+    return inputs if has_complete_sizing or has_any_sizing else {}
+
+
+def _structured_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [part.strip() for part in re.split(r"[,;/]", value) if part.strip()]
+    return []
+
+
+def _structured_bom_region(facts: dict[str, Any], text: str) -> str:
+    explicit = _extract_oci_region(text)
+    if explicit:
+        return explicit
+    region = str(facts.get("region_geography", "") or facts.get("region", "") or "").strip()
+    if region.lower() == "south africa":
+        return "af-johannesburg-1"
+    return region
+
+
+def _structured_bom_architecture_option(
+    facts: dict[str, Any],
+    profile: dict[str, Any],
+    text: str,
+) -> str:
+    explicit = str(facts.get("architecture_option", "") or "").strip()
+    if explicit:
+        return explicit
+    haystack = " ".join(
+        [
+            str(facts.get("platform", "") or ""),
+            str(profile.get("platform", "") or ""),
+            text,
+        ]
+    ).lower()
+    if any(marker in haystack for marker in ("ocvs", "dedicated vmware", "vmware", "vxrail", "esxi")):
+        return "OCI Dedicated VMware Solution"
+    return ""
+
+
+def _structured_bom_ocpu(profile: dict[str, Any], text: str) -> float | None:
+    cpu = profile.get("cpu", {}) if isinstance(profile.get("cpu"), dict) else {}
+    for key in ("ocpu", "ocpu_equivalent", "target_ocpu", "logical_cores", "cores"):
+        value = _coerce_positive_float(cpu.get(key))
+        if value is not None:
+            return value
+    match = re.search(r"(?:equiv(?:alent)?|target|oci[-\s]?equiv(?:alent)?)[^\d]{0,24}(\d+(?:\.\d+)?)\s*o?cpu\b", text, re.I)
+    if match:
+        return float(match.group(1))
+    match = re.search(r"\b(\d+(?:\.\d+)?)\s*o?cpu\b", text, re.I)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def _structured_bom_memory_gb(profile: dict[str, Any], text: str) -> float | None:
+    memory = profile.get("memory", {}) if isinstance(profile.get("memory"), dict) else {}
+    for key in ("gb", "target_gb", "oci_equivalent_gb", "total_gb", "used_gb"):
+        value = _coerce_positive_float(memory.get(key))
+        if value is not None:
+            return value
+    match = re.search(r"(?:oci[-\s]?equiv(?:alent)?|target)[^\d]{0,32}(\d+(?:\.\d+)?)\s*(tb|gb)\b[^\n]{0,32}(?:ram|memory)", text, re.I)
+    if not match:
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(tb|gb)\s*(?:of\s+)?(?:ram|memory)\b", text, re.I)
+    return _capacity_match_to_gb(match) if match else None
+
+
+def _structured_bom_block_tb(profile: dict[str, Any], text: str) -> float | None:
+    storage = profile.get("storage", {}) if isinstance(profile.get("storage"), dict) else {}
+    for key in ("block_tb", "target_tb", "oci_equivalent_tb", "used_tb", "total_tb"):
+        value = _coerce_positive_float(storage.get(key))
+        if value is not None:
+            return value
+    for key in ("block_gb", "target_gb", "oci_equivalent_gb", "used_gb", "total_gb"):
+        value = _coerce_positive_float(storage.get(key))
+        if value is not None:
+            return value / 1024.0
+    match = re.search(
+        r"(\d+(?:\.\d+)?)\s*(tb|gb)\s*(?:of\s+)?(?:block\s+storage|block\s+volume|storage|vsan|hci|capacity)\b",
+        text,
+        re.I,
+    )
+    if not match:
+        return None
+    gb = _capacity_match_to_gb(match)
+    return gb / 1024.0 if gb is not None else None
+
+
+def _structured_bom_connectivity(
+    facts: dict[str, Any],
+    profile: dict[str, Any],
+    text: str,
+) -> dict[str, Any]:
+    memory_conn = facts.get("connectivity", {}) if isinstance(facts.get("connectivity"), dict) else {}
+    profile_conn = profile.get("connectivity", {}) if isinstance(profile.get("connectivity"), dict) else {}
+    conn = _merge_structured_bom_dicts(memory_conn, profile_conn)
+    internet = _coerce_positive_float(conn.get("internet_mbps") or conn.get("internet_bandwidth_mbps"))
+    if internet is None:
+        bandwidth = str(conn.get("internet_bandwidth", "") or "")
+        internet = _coerce_positive_float(bandwidth)
+    if internet is None:
+        match = re.search(r"\b(\d+(?:\.\d+)?)\s*mbps\b", text, re.I)
+        internet = float(match.group(1)) if match else None
+    lower = text.lower()
+    return {
+        "internet_mbps": internet,
+        "mpls": bool(conn.get("mpls")) or "mpls" in lower,
+        "sd_wan": bool(conn.get("sd_wan")) or "sd-wan" in lower or "sd wan" in lower,
+    }
+
+
+def _structured_bom_dr(
+    facts: dict[str, Any],
+    profile: dict[str, Any],
+    text: str,
+) -> dict[str, Any]:
+    memory_dr = facts.get("dr", {}) if isinstance(facts.get("dr"), dict) else {}
+    profile_dr = profile.get("dr", {}) if isinstance(profile.get("dr"), dict) else {}
+    dr = _merge_structured_bom_dicts(memory_dr, profile_dr)
+    rto = _coerce_positive_float(dr.get("rto_hours") or dr.get("sla_hours"))
+    if rto is None:
+        match = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b[^\n]{0,24}(?:dr|rto|restore|sla)", text, re.I)
+        if not match:
+            match = re.search(r"(?:dr|rto|restore|sla)[^\d]{0,24}(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b", text, re.I)
+        rto = float(match.group(1)) if match else None
+    lower = text.lower()
+    return {
+        "rto_hours": rto,
+        "cross_region_restore": bool(dr.get("cross_region_restore")) or "cross-region restore" in lower or "cross region restore" in lower,
+    }
+
+
+def _structured_bom_gpu_requested(facts: dict[str, Any], text: str) -> bool:
+    exclusions = [str(item).lower() for item in facts.get("exclusions", []) or []]
+    lower = text.lower()
+    if "gpu" in exclusions or re.search(r"\b(?:no|exclude|excluding|out of scope)\s+gpu\b", lower):
+        return False
+    return bool(re.search(r"\bgpu\b", lower))
+
+
+def _coerce_positive_float(value: Any) -> float | None:
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if float(value) > 0 else None
+    match = re.search(r"\d+(?:\.\d+)?", str(value).replace(",", ""))
+    if not match:
+        return None
+    parsed = float(match.group(0))
+    return parsed if parsed > 0 else None
+
+
+def _capacity_match_to_gb(match: re.Match[str]) -> float | None:
+    try:
+        value = float(match.group(1))
+        unit = str(match.group(2) or "gb").lower()
+    except Exception:
+        return None
+    return value * 1024.0 if unit == "tb" else value
+
+
+def _merge_structured_bom_dicts(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base or {})
+    for key, value in dict(incoming or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_structured_bom_dicts(merged[key], value)
+        elif value not in (None, "", [], {}):
+            merged[key] = value
+    return merged
 
 
 def _text_has_bom_sizing(text: str) -> bool:
@@ -4574,6 +4844,8 @@ def _bom_review_source_text(
     context_summary: str,
     decision_context: dict[str, Any],
 ) -> str:
+    if isinstance(sanitized_tool_input.get("inputs"), dict) and sanitized_tool_input.get("inputs"):
+        return json.dumps(sanitized_tool_input.get("inputs"), ensure_ascii=True, sort_keys=True)
     input_text = json.dumps(sanitized_tool_input, ensure_ascii=True, sort_keys=True)
     return "\n".join(
         part
@@ -4591,6 +4863,28 @@ def _extract_bom_sizing_requirements(text: str) -> dict[str, Any]:
     cleaned = str(text or "")
     lower = cleaned.lower()
     requirements: dict[str, Any] = {}
+    try:
+        structured = json.loads(cleaned)
+    except Exception:
+        structured = None
+    if isinstance(structured, dict):
+        compute = structured.get("compute", {}) if isinstance(structured.get("compute"), dict) else {}
+        memory = structured.get("memory", {}) if isinstance(structured.get("memory"), dict) else {}
+        storage = structured.get("storage", {}) if isinstance(structured.get("storage"), dict) else {}
+        ocpu = _coerce_positive_float(compute.get("ocpu"))
+        ram_gb = _coerce_positive_float(memory.get("gb"))
+        block_tb = _coerce_positive_float(storage.get("block_tb"))
+        if ocpu is not None:
+            requirements["ocpu"] = ocpu
+        if ram_gb is not None:
+            requirements["ram_gb"] = ram_gb
+        if block_tb is not None:
+            requirements["storage_gb"] = block_tb * 1024.0
+        region = str(structured.get("region", "") or "").strip()
+        if region:
+            requirements["region"] = region
+        if requirements:
+            return requirements
     ocpu_values = [
         float(match.group(1) or match.group(2))
         for match in re.finditer(r"(\d+(?:\.\d+)?)\s*o\s*cpu|\b(\d+(?:\.\d+)?)\s*ocpu\b", lower)
