@@ -1960,6 +1960,116 @@ def test_bom_handoff_builds_structured_inputs_from_kr1_memory() -> None:
     assert inputs["output_format"] == "xlsx"
 
 
+def test_bom_handoff_oci_native_approval_overrides_vxrail_history() -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "kr1-native-structured", "KR1")
+    context_store.merge_archie_client_facts(
+        ctx,
+        {
+            "region": "af-johannesburg-1",
+            "platform": "VxRail / VMware ESXi",
+            "workloads": ["SQL Server", "Oracle databases", "Linux servers", "file servers"],
+            "os_mix": ["Linux", "Windows"],
+            "infrastructure": {
+                "cpu": {"logical_cores": 64},
+                "memory": {"total_gb": 1147},
+                "storage": {"used_tb": 44},
+                "connectivity": {"internet_mbps": 100, "mpls": True},
+                "dr": {"rto_hours": 24},
+            },
+            "connectivity": {"internet_mbps": 100, "mpls": True},
+            "dr": {"rto_hours": 24},
+        },
+    )
+
+    prepared = orchestrator_agent._prepare_bom_tool_args(
+        args={"prompt": "Prior recommendation: migrate to OCI native services. Generate the BOM XLSX"},
+        user_message="approve, we need the bom and diagram for the OCI native option",
+        context=ctx,
+        decision_context={},
+    )
+
+    inputs = prepared["inputs"]
+    assert inputs["architecture_option"] == "OCI Native Services"
+    assert inputs["architecture_option"] != "OCI Dedicated VMware Solution"
+    assert "VM.Standard.E5.Flex compute VMs" in inputs["target_services"]
+    assert "Autonomous Database" in inputs["target_services"]
+    assert "File Storage" in inputs["target_services"]
+    assert "Load Balancer/WAF" in inputs["target_services"]
+
+
+def test_diagram_handoff_preserves_oci_native_bom_services() -> None:
+    bom_text = orchestrator_agent._build_diagram_bom_text_from_bom_result(
+        scenario_label="Scenario 1",
+        scenario_text="Approved OCI native migration",
+        user_message="approve, we need the bom and diagram",
+        bom_summary="Final BOM prepared.",
+        bom_result_data={
+            "bom_payload": {
+                "architecture_option": "OCI Native Services",
+                "line_items": [
+                    {
+                        "sku": "B97384",
+                        "description": "VM.Standard.E5.Flex compute VMs - OCPU",
+                        "quantity": 64,
+                        "notes": "OCI Native Services target: VM.Standard.E5.Flex compute VMs",
+                    },
+                    {
+                        "sku": "B99060",
+                        "description": "Oracle Autonomous Database - ECPU",
+                        "quantity": 16,
+                        "notes": "OCI Native Services target: Autonomous Database",
+                    },
+                    {
+                        "sku": "BFILE01",
+                        "description": "File Storage - Capacity",
+                        "quantity": 11264,
+                        "notes": "OCI Native Services target: File Storage",
+                    },
+                    {
+                        "sku": "B91628",
+                        "description": "Object Storage - Storage",
+                        "quantity": 9011.2,
+                        "notes": "OCI Native Services target: Object Storage backups/archive",
+                    },
+                    {
+                        "sku": "B88325",
+                        "description": "FastConnect - 1 Gbps Port Hour",
+                        "quantity": 1,
+                        "notes": "OCI Native Services target: DRG/FastConnect/MPLS private connectivity",
+                    },
+                ],
+                "resolved_inputs": [{"question_id": "bom.architecture_option", "answer": "OCI Native Services"}],
+                "structured_inputs": {
+                    "target_services": [
+                        "VM.Standard.E5.Flex compute VMs",
+                        "Autonomous Database",
+                        "File Storage",
+                        "Object Storage backups/archive",
+                        "DRG/FastConnect/MPLS",
+                        "Load Balancer/WAF",
+                    ],
+                    "workload_service_mapping": [
+                        {"workload": "Oracle databases", "target_service": "Autonomous Database"},
+                        {"workload": "file servers", "target_service": "File Storage"},
+                    ],
+                },
+                "assumptions": ["Architecture option: OCI Native Services."],
+            }
+        },
+    )
+
+    assert "OCI Native Services" in bom_text
+    assert "Autonomous Database" in bom_text
+    assert "VM.Standard.E5.Flex" in bom_text
+    assert "File Storage" in bom_text
+    assert "Object Storage" in bom_text
+    assert "DRG/FastConnect" in bom_text
+    assert "Load Balancer/WAF" in bom_text
+    assert "no OCVS/vCenter/NSX/ESXi boxes" in bom_text
+    assert "OCI Dedicated VMware Solution" not in bom_text
+
+
 def test_bom_handoff_recovers_block_storage_from_prior_context_text() -> None:
     ctx = context_store.read_context(InMemoryObjectStore(), "kr1-storage-recovery", "KR1")
     context_store.merge_archie_client_facts(

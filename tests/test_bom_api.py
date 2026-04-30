@@ -54,6 +54,23 @@ def test_bom_health_and_refresh_and_chat_flow() -> None:
             assert len(xlsx.content) > 200
 
 
+def test_bom_xlsx_metadata_includes_resolved_input_count() -> None:
+    metadata = drawing_agent_server._bom_xlsx_metadata(
+        "oci-bom-test.xlsx",
+        "customers/acme/bom/xlsx/oci-bom-test.xlsx",
+        {
+            "bom_payload": {
+                "resolved_inputs": [
+                    {"question_id": "bom.compute.ocpu", "answer": "48 OCPU"},
+                    {"question_id": "bom.compute.memory", "answer": "768 GB RAM"},
+                ]
+            }
+        },
+    )
+
+    assert metadata["resolved_input_count"] == 2
+
+
 def test_bom_refresh_requires_admin_group_when_auth_enabled(monkeypatch) -> None:
     _setup()
     monkeypatch.setattr(drawing_agent_server, "AUTH_ENABLED", True)

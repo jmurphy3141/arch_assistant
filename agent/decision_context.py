@@ -59,15 +59,25 @@ def build_decision_context(
     missing_inputs: list[str] = []
 
     if region is None:
-        assumptions.append(
-            {
-                "id": "region_default",
-                "statement": "Region not specified; assume primary OCI region from current tenancy preference.",
-                "reason": "No explicit OCI region found in the request or current context.",
-                "risk": "medium",
-            }
-        )
-        missing_inputs.append("preferred OCI region")
+        if _is_bom_pricing_only_request(msg_lc):
+            assumptions.append(
+                {
+                    "id": "bom_region_pricing_consistent",
+                    "statement": "Region not specified; treat OCI pricing as region-consistent for this BOM estimate.",
+                    "reason": "The request is a BOM/pricing estimate and does not require a pinned deployment region to draft line items.",
+                    "risk": "low",
+                }
+            )
+        else:
+            assumptions.append(
+                {
+                    "id": "region_default",
+                    "statement": "Region not specified; assume primary OCI region from current tenancy preference.",
+                    "reason": "No explicit OCI region found in the request or current context.",
+                    "risk": "medium",
+                }
+            )
+            missing_inputs.append("preferred OCI region")
 
     if availability is None:
         assumptions.append(
@@ -78,17 +88,6 @@ def build_decision_context(
                 "risk": "low",
             }
         )
-
-    if cost_max_monthly is None and any(token in msg_lc for token in ("cost", "budget", "bom", "pricing", "spend")):
-        assumptions.append(
-            {
-                "id": "cost_unbounded",
-                "statement": "No explicit monthly budget cap provided.",
-                "reason": "The request references cost but does not define a budget ceiling.",
-                "risk": "medium" if assumption_mode else "high",
-            }
-        )
-        missing_inputs.append("monthly budget cap")
 
     if not security_requirements and any(token in msg_lc for token in ("public", "internet", "external")):
         assumptions.append(
@@ -232,6 +231,13 @@ def _extract_cost_limit(text: str) -> float | None:
     elif suffix == "m":
         value *= 1000000
     return round(value, 2)
+
+
+def _is_bom_pricing_only_request(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if not any(token in lowered for token in ("bom", "bill of materials", "pricing", "priced", "sku", "skus")):
+        return False
+    return not any(token in lowered for token in ("diagram", "terraform", "pov", "jep", "well-architected", "well architected", "waf"))
 
 
 def _extract_keyword_requirements(text: str, keywords: tuple[tuple[str, str], ...]) -> list[str]:

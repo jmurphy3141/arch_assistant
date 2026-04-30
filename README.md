@@ -239,6 +239,10 @@ Current path coverage:
 Layered behavior is intentional:
 - `agent/orchestrator_skills/*` remain authoritative preflight/postflight fail-closed gates.
 - `gstack_skills/*` provide dynamic specialist guidance and model routing.
+- Archie deterministic expert review runs after specialist tool execution and
+  before artifact exposure. It is fail-closed for hard mismatches, including
+  BOM sizing contradictions, while preserving specialist/subagent ownership of
+  generation.
 
 The orchestrator runs a bounded critic/refine pass for specialist outputs
 (`generate_pov`, `generate_jep`, `generate_waf`, `generate_terraform`):
@@ -249,6 +253,10 @@ The orchestrator runs a bounded critic/refine pass for specialist outputs
 3. On fail, orchestrator re-dispatches with critic feedback + re-injected skills.
 4. Loop stops when pass or `max_refinements` is reached.
 5. Critic failures are fail-open with warning metadata.
+
+Critic fail-open behavior does not override deterministic Archie review. A BOM
+that undersizes explicit customer requirements such as OCPU, RAM, or storage is
+blocked or retried before it can be presented or exported as XLSX.
 
 Skill frontmatter can request model routing per specialist call:
 
@@ -271,7 +279,9 @@ model_profile: terraform
 
 Each tool call now includes trace metadata in `tool_calls[].result_data.trace`,
 including `applied_skills`, `model_profile`, `refinement_count`,
-`max_refinements`, `overall_pass`, and `warnings`.
+`max_refinements`, `overall_pass`, `warnings`, `archie_lens`,
+`sent_to_specialist`, `review_verdict`, `review_findings`, and
+`refinement_history`.
 
 For JEP flows, trace and API payloads also include lifecycle contract metadata
 (`jep_state`, lock outcome, and required-next-step policy hints).

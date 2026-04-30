@@ -36,6 +36,7 @@ import agent.context_store as context_store
 import agent.decision_context as decision_context_builder
 import agent.jep_lifecycle as jep_lifecycle
 from agent import critic_agent
+from agent.drawio_inspector import inspect_drawio_xml
 from agent.orchestrator_skill_engine import (
     OrchestratorSkillDecision,
     OrchestratorSkillEngine,
@@ -1966,6 +1967,13 @@ def _build_structured_bom_inputs(
     if not os_mix:
         lower = combined_text.lower()
         os_mix = [label for marker, label in (("linux", "Linux"), ("windows", "Windows")) if marker in lower]
+    native_target_services = _structured_bom_native_target_services(
+        architecture_option=architecture_option,
+        workloads=workloads,
+        connectivity=connectivity,
+        dr=dr,
+        text=combined_text,
+    )
 
     inputs: dict[str, Any] = {
         "region": region,
@@ -1979,6 +1987,9 @@ def _build_structured_bom_inputs(
         "os_mix": os_mix,
         "output_format": "xlsx" if re.search(r"\b(?:xlsx|excel|spreadsheet|workbook)\b", combined_text, re.I) else "json",
     }
+    if native_target_services:
+        inputs["target_services"] = native_target_services
+        inputs["workload_service_mapping"] = _structured_bom_native_workload_mapping(workloads, combined_text)
     has_any_sizing = any(value not in (None, "", [], {}) for value in (ocpu, memory_gb, block_tb))
     has_complete_sizing = all(value not in (None, "", [], {}) for value in (ocpu, memory_gb, block_tb))
     return inputs if has_complete_sizing or has_any_sizing else {}
@@ -2007,6 +2018,8 @@ def _structured_bom_architecture_option(
     profile: dict[str, Any],
     text: str,
 ) -> str:
+    if _text_requests_oci_native(text):
+        return "OCI Native Services"
     explicit = str(facts.get("architecture_option", "") or "").strip()
     if explicit:
         return explicit
@@ -2020,6 +2033,61 @@ def _structured_bom_architecture_option(
     if any(marker in haystack for marker in ("ocvs", "dedicated vmware", "vmware", "vxrail", "esxi")):
         return "OCI Dedicated VMware Solution"
     return ""
+
+
+def _text_requests_oci_native(text: str) -> bool:
+    lower = str(text or "").lower()
+    return bool(
+        re.search(r"\boci[-\s]?native\b", lower)
+        or "native services" in lower
+        or "migrate to oci native" in lower
+        or "migration to oci native" in lower
+        or "approve" in lower and "native" in lower and "oci" in lower
+        or "approved" in lower and "native" in lower and "oci" in lower
+    )
+
+
+def _structured_bom_native_target_services(
+    *,
+    architecture_option: str,
+    workloads: list[str],
+    connectivity: dict[str, Any],
+    dr: dict[str, Any],
+    text: str,
+) -> list[str]:
+    if "native" not in str(architecture_option or "").lower() and not _text_requests_oci_native(text):
+        return []
+    combined = " ".join([text, " ".join(workloads)]).lower()
+    services = ["VM.Standard.E5.Flex compute VMs", "Block Volumes"]
+    if re.search(r"\b(?:oracle\s+db|oracle\s+database|oracle\s+databases|autonomous|adb|atp|adw)\b", combined):
+        services.append("Autonomous Database")
+    if re.search(r"\b(?:file\s+server|file\s+servers|file\s+share|file\s+shares|nfs|smb)\b", combined):
+        services.append("File Storage")
+    if re.search(r"\b(?:backup|archive|object\s+storage|restore|dr)\b", combined) or dr.get("rto_hours") or dr.get("cross_region_restore"):
+        services.append("Object Storage backups/archive")
+    services.append("Load Balancer/WAF")
+    if connectivity.get("mpls") or connectivity.get("sd_wan") or re.search(r"\b(?:drg|fastconnect|mpls|sd[-\s]?wan|vpn)\b", combined):
+        services.append("DRG/FastConnect/MPLS")
+    return list(dict.fromkeys(services))
+
+
+def _structured_bom_native_workload_mapping(workloads: list[str], text: str) -> list[dict[str, str]]:
+    combined_workloads = workloads or [text]
+    mappings: list[dict[str, str]] = []
+    for workload in combined_workloads:
+        lower = str(workload or "").lower()
+        if not lower.strip():
+            continue
+        if "oracle" in lower and ("db" in lower or "database" in lower):
+            service = "Autonomous Database"
+        elif "file" in lower or "nfs" in lower or "smb" in lower:
+            service = "File Storage"
+        elif "sql server" in lower:
+            service = "VM.Standard.E5.Flex compute VMs"
+        else:
+            service = "VM.Standard.E5.Flex compute VMs"
+        mappings.append({"workload": str(workload).strip()[:120], "target_service": service})
+    return mappings
 
 
 def _structured_bom_ocpu(profile: dict[str, Any], text: str) -> float | None:
@@ -3677,6 +3745,19 @@ def _suggest_answer_for_question(
     qid = _normalize_specialist_question_id(question_id)
     prompt_lc = prompt.lower()
 
+    if qid in _specialist_question_id_aliases("ha.ads"):
+        if (
+            re.search(r"\b(?:two|2)\b", text)
+            and re.search(r"\bbm\.standard\.x9\.64\b", text)
+            and re.search(r"\bfd\s*1\b", text)
+            and re.search(r"\bfd\s*2\b", text)
+        ):
+            return (
+                "two BM.Standard.X9.64 hosts; host 1 in FD1 using FD-local subnet; host 2 in FD2 using FD-local subnet",
+                "current request explicitly provides BM host count and FD-local placement",
+                "high",
+            )
+
     if qid in _specialist_question_id_aliases("constraints.region") or (
         "region" in prompt_lc and not any(token in prompt_lc for token in ("single-region", "multi-region", "multi ad", "multi-ad", "topology"))
     ):
@@ -4093,6 +4174,7 @@ def _specialist_question_id_aliases(question_id: str) -> set[str]:
     alias_groups = (
         {"components.scope", "workload.components"},
         {"regions.mode", "region.mode", "topology.scope", "regions.count"},
+        {"ha.ads", "availability.domains", "ha.availability.domains", "availability.domains.per.region"},
         {"constraints.region", "region", "preferred.region"},
         {"bom.compute.gpu", "compute.gpu", "gpu", "gpu.mode", "compute.type"},
         {"bom.compute.ocpu", "compute.ocpu", "ocpu", "workload.ocpu"},
@@ -4619,6 +4701,280 @@ def _infer_tool_context_source(tool_name: str, args: dict[str, Any], context_sum
     return "direct_request"
 
 
+def _diagram_artifact_view_from_result(
+    *,
+    store: ObjectStoreBase,
+    artifact_key: str,
+    result_data: dict[str, Any],
+) -> dict[str, Any]:
+    xml_text = str(result_data.get("drawio_xml", "") or "")
+    source = "result_data.drawio_xml" if xml_text.strip() else ""
+    if not xml_text.strip() and artifact_key:
+        try:
+            xml_text = store.get(artifact_key).decode("utf-8", errors="replace")
+            source = artifact_key
+        except Exception as exc:
+            return {
+                "readable": False,
+                "labels": [],
+                "cells": [],
+                "search_text": "",
+                "source": artifact_key,
+                "error": f"drawio_fetch_error: {exc}",
+            }
+    if not xml_text.strip():
+        return {
+            "readable": False,
+            "labels": [],
+            "cells": [],
+            "search_text": "",
+            "source": source,
+            "error": "drawio_xml_missing",
+        }
+    view = inspect_drawio_xml(xml_text)
+    view["source"] = source
+    # Keep trace payload compact; the reader returns every mxCell for callers that
+    # need it, but Archie only needs labeled cells and searchable text.
+    labeled_cells = [cell for cell in view.get("cells", []) if str(cell.get("value", "") or "").strip()]
+    view["cells"] = labeled_cells[:200]
+    view["labels"] = list(view.get("labels", []) or [])[:200]
+    view["cell_count"] = len(labeled_cells)
+    return view
+
+
+def _diagram_review_source_text(
+    *,
+    sanitized_tool_input: dict[str, Any],
+    user_message: str,
+    context_summary: str,
+    decision_context: dict[str, Any],
+) -> str:
+    parts = [
+        str(user_message or ""),
+        str(sanitized_tool_input.get("bom_text", "") or ""),
+        str(sanitized_tool_input.get("_user_request_text", "") or ""),
+        str(context_summary or ""),
+        json.dumps(decision_context or {}, ensure_ascii=True, sort_keys=True),
+    ]
+    return "\n".join(part for part in parts if part.strip())
+
+
+def _extract_requested_bm_count(text: str) -> int:
+    lowered = str(text or "").lower()
+    if not any(marker in lowered for marker in (" bm", "bm.", "bare metal", "bare-metal")):
+        return 0
+    count_words = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+    }
+    for word, count in count_words.items():
+        if re.search(rf"\b{word}\s+(?:bm|bare[- ]metal)", lowered):
+            return count
+    match = re.search(r"\b(\d+)\s*(?:x\s*)?(?:bm|bare[- ]metal)", lowered)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"\b(?:bm|bare[- ]metal)[^\n]{0,30}?\b(\d+)\b", lowered)
+    if match:
+        return int(match.group(1))
+    return 1
+
+
+def _diagram_review_requirements(
+    *,
+    sanitized_tool_input: dict[str, Any],
+    user_message: str,
+    context_summary: str,
+    decision_context: dict[str, Any],
+) -> dict[str, Any]:
+    source = _diagram_review_source_text(
+        sanitized_tool_input=sanitized_tool_input,
+        user_message=user_message,
+        context_summary=context_summary,
+        decision_context=decision_context,
+    )
+    lowered = source.lower()
+    bm_count = _extract_requested_bm_count(source)
+    split_fd = any(
+        marker in lowered
+        for marker in (
+            "split fd",
+            "split fault",
+            "fd1/fd2",
+            "fd1 and fd2",
+            "fault domain 1",
+            "fault domain 2",
+        )
+    )
+    vmware_context = any(
+        marker in lowered
+        for marker in (
+            "ocvs",
+            "oci dedicated vmware",
+            "vxrail",
+            "esxi",
+            "vsphere",
+            "sddc",
+        )
+    )
+    return {
+        "requested_bm_count": bm_count,
+        "split_fault_domains": split_fd,
+        "vmware_ocvs_context": vmware_context,
+    }
+
+
+def _diagram_actual_text(result_data: dict[str, Any]) -> str:
+    view = result_data.get("diagram_artifact_view", {}) if isinstance(result_data.get("diagram_artifact_view"), dict) else {}
+    parts = [
+        str(view.get("search_text", "") or ""),
+        json.dumps(result_data.get("node_to_resource_map", {}) or {}, ensure_ascii=True, sort_keys=True).lower(),
+        json.dumps(result_data.get("draw_dict", {}) or {}, ensure_ascii=True, sort_keys=True).lower(),
+        json.dumps(result_data.get("spec", {}) or {}, ensure_ascii=True, sort_keys=True).lower(),
+    ]
+    return "\n".join(part for part in parts if part.strip())
+
+
+def _count_actual_bm_nodes(result_data: dict[str, Any]) -> int:
+    seen: set[str] = set()
+    node_map = result_data.get("node_to_resource_map", {}) if isinstance(result_data.get("node_to_resource_map"), dict) else {}
+    for node_id, value in node_map.items():
+        if not isinstance(value, dict):
+            continue
+        text = " ".join(str(value.get(field, "") or "").lower() for field in ("oci_type", "label", "layer"))
+        if any(marker in text for marker in ("bare metal", "bare-metal", "bm.standard", "bm host", "bm server")):
+            seen.add(str(node_id))
+    draw_dict = result_data.get("draw_dict", {}) if isinstance(result_data.get("draw_dict"), dict) else {}
+    for node in draw_dict.get("nodes", []) or []:
+        if not isinstance(node, dict):
+            continue
+        text = " ".join(str(node.get(field, "") or "").lower() for field in ("type", "label", "id"))
+        if any(marker in text for marker in ("bare metal", "bare-metal", "bm.standard", "bm host", "bm server")):
+            seen.add(str(node.get("id", "") or text))
+    actual_text = _diagram_actual_text(result_data)
+    label_hits = re.findall(r"\b(?:bm\.standard|bm\s*(?:host|server)|bare[- ]metal)\b", actual_text)
+    return max(len(seen), len(label_hits))
+
+
+def _actual_fault_domain_names(result_data: dict[str, Any]) -> set[str]:
+    actual_text = _diagram_actual_text(result_data)
+    names: set[str] = set()
+    if re.search(r"\bfd\s*1\b|fault domain 1", actual_text):
+        names.add("fd1")
+    if re.search(r"\bfd\s*2\b|fault domain 2", actual_text):
+        names.add("fd2")
+    if re.search(r"\bfd\s*3\b|fault domain 3", actual_text):
+        names.add("fd3")
+    return names
+
+
+def _bm_fault_domain_evidence(result_data: dict[str, Any]) -> set[str]:
+    actual_text = _diagram_actual_text(result_data)
+    evidence: set[str] = set()
+    bm_marker = r"(?:bm\.standard|bm\s*(?:host|server)|bare[- ]metal)"
+    fd1_marker = r"(?:fd\s*1|fault domain 1)"
+    fd2_marker = r"(?:fd\s*2|fault domain 2)"
+    if re.search(rf"{fd1_marker}.{{0,180}}{bm_marker}|{bm_marker}.{{0,180}}{fd1_marker}", actual_text, flags=re.DOTALL):
+        evidence.add("fd1")
+    if re.search(rf"{fd2_marker}.{{0,180}}{bm_marker}|{bm_marker}.{{0,180}}{fd2_marker}", actual_text, flags=re.DOTALL):
+        evidence.add("fd2")
+
+    draw_dict = result_data.get("draw_dict", {}) if isinstance(result_data.get("draw_dict"), dict) else {}
+    boxes = [box for box in draw_dict.get("boxes", []) or [] if isinstance(box, dict) and str(box.get("box_type", "") or "") == "_fd_box"]
+    nodes = [node for node in draw_dict.get("nodes", []) or [] if isinstance(node, dict)]
+    for node in nodes:
+        node_text = " ".join(str(node.get(field, "") or "").lower() for field in ("id", "type", "label"))
+        if not any(marker in node_text for marker in ("bm.standard", "bm host", "bm server", "bare metal", "bare-metal")):
+            continue
+        try:
+            cx = float(node.get("x", 0) or 0) + float(node.get("w", 0) or 0) / 2
+            cy = float(node.get("y", 0) or 0) + float(node.get("h", 0) or 0) / 2
+        except (TypeError, ValueError):
+            continue
+        for box in boxes:
+            try:
+                x = float(box.get("x", 0) or 0)
+                y = float(box.get("y", 0) or 0)
+                w = float(box.get("w", 0) or 0)
+                h = float(box.get("h", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if x <= cx <= x + w and y <= cy <= y + h:
+                label = str(box.get("label", "") or box.get("id", "") or "").lower()
+                if "1" in label:
+                    evidence.add("fd1")
+                elif "2" in label:
+                    evidence.add("fd2")
+                elif "3" in label:
+                    evidence.add("fd3")
+    return evidence
+
+
+def _review_diagram_artifact(
+    *,
+    sanitized_tool_input: dict[str, Any],
+    user_message: str,
+    artifact_key: str,
+    result_data: dict[str, Any],
+    context_summary: str,
+    decision_context: dict[str, Any],
+) -> dict[str, Any]:
+    requirements = _diagram_review_requirements(
+        sanitized_tool_input=sanitized_tool_input,
+        user_message=user_message,
+        context_summary=context_summary,
+        decision_context=decision_context,
+    )
+    findings: list[str] = []
+    actions: list[str] = []
+    view = result_data.get("diagram_artifact_view", {}) if isinstance(result_data.get("diagram_artifact_view"), dict) else {}
+    requires_artifact_read = any(
+        (
+            int(requirements.get("requested_bm_count", 0) or 0),
+            bool(requirements.get("split_fault_domains")),
+            bool(requirements.get("vmware_ocvs_context")),
+        )
+    )
+    if artifact_key and requires_artifact_read and not view.get("readable", False):
+        findings.append("Archie could not read the generated draw.io artifact for acceptance review.")
+        if view.get("error"):
+            findings.append(str(view.get("error")))
+        actions.append("Return a readable .drawio XML artifact for review.")
+
+    requested_bm = int(requirements.get("requested_bm_count", 0) or 0)
+    produced_bm = _count_actual_bm_nodes(result_data)
+    if requested_bm and produced_bm < requested_bm:
+        findings.append(f"Diagram artifact shows {produced_bm} BM/bare metal server nodes; requested {requested_bm}.")
+        actions.append(f"Render {requested_bm} visible BM/bare metal server nodes in the diagram.")
+
+    fd_names = _actual_fault_domain_names(result_data)
+    bm_fd_evidence = _bm_fault_domain_evidence(result_data)
+    if requirements.get("split_fault_domains") and not {"fd1", "fd2"} <= (fd_names & bm_fd_evidence):
+        findings.append("Diagram artifact does not show BM server placement split across FD1 and FD2.")
+        actions.append("Show the BM servers split across Fault Domain 1 and Fault Domain 2.")
+
+    actual_text = _diagram_actual_text(result_data)
+    if requirements.get("vmware_ocvs_context") and not any(
+        marker in actual_text
+        for marker in ("ocvs", "sddc", "esxi", "vsphere", "vcenter", "nsx", "vmware")
+    ):
+        findings.append("Diagram artifact does not show OCVS/VMware-specific elements from the engagement context.")
+        actions.append("Render OCVS/VMware elements such as SDDC, ESXi hosts, vSphere/vCenter, or NSX where appropriate.")
+
+    return {
+        "findings": findings,
+        "required_actions": actions,
+        "requirements": requirements,
+        "produced": {
+            "bm_count": produced_bm,
+            "fault_domains": sorted(fd_names),
+            "bm_fault_domain_evidence": sorted(bm_fd_evidence),
+            "artifact_readable": bool(view.get("readable", False)),
+        },
+    }
+
+
 async def _archie_expert_review_if_needed(
     *,
     tool_name: str,
@@ -4643,6 +4999,12 @@ async def _archie_expert_review_if_needed(
     current_summary = result_summary
     current_key = artifact_key
     current_data = dict(result_data or {})
+    if tool_name == "generate_diagram":
+        current_data["diagram_artifact_view"] = _diagram_artifact_view_from_result(
+            store=store,
+            artifact_key=current_key,
+            result_data=current_data,
+        )
     review = _archie_expert_review(
         tool_name=tool_name,
         sanitized_tool_input=sanitized_tool_input,
@@ -4707,6 +5069,85 @@ async def _archie_expert_review_if_needed(
                     "findings": [
                         *list(retry_review.get("findings", []) or []),
                         "BOM deterministic review retry did not satisfy the requested sizing.",
+                    ],
+                }
+            retry_data["archie_expert_review"] = retry_review
+            _merge_archie_review_trace(retry_data, retry_review)
+            current_summary, current_key, current_data = retry_summary, retry_key, retry_data
+            review = retry_review
+
+    if (
+        tool_name == "generate_diagram"
+        and review.get("verdict") == "revise_required"
+        and _diagram_review_retry_is_safe(current_data)
+    ):
+        feedback = _build_archie_diagram_review_feedback(review)
+        if feedback:
+            retry_args = dict(args)
+            retry_args["_archie_expert_review_retry"] = True
+            original_bom_text = str(retry_args.get("bom_text", "") or user_message or "").strip()
+            retry_args["bom_text"] = (
+                f"{original_bom_text}\n\n[Archie Diagram Artifact Review Feedback]\n{feedback}"
+            ).strip()
+            architect_brief = dict(retry_args.get("_architect_brief", {}) or {})
+            architect_context = str(architect_brief.get("architect_context", "") or "").strip()
+            architect_brief["architect_context"] = (
+                f"{architect_context}\n\n[Archie Diagram Artifact Review Feedback]\n{feedback}"
+            ).strip()
+            architect_brief["user_notes"] = _append_diagram_review_feedback_to_notes(
+                str(architect_brief.get("user_notes", "") or original_bom_text),
+                feedback,
+            )
+            retry_args["_architect_brief"] = architect_brief
+            retry_runner = _runner_for_tool(text_runner, retry_args)
+            retry_summary, retry_key, retry_data = await _execute_tool_core(
+                tool_name,
+                retry_args,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                store=store,
+                text_runner=retry_runner,
+                a2a_base_url=a2a_base_url,
+                specialist_mode=specialist_mode,
+            )
+            retry_data = dict(retry_data or {})
+            retry_data["decision_context"] = dict(decision_context or {})
+            retry_data["constraint_tags"] = list(args.get("_constraint_tags", []) or [])
+            retry_data["applied_skills"] = list(current_data.get("applied_skills", []) or args.get("_skill_injected", []) or [])
+            retry_data["skill_versions"] = dict(current_data.get("skill_versions", {}) or args.get("_skill_versions", {}) or {})
+            retry_data["skill_model_profile"] = str(current_data.get("skill_model_profile", "") or args.get("_skill_model_profile", "") or "")
+            retry_data["diagram_artifact_view"] = _diagram_artifact_view_from_result(
+                store=store,
+                artifact_key=retry_key,
+                result_data=retry_data,
+            )
+            retry_trace = {
+                **(current_data.get("trace", {}) if isinstance(current_data.get("trace"), dict) else {}),
+                **(retry_data.get("trace", {}) if isinstance(retry_data.get("trace"), dict) else {}),
+            }
+            retry_trace["refinement_history"] = [
+                *list(retry_trace.get("refinement_history", []) or []),
+                {"attempt": 1, "review_feedback": feedback},
+            ]
+            retry_data["trace"] = retry_trace
+            retry_review = _archie_expert_review(
+                tool_name=tool_name,
+                sanitized_tool_input=_postflight_tool_args(tool_name, retry_args),
+                user_message=user_message,
+                result_summary=retry_summary,
+                artifact_key=retry_key,
+                result_data=retry_data,
+                context_summary=context_summary,
+                decision_context=decision_context,
+            )
+            if retry_review.get("verdict") == "revise_required":
+                retry_review = {
+                    **retry_review,
+                    "verdict": "blocked",
+                    "retry_allowed": False,
+                    "findings": [
+                        *list(retry_review.get("findings", []) or []),
+                        "Diagram artifact review retry did not satisfy the requested visual elements.",
                     ],
                 }
             retry_data["archie_expert_review"] = retry_review
@@ -4804,6 +5245,37 @@ def _archie_expert_review(
             "produced": bom_review["produced"],
         }
 
+    if tool_name == "generate_diagram":
+        diagram_review = _review_diagram_artifact(
+            sanitized_tool_input=sanitized_tool_input,
+            user_message=user_message,
+            artifact_key=artifact_key,
+            result_data=result_data,
+            context_summary=context_summary,
+            decision_context=decision_context,
+        )
+        findings.extend(diagram_review["findings"])
+        required_actions.extend(diagram_review["required_actions"])
+        governor = result_data.get("governor", {}) if isinstance(result_data.get("governor"), dict) else {}
+        governor_status = str(governor.get("overall_status", "pass") or "pass").lower()
+        if governor_status == "revise":
+            critique = str(governor.get("decision_summary", "") or governor.get("critique_summary", "") or "").strip()
+            if critique:
+                findings.append(critique)
+            else:
+                findings.append("Governor quality review requested diagram revision.")
+        if findings:
+            verdict = "revise_required" if _diagram_review_retry_is_safe(result_data) else "blocked"
+        return {
+            "verdict": verdict,
+            "findings": findings,
+            "required_actions": required_actions,
+            "retry_allowed": verdict == "revise_required",
+            "review_type": "diagram_artifact_acceptance",
+            "requirements": diagram_review["requirements"],
+            "produced": diagram_review["produced"],
+        }
+
     return {
         "verdict": verdict,
         "findings": findings,
@@ -4825,6 +5297,18 @@ def _bom_review_retry_is_safe(result_data: dict[str, Any]) -> bool:
     return True
 
 
+def _diagram_review_retry_is_safe(result_data: dict[str, Any]) -> bool:
+    if not isinstance(result_data, dict):
+        return False
+    if result_data.get("_archie_expert_review_retry") is True:
+        return False
+    if isinstance(result_data.get("archie_question_bundle"), dict):
+        return False
+    if str(result_data.get("diagram_recovery_status", "none") or "none") in {"needs_clarification", "backend_error"}:
+        return False
+    return True
+
+
 def _build_archie_bom_review_feedback(review: dict[str, Any]) -> str:
     findings = [str(item).strip() for item in review.get("findings", []) if str(item).strip()]
     actions = [str(item).strip() for item in review.get("required_actions", []) if str(item).strip()]
@@ -4834,6 +5318,40 @@ def _build_archie_bom_review_feedback(review: dict[str, Any]) -> str:
     lines.extend(f"- {item}" for item in findings)
     lines.extend(f"- Required action: {item}" for item in actions)
     return "\n".join(lines).strip()
+
+
+def _build_archie_diagram_review_feedback(review: dict[str, Any]) -> str:
+    findings = [str(item).strip() for item in review.get("findings", []) if str(item).strip()]
+    actions = [str(item).strip() for item in review.get("required_actions", []) if str(item).strip()]
+    requirements = review.get("requirements", {}) if isinstance(review.get("requirements"), dict) else {}
+    lines = [
+        "Revise the draw.io artifact so the visible diagram satisfies Archie architect review.",
+    ]
+    if requirements:
+        lines.append("Required visual evidence:")
+        if int(requirements.get("requested_bm_count", 0) or 0):
+            lines.append(f"- {int(requirements.get('requested_bm_count', 0) or 0)} visible BM/bare metal server nodes.")
+        if requirements.get("split_fault_domains"):
+            lines.append("- BM/bare metal servers visibly split across FD1 and FD2.")
+        if requirements.get("vmware_ocvs_context"):
+            lines.append("- OCVS/VMware-specific elements such as SDDC, ESXi hosts, vSphere/vCenter, or NSX where appropriate.")
+    lines.extend(f"- Finding: {item}" for item in findings)
+    lines.extend(f"- Required action: {item}" for item in actions)
+    return "\n".join(lines).strip()
+
+
+def _append_diagram_review_feedback_to_notes(notes: str, feedback: str) -> str:
+    clean_notes = _strip_injected_guidance_blocks(str(notes or "")).strip()
+    clean_feedback = _strip_injected_guidance_blocks(str(feedback or "")).strip()
+    if not clean_feedback:
+        return clean_notes
+    if clean_feedback in clean_notes:
+        return clean_notes
+    return (
+        f"{clean_notes}\n\n"
+        "Archie diagram acceptance corrections for this regeneration:\n"
+        f"{clean_feedback}"
+    ).strip()
 
 
 def _review_bom_sizing_consistency(
@@ -5747,6 +6265,23 @@ async def _call_generate_diagram(
     reference_architecture = dict(args.get("_reference_architecture", {}) or {})
     if reference_architecture:
         context_parts.append("\n".join(build_reference_context_lines(reference_architecture)))
+    architect_requirements = _diagram_review_requirements(
+        sanitized_tool_input=args,
+        user_message=user_notes,
+        context_summary=architect_context,
+        decision_context=decision_context if isinstance(decision_context, dict) else {},
+    )
+    acceptance_lines: list[str] = []
+    if int(architect_requirements.get("requested_bm_count", 0) or 0):
+        acceptance_lines.append(
+            f"- Render {int(architect_requirements.get('requested_bm_count', 0) or 0)} visible BM/bare metal server or host nodes."
+        )
+    if architect_requirements.get("split_fault_domains"):
+        acceptance_lines.append("- Show BM/bare metal servers visibly split across FD1 and FD2.")
+    if architect_requirements.get("vmware_ocvs_context"):
+        acceptance_lines.append("- Include visible OCVS/VMware-specific elements when applicable, such as SDDC, ESXi hosts, vSphere/vCenter, or NSX.")
+    if acceptance_lines:
+        context_parts.append("Archie diagram architect acceptance criteria:\n" + "\n".join(acceptance_lines))
     payload = {
         "task_id": f"orch-{_now()}",
         "skill": "generate_diagram",
@@ -6447,7 +6982,7 @@ def _call_result_is_successful_generation(call: dict[str, Any]) -> bool:
     if isinstance(result_data.get("archie_question_bundle"), dict):
         return False
     governor = result_data.get("governor", {}) if isinstance(result_data.get("governor"), dict) else {}
-    if str(governor.get("overall_status", "pass") or "pass") in {"blocked", "checkpoint_required"}:
+    if str(governor.get("overall_status", "pass") or "pass") in {"revise", "blocked", "checkpoint_required"}:
         return False
     summary = str(call.get("result_summary", "") or "").strip().lower()
     blocked_markers = (
@@ -6967,6 +7502,26 @@ def _compact_bom_payload_for_diagram(result_data: dict[str, Any] | None) -> str:
     if not payload:
         return ""
     lines = ["[Generated BOM Context]"]
+    architecture_option = str(payload.get("architecture_option", "") or "").strip()
+    if architecture_option:
+        lines.append(f"Architecture option: {architecture_option}")
+        if "native" in architecture_option.lower():
+            lines.append("Diagram directive: OCI Native Services, no OCVS/vCenter/NSX/ESXi boxes.")
+    target_services = list((payload.get("structured_inputs", {}) or {}).get("target_services", []) or [])
+    if target_services:
+        lines.append("Native target services: " + ", ".join(str(item) for item in target_services if str(item).strip()))
+    mapping = list((payload.get("structured_inputs", {}) or {}).get("workload_service_mapping", []) or [])
+    if mapping:
+        lines.append("Workload-to-service mapping:")
+        for item in mapping[:10]:
+            if isinstance(item, dict) and item.get("workload") and item.get("target_service"):
+                lines.append(f"- {item.get('workload')} -> {item.get('target_service')}")
+    resolved_inputs = list(payload.get("resolved_inputs", []) or [])
+    if resolved_inputs:
+        lines.append("Resolved BOM inputs:")
+        for item in resolved_inputs[:12]:
+            if isinstance(item, dict) and item.get("question_id") and item.get("answer"):
+                lines.append(f"- {item.get('question_id')}: {item.get('answer')}")
     line_items = list(payload.get("line_items", []) or [])
     if line_items:
         lines.append("Line items:")
@@ -6976,6 +7531,7 @@ def _compact_bom_payload_for_diagram(result_data: dict[str, Any] | None) -> str:
             sku = str(item.get("sku", "") or item.get("part_number", "") or "").strip()
             desc = str(item.get("description", "") or item.get("name", "") or item.get("service", "") or "").strip()
             qty = item.get("quantity", item.get("qty", ""))
+            notes = str(item.get("notes", "") or "").strip()
             bits = [f"{idx}."]
             if sku:
                 bits.append(sku)
@@ -6983,6 +7539,8 @@ def _compact_bom_payload_for_diagram(result_data: dict[str, Any] | None) -> str:
                 bits.append(desc)
             if qty not in ("", None):
                 bits.append(f"qty={qty}")
+            if notes:
+                bits.append(f"notes={notes}")
             lines.append(" ".join(str(bit) for bit in bits if str(bit).strip()))
     totals = payload.get("totals", {}) if isinstance(payload.get("totals"), dict) else {}
     if totals:
@@ -7926,7 +8484,7 @@ def _requested_generation_tools(user_message: str) -> set[str]:
         generation_or_export and any(term in msg for term in bom_pricing_terms)
     ):
         requested.add("generate_bom")
-    if _message_requests_diagram_generation(msg):
+    if _message_requests_diagram_generation(msg) or _message_requests_diagram_revision(msg):
         requested.add("generate_diagram")
     if "terraform" in msg or "iac" in msg:
         requested.add("generate_terraform")
@@ -7949,6 +8507,39 @@ def _message_requests_diagram_generation(msg: str) -> bool:
     if "terraform" in msg and any(marker in msg for marker in ("latest diagram", "existing diagram", "current diagram", "approved diagram")):
         return False
     return True
+
+
+def _message_requests_diagram_revision(msg: str) -> bool:
+    revision_marker = any(
+        marker in msg
+        for marker in (
+            "does not show",
+            "doesn't show",
+            "doesnt show",
+            "not showing",
+            "missing",
+            "add ",
+            "update ",
+            "revise ",
+        )
+    )
+    visual_target = any(
+        marker in msg
+        for marker in (
+            " bm",
+            "bm.",
+            "bare metal",
+            "fault domain",
+            " fd",
+            "server",
+            "host",
+            "ocvs",
+            "sddc",
+            "esxi",
+            "vsphere",
+        )
+    )
+    return revision_marker and visual_target
 
 
 def _single_requested_tool_to_force(requested_tools: set[str], tool_calls: list[dict[str, Any]]) -> str:

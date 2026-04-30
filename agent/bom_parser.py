@@ -22,6 +22,8 @@ SKU_MAP: dict[str, tuple] = {
     # Compute — VM shapes (all generations map to "compute")
     "B94176":  ("compute",           "compute"),   # E3/E4 OCPU
     "B94177":  (None,                None),        # E3/E4 memory — part of compute
+    "B97384":  ("compute",           "compute"),   # E5 OCPU
+    "B97385":  (None,                None),        # E5 memory — part of compute
     "B111129": ("compute",           "compute"),   # E6 OCPU
     "B111130": (None,                None),        # E6 memory — part of compute
     "B88317":  ("compute",           "compute"),   # A1 Flex OCPU
@@ -32,6 +34,7 @@ SKU_MAP: dict[str, tuple] = {
     # Database
     "B99060":  ("database",          "data"),
     "B99062":  (None,                None),        # db storage — implied
+    "BFILE01": ("file storage",      "data"),
     # Object Storage
     "B91628":  ("object storage",    "data"),
     # Load Balancer
@@ -41,6 +44,7 @@ SKU_MAP: dict[str, tuple] = {
     "B88325":  ("drg",               "ingress"),   # FastConnect 1 Gbps
     "B88326":  ("drg",               "ingress"),   # FastConnect 10 Gbps
     "B88327":  ("drg",               "ingress"),   # FastConnect 100 Gbps
+    "BWAF01":  ("waf",               "ingress"),
     # Functions
     "B90618":  ("functions",         "compute"),
     "B90617":  (None,                None),        # fn execution — part of functions
@@ -392,7 +396,7 @@ def inline_bom_text_to_llm_input(
             label_qty = app_ocpu
         if oci_type == "database" and db_ocpu > 0:
             label_qty = db_ocpu
-        label = _make_label(oci_type, label_qty, int(app_ocpu), int(db_ocpu), obj_gb, "")
+        label = _make_label(oci_type, label_qty, int(app_ocpu), int(db_ocpu), obj_gb, str(row["desc"]))
         items.append(
             ServiceItem(
                 id=f"{oci_type.replace(' ', '_')}_{counters[oci_type]}",
@@ -543,7 +547,7 @@ def freeform_arch_text_to_llm_input(
             ServiceItem(
                 id=f"{oci_type.replace(' ', '_')}_{counters[oci_type]}",
                 oci_type=oci_type,
-                label=_make_label(oci_type, 1, 0, 0, 0.0, "freeform_notes"),
+                label=_make_label(oci_type, 1, 0, 0, 0.0, desc),
                 layer=layer,
                 quantity=1.0,
                 notes="freeform_notes",
@@ -865,7 +869,7 @@ def parse_bom(xlsx_path: str | Path, context: str = "",
 
             counters_local[oci_type] = counters_local.get(oci_type, 0) + 1
             nid   = f"{id_prefix}{oci_type.replace(' ', '_')}_{counters_local[oci_type]}"
-            label = _make_label(oci_type, qty, app_ocpu, db_ocpu, obj_gb, note) + lbl_suffix
+            label = _make_label(oci_type, qty, app_ocpu, db_ocpu, obj_gb, f"{desc} {note}") + lbl_suffix
 
             items.append(ServiceItem(id=nid, oci_type=oci_type, label=label,
                                      layer=layer, quantity=qty, notes=sec_name))
@@ -911,10 +915,17 @@ def parse_bom(xlsx_path: str | Path, context: str = "",
 
 def _make_label(oci_type: str, qty, app_ocpu: int, db_ocpu: int, obj_gb: float, note: str) -> str:
     q = int(qty) if qty else "?"
+    note_l = str(note or "").lower()
+    compute_label = f"VM.Standard.E5.Flex VMs\n×{q} OCPU" if "vm.standard.e5.flex" in note_l or "oci native" in note_l else f"Compute\n×{q} OCPU"
+    database_label = "Autonomous Database" if any(token in note_l for token in ("autonomous", "adb", "atp", "adw")) else ""
+    if database_label and db_ocpu:
+        database_label = f"{database_label}\n×{db_ocpu:,} OCPU"
+    elif database_label and q != "?":
+        database_label = f"{database_label}\n×{q} ECPU"
     labels = {
-        "compute":        f"Compute\n×{q} OCPU",
+        "compute":        compute_label,
         "bare metal":     f"HPC BM.Optimized3.36\n×{q} nodes",
-        "database":       f"PostgreSQL DB\n×{db_ocpu:,} OCPU" if db_ocpu else f"Database\n×{q} OCPU",
+        "database":       database_label or (f"PostgreSQL DB\n×{db_ocpu:,} OCPU" if db_ocpu else f"Database\n×{q} OCPU"),
         "object storage": f"Object Storage\n{int(obj_gb*2/1024)} TB",
         "load balancer":  f"Load Balancer\n×{q} (per region)",
         "drg":            f"DRG / FastConnect\n×{q} ports",

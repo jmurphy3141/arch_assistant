@@ -181,6 +181,18 @@ def list_notes(store: ObjectStoreBase, customer_id: str) -> list[dict]:
     return manifest.get("notes", [])
 
 
+def clear_notes_manifest(store: ObjectStoreBase, customer_id: str) -> None:
+    """Clear the active notes manifest without deleting stored note files."""
+    manifest_bytes = json.dumps({"notes": []}, indent=2).encode("utf-8")
+    _put_dual(
+        store,
+        customer_key=_notes_manifest_key(customer_id, customer_first=True),
+        legacy_key=_notes_manifest_key(customer_id, customer_first=False),
+        content=manifest_bytes,
+        content_type="application/json",
+    )
+
+
 def get_note(store: ObjectStoreBase, customer_id: str, note_name: str) -> Optional[str]:
     """Read a single note by name. Returns None if not found."""
     try:
@@ -656,6 +668,22 @@ def clear_conversation_history(
         legacy_key=key,
         content=b"[]",
         content_type="application/json",
+    )
+
+
+def clear_conversation_summary(
+    store: ObjectStoreBase,
+    customer_id: str,
+) -> None:
+    """Overwrite the rolling conversation summary with an empty string."""
+    key = _conversation_key(customer_id, "summary.txt", customer_first=False)
+    customer_key = _conversation_key(customer_id, "summary.txt", customer_first=True)
+    _put_dual(
+        store,
+        customer_key=customer_key,
+        legacy_key=key,
+        content=b"",
+        content_type="text/plain",
     )
 
 

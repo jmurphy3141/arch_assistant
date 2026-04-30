@@ -10,6 +10,7 @@ from pathlib import Path
 from agent.bom_parser import (
     parse_bom, build_llm_prompt, bom_to_llm_input, ServiceItem,
     _normalize_desc, _infer_from_tokens, DESC_MAP, freeform_arch_text_to_llm_input,
+    inline_bom_text_to_llm_input,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -306,3 +307,24 @@ class TestUnknownSkuEndToEnd:
                           "waf", "bastion", "logging", "monitoring", "iam", "vault", "internet"}
         bom_derived = [i for i in items if i.oci_type not in baseline_types]
         assert not bom_derived, f"Bandwidth row should produce no node, got: {[i.oci_type for i in bom_derived]}"
+
+
+def test_inline_native_bom_maps_managed_services_and_labels() -> None:
+    items, _prompt = inline_bom_text_to_llm_input(
+        """
+| Category | Component | Details | Quantity |
+|----------|-----------|---------|----------|
+| Compute | VM.Standard.E5.Flex compute VMs | OCI Native Services lift/shift, 64 OCPU | 1 |
+| Database | Autonomous Database | Oracle database workloads, 16 ECPU | 1 |
+| Storage | File Storage | File server shares, NFS | 1 |
+| Storage | Object Storage | backups/archive | 1 |
+| Network | Load Balancer | WAF protected ingress | 1 |
+| Network | FastConnect | DRG/FastConnect/MPLS private connectivity | 1 |
+        """
+    )
+
+    by_type = {item.oci_type: item for item in items}
+    assert {"compute", "database", "file storage", "object storage", "load balancer", "drg"}.issubset(by_type)
+    assert "Autonomous Database" in by_type["database"].label
+    assert "VM.Standard.E5.Flex VMs" in by_type["compute"].label
+    assert by_type["database"].label != "Database\n×1 OCPU"

@@ -58,8 +58,12 @@ Response semantics should mirror the imported BOM engine behavior:
 - no unknown SKU in final BOM
 - no non-positive prices
 - non-GPU compute split rules enforced
-5. Repair/retry loop preserved (up to 3 attempts).
-6. XLSX generation includes formulas and editable line-item schema compatibility.
+5. Archie deterministic sizing consistency review is enforced before orchestrator
+   BOM finalization/export: explicit OCPU, RAM, and storage requirements must be
+   reflected in `bom_payload.line_items`, or the result is blocked/retried and
+   omitted from artifact manifests/downloads.
+6. Repair/retry loop preserved (up to 3 attempts).
+7. XLSX generation includes formulas and editable line-item schema compatibility.
 
 ## 6) UI Requirements (Current UI)
 

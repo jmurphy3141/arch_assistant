@@ -4,8 +4,11 @@ import asyncio
 import time
 from pathlib import Path
 
+import drawing_agent_server as srv
 from drawing_agent_server import _run_orchestrator_turn, OrchestratorChatRequest
+from agent.bom_parser import ServiceItem
 from agent import context_store
+from agent.drawio_inspector import inspect_drawio_xml
 from agent.persistence_objectstore import InMemoryObjectStore
 import agent.orchestrator_agent as orchestrator_agent
 from agent import skill_loader
@@ -129,6 +132,82 @@ def test_diagram_graph_uses_a2a_task_endpoint(monkeypatch):
     assert key == "agent3/acme/arch/v1/diagram.drawio"
     assert result_data["render_manifest"]["node_count"] == 6
     assert "node_to_resource_map" in result_data
+
+
+def test_diagram_pipeline_applies_ocvs_bm_x9_fd_local_overlay(monkeypatch, tmp_path):
+    generic_spec = {
+        "deployment_type": "single_ad",
+        "regions": [
+            {
+                "id": "region_box",
+                "label": "OCI Region",
+                "regional_subnets": [],
+                "availability_domains": [
+                    {
+                        "id": "ad1_box",
+                        "label": "Availability Domain 1",
+                        "fault_domains": [
+                            {"id": "fd1_box", "label": "FD1", "subnets": []},
+                            {"id": "fd2_box", "label": "FD2", "subnets": []},
+                            {"id": "fd3_box", "label": "FD3", "subnets": []},
+                        ],
+                        "subnets": [
+                            {
+                                "id": "public_subnet",
+                                "label": "Public Subnet",
+                                "tier": "ingress",
+                                "nodes": [{"id": "compute_1", "type": "compute", "label": "Generic Compute"}],
+                            },
+                            {"id": "db_subnet", "label": "DB Subnet", "tier": "db", "nodes": []},
+                        ],
+                    }
+                ],
+                "gateways": [],
+                "oci_services": [],
+            }
+        ],
+        "external": [],
+        "edges": [],
+    }
+
+    srv.app.state.llm_runner = lambda _prompt, _client_id: generic_spec
+    srv.app.state.object_store = None
+    srv.app.state.persistence_config = {}
+    monkeypatch.setattr(srv, "OUTPUT_DIR", tmp_path)
+
+    request_context = (
+        "Target architecture is OCI Dedicated VMware Solution in af-johannesburg-1. "
+        "Regenerate the diagram for VMware ESXi / VxRail with two BM.Standard.X9.64 hosts: "
+        "host 1 in FD1 using FD-local subnet and host 2 in FD2 using FD-local subnet."
+    )
+
+    result = asyncio.run(
+        srv.run_pipeline(
+            items=[ServiceItem(id="compute_1", oci_type="compute", label="Compute - Standard - X9", layer="compute")],
+            prompt="generic prompt",
+            diagram_name="ocvs-bm-overlay",
+            client_id="acme",
+            request_id="req-ocvs-bm",
+            input_hash="hash-ocvs-bm",
+            reference_context_text=request_context,
+        )
+    )
+
+    view = inspect_drawio_xml(result["drawio_xml"])
+    labels = "\n".join(view["labels"])
+
+    assert result["status"] == "ok"
+    assert result["render_manifest"]["ocvs_bm_overlay_applied"] is True
+    assert labels.count("BM.Standard.X9.64 ESXi Host") == 2
+    assert "BM.Standard.X9.64 ESXi Host - FD1" in labels
+    assert "BM.Standard.X9.64 ESXi Host - FD2" in labels
+    assert "FD1 OCVS Management Subnet" in labels
+    assert "FD1 ESXi Host Subnet" in labels
+    assert "FD2 OCVS Management Subnet" in labels
+    assert "FD2 ESXi Host Subnet" in labels
+    assert any(marker in labels for marker in ("OCI Dedicated VMware Solution SDDC", "vCenter", "NSX"))
+    assert "Public Subnet" not in labels
+    assert "DB Subnet" not in labels
 
 
 def test_run_orchestrator_turn_passes_specialist_mode(monkeypatch):
@@ -1198,6 +1277,401 @@ def test_execute_tool_diagram_trace_preserves_backend_error_metadata(monkeypatch
     assert data["trace"]["diagram_recovery_status"] == "backend_error"
     assert data["trace"]["recovery_attempt_count"] == 1
     assert data["trace"]["final_disposition"] == "backend_error"
+
+
+def test_execute_tool_diagram_artifact_review_retries_missing_bm_split_fd(monkeypatch):
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "acme", "ACME Corp")
+    context_store.set_archie_engagement_summary(ctx, "OCI diagram exists for OCVS migration.")
+    context_store.write_context(store, "acme", ctx)
+    calls: list[dict] = []
+
+    bad_key = "diagrams/acme/oci_architecture/v1/diagram.drawio"
+    good_key = "diagrams/acme/oci_architecture/v2/diagram.drawio"
+    bad_xml = """
+    <mxGraphModel><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="fd1" value="Fault Domain 1" vertex="1" parent="1"/>
+      <mxCell id="fd2" value="Fault Domain 2" vertex="1" parent="1"/>
+      <mxCell id="compute" value="Generic Compute" vertex="1" parent="1"/>
+    </root></mxGraphModel>
+    """
+    good_xml = """
+    <mxGraphModel><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="fd1" value="Fault Domain 1" vertex="1" parent="1"/>
+      <mxCell id="bm1" value="BM.Standard.X9.64 #1 FD1" vertex="1" parent="1"/>
+      <mxCell id="fd2" value="Fault Domain 2" vertex="1" parent="1"/>
+      <mxCell id="bm2" value="BM.Standard.X9.64 #2 FD2" vertex="1" parent="1"/>
+    </root></mxGraphModel>
+    """
+
+    async def _fake_execute_tool_core(tool_name, args, **kwargs):
+        calls.append(dict(args))
+        target_store = kwargs["store"]
+        if len(calls) == 1:
+            target_store.put(bad_key, bad_xml.encode("utf-8"), "text/xml")
+            return (
+                f"Diagram generated. Key: {bad_key}",
+                bad_key,
+                {"render_manifest": {"node_count": 3}},
+            )
+        target_store.put(good_key, good_xml.encode("utf-8"), "text/xml")
+        return (
+            f"Diagram generated. Key: {good_key}",
+            good_key,
+            {"render_manifest": {"node_count": 4}},
+        )
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+    monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
+
+    summary, key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_diagram",
+            {"bom_text": "Update the diagram to have the 2 BM servers in split FD."},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=store,
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Update the diagram to have the 2 BM servers in split FD.",
+        )
+    )
+
+    assert len(calls) == 2
+    assert "Archie Diagram Artifact Review Feedback" in calls[1]["bom_text"]
+    assert key == good_key
+    assert summary == f"Diagram generated. Key: {good_key}"
+    assert data["trace"]["review_verdict"] == "pass"
+    assert data["trace"]["review_produced"]["bm_count"] >= 2
+    assert data["trace"]["refinement_history"]
+
+
+def test_execute_tool_diagram_retry_promotes_ocvs_review_feedback_to_user_notes(monkeypatch):
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "acme", "ACME Corp")
+    context_store.set_archie_engagement_summary(ctx, "OCVS migration from VMware/VxRail to OCI Dedicated VMware Solution.")
+    context_store.write_context(store, "acme", ctx)
+    calls: list[dict] = []
+
+    bad_key = "diagrams/acme/oci_architecture/v1/diagram.drawio"
+    good_key = "diagrams/acme/oci_architecture/v2/diagram.drawio"
+    bad_xml = """
+    <mxGraphModel><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="fd1" value="Fault Domain 1" vertex="1" parent="1"/>
+      <mxCell id="bm1" value="BM.Standard.X9.64 host #1 FD1" vertex="1" parent="1"/>
+      <mxCell id="fd2" value="Fault Domain 2" vertex="1" parent="1"/>
+      <mxCell id="bm2" value="BM.Standard.X9.64 host #2 FD2" vertex="1" parent="1"/>
+    </root></mxGraphModel>
+    """
+    good_xml = """
+    <mxGraphModel><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="ocvs" value="OCI Dedicated VMware Solution SDDC, vCenter, NSX" vertex="1" parent="1"/>
+      <mxCell id="fd1" value="Fault Domain 1" vertex="1" parent="1"/>
+      <mxCell id="bm1" value="BM.Standard.X9.64 ESXi host #1 FD1" vertex="1" parent="1"/>
+      <mxCell id="fd2" value="Fault Domain 2" vertex="1" parent="1"/>
+      <mxCell id="bm2" value="BM.Standard.X9.64 ESXi host #2 FD2" vertex="1" parent="1"/>
+    </root></mxGraphModel>
+    """
+
+    async def _fake_execute_tool_core(tool_name, args, **kwargs):
+        calls.append(dict(args))
+        target_store = kwargs["store"]
+        if len(calls) == 1:
+            target_store.put(bad_key, bad_xml.encode("utf-8"), "text/xml")
+            return (f"Diagram generated. Key: {bad_key}", bad_key, {"render_manifest": {"node_count": 4}})
+        target_store.put(good_key, good_xml.encode("utf-8"), "text/xml")
+        return (f"Diagram generated. Key: {good_key}", good_key, {"render_manifest": {"node_count": 5}})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(
+        orchestrator_agent,
+        "_build_context_summary_for_skills",
+        lambda *_a, **_k: "OCVS migration from VMware/VxRail to OCI Dedicated VMware Solution.",
+    )
+    monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
+
+    user_message = (
+        "Regenerate the diagram with the two BM.Standard.X9.64 hosts split across fault domains, "
+        "using FD-local subnets so one BM host is in FD1 and the other is in FD2."
+    )
+    summary, key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_diagram",
+            {"bom_text": user_message},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=store,
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message=user_message,
+        )
+    )
+
+    assert len(calls) == 2
+    retry_notes = calls[1]["_architect_brief"]["user_notes"]
+    assert "Archie diagram acceptance corrections" in retry_notes
+    assert "OCVS/VMware-specific elements" in retry_notes
+    assert key == good_key
+    assert summary == f"Diagram generated. Key: {good_key}"
+    assert data["trace"]["review_verdict"] == "pass"
+
+
+def test_execute_tool_diagram_auto_answers_ha_ads_for_explicit_bm_fd_request(monkeypatch):
+    store = InMemoryObjectStore()
+    calls: list[dict] = []
+    good_key = "diagrams/acme/oci_architecture/v1/diagram.drawio"
+    good_xml = """
+    <mxGraphModel><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="ocvs" value="OCI Dedicated VMware Solution SDDC, vCenter, NSX" vertex="1" parent="1"/>
+      <mxCell id="fd1" value="FD1" vertex="1" parent="1"/>
+      <mxCell id="bm1" value="BM.Standard.X9.64 ESXi Host - FD1" vertex="1" parent="1"/>
+      <mxCell id="fd2" value="FD2" vertex="1" parent="1"/>
+      <mxCell id="bm2" value="BM.Standard.X9.64 ESXi Host - FD2" vertex="1" parent="1"/>
+    </root></mxGraphModel>
+    """
+
+    async def _fake_execute_tool_core(tool_name, args, **kwargs):
+        calls.append(dict(args))
+        if len(calls) == 1:
+            return (
+                "Diagram clarification required before generation can continue.",
+                "",
+                {
+                    "questions": [
+                        {
+                            "id": "ha.ads",
+                            "question": "How should the BM hosts be placed across availability domains?",
+                            "blocking": True,
+                        }
+                    ],
+                    "diagram_recovery_status": "needs_clarification",
+                    "diagram_final_disposition": "needs_clarification",
+                },
+            )
+        kwargs["store"].put(good_key, good_xml.encode("utf-8"), "text/xml")
+        return (f"Diagram generated. Key: {good_key}", good_key, {"drawio_xml": good_xml})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(
+        orchestrator_agent,
+        "_build_context_summary_for_skills",
+        lambda *_a, **_k: "OCVS migration from VMware/VxRail to OCI Dedicated VMware Solution.",
+    )
+    monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
+
+    user_message = (
+        "Regenerate the OCVS diagram in af-johannesburg-1 with two BM.Standard.X9.64 hosts: "
+        "host 1 in FD1 using FD-local subnet and host 2 in FD2 using FD-local subnet."
+    )
+    summary, key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_diagram",
+            {"bom_text": user_message},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=store,
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message=user_message,
+        )
+    )
+
+    assert len(calls) == 2
+    assert key == good_key
+    assert summary == f"Diagram generated. Key: {good_key}"
+    assert "archie_question_bundle" not in data
+    auto_answers = data["archie_auto_answers"]
+    assert auto_answers[0]["question_id"] == "ha.ads"
+    assert auto_answers[0]["final_answer"].startswith("two BM.Standard.X9.64 hosts")
+    assert "ha.ads" in calls[1]["bom_text"]
+
+
+def test_execute_tool_diagram_artifact_review_blocks_after_failed_retry(monkeypatch):
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "acme", "ACME Corp")
+    context_store.set_archie_engagement_summary(ctx, "OCI diagram exists for OCVS migration.")
+    context_store.write_context(store, "acme", ctx)
+    calls = 0
+    bad_xml = """
+    <mxGraphModel><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="fd1" value="Fault Domain 1" vertex="1" parent="1"/>
+      <mxCell id="fd2" value="Fault Domain 2" vertex="1" parent="1"/>
+      <mxCell id="compute" value="Generic Compute" vertex="1" parent="1"/>
+    </root></mxGraphModel>
+    """
+
+    async def _fake_execute_tool_core(tool_name, args, **kwargs):
+        nonlocal calls
+        calls += 1
+        key = f"diagrams/acme/oci_architecture/v{calls}/diagram.drawio"
+        kwargs["store"].put(key, bad_xml.encode("utf-8"), "text/xml")
+        return (f"Diagram generated. Key: {key}", key, {"render_manifest": {"node_count": 3}})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+    monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
+
+    summary, key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_diagram",
+            {"bom_text": "Update the diagram to have the 2 BM servers in split FD."},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=store,
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Update the diagram to have the 2 BM servers in split FD.",
+        )
+    )
+
+    assert calls == 2
+    assert key == ""
+    assert "Archie expert review blocked" in summary
+    assert "requested 2" in summary
+    assert data["trace"]["review_verdict"] == "blocked"
+
+
+def test_diagram_revision_complaint_routes_to_diagram_without_diagram_word(monkeypatch):
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "acme", "ACME Corp")
+    context_store.record_agent_run(
+        ctx,
+        "diagram",
+        [],
+        {
+            "version": 1,
+            "diagram_key": "diagrams/acme/oci_architecture/v1/diagram.drawio",
+            "summary": "existing diagram",
+        },
+    )
+    context_store.write_context(store, "acme", ctx)
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_execute_tool(tool_name, args, **_kwargs):
+        calls.append((tool_name, dict(args)))
+        return ("Diagram generated. Key: diagrams/acme/v2/diagram.drawio", "diagrams/acme/v2/diagram.drawio", {})
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="acme",
+            customer_name="ACME Corp",
+            user_message="this does not show 2 BM servers",
+            store=store,
+            text_runner=lambda _prompt, _system: "I agree that change is needed.",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert [tool for tool, _args in calls] == ["generate_diagram"]
+    assert calls[0][1]["bom_text"] == "this does not show 2 BM servers"
+    assert result["tool_calls"][0]["tool"] == "generate_diagram"
+
+
+def test_execute_tool_bom_expert_review_blocks_undersized_retry(monkeypatch):
+    async def _fake_execute_tool_core(tool_name, args, **_kwargs):
+        _ = (tool_name, args)
+        return (
+            "Final BOM prepared.",
+            "",
+            {
+                "type": "final",
+                "reply": "Final BOM prepared.",
+                "bom_payload": {
+                    "currency": "USD",
+                    "line_items": [
+                        {"sku": "B94176", "description": "Compute E4 OCPU", "category": "compute", "quantity": 4},
+                        {"sku": "B94177", "description": "Compute E4 Memory", "category": "compute", "quantity": 64},
+                        {"sku": "B91961", "description": "Block storage capacity", "category": "storage", "quantity": 1024},
+                        {"sku": "B91628", "description": "Object storage", "category": "storage", "quantity": 204.8},
+                    ],
+                },
+            },
+        )
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "")
+    monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
+
+    summary, key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_bom",
+            {"prompt": "Generate BOM for 48 OCPU, 768 GB RAM, 42 TB storage."},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Generate BOM for 48 OCPU, 768 GB RAM, 42 TB storage.",
+        )
+    )
+
+    assert key == ""
+    assert "Archie expert review blocked" in summary
+    assert "requested 48" in summary
+    assert "requested 768" in summary
+    assert "requested 43008" in summary
+    assert data["trace"]["review_verdict"] == "blocked"
+    assert len(data["trace"]["refinement_history"]) == 1
+
+
+def test_execute_tool_bom_expert_review_passes_matching_sizing(monkeypatch):
+    async def _fake_execute_tool_core(tool_name, args, **_kwargs):
+        _ = (tool_name, args)
+        return (
+            "Final BOM prepared.",
+            "",
+            {
+                "type": "final",
+                "reply": "Final BOM prepared.",
+                "bom_payload": {
+                    "currency": "USD",
+                    "line_items": [
+                        {"sku": "B94176", "description": "Compute E4 OCPU", "category": "compute", "quantity": 48},
+                        {"sku": "B94177", "description": "Compute E4 Memory", "category": "compute", "quantity": 768},
+                        {"sku": "B91961", "description": "Block storage capacity", "category": "storage", "quantity": 43008},
+                    ],
+                },
+            },
+        )
+
+    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "")
+    monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
+
+    summary, key, data = asyncio.run(
+        orchestrator_agent._execute_tool(
+            "generate_bom",
+            {"prompt": "Generate BOM for 48 OCPU, 768 GB RAM, 42 TB storage."},
+            customer_id="acme",
+            customer_name="ACME Corp",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
+            a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
+            user_message="Generate BOM for 48 OCPU, 768 GB RAM, 42 TB storage.",
+        )
+    )
+
+    assert "Final BOM prepared" in summary
+    assert key == ""
+    assert data["trace"]["review_verdict"] == "pass"
+    assert data["trace"]["archie_lens"] == "OCI BOM sizing and pricing reviewer"
+    assert data["trace"]["sent_to_specialist"]["prompt"].startswith("Generate BOM")
 
 
 def test_orchestrator_critic_respects_max_refinements(monkeypatch):

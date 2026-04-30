@@ -35,6 +35,8 @@
   - `generate_bom` orchestrator tool path for legacy + LangGraph specialist execution.
   - Fail-closed orchestrator skill coverage extended to `bom` path.
   - Dynamic BOM skill injection via `gstack_skills/oci_bom_expert`.
+  - BOM finalization now includes deterministic Archie sizing consistency
+    review for explicit OCPU, RAM, and storage requirements before XLSX export.
 
 ### v1.8.0 (Delivered)
 - JEP lifecycle contract and approved-lock revision flow delivered on top of orchestrator hardening baseline:
@@ -55,6 +57,10 @@
 - Sidebar Documents navigation is collapsed by default so project/customer conversations stay visible.
 - Historical chat diagram artifacts are restored into the right-side Artifacts panel.
 - Chat artifact download URLs now include the required diagram scope.
+- Tool-call traceability now includes Archie expert lens, sanitized specialist
+  input, deterministic review verdict/findings, and retry history.
+- Archie deterministic expert review is fail-closed for hard mismatches before
+  artifacts are presented, exported, or linked.
 
 ## 2) Locked Requirements (Still In Effect)
 
@@ -76,6 +82,8 @@
 - `DONE`: Orchestrator SKILL.md governance layer with authoritative block + pushback behavior.
 - `DONE`: Fail-closed enforcement for missing/unreadable/malformed required orchestrator skill files.
 - `DONE`: Trace ID propagation and structured response trace fields.
+- `DONE`: Archie deterministic expert review around tool calls, including
+  fail-closed BOM sizing checks and artifact/export eligibility gating.
 - `DONE`: Aggregated history endpoint for sidebar (`/api/chat/history`).
 - `DONE`: Chat streaming endpoint with SSE and chunked support (`/api/chat/stream`).
 - `DONE`: Terraform artifact persistence + list/latest/download APIs.

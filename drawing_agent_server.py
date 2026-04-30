@@ -28,6 +28,7 @@ v1.5.0 additions:
 """
 
 import asyncio
+import copy
 import contextvars
 import dataclasses
 import functools
@@ -833,6 +834,170 @@ def _freeform_clarify_response(
     )
 
 
+_BM_X9_SHAPE_RE = re.compile(r"\bbm\.standard\.x9\.64\b", re.IGNORECASE)
+_TWO_BM_X9_RE = re.compile(
+    r"\b(?:two|2)\s+(?:distinct\s+)?(?:bm\.standard\.x9\.64|bm|bare[- ]metal)",
+    re.IGNORECASE,
+)
+_VMWARE_OCVS_RE = re.compile(
+    r"\b(?:ocvs|oci\s+dedicated\s+vmware\s+solution|vxrail|vmware|esxi|vsphere|sddc|vcenter|nsx)\b",
+    re.IGNORECASE,
+)
+
+
+def _ocvs_bm_overlay_requested(text: str) -> bool:
+    """Return True when explicit user context asks for two BM X9 ESXi/OCVS hosts."""
+    source = str(text or "")
+    if not source.strip():
+        return False
+    bm_shape = bool(_BM_X9_SHAPE_RE.search(source))
+    two_hosts = bool(_TWO_BM_X9_RE.search(source)) or bool(
+        bm_shape
+        and re.search(r"\b(?:two|2)\b", source, re.IGNORECASE)
+        and re.search(r"\bfd\s*1\b", source, re.IGNORECASE)
+        and re.search(r"\bfd\s*2\b", source, re.IGNORECASE)
+    )
+    return bm_shape and two_hosts
+
+
+def _ocvs_vmware_context_present(text: str) -> bool:
+    return bool(_VMWARE_OCVS_RE.search(str(text or "")))
+
+
+def _region_label_from_context(text: str, existing: str = "") -> str:
+    match = re.search(r"\b[a-z]{2}-[a-z]+-\d+\b", str(text or ""), re.IGNORECASE)
+    if match:
+        return f"OCI Region - {match.group(0).lower()}"
+    return existing or "OCI Region"
+
+
+def _apply_ocvs_bm_overlay(spec: dict, *, source_text: str) -> tuple[dict, bool]:
+    """
+    Force explicit OCVS/BM.Standard.X9.64 ESXi placement before layout compilation.
+
+    This handles regeneration requests where current user text is more specific
+    than a prior BOM baseline that only parsed the SKU family as generic compute.
+    """
+    bm_overlay = _ocvs_bm_overlay_requested(source_text)
+    vmware_overlay = _ocvs_vmware_context_present(source_text)
+    if not bm_overlay and not vmware_overlay:
+        return spec, False
+
+    updated = copy.deepcopy(spec)
+    regions = updated.get("regions")
+    if not isinstance(regions, list) or not regions:
+        regions = [{"id": "region_box", "label": "OCI Region"}]
+        updated["regions"] = regions
+    region = regions[0]
+    if not isinstance(region, dict):
+        region = {"id": "region_box", "label": "OCI Region"}
+        regions[0] = region
+
+    region.setdefault("id", "region_box")
+    region["label"] = _region_label_from_context(source_text, str(region.get("label", "") or "OCI Region"))
+    region.setdefault("regional_subnets", [])
+    region.setdefault("gateways", [])
+
+    services = [svc for svc in region.get("oci_services", []) or [] if isinstance(svc, dict)]
+    service_ids = {str(svc.get("id", "") or "") for svc in services}
+    required_services = [
+        {"id": "ocvs_sddc", "type": "ocvs", "label": "OCI Dedicated VMware Solution SDDC"},
+        {"id": "vcenter", "type": "vmware", "label": "vCenter"},
+        {"id": "nsx", "type": "vmware", "label": "NSX"},
+    ]
+    for svc in required_services:
+        if svc["id"] not in service_ids:
+            services.append(svc)
+    region["oci_services"] = services
+
+    if not bm_overlay:
+        return updated, True
+
+    updated["deployment_type"] = "single_ad"
+
+    region["availability_domains"] = [
+        {
+            "id": "ad1_box",
+            "label": "Availability Domain 1",
+            "fault_domains": [
+                {
+                    "id": "fd1_box",
+                    "label": "FD1",
+                    "subnets": [
+                        {
+                            "id": "fd1_ocvs_mgmt_subnet",
+                            "label": "FD1 OCVS Management Subnet",
+                            "tier": "app",
+                            "nodes": [],
+                        },
+                        {
+                            "id": "fd1_esxi_host_subnet",
+                            "label": "FD1 ESXi Host Subnet",
+                            "tier": "app",
+                            "nodes": [
+                                {
+                                    "id": "bm_standard_x9_64_esxi_fd1",
+                                    "type": "bare metal",
+                                    "label": "BM.Standard.X9.64 ESXi Host - FD1",
+                                }
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "id": "fd2_box",
+                    "label": "FD2",
+                    "subnets": [
+                        {
+                            "id": "fd2_ocvs_mgmt_subnet",
+                            "label": "FD2 OCVS Management Subnet",
+                            "tier": "app",
+                            "nodes": [],
+                        },
+                        {
+                            "id": "fd2_esxi_host_subnet",
+                            "label": "FD2 ESXi Host Subnet",
+                            "tier": "app",
+                            "nodes": [
+                                {
+                                    "id": "bm_standard_x9_64_esxi_fd2",
+                                    "type": "bare metal",
+                                    "label": "BM.Standard.X9.64 ESXi Host - FD2",
+                                }
+                            ],
+                        },
+                    ],
+                },
+                {"id": "fd3_box", "label": "FD3", "subnets": []},
+            ],
+            "subnets": [],
+        }
+    ]
+
+    node_ids = {
+        node["id"]
+        for fd in region["availability_domains"][0]["fault_domains"]
+        for subnet in fd.get("subnets", [])
+        for node in subnet.get("nodes", [])
+    }
+    service_ids = {svc["id"] for svc in services}
+    gateway_ids = {str(gw.get("id", "") or "") for gw in region.get("gateways", []) or [] if isinstance(gw, dict)}
+    external_ids = {
+        str(ext.get("id", "") or "")
+        for ext in updated.get("external", []) or []
+        if isinstance(ext, dict)
+    }
+    valid_edge_ids = node_ids | service_ids | gateway_ids | external_ids
+    updated["edges"] = [
+        edge
+        for edge in updated.get("edges", []) or []
+        if isinstance(edge, dict)
+        and str(edge.get("source", "") or "") in valid_edge_ids
+        and str(edge.get("target", "") or "") in valid_edge_ids
+    ]
+    return updated, True
+
+
 async def run_pipeline(
     items: list,
     prompt: str,
@@ -918,6 +1083,13 @@ async def run_pipeline(
                 status_code=422,
                 detail=f"LayoutIntent validation/compile error: {exc}",
             )
+
+    overlay_source_text = "\n\n".join(
+        part
+        for part in (reference_context_text, prompt)
+        if str(part or "").strip()
+    )
+    spec, ocvs_bm_overlay_applied = _apply_ocvs_bm_overlay(spec, source_text=overlay_source_text)
 
     # ── Multi-region hints check ──────────────────────────────────────────────
     # multi_compartment = multiple environments inside ONE region (IAM boundaries).
@@ -1007,6 +1179,7 @@ async def run_pipeline(
         "reference_confidence": float(reference_metadata.get("reference_confidence", 0) or 0),
         "reference_mode": str(reference_metadata.get("reference_mode", render_mode) or render_mode),
         "family_fit_score": float(reference_metadata.get("family_fit_score", 0) or 0),
+        "ocvs_bm_overlay_applied": bool(ocvs_bm_overlay_applied),
     }
 
     # ── Node-to-resource map ──────────────────────────────────────────────────

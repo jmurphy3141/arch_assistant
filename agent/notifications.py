@@ -20,9 +20,25 @@ Events emitted by the system:
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
+from typing import Callable
 
 logger = logging.getLogger(__name__)
+_NOTIFICATION_SINK: ContextVar[Callable[[str, str, str], None] | None] = ContextVar(
+    "archie_notification_sink",
+    default=None,
+)
+
+
+@contextmanager
+def notification_sink(sink: Callable[[str, str, str], None]):
+    token = _NOTIFICATION_SINK.set(sink)
+    try:
+        yield
+    finally:
+        _NOTIFICATION_SINK.reset(token)
 
 
 def notify(event: str, customer_id: str, detail: str = "") -> None:
@@ -35,6 +51,12 @@ def notify(event: str, customer_id: str, detail: str = "") -> None:
         detail:      Human-readable description of what happened.
     """
     _send(event, customer_id, detail)
+    sink = _NOTIFICATION_SINK.get()
+    if sink is not None:
+        try:
+            sink(event, customer_id, detail)
+        except Exception:
+            logger.exception("Notification sink failed for event=%s customer_id=%s", event, customer_id)
 
 
 def _send(event: str, customer_id: str, detail: str) -> None:

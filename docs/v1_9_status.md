@@ -16,6 +16,7 @@ construction by design, so they do not count as ReAct self-guidance failures.
 | Management Summary | Complete | `_render_management_summary` renders from `_synthesize_management_metadata` and includes applied skills, refinement count, governor/critic summary, key decisions, assumptions/tradeoffs, artifact refs, and checkpoint status. Clarification, recall, pending checkpoint, and answer-only paths suppress the summary. Covered by `tests/test_orchestrator_parallel_reply.py` and `tests/test_orchestrator_decision_flow.py`. |
 | Synthesis | Complete | `_synthesize_management_metadata` deterministically consolidates applied skills, refinements, governor status, tradeoffs, artifact refs, and critic/governor summaries without an extra LLM call. Covered by `test_synthesize_management_metadata_is_stable_and_complete`. |
 | Fast Paths | Complete | Fast-path orchestration routes execute deterministic tool sequences without LLM freewrite and without ReAct prompt assembly. Covered by fast-path tests in `tests/test_orchestrator_parallel_reply.py`; explicitly exempt from ReAct self-guidance checks because there is no ReAct prompt. |
+| Archie Expert Review | Complete | `agent/orchestrator_agent.py` records Archie lens, sanitized specialist input, skill guidance metadata, context source, and review verdict in tool traces. Deterministic BOM sizing review blocks or retries hard mismatches before XLSX export. Covered by `test_execute_tool_bom_expert_review_blocks_undersized_retry`, `test_execute_tool_bom_expert_review_passes_matching_sizing`, and `test_artifact_manifest_hides_failed_review_bom_xlsx`. |
 | Evidence Document | Complete | This file is the v1.9 completion evidence reference. |
 
 ## Deterministic Governor Rules
@@ -42,6 +43,11 @@ General:
 - A directly contradicted requirement versus generated structured result data
   produces `blocked`; an unstructured contradiction signal produces
   `checkpoint_required`.
+- Archie deterministic expert review is fail-closed for hard tool-result
+  mismatches. BOM finalization compares explicit OCPU, RAM, and storage
+  requirements against `bom_payload.line_items`; failed review blocks artifact
+  manifest/download exposure even if the LLM critic is unavailable or
+  fail-open.
 
 ## Implementation Pointers
 
@@ -50,6 +56,9 @@ General:
 - Decision Context propagation: `agent/orchestrator_agent.py` `_execute_tool`,
   `_inject_skill_into_tool_args`, `_build_tool_trace`,
   `_record_tool_decision_state`.
+- Expert review: `agent/orchestrator_agent.py`
+  `_archie_expert_review_if_needed`, `_review_bom_sizing_consistency`,
+  `_build_pre_execution_tool_trace`.
 - Governor hardening: `agent/governor_agent.py`
   `_apply_deterministic_overrides`.
 - Deterministic synthesis and Management Summary:
