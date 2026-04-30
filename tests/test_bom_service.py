@@ -135,6 +135,52 @@ def test_structured_bom_inputs_drive_explicit_line_item_quantities() -> None:
     assert payload["os_mix"] == ["Linux", "Windows"]
 
 
+def test_structured_native_bom_includes_managed_oci_services() -> None:
+    svc = _ready_service()
+
+    result = svc.generate_from_inputs(
+        inputs={
+            "region": "af-johannesburg-1",
+            "architecture_option": "OCI Native Services",
+            "compute": {"ocpu": 64, "gpu": False},
+            "memory": {"gb": 1147},
+            "storage": {"block_tb": 44},
+            "connectivity": {"internet_mbps": 100, "mpls": True, "sd_wan": False},
+            "dr": {"rto_hours": 24, "cross_region_restore": True},
+            "workloads": ["Oracle databases", "SQL Server", "file servers"],
+            "target_services": [
+                "VM.Standard.E5.Flex compute VMs",
+                "Autonomous Database",
+                "File Storage",
+                "Block Volumes",
+                "Object Storage backups/archive",
+                "Load Balancer/WAF",
+                "DRG/FastConnect/MPLS",
+            ],
+            "output_format": "xlsx",
+        },
+        trace_id="trace-native-structured",
+        model_id="test-bom",
+    )
+
+    assert result["type"] == "final"
+    payload = result["bom_payload"]
+    by_sku = {row["sku"]: row for row in payload["line_items"]}
+    assert by_sku["B97384"]["quantity"] == 64.0
+    assert by_sku["B97385"]["quantity"] == 1147.0
+    assert by_sku["B91961"]["quantity"] == 45056.0
+    descriptions = " ".join(str(row["description"]) for row in payload["line_items"])
+    notes = " ".join(str(row.get("notes") or "") for row in payload["line_items"])
+    combined = f"{descriptions} {notes}"
+    assert "VM.Standard.E5.Flex compute VMs" in combined
+    assert "Autonomous Database" in combined
+    assert "File Storage" in combined
+    assert "Object Storage" in combined
+    assert "Load Balancer" in combined
+    assert "DRG/FastConnect/MPLS" in combined
+    assert "OCI Native Services selected" in " ".join(payload["assumptions"])
+
+
 def test_structured_bom_inputs_block_when_required_sizing_cannot_normalize() -> None:
     svc = _ready_service()
 

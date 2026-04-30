@@ -1966,6 +1966,13 @@ def _build_structured_bom_inputs(
     if not os_mix:
         lower = combined_text.lower()
         os_mix = [label for marker, label in (("linux", "Linux"), ("windows", "Windows")) if marker in lower]
+    native_target_services = _structured_bom_native_target_services(
+        architecture_option=architecture_option,
+        workloads=workloads,
+        connectivity=connectivity,
+        dr=dr,
+        text=combined_text,
+    )
 
     inputs: dict[str, Any] = {
         "region": region,
@@ -1979,6 +1986,9 @@ def _build_structured_bom_inputs(
         "os_mix": os_mix,
         "output_format": "xlsx" if re.search(r"\b(?:xlsx|excel|spreadsheet|workbook)\b", combined_text, re.I) else "json",
     }
+    if native_target_services:
+        inputs["target_services"] = native_target_services
+        inputs["workload_service_mapping"] = _structured_bom_native_workload_mapping(workloads, combined_text)
     has_any_sizing = any(value not in (None, "", [], {}) for value in (ocpu, memory_gb, block_tb))
     has_complete_sizing = all(value not in (None, "", [], {}) for value in (ocpu, memory_gb, block_tb))
     return inputs if has_complete_sizing or has_any_sizing else {}
@@ -2007,6 +2017,8 @@ def _structured_bom_architecture_option(
     profile: dict[str, Any],
     text: str,
 ) -> str:
+    if _text_requests_oci_native(text):
+        return "OCI Native Services"
     explicit = str(facts.get("architecture_option", "") or "").strip()
     if explicit:
         return explicit
@@ -2020,6 +2032,61 @@ def _structured_bom_architecture_option(
     if any(marker in haystack for marker in ("ocvs", "dedicated vmware", "vmware", "vxrail", "esxi")):
         return "OCI Dedicated VMware Solution"
     return ""
+
+
+def _text_requests_oci_native(text: str) -> bool:
+    lower = str(text or "").lower()
+    return bool(
+        re.search(r"\boci[-\s]?native\b", lower)
+        or "native services" in lower
+        or "migrate to oci native" in lower
+        or "migration to oci native" in lower
+        or "approve" in lower and "native" in lower and "oci" in lower
+        or "approved" in lower and "native" in lower and "oci" in lower
+    )
+
+
+def _structured_bom_native_target_services(
+    *,
+    architecture_option: str,
+    workloads: list[str],
+    connectivity: dict[str, Any],
+    dr: dict[str, Any],
+    text: str,
+) -> list[str]:
+    if "native" not in str(architecture_option or "").lower() and not _text_requests_oci_native(text):
+        return []
+    combined = " ".join([text, " ".join(workloads)]).lower()
+    services = ["VM.Standard.E5.Flex compute VMs", "Block Volumes"]
+    if re.search(r"\b(?:oracle\s+db|oracle\s+database|oracle\s+databases|autonomous|adb|atp|adw)\b", combined):
+        services.append("Autonomous Database")
+    if re.search(r"\b(?:file\s+server|file\s+servers|file\s+share|file\s+shares|nfs|smb)\b", combined):
+        services.append("File Storage")
+    if re.search(r"\b(?:backup|archive|object\s+storage|restore|dr)\b", combined) or dr.get("rto_hours") or dr.get("cross_region_restore"):
+        services.append("Object Storage backups/archive")
+    services.append("Load Balancer/WAF")
+    if connectivity.get("mpls") or connectivity.get("sd_wan") or re.search(r"\b(?:drg|fastconnect|mpls|sd[-\s]?wan|vpn)\b", combined):
+        services.append("DRG/FastConnect/MPLS")
+    return list(dict.fromkeys(services))
+
+
+def _structured_bom_native_workload_mapping(workloads: list[str], text: str) -> list[dict[str, str]]:
+    combined_workloads = workloads or [text]
+    mappings: list[dict[str, str]] = []
+    for workload in combined_workloads:
+        lower = str(workload or "").lower()
+        if not lower.strip():
+            continue
+        if "oracle" in lower and ("db" in lower or "database" in lower):
+            service = "Autonomous Database"
+        elif "file" in lower or "nfs" in lower or "smb" in lower:
+            service = "File Storage"
+        elif "sql server" in lower:
+            service = "VM.Standard.E5.Flex compute VMs"
+        else:
+            service = "VM.Standard.E5.Flex compute VMs"
+        mappings.append({"workload": str(workload).strip()[:120], "target_service": service})
+    return mappings
 
 
 def _structured_bom_ocpu(profile: dict[str, Any], text: str) -> float | None:
@@ -3876,6 +3943,48 @@ def _attach_bom_resolved_inputs(
     payload["resolved_inputs"] = list(by_id.values())
 
 
+def _decision_context_with_auto_answers(
+    decision_context: dict[str, Any],
+    answers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    updated = dict(decision_context or {})
+    if not updated or not answers:
+        return updated
+    missing = [str(item).strip() for item in updated.get("missing_inputs", []) or [] if str(item).strip()]
+    remove_missing: set[str] = set()
+    constraints = dict(updated.get("constraints", {}) or {})
+    assumptions = list(updated.get("assumptions", []) or [])
+    for item in answers:
+        qid = _normalize_specialist_question_id(str(item.get("question_id", "") or item.get("id", "") or ""))
+        answer = str(item.get("final_answer", "") or item.get("suggested_answer", "") or "").strip()
+        if not answer:
+            continue
+        if qid in _specialist_question_id_aliases("constraints.region"):
+            remove_missing.add("preferred OCI region")
+            if re.fullmatch(r"[a-z]{2,}-[a-z]+-\d", answer):
+                constraints["region"] = answer
+            elif "pricing-only estimate" in answer.lower():
+                assumptions = _merge_assumption_lists(
+                    assumptions,
+                    [
+                        {
+                            "id": "bom_region_pricing_consistent",
+                            "statement": "Region not specified; BOM pricing is treated as region-consistent for this draft estimate.",
+                            "reason": "BOM pricing-only flow can proceed without a pinned OCI deployment region.",
+                            "risk": "low",
+                        }
+                    ],
+                )
+        if qid in _specialist_question_id_aliases("bom.budget"):
+            remove_missing.add("monthly budget cap")
+    if remove_missing:
+        updated["missing_inputs"] = [item for item in missing if item not in remove_missing]
+    if constraints:
+        updated["constraints"] = constraints
+    updated["assumptions"] = assumptions
+    return updated
+
+
 async def _mediate_specialist_questions(
     *,
     tool_name: str,
@@ -3948,6 +4057,8 @@ async def _mediate_specialist_questions(
 
     context_store.clear_pending_checkpoint(context)
     context_store.set_open_questions(context, [])
+    decision_context = _decision_context_with_auto_answers(decision_context, auto_answered)
+    context_store.set_latest_decision_context(context, decision_context)
     context_store.write_context(store, customer_id, context)
     rerun_args = _apply_resolved_answers_to_tool_args(tool_name=tool_name, args=args, answers=auto_answered)
     rerun_summary, rerun_key, rerun_data = await _execute_tool(
@@ -6967,6 +7078,26 @@ def _compact_bom_payload_for_diagram(result_data: dict[str, Any] | None) -> str:
     if not payload:
         return ""
     lines = ["[Generated BOM Context]"]
+    architecture_option = str(payload.get("architecture_option", "") or "").strip()
+    if architecture_option:
+        lines.append(f"Architecture option: {architecture_option}")
+        if "native" in architecture_option.lower():
+            lines.append("Diagram directive: OCI Native Services, no OCVS/vCenter/NSX/ESXi boxes.")
+    target_services = list((payload.get("structured_inputs", {}) or {}).get("target_services", []) or [])
+    if target_services:
+        lines.append("Native target services: " + ", ".join(str(item) for item in target_services if str(item).strip()))
+    mapping = list((payload.get("structured_inputs", {}) or {}).get("workload_service_mapping", []) or [])
+    if mapping:
+        lines.append("Workload-to-service mapping:")
+        for item in mapping[:10]:
+            if isinstance(item, dict) and item.get("workload") and item.get("target_service"):
+                lines.append(f"- {item.get('workload')} -> {item.get('target_service')}")
+    resolved_inputs = list(payload.get("resolved_inputs", []) or [])
+    if resolved_inputs:
+        lines.append("Resolved BOM inputs:")
+        for item in resolved_inputs[:12]:
+            if isinstance(item, dict) and item.get("question_id") and item.get("answer"):
+                lines.append(f"- {item.get('question_id')}: {item.get('answer')}")
     line_items = list(payload.get("line_items", []) or [])
     if line_items:
         lines.append("Line items:")
@@ -6976,6 +7107,7 @@ def _compact_bom_payload_for_diagram(result_data: dict[str, Any] | None) -> str:
             sku = str(item.get("sku", "") or item.get("part_number", "") or "").strip()
             desc = str(item.get("description", "") or item.get("name", "") or item.get("service", "") or "").strip()
             qty = item.get("quantity", item.get("qty", ""))
+            notes = str(item.get("notes", "") or "").strip()
             bits = [f"{idx}."]
             if sku:
                 bits.append(sku)
@@ -6983,6 +7115,8 @@ def _compact_bom_payload_for_diagram(result_data: dict[str, Any] | None) -> str:
                 bits.append(desc)
             if qty not in ("", None):
                 bits.append(f"qty={qty}")
+            if notes:
+                bits.append(f"notes={notes}")
             lines.append(" ".join(str(bit) for bit in bits if str(bit).strip()))
     totals = payload.get("totals", {}) if isinstance(payload.get("totals"), dict) else {}
     if totals:
