@@ -95,6 +95,11 @@ task explicitly asks for them.
 - BOM finalization is fail-closed for explicit sizing mismatches. If requested
   OCPU, RAM, or storage is larger than `bom_payload.line_items`, Archie retries
   once when safe and otherwise blocks XLSX persistence/download exposure.
+- BOM handoff uses an internal A2A-shaped `generate_bom.inputs` wrapper.
+  Archie extracts region, architecture option, compute, memory, storage,
+  connectivity, DR, workload, OS mix, and output format from canonical memory
+  and current-turn facts; the BOM service converts those structured fields into
+  the existing validated payload/XLSX flow.
 - Persistence: document/context stores write local artifacts and can integrate
   with OCI Object Storage through `agent/object_store_oci.py` and related
   persistence modules.

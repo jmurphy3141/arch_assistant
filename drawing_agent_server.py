@@ -99,6 +99,7 @@ from agent.persistence_objectstore import (
 from agent.document_store import (
     save_note,
     list_notes,
+    clear_notes_manifest,
     list_versions,
     get_latest_doc,
     save_approved_doc,
@@ -107,6 +108,7 @@ from agent.document_store import (
     save_jep_questions,
     load_conversation_history,
     clear_conversation_history,
+    clear_conversation_summary,
     list_conversation_summaries,
     list_project_summaries,
     normalize_project_id,
@@ -130,7 +132,9 @@ from agent.diagram_waf_orchestrator import run_diagram_waf_loop
 from agent.context_store import (
     read_context,
     write_context,
+    reset_context,
     record_agent_run,
+    attach_bom_xlsx_to_latest,
     get_new_notes,
     build_context_summary,
 )
@@ -2457,6 +2461,30 @@ async def bom_generate_xlsx(req: BomXlsxRequest, _user: dict = Depends(require_u
     )
 
 
+@app.get("/api/bom/{customer_id}/download/{filename}")
+async def bom_download_xlsx(
+    customer_id: str,
+    filename: str,
+    _user: dict = Depends(require_user),
+):
+    safe_filename = _validate_bom_xlsx_filename(filename)
+    object_store = getattr(app.state, "object_store", None)
+    if object_store is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    key = _bom_xlsx_key(customer_id, safe_filename)
+    if not _bom_xlsx_download_is_valid(object_store, key):
+        raise HTTPException(status_code=404, detail="BOM XLSX file not found")
+    try:
+        data = object_store.get(key)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="BOM XLSX file not found")
+    return Response(
+        content=data,
+        media_type=_BOM_XLSX_CONTENT_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+    )
+
+
 @app.post("/api/bom/refresh-data")
 async def bom_refresh_data(_user: dict = Depends(require_admin_user)):
     service = getattr(app.state, "bom_service", None) or get_shared_bom_service()
@@ -3048,12 +3076,50 @@ def _chunk_reply_text(text: str, chunk_size: int = 48) -> list[str]:
     return chunks
 
 
+_TOOL_WAITING_LABELS = {
+    "generate_bom": ("BOM", "BOM specialist"),
+    "generate_diagram": ("diagram", "diagram specialist"),
+    "generate_terraform": ("Terraform", "Terraform specialist"),
+    "generate_pov": ("POV", "POV specialist"),
+    "generate_jep": ("JEP", "JEP specialist"),
+    "generate_waf": ("Well-Architected", "Well-Architected specialist"),
+    "save_notes": ("notes", "notes tool"),
+    "get_summary": ("summary", "summary tool"),
+    "get_document": ("document", "document tool"),
+}
+
+
+def _tool_started_stream_event(
+    *,
+    event: str,
+    customer_id: str,
+    trace_id: str,
+) -> dict | None:
+    prefix = "tool_started:"
+    if not str(event or "").startswith(prefix):
+        return None
+    tool_name = str(event or "")[len(prefix):].strip()
+    if not tool_name:
+        return None
+    hat, label = _TOOL_WAITING_LABELS.get(tool_name, (tool_name, tool_name))
+    return {
+        "trace_id": trace_id,
+        "customer_id": customer_id,
+        "event_type": "status",
+        "status": "tool_started",
+        "tool": tool_name,
+        "hat": hat,
+        "message": f"Archie put on the {hat} hat and is calling the {label}.",
+    }
+
+
 def _build_artifact_manifest(customer_id: str, result: dict) -> dict:
     """
     Build UI-friendly artifact metadata from orchestrator result.
     """
     manifest: dict[str, list[dict]] = {"downloads": []}
     seen_diagram_keys: set[str] = set()
+    seen_bom_keys: set[str] = set()
 
     def _append_diagram_download(artifact_key: str, *, tool_name: str, scenario_label: str = "") -> None:
         if not artifact_key or artifact_key in seen_diagram_keys:
@@ -3094,6 +3160,33 @@ def _build_artifact_manifest(customer_id: str, result: dict) -> dict:
             _append_diagram_download(str(artifact_key or ""), tool_name=tool_name)
 
     for tool_call in result.get("tool_calls", []) or []:
+        if tool_call.get("tool") != "generate_bom":
+            continue
+        result_data = tool_call.get("result_data", {}) or {}
+        if not isinstance(result_data, dict):
+            continue
+        if not _bom_result_is_exportable(result_data) or not _result_has_bom_xlsx_metadata(result_data):
+            continue
+        xlsx = result_data.get("bom_xlsx") if isinstance(result_data.get("bom_xlsx"), dict) else {}
+        artifact_key = str(result_data.get("xlsx_artifact_key") or xlsx.get("key") or "").strip()
+        filename = str(result_data.get("xlsx_filename") or xlsx.get("filename") or "").strip()
+        if not artifact_key or not filename or artifact_key in seen_bom_keys:
+            continue
+        seen_bom_keys.add(artifact_key)
+        manifest["downloads"].append(
+            {
+                "type": "bom",
+                "tool": "generate_bom",
+                "key": artifact_key,
+                "filename": filename,
+                "download_url": (
+                    f"/api/bom/{urllib.parse.quote(customer_id)}/download/"
+                    f"{urllib.parse.quote(filename)}"
+                ),
+            }
+        )
+
+    for tool_call in result.get("tool_calls", []) or []:
         if tool_call.get("tool") != "generate_terraform":
             continue
         result_data = tool_call.get("result_data", {}) or {}
@@ -3109,6 +3202,245 @@ def _build_artifact_manifest(customer_id: str, result: dict) -> dict:
                     }
                 )
     return manifest
+
+
+_BOM_XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_BOM_XLSX_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.xlsx$")
+_BOM_XLSX_METADATA_SUFFIX = ".metadata.json"
+
+
+def _bom_xlsx_key(customer_id: str, filename: str) -> str:
+    return f"customers/{customer_id}/bom/xlsx/{filename}"
+
+
+def _bom_xlsx_metadata_key(xlsx_key: str) -> str:
+    return f"{xlsx_key}{_BOM_XLSX_METADATA_SUFFIX}"
+
+
+def _validate_bom_xlsx_filename(filename: str) -> str:
+    safe_name = Path(str(filename or "")).name
+    if safe_name != filename or not _BOM_XLSX_FILENAME_RE.fullmatch(safe_name):
+        raise HTTPException(status_code=400, detail="Invalid BOM XLSX filename")
+    return safe_name
+
+
+def _bom_result_is_exportable(result_data: dict) -> bool:
+    result_type = str(result_data.get("type", "") or "").strip().lower()
+    if result_type and result_type != "final":
+        return False
+    payload = result_data.get("bom_payload") if isinstance(result_data.get("bom_payload"), dict) else {}
+    line_items = payload.get("line_items") if isinstance(payload.get("line_items"), list) else []
+    if not line_items:
+        return False
+    if isinstance(result_data.get("archie_question_bundle"), dict):
+        return False
+    if result_data.get("checkpoint_required") is True:
+        return False
+    for governor in (
+        result_data.get("governor", {}) if isinstance(result_data.get("governor"), dict) else {},
+        (result_data.get("trace", {}) or {}).get("governor", {}) if isinstance(result_data.get("trace"), dict) else {},
+    ):
+        status = str((governor or {}).get("overall_status", "") or "").strip().lower()
+        if status in {"checkpoint_required", "blocked"}:
+            return False
+    review = result_data.get("archie_expert_review")
+    if not isinstance(review, dict):
+        trace = result_data.get("trace", {}) if isinstance(result_data.get("trace"), dict) else {}
+        review = trace.get("archie_expert_review") if isinstance(trace.get("archie_expert_review"), dict) else {}
+    verdict = str((review or {}).get("verdict", "") or "").strip().lower()
+    if verdict and verdict != "pass":
+        return False
+    trace_verdict = str(
+        ((result_data.get("trace", {}) or {}).get("review_verdict", "") if isinstance(result_data.get("trace"), dict) else "")
+        or ""
+    ).strip().lower()
+    if trace_verdict and trace_verdict != "pass":
+        return False
+    if _structured_bom_result_uses_default_sizing(result_data):
+        return False
+    return True
+
+
+def _structured_bom_result_uses_default_sizing(result_data: dict) -> bool:
+    structured = result_data.get("structured_inputs")
+    if not isinstance(structured, dict):
+        structured = result_data.get("inputs") if isinstance(result_data.get("inputs"), dict) else {}
+    if not structured:
+        return False
+    payload = result_data.get("bom_payload") if isinstance(result_data.get("bom_payload"), dict) else {}
+    produced = _bom_payload_sizing(payload)
+    compute = structured.get("compute", {}) if isinstance(structured.get("compute"), dict) else {}
+    memory = structured.get("memory", {}) if isinstance(structured.get("memory"), dict) else {}
+    storage = structured.get("storage", {}) if isinstance(structured.get("storage"), dict) else {}
+    required = {
+        "ocpu": _positive_float(compute.get("ocpu")),
+        "ram_gb": _positive_float(memory.get("gb")),
+        "storage_gb": (_positive_float(storage.get("block_tb")) or 0.0) * 1024.0 if _positive_float(storage.get("block_tb")) else None,
+    }
+    for key, value in required.items():
+        if value is None:
+            continue
+        if float(produced.get(key, 0.0) or 0.0) + 0.0001 < value:
+            return True
+    return False
+
+
+def _positive_float(value: Any) -> float | None:
+    if value in (None, "", [], {}):
+        return None
+    try:
+        parsed = float(value)
+    except Exception:
+        match = re.search(r"\d+(?:\.\d+)?", str(value).replace(",", ""))
+        if not match:
+            return None
+        parsed = float(match.group(0))
+    return parsed if parsed > 0 else None
+
+
+def _bom_payload_sizing(payload: dict) -> dict[str, float]:
+    cpu_skus = {"B93113", "B97384", "B111129", "B94176", "B93297"}
+    mem_skus = {"B93114", "B97385", "B111130", "B94177", "B93298"}
+    produced = {"ocpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0}
+    for row in payload.get("line_items", []) or []:
+        if not isinstance(row, dict):
+            continue
+        sku = str(row.get("sku", "") or "").upper()
+        desc = str(row.get("description", "") or "").lower()
+        category = str(row.get("category", "") or "").lower()
+        qty = _positive_float(row.get("quantity")) or 0.0
+        if sku in cpu_skus or ("ocpu" in desc and category == "compute"):
+            produced["ocpu"] += qty
+        elif sku in mem_skus or ("memory" in desc and category == "compute"):
+            produced["ram_gb"] += qty
+        elif category == "storage" or "storage" in desc or "volume" in desc:
+            produced["storage_gb"] += qty
+    return produced
+
+
+def _bom_xlsx_metadata(filename: str, key: str, result_data: dict | None = None) -> dict:
+    result_data = result_data or {}
+    review = result_data.get("archie_expert_review")
+    if not isinstance(review, dict):
+        trace = result_data.get("trace", {}) if isinstance(result_data.get("trace"), dict) else {}
+        review = trace.get("archie_expert_review") if isinstance(trace.get("archie_expert_review"), dict) else {}
+    payload = result_data.get("bom_payload") if isinstance(result_data.get("bom_payload"), dict) else {}
+    resolved_inputs = payload.get("resolved_inputs") if isinstance(payload.get("resolved_inputs"), list) else []
+    trace = result_data.get("trace", {}) if isinstance(result_data.get("trace"), dict) else {}
+    context_source = str(trace.get("bom_context_source", result_data.get("bom_context_source", "")) or "")
+    return {
+        "schema_version": "1.0",
+        "tool": "generate_bom",
+        "status": "approved",
+        "checkpoint_required": False,
+        "filename": filename,
+        "key": key,
+        "archie_review_verdict": str((review or {}).get("verdict", "") or "pass"),
+        "resolved_input_count": len(resolved_inputs),
+        "context_source": context_source,
+        "grounding": "revision-grounded" if "revision" in context_source else ("context-grounded" if context_source and context_source != "direct_request" else "generic"),
+    }
+
+
+def _bom_xlsx_download_is_valid(store, key: str) -> bool:
+    meta_key = _bom_xlsx_metadata_key(key)
+    if not key.lower().endswith(".xlsx") or not store.head(key) or not store.head(meta_key):
+        return False
+    try:
+        metadata = json.loads(store.get(meta_key).decode("utf-8"))
+    except Exception:
+        return False
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("tool") != "generate_bom":
+        return False
+    if str(metadata.get("status", "") or "").lower() not in {"approved", "final"}:
+        return False
+    if metadata.get("checkpoint_required") is True:
+        return False
+    if str(metadata.get("archie_review_verdict", "pass") or "pass").lower() != "pass":
+        return False
+    return True
+
+
+def _result_has_bom_xlsx_metadata(result_data: dict) -> bool:
+    xlsx = result_data.get("bom_xlsx") if isinstance(result_data.get("bom_xlsx"), dict) else {}
+    metadata = result_data.get("xlsx_metadata")
+    if not isinstance(metadata, dict):
+        metadata = xlsx.get("metadata") if isinstance(xlsx.get("metadata"), dict) else {}
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("tool") == "generate_bom"
+        and str(metadata.get("status", "") or "").lower() in {"approved", "final"}
+        and metadata.get("checkpoint_required") is not True
+        and str(metadata.get("archie_review_verdict", "pass") or "pass").lower() == "pass"
+    )
+
+
+async def _persist_bom_xlsx_downloads(customer_id: str, store, result: dict) -> dict:
+    """
+    Persist downloadable XLSX workbooks for successful BOM tool calls.
+    Mutates and returns result so artifact manifests can expose the links.
+    """
+    service = getattr(app.state, "bom_service", None) or get_shared_bom_service()
+    for index, tool_call in enumerate(result.get("tool_calls", []) or []):
+        if tool_call.get("tool") != "generate_bom":
+            continue
+        result_data = tool_call.get("result_data")
+        if not isinstance(result_data, dict):
+            continue
+        if not _bom_result_is_exportable(result_data):
+            continue
+        if result_data.get("xlsx_artifact_key") or isinstance(result_data.get("bom_xlsx"), dict):
+            continue
+        payload = result_data.get("bom_payload")
+        if not isinstance(payload, dict) or not payload:
+            continue
+        if not isinstance(payload.get("line_items"), list) or not payload.get("line_items"):
+            continue
+        workbook_bytes = await anyio.to_thread.run_sync(
+            functools.partial(service.generate_xlsx, payload)
+        )
+        filename = f"oci-bom-{time.strftime('%Y%m%d-%H%M%S')}-{index + 1}-{uuid.uuid4().hex[:8]}.xlsx"
+        key = _bom_xlsx_key(customer_id, filename)
+        metadata = _bom_xlsx_metadata(filename, key, result_data)
+        store.put(key, workbook_bytes, _BOM_XLSX_CONTENT_TYPE)
+        store.put(
+            _bom_xlsx_metadata_key(key),
+            json.dumps(metadata, sort_keys=True).encode("utf-8"),
+            "application/json",
+        )
+        result_data["xlsx_artifact_key"] = key
+        result_data["xlsx_filename"] = filename
+        result_data["xlsx_metadata"] = metadata
+        result_data["bom_xlsx"] = {"key": key, "filename": filename, "metadata": metadata}
+        trace = result_data.get("trace", {}) if isinstance(result_data.get("trace"), dict) else {}
+        stages = list(trace.get("bom_trace_stages", []) or [])
+        if "XLSX persisted" not in stages:
+            stages.append("XLSX persisted")
+        trace["bom_trace_stages"] = stages
+        result_data["trace"] = trace
+        try:
+            context = read_context(store, customer_id)
+            record_agent_run(
+                context,
+                "bom",
+                [],
+                {
+                    "xlsx_artifact_key": key,
+                    "xlsx_filename": filename,
+                    "xlsx_metadata": metadata,
+                    "bom_xlsx": {"key": key, "filename": filename, "metadata": metadata},
+                },
+            )
+            attach_bom_xlsx_to_latest(
+                context,
+                {"key": key, "filename": filename, "metadata": metadata},
+            )
+            write_context(store, customer_id, context)
+        except Exception as exc:
+            logger.warning("Could not record BOM XLSX artifact in context: %s", exc)
+    return result
 
 
 def _persist_chat_project_membership(store, req: OrchestratorChatRequest) -> dict:
@@ -3140,6 +3472,7 @@ async def api_chat(req: OrchestratorChatRequest):
             text_runner=text_runner,
             orch_cfg=orch_cfg,
         )
+        result = await _persist_bom_xlsx_downloads(req.customer_id, store, result)
         artifact_manifest = _build_artifact_manifest(req.customer_id, result)
         project_membership = _persist_chat_project_membership(store, req)
         return {
@@ -3180,6 +3513,41 @@ async def api_chat_stream(
     orch_cfg = _cfg.get("orchestrator", {})
     trace_id = _current_trace_id()
 
+    async def _run_orchestrator_with_stream_notifications(queue: asyncio.Queue[dict]):
+        from agent.notifications import notification_sink
+
+        loop = asyncio.get_running_loop()
+
+        def _sink(event: str, customer_id: str, _detail: str = "") -> None:
+            payload = _tool_started_stream_event(
+                event=event,
+                customer_id=customer_id,
+                trace_id=trace_id,
+            )
+            if payload is not None:
+                loop.call_soon_threadsafe(queue.put_nowait, payload)
+
+        with notification_sink(_sink):
+            result = await _run_orchestrator_turn(
+                req=req,
+                store=store,
+                text_runner=text_runner,
+                orch_cfg=orch_cfg,
+            )
+        result = await _persist_bom_xlsx_downloads(req.customer_id, store, result)
+        project_membership = _persist_chat_project_membership(store, req)
+        return result, project_membership
+
+    async def _drain_status_queue(queue: asyncio.Queue[dict], task: asyncio.Task, formatter):
+        while not task.done():
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                continue
+            yield formatter(payload)
+        while not queue.empty():
+            yield formatter(queue.get_nowait())
+
     async def _sse_events():
         started = {
             "trace_id": trace_id,
@@ -3189,13 +3557,15 @@ async def api_chat_stream(
         }
         yield f"event: status\ndata: {json.dumps(started)}\n\n"
         try:
-            result = await _run_orchestrator_turn(
-                req=req,
-                store=store,
-                text_runner=text_runner,
-                orch_cfg=orch_cfg,
-            )
-            project_membership = _persist_chat_project_membership(store, req)
+            status_queue: asyncio.Queue[dict] = asyncio.Queue()
+            task = asyncio.create_task(_run_orchestrator_with_stream_notifications(status_queue))
+            async for event_text in _drain_status_queue(
+                status_queue,
+                task,
+                lambda payload: f"event: status\ndata: {json.dumps(payload)}\n\n",
+            ):
+                yield event_text
+            result, project_membership = await task
             for tool_call in result.get("tool_calls", []):
                 if (
                     tool_call.get("tool") == "generate_terraform"
@@ -3262,13 +3632,15 @@ async def api_chat_stream(
         }
         yield json.dumps(started) + "\n"
         try:
-            result = await _run_orchestrator_turn(
-                req=req,
-                store=store,
-                text_runner=text_runner,
-                orch_cfg=orch_cfg,
-            )
-            project_membership = _persist_chat_project_membership(store, req)
+            status_queue: asyncio.Queue[dict] = asyncio.Queue()
+            task = asyncio.create_task(_run_orchestrator_with_stream_notifications(status_queue))
+            async for event_text in _drain_status_queue(
+                status_queue,
+                task,
+                lambda payload: json.dumps(payload) + "\n",
+            ):
+                yield event_text
+            result, project_membership = await task
             for tool_call in result.get("tool_calls", []):
                 if (
                     tool_call.get("tool") == "generate_terraform"
@@ -3413,6 +3785,31 @@ async def api_clear_chat_history(customer_id: str):
         "trace_id": _current_trace_id(),
         "customer_id": customer_id,
         "message": "History cleared.",
+    }
+
+
+@app.post("/api/chat/{customer_id}/reset-context")
+async def api_reset_chat_context(customer_id: str):
+    """Reset active Archie context, chat history, summary, and active notes."""
+    store = _require_object_store()
+
+    def _reset() -> dict:
+        reset_context(store, customer_id)
+        clear_conversation_history(store, customer_id)
+        clear_conversation_summary(store, customer_id)
+        clear_notes_manifest(store, customer_id)
+        return {
+            "notes_manifest_count": len(list_notes(store, customer_id)),
+            "history_count": len(load_conversation_history(store, customer_id, max_turns=0)),
+        }
+
+    counts = await anyio.to_thread.run_sync(_reset)
+    return {
+        "status": "ok",
+        "trace_id": _current_trace_id(),
+        "customer_id": customer_id,
+        "message": "Context reset.",
+        **counts,
     }
 
 

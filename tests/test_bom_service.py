@@ -1,6 +1,20 @@
 from __future__ import annotations
 
-from agent.bom_service import BomService, DEFAULT_PRICE_TABLE
+import time
+
+from agent.bom_service import BomService, DEFAULT_PRICE_TABLE, CacheSnapshot
+
+
+def _ready_service() -> BomService:
+    svc = BomService()
+    svc._cache = CacheSnapshot(
+        pricing_table=dict(DEFAULT_PRICE_TABLE),
+        shapes_text="fallback shapes",
+        services_text="fallback services",
+        refreshed_at=time.time(),
+        source="test",
+    )
+    return svc
 
 
 def test_bom_validation_enforces_unknown_sku_and_positive_price() -> None:
@@ -73,6 +87,96 @@ def test_bom_fast_path_normalizes_non_oci_provider_mentions() -> None:
     )
 
 
+def test_bom_fast_path_honors_explicit_large_sizing() -> None:
+    svc = BomService()
+    payload = svc._draft_bom_payload(
+        "Generate a BOM and XLSX for 48 OCPU, 768 GB RAM, and 42 TB block storage in us-ashburn-1.",
+        dict(DEFAULT_PRICE_TABLE),
+    )
+
+    by_sku = {row["sku"]: row for row in payload["line_items"]}
+    assert by_sku["B94176"]["quantity"] == 48.0
+    assert by_sku["B94177"]["quantity"] == 768.0
+    assert by_sku["B91961"]["quantity"] == 43008.0
+
+
+def test_structured_bom_inputs_drive_explicit_line_item_quantities() -> None:
+    svc = _ready_service()
+
+    result = svc.generate_from_inputs(
+        inputs={
+            "region": "af-johannesburg-1",
+            "architecture_option": "OCI Dedicated VMware Solution",
+            "compute": {"ocpu": 64, "gpu": False},
+            "memory": {"gb": 1146.88},
+            "storage": {"block_tb": 44},
+            "connectivity": {"internet_mbps": 100, "mpls": True, "sd_wan": True},
+            "dr": {"rto_hours": 24, "cross_region_restore": True},
+            "workloads": ["SQL Server", "Oracle databases", "Linux servers"],
+            "os_mix": ["Linux", "Windows"],
+            "output_format": "xlsx",
+        },
+        trace_id="trace-structured",
+        model_id="test-bom",
+    )
+
+    assert result["type"] == "final"
+    payload = result["bom_payload"]
+    by_sku = {row["sku"]: row for row in payload["line_items"]}
+    assert by_sku["B94176"]["quantity"] == 64.0
+    assert by_sku["B94177"]["quantity"] == 1146.88
+    assert by_sku["B91961"]["quantity"] == 45056.0
+    assert by_sku["B94176"]["quantity"] != 4.0
+    assert by_sku["B94177"]["quantity"] != 64.0
+    assert by_sku["B91961"]["quantity"] != 1024.0
+    assert payload["region"] == "af-johannesburg-1"
+    assert payload["architecture_option"] == "OCI Dedicated VMware Solution"
+    assert payload["workloads"] == ["SQL Server", "Oracle databases", "Linux servers"]
+    assert payload["os_mix"] == ["Linux", "Windows"]
+
+
+def test_structured_bom_inputs_block_when_required_sizing_cannot_normalize() -> None:
+    svc = _ready_service()
+
+    result = svc.generate_from_inputs(
+        inputs={
+            "compute": {"ocpu": "sixty-four"},
+            "memory": {"gb": 1146.88},
+            "storage": {"block_tb": 44},
+        },
+        trace_id="trace-bad-inputs",
+        model_id="test-bom",
+    )
+
+    assert result["type"] == "question"
+    assert "compute.ocpu" in " ".join(result["normalization_blockers"])
+    assert "bom_payload" not in result
+
+
+def test_bom_fast_path_uses_kr1_migration_equivalent_table_values() -> None:
+    svc = BomService()
+    payload = svc._draft_bom_payload(
+        """
+Generate a BOM and XLSX for KR1 from the customer sizing table. Use the OCI
+migration-equivalent sizing values, not the raw on-prem inventory values.
+
+| Resource | Quantity | Specs |
+|----------|----------|-------|
+| VxRail CPU | 96 vCPU | equiv. ~48 OCPU for OCI migration target |
+| VxRail RAM | 655 GB | OCI-equivalent RAM 768 GB for migration target |
+| vSAN/HCI storage | 42.5 TB | usable capacity mapped to OCI Block Volume |
+        """,
+        dict(DEFAULT_PRICE_TABLE),
+    )
+
+    by_sku = {row["sku"]: row for row in payload["line_items"]}
+    assert by_sku["B94176"]["quantity"] == 48.0
+    assert by_sku["B94177"]["quantity"] == 768.0
+    assert by_sku["B91961"]["quantity"] == 43520.0
+    assert "source VxRail RAM 655 GB" in by_sku["B94177"]["notes"]
+    assert "target OCI-equivalent RAM 768 GB" in by_sku["B94177"]["notes"]
+
+
 def test_bom_validation_rejects_non_oci_provider_references_in_line_items() -> None:
     svc = BomService()
     payload = {
@@ -107,8 +211,38 @@ def test_bom_fast_path_uses_markdown_table_quantities() -> None:
     )
 
     by_sku = {row["sku"]: row for row in payload["line_items"]}
-    assert by_sku["B88317"]["quantity"] == 12.0
-    assert by_sku["B88318"]["quantity"] == 72.0
+    assert by_sku["B93297"]["quantity"] == 12.0
+    assert by_sku["B93298"]["quantity"] == 72.0
     assert by_sku["B91961"]["quantity"] == 600.0
+    assert by_sku["B91962"]["quantity"] == 6000.0
     assert by_sku["B93030"]["quantity"] == 1.0
     assert by_sku["B91628"]["quantity"] == 250.0
+
+
+def test_bom_pricing_parser_uses_oracle_usd_price_tiers() -> None:
+    svc = BomService()
+    table = svc._parse_pricing_payload(
+        {
+            "items": [
+                {
+                    "partNumber": "BTEST1",
+                    "displayName": "OCI Test Service",
+                    "metricName": "Unit Per Hour",
+                    "currencyCodeLocalizations": [
+                        {
+                            "currencyCode": "USD",
+                            "prices": [
+                                {"model": "PAY_AS_YOU_GO", "value": 0},
+                                {"model": "PAY_AS_YOU_GO", "rangeMin": 100, "value": 0.25},
+                                {"model": "MONTHLY_FLEX", "value": 0.20},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert table["BTEST1"]["unit_price"] == 0.25
+    assert table["BTEST1"]["metric"] == "Unit Per Hour"
+    assert table["BTEST1"]["source"] == "oracle_price_list_api"

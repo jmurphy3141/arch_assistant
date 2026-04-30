@@ -5,7 +5,26 @@ from fastapi.testclient import TestClient
 
 from drawing_agent_server import app, _build_artifact_manifest
 from agent.persistence_objectstore import InMemoryObjectStore
-from agent.document_store import save_conversation_turns, save_project_engagement
+from agent.context_store import read_context, write_context
+from agent.document_store import (
+    list_notes,
+    load_conversation_history,
+    load_conversation_summary,
+    save_conversation_summary,
+    save_conversation_turns,
+    save_note,
+    save_project_engagement,
+)
+
+
+class _FakeBomService:
+    def __init__(self, content: bytes = b"fake-xlsx-content") -> None:
+        self.content = content
+        self.payloads: list[dict] = []
+
+    def generate_xlsx(self, payload: dict) -> bytes:
+        self.payloads.append(dict(payload))
+        return self.content
 
 
 @pytest.fixture
@@ -56,6 +75,62 @@ def test_chat_history_index_returns_paginated_items(client):
     assert body["pagination"]["total"] == 2
     assert body["pagination"]["has_next"] is True
     assert body["items"][0]["customer_id"] == "acme"
+
+
+def test_reset_chat_context_clears_active_memory_without_deleting_artifacts(client):
+    test_client, store = client
+    customer_id = "rga"
+
+    context = read_context(store, customer_id, "RGA")
+    context.update(
+        {
+            "agents": {
+                "diagram": {
+                    "notes_incorporated": ["notes/rga/discovery.md"],
+                    "diagram_key": "customers/rga/diagrams/v1/diagram.drawio",
+                }
+            },
+            "archie": {
+                "engagement_summary": "Old operating model notes",
+                "pending_update": {"status": "waiting"},
+            },
+            "latest_decision_context": {"goal": "export operating model"},
+            "decision_log": [{"path": "export"}],
+            "pending_checkpoint": {"id": "cp-1"},
+        }
+    )
+    write_context(store, customer_id, context)
+    save_conversation_turns(
+        store,
+        customer_id,
+        [{"role": "user", "content": "old prompt", "timestamp": "2026-04-29T00:00:00Z"}],
+    )
+    save_conversation_summary(store, customer_id, "Older chat summary")
+    raw_note_key = save_note(store, customer_id, "discovery.md", b"old active note")
+    raw_artifact_key = "customers/rga/diagrams/v1/diagram.drawio"
+    store.put(raw_artifact_key, b"<mxfile />", "application/xml")
+
+    resp = test_client.post(f"/api/chat/{customer_id}/reset-context")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["customer_id"] == customer_id
+    assert body["message"] == "Context reset."
+
+    reset = read_context(store, customer_id)
+    assert reset["agents"] == {}
+    assert reset["archie"]["engagement_summary"] == ""
+    assert reset["archie"]["pending_update"] is None
+    assert reset["latest_decision_context"] == {}
+    assert reset["decision_log"] == []
+    assert reset["pending_checkpoint"] is None
+    assert load_conversation_history(store, customer_id, max_turns=0) == []
+    assert load_conversation_summary(store, customer_id) == ""
+    assert list_notes(store, customer_id) == []
+    assert store.head(raw_note_key)
+    assert store.head(f"customers/{customer_id}/notes/discovery.md")
+    assert store.head(raw_artifact_key)
 
 
 def test_chat_history_index_supports_search(client):
@@ -285,12 +360,25 @@ def test_chat_stream_sse_mode(monkeypatch, client):
 
 
 def test_api_chat_includes_artifact_manifest(monkeypatch, client):
-    test_client, _store = client
+    test_client, store = client
 
     async def _fake_run_turn(**_kwargs):
         return {
             "reply": "Done",
             "tool_calls": [
+                {
+                    "tool": "generate_bom",
+                    "args": {},
+                    "result_summary": "bom ok",
+                    "result_data": {
+                        "type": "final",
+                        "bom_payload": {
+                            "line_items": [{"sku": "B94176", "description": "Compute", "quantity": 2}],
+                            "totals": {"estimated_monthly_cost": 500},
+                        },
+                        "archie_expert_review": {"verdict": "pass"},
+                    },
+                },
                 {
                     "tool": "generate_terraform",
                     "args": {},
@@ -313,6 +401,8 @@ def test_api_chat_includes_artifact_manifest(monkeypatch, client):
 
     import drawing_agent_server as srv
 
+    fake_bom_service = _FakeBomService()
+    monkeypatch.setattr(srv.app.state, "bom_service", fake_bom_service, raising=False)
     monkeypatch.setattr(srv, "_run_orchestrator_turn", _fake_run_turn)
 
     resp = test_client.post(
@@ -324,7 +414,123 @@ def test_api_chat_includes_artifact_manifest(monkeypatch, client):
     assert "artifact_manifest" in body
     downloads = body["artifact_manifest"]["downloads"]
     assert any(item["type"] == "diagram" for item in downloads)
+    bom_download = next(item for item in downloads if item["type"] == "bom")
+    assert bom_download["filename"].endswith(".xlsx")
+    assert store.head(bom_download["key"])
     assert any(item["type"] == "terraform" and item["filename"] == "main.tf" for item in downloads)
+    assert body["tool_calls"][0]["result_data"]["xlsx_artifact_key"] == bom_download["key"]
+
+    download_resp = test_client.get(bom_download["download_url"])
+    assert download_resp.status_code == 200
+    assert download_resp.content == fake_bom_service.content
+    assert download_resp.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+def test_api_chat_does_not_persist_checkpointed_bom_xlsx(monkeypatch, client):
+    test_client, store = client
+
+    async def _fake_run_turn(**_kwargs):
+        return {
+            "reply": "Cost checkpoint required.",
+            "tool_calls": [
+                {
+                    "tool": "generate_bom",
+                    "args": {},
+                    "result_summary": "Final BOM prepared, checkpoint required.",
+                    "result_data": {
+                        "type": "final",
+                        "bom_payload": {
+                            "line_items": [{"sku": "B94176", "description": "Compute", "quantity": 2}],
+                            "totals": {"estimated_monthly_cost": 7500},
+                        },
+                        "governor": {"overall_status": "checkpoint_required"},
+                    },
+                }
+            ],
+            "artifacts": {},
+            "history_length": 1,
+        }
+
+    import drawing_agent_server as srv
+
+    fake_bom_service = _FakeBomService()
+    monkeypatch.setattr(srv.app.state, "bom_service", fake_bom_service, raising=False)
+    monkeypatch.setattr(srv, "_run_orchestrator_turn", _fake_run_turn)
+
+    resp = test_client.post(
+        "/api/chat",
+        json={"customer_id": "checkpoint-bom", "customer_name": "Checkpoint BOM", "message": "build bom"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [item for item in body["artifact_manifest"]["downloads"] if item["type"] == "bom"] == []
+    assert fake_bom_service.payloads == []
+    assert not store.list("customers/checkpoint-bom/bom/xlsx/")
+
+
+def test_api_chat_does_not_persist_empty_or_defaulted_structured_bom_xlsx(monkeypatch, client):
+    test_client, store = client
+
+    async def _fake_run_turn(**_kwargs):
+        return {
+            "reply": "BOM blocked.",
+            "tool_calls": [
+                {
+                    "tool": "generate_bom",
+                    "args": {},
+                    "result_summary": "Final BOM prepared.",
+                    "result_data": {
+                        "type": "final",
+                        "bom_payload": {"line_items": [], "totals": {}},
+                        "archie_expert_review": {"verdict": "pass"},
+                    },
+                },
+                {
+                    "tool": "generate_bom",
+                    "args": {},
+                    "result_summary": "Final BOM prepared.",
+                    "result_data": {
+                        "type": "final",
+                        "structured_inputs": {
+                            "compute": {"ocpu": 64},
+                            "memory": {"gb": 1146.88},
+                            "storage": {"block_tb": 44},
+                        },
+                        "bom_payload": {
+                            "line_items": [
+                                {"sku": "B94176", "description": "Compute OCPU", "category": "compute", "quantity": 4},
+                                {"sku": "B94177", "description": "Compute memory", "category": "compute", "quantity": 64},
+                                {"sku": "B91961", "description": "Block storage", "category": "storage", "quantity": 1024},
+                            ],
+                            "totals": {},
+                        },
+                        "archie_expert_review": {"verdict": "pass"},
+                    },
+                },
+            ],
+            "artifacts": {},
+            "history_length": 1,
+        }
+
+    import drawing_agent_server as srv
+
+    fake_bom_service = _FakeBomService()
+    monkeypatch.setattr(srv.app.state, "bom_service", fake_bom_service, raising=False)
+    monkeypatch.setattr(srv, "_run_orchestrator_turn", _fake_run_turn)
+
+    resp = test_client.post(
+        "/api/chat",
+        json={"customer_id": "structured-default-bom", "customer_name": "Structured BOM", "message": "build bom"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [item for item in body["artifact_manifest"]["downloads"] if item["type"] == "bom"] == []
+    assert fake_bom_service.payloads == []
+    assert not store.list("customers/structured-default-bom/bom/xlsx/")
 
 
 def test_artifact_manifest_includes_multiple_diagram_tool_call_keys():
@@ -353,6 +559,130 @@ def test_artifact_manifest_includes_multiple_diagram_tool_call_keys():
         "agent3/acme/oci-native/v1/diagram.drawio",
     ]
     assert [item["label"] for item in downloads] == ["Scenario 1", "Scenario 2"]
+
+
+def test_artifact_manifest_includes_bom_xlsx_download():
+    metadata = {
+        "schema_version": "1.0",
+        "tool": "generate_bom",
+        "status": "approved",
+        "checkpoint_required": False,
+    }
+    manifest = _build_artifact_manifest(
+        "acme",
+        {
+            "tool_calls": [
+                {
+                    "tool": "generate_bom",
+                    "result_data": {
+                        "type": "final",
+                        "bom_payload": {
+                            "line_items": [{"sku": "B94176", "description": "Compute", "quantity": 2}],
+                        },
+                        "xlsx_artifact_key": "customers/acme/bom/xlsx/oci-bom-test.xlsx",
+                        "xlsx_filename": "oci-bom-test.xlsx",
+                        "xlsx_metadata": metadata,
+                    },
+                },
+                {
+                    "tool": "generate_diagram",
+                    "artifact_key": "agent3/acme/arch/v1/diagram.drawio",
+                },
+            ],
+        },
+    )
+
+    downloads = manifest["downloads"]
+    assert any(item["type"] == "diagram" for item in downloads)
+    bom_download = next(item for item in downloads if item["type"] == "bom")
+    assert bom_download["download_url"] == "/api/bom/acme/download/oci-bom-test.xlsx"
+
+
+def test_artifact_manifest_hides_checkpointed_or_metadata_less_bom_xlsx():
+    manifest = _build_artifact_manifest(
+        "acme",
+        {
+            "tool_calls": [
+                {
+                    "tool": "generate_bom",
+                    "result_data": {
+                        "type": "final",
+                        "xlsx_artifact_key": "customers/acme/bom/xlsx/old.xlsx",
+                        "xlsx_filename": "old.xlsx",
+                    },
+                },
+                {
+                    "tool": "generate_bom",
+                    "result_data": {
+                        "type": "final",
+                        "xlsx_artifact_key": "customers/acme/bom/xlsx/checkpoint.xlsx",
+                        "xlsx_filename": "checkpoint.xlsx",
+                        "xlsx_metadata": {
+                            "tool": "generate_bom",
+                            "status": "approved",
+                            "checkpoint_required": False,
+                        },
+                        "governor": {"overall_status": "checkpoint_required"},
+                    },
+                },
+            ],
+        },
+    )
+
+    assert [item for item in manifest["downloads"] if item["type"] == "bom"] == []
+
+
+def test_artifact_manifest_hides_failed_review_bom_xlsx():
+    manifest = _build_artifact_manifest(
+        "acme",
+        {
+            "tool_calls": [
+                {
+                    "tool": "generate_bom",
+                    "result_data": {
+                        "type": "final",
+                        "xlsx_artifact_key": "customers/acme/bom/xlsx/failed.xlsx",
+                        "xlsx_filename": "failed.xlsx",
+                        "xlsx_metadata": {
+                            "tool": "generate_bom",
+                            "status": "approved",
+                            "checkpoint_required": False,
+                            "archie_review_verdict": "blocked",
+                        },
+                        "trace": {
+                            "review_verdict": "blocked",
+                            "review_findings": ["BOM sizing mismatch for OCPU: requested 48, produced 4."],
+                        },
+                    },
+                },
+            ],
+        },
+    )
+
+    assert [item for item in manifest["downloads"] if item["type"] == "bom"] == []
+
+
+def test_bom_xlsx_download_rejects_invalid_or_missing_filename(client):
+    test_client, _store = client
+
+    invalid = test_client.get("/api/bom/acme/download/not-a-workbook.txt")
+    assert invalid.status_code == 400
+
+    missing = test_client.get("/api/bom/acme/download/missing.xlsx")
+    assert missing.status_code == 404
+
+
+def test_bom_xlsx_download_rejects_metadata_less_file(client):
+    test_client, store = client
+    store.put(
+        "customers/acme/bom/xlsx/old.xlsx",
+        b"xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    resp = test_client.get("/api/bom/acme/download/old.xlsx")
+
+    assert resp.status_code == 404
 
 
 def test_chat_stream_chunked_mode(monkeypatch, client):
@@ -385,6 +715,37 @@ def test_chat_stream_chunked_mode(monkeypatch, client):
     assert '"event_type": "token"' in resp.text
     assert '"event_type": "completion"' in resp.text
     assert '"reply": "Chunked output"' in resp.text
+
+
+def test_chat_stream_emits_tool_started_status(monkeypatch, client):
+    test_client, _store = client
+
+    async def _fake_run_turn(req, **_kwargs):
+        from agent.notifications import notify
+
+        notify("tool_started:generate_bom", req.customer_id, "")
+        await asyncio.sleep(0)
+        return {
+            "reply": "BOM done",
+            "tool_calls": [{"tool": "generate_bom", "args": {}, "result_summary": "ok"}],
+            "artifacts": {},
+            "history_length": 1,
+        }
+
+    import drawing_agent_server as srv
+
+    monkeypatch.setattr(srv, "_run_orchestrator_turn", _fake_run_turn)
+
+    resp = test_client.post(
+        "/api/chat/stream?mode=chunked",
+        json={"customer_id": "stream-tool", "customer_name": "Stream Tool", "message": "build bom"},
+    )
+
+    assert resp.status_code == 200
+    assert '"status": "tool_started"' in resp.text
+    assert '"tool": "generate_bom"' in resp.text
+    assert '"hat": "BOM"' in resp.text
+    assert "Archie put on the BOM hat and is calling the BOM specialist." in resp.text
 
 
 def test_chat_history_index_page_out_of_range(client):
