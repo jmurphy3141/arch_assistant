@@ -126,6 +126,51 @@ must not be eroded by routing shortcuts.
 
 ---
 
+## Memory Requirements
+
+### Hierarchy
+
+```
+Customer
+  └── Engagement  (independent requirements, independent architecture)
+        └── Session  (conversation thread within an engagement)
+```
+
+A customer may have many engagements running in parallel. Each engagement has its
+own requirements, assumptions, and artifact set. Sessions within an engagement
+share engagement context but have independent message histories.
+
+### What Archie Maintains
+
+**Per engagement** (persisted to OCI Object Storage):
+- `facts` — gathered workload facts: region, scale, HA requirements, constraints
+- `assumptions` — explicit working assumptions with dates (used when facts are missing)
+- `decisions` — architecture decisions made in this engagement
+- `artifacts` — references to the latest version of each artifact type (BOM, diagram, POV, JEP, WAF, Terraform)
+- `notes` — uploaded or dictated notes attached to this engagement
+
+**Per session** (persisted, linked to engagement):
+- Conversation turns, capped at `history_max_turns` (config)
+- Session summary generated when turn count exceeds the cap
+
+**Storage key structure:**
+```
+{customer_id}/{engagement_id}/context.json
+{customer_id}/{engagement_id}/notes/
+{customer_id}/{engagement_id}/artifacts/{type}/latest.json
+{customer_id}/{engagement_id}/artifacts/{type}/v{n}.json
+{customer_id}/{engagement_id}/sessions/{session_id}/history.json
+```
+
+### What Gets Passed to Sub-Agents
+
+Archie passes only what a sub-agent's A2A card declares it needs.
+Sub-agents do not receive raw conversation history.
+Archie constructs a targeted prompt from engagement facts, current task
+requirements, and any relevant prior artifact — then sends it.
+
+---
+
 ## Phases
 
 Work proceeds in phase order. Do not start a phase until the previous one is merged to main.
@@ -139,95 +184,58 @@ Work proceeds in phase order. Do not start a phase until the previous one is mer
 **Tasks:**
 - `tasks/p0-fix-config.md` — update `config.yaml` `git_push.branch` from `claude/webapp-fastapi-tests-sWH4S` to `main`
 - `tasks/p0-delete-deprecated.md` — delete `agent/diagram_orchestrator.py`; confirm no live imports
-- `tasks/p0-update-agents-md.md` — update `AGENTS.md` to reference `PLAN.md` as the architecture source; remove instructions that contradict this plan
+- `tasks/p0-update-agents-md.md` — already done; keep current state
 - `tasks/p0-close-orphan-branch.md` — cherry-pick the UI rename commit from `archie-cross-path-drafting` (`f22fa0d`); do not merge the full branch
 
 **Acceptance:** all tests pass, server starts, `config.yaml` branch is `main`.
 
 ---
 
-### Phase 1 — Hat System
+### Phase 1 — Sub-Agent Independence
 
-**Goal:** Archie chooses expert lenses as tools. This is the highest priority change.
+**Goal:** every sub-agent is an independent process Archie calls over HTTP.
+This is the highest priority change — it breaks the monolith and dramatically
+reduces the surface Archie's orchestrator needs to cover.
 
-**What to build:**
+**Sub-agents are independent processes.** Each runs its own FastAPI/uvicorn server
+on its own port. On one machine, ports are assigned in `config.yaml`. In production,
+each can be a separate container or VM. Archie only needs the URL.
 
-1. `agent/hats/` directory with initial `.md` files (see hat inventory above)
-2. `agent/hat_engine.py` — discovers hats, registers each as a tool, handles injection and stacking
-3. Modify `orchestrator_agent.py` `run_turn()` to:
-   - Include hat tools in the tool list shown to the LLM
-   - When a hat tool is called, load the `.md` content and prepend to the next prompt round
-   - Support multiple active hats (concatenate in call order)
-   - Clear hat stack when Archie judges the task complete
-4. Write `agent/hats/critic.md` — migrates the LLM-based critique logic from `governor_agent.py`
-5. Write `agent/hats/governor.md` — migrates the LLM-based governance reasoning from `governor_agent.py`
-6. Write `agent/safety_rules.py` — keep only the deterministic block rules from `governor_agent.py` (≤ 100 lines, no LLM calls)
-7. Delete `agent/critic_agent.py` (it is currently a one-line re-export; remove the import from orchestrator too)
-8. Slim `agent/governor_agent.py` down to a shim that calls `safety_rules.py`; schedule for deletion in Phase 3
+### A2A Agent Card
 
-**Do not touch in this phase:**
-- Sub-agent call paths (bom, diagram, pov, jep, waf, terraform)
-- `gstack_skills/` and `agent/orchestrator_skills/` — leave them in place; they become sub-agent system prompts in Phase 3
-- UI
+Every sub-agent publishes an agent card at `GET /a2a/card`. Archie reads this card
+to know exactly what inputs to provide. The card is the contract.
 
-**Acceptance:**
-- Archie's tool list includes `use_hat_critic`, `use_hat_governor`, `use_hat_diagram_builder`, etc.
-- A conversation log shows Archie calling a hat before delegating to a sub-agent
-- Hats stack: Archie can call two hat tools in one turn and both are injected
-- `agent/critic_agent.py` is deleted
-- All existing tests pass
+```json
+{
+  "name": "bom",
+  "description": "Produces a priced OCI Bill of Materials from workload inputs.",
+  "inputs": {
+    "required": ["task"],
+    "optional": ["engagement_context", "trace_id"]
+  },
+  "output": "Structured BOM JSON + human-readable summary",
+  "llm": "ocid1.generativeaimodel..."
+}
+```
 
----
-
-### Phase 2 — Split Orchestrator
-
-**Goal:** break `orchestrator_agent.py` into modules Codex can work on without conflict.
-
-**Target module structure:**
-
-| New file | Responsibility | Approx lines |
-|----------|---------------|-------------|
-| `agent/archie_loop.py` | `run_turn()`, ReAct loop, tool dispatch routing | ~400 |
-| `agent/hat_engine.py` | Already created in Phase 1 | ~150 |
-| `agent/archie_memory.py` | Conversation history, context assembly, canonical memory snapshot | ~300 |
-| `agent/sub_agent_client.py` | A2A HTTP client for calling sub-agents; prompt construction | ~200 |
-| `agent/orchestrator_agent.py` | Thin entry point — imports and re-exports `run_turn` only | ~50 |
-
-**Rules for this phase:**
-- Behaviour must not change. This is a structural refactor only.
-- Each module has one clear responsibility stated at the top of the file.
-- No new features, no new abstractions beyond the split.
-- Tests must pass before and after with no changes to test files.
-
-**Do not touch in this phase:**
-- Sub-agents
-- Hat `.md` files
-- UI
-
----
-
-### Phase 3 — Sub-Agent Independence
-
-**Goal:** every sub-agent is an independent A2A service Archie calls over HTTP.
-
-**A2A contract (all sub-agents implement this):**
+### A2A Call Contract
 
 ```
 POST /a2a
 Content-Type: application/json
 
 {
-  "task": "<plain-text prompt Archie constructed>",
-  "customer_id": "<str>",
-  "trace_id": "<uuid>",
-  "llm_config": { ... }   // optional override; sub-agent uses own default if absent
+  "task": "<prompt Archie constructed from engagement context>",
+  "engagement_context": { ... },   // only fields the card declares as needed
+  "trace_id": "<uuid>"
 }
 
 → 200 OK
 {
-  "result": "<output text or structured payload>",
+  "result": "<output>",
   "status": "ok" | "needs_input" | "error",
-  "trace": { ... }        // sub-agent internal trace for Archie's review
+  "trace": { ... }
 }
 ```
 
@@ -236,78 +244,121 @@ Content-Type: application/json
 ```
 sub_agents/
   {name}/
-    server.py          # FastAPI app, single POST /a2a endpoint
+    server.py          # FastAPI app — GET /a2a/card, POST /a2a
     system_prompt.md   # The agent's own identity and instructions
-    config.yaml        # Default LLM, port, timeouts
-    README.md          # What this agent does and how to deploy it
+    config.yaml        # LLM model_id, port, timeouts
+    README.md          # What this agent does, how to run it, how to deploy it
 ```
 
 **Migration order** (one PR per sub-agent):
-1. BOM — highest complexity, validate against existing `bom_service.py` tests
-2. Diagram — already has A2A shape, lowest migration risk
+1. Diagram — already has A2A shape, lowest migration risk, validates the pattern
+2. BOM — high complexity; validate against existing `bom_service.py` tests
 3. POV
 4. JEP
 5. WAF
-6. Terraform — update `config.yaml` to point at code-optimised model
+6. Terraform — set `config.yaml` model_id to code-optimised LLM
 
-**Archie side changes (in `sub_agent_client.py`):**
-- Replace all `from agent.bom_service import ...` and similar direct imports with HTTP calls
-- Sub-agent URLs come from `config.yaml` `sub_agents:` block
-- Archie constructs the prompt, calls the URL, receives the result, optionally wears critic hat to review
+**Archie side (`sub_agent_client.py`):**
+- One function: `call_sub_agent(name, task, engagement_context, trace_id) → result`
+- Reads URL from `config.yaml` `sub_agents:` block
+- Fetches and caches the agent card on first call
+- Constructs the request from only the fields the card requires
+- Returns the raw result to the caller (Archie's loop decides what to do with it)
 
 **`gstack_skills/` and `agent/orchestrator_skills/`:**
-- These become the source material for each sub-agent's `system_prompt.md`
-- Migrate content, then delete the originals at end of this phase
+- These become source material for each sub-agent's `system_prompt.md`
+- Migrate content when building each sub-agent, then delete the originals at phase end
 
 **Do not touch in this phase:**
-- Hat system
+- Hat system (build it on a smaller orchestrator in Phase 3)
+- UI
+
+**Acceptance:**
+- Each sub-agent starts independently: `python3.11 -m uvicorn sub_agents.{name}.server:app`
+- `GET /a2a/card` returns a valid card for each sub-agent
+- Archie calls sub-agents via `sub_agent_client.py`; no direct imports of sub-agent modules remain in orchestrator code
+- All existing integration tests pass
+
+---
+
+### Phase 2 — Split Orchestrator
+
+**Goal:** break `orchestrator_agent.py` into modules Codex can work on without conflict.
+By this point sub-agent logic has moved out; the remaining orchestrator code
+should be much smaller and split cleanly.
+
+**Target module structure:**
+
+| New file | Responsibility | Approx lines |
+|----------|---------------|-------------|
+| `agent/archie_loop.py` | `run_turn()`, ReAct loop, tool dispatch routing | ~300 |
+| `agent/archie_memory.py` | Customer/engagement/session hierarchy, context assembly | ~300 |
+| `agent/sub_agent_client.py` | A2A HTTP client, agent card cache, prompt construction | ~200 |
+| `agent/orchestrator_agent.py` | Thin entry point — imports and re-exports `run_turn` only | ~30 |
+
+**Rules for this phase:**
+- Behaviour must not change. This is a structural refactor only.
+- Each module has one clear responsibility stated at the top of the file.
+- No new features, no new abstractions beyond the split.
+- Tests must pass before and after with no changes to test files.
+
+**Do not touch in this phase:**
+- Sub-agents (already independent from Phase 1)
 - UI
 
 ---
 
-### Phase 4 — Single Chat UI
+### Phase 3 — Hat System
 
-**Goal:** one interface. No form modes.
+**Goal:** Archie chooses expert lenses as tools. By this phase the orchestrator
+is small enough that the hat system integrates cleanly.
 
-**Remove:**
-- `ui/src/components/BomAdvisor.tsx`
-- `ui/src/components/GenerateForm.tsx`
-- `ui/src/components/TerraformForm.tsx`
-- `ui/src/components/WafForm.tsx`
-- `ui/src/components/JepForm.tsx`
-- `ui/src/components/PovForm.tsx`
-- `ui/src/components/NoteUpload.tsx`
-- `ui/src/components/ClarifyForm.tsx`
-- All mode routing in `ui/src/App.tsx` except `chat`
-- Dead API client functions in `ui/src/api/client.ts` that only served removed forms
+**What to build:**
 
-**Keep:**
-- `ChatInterface.tsx` — primary surface
-- `ArtifactPreviewPanel.tsx` — output display
-- `ChatSidebar.tsx` — conversation history
-- `DocViewer.tsx` — document viewing
-- `HealthIndicator.tsx`
+1. `agent/hats/` directory with initial `.md` files (see hat inventory above)
+2. `agent/hat_engine.py` — discovers hats at startup, registers each as a tool, handles injection and stacking
+3. Modify `agent/archie_loop.py` `run_turn()` to:
+   - Include hat tools in the tool list shown to the LLM
+   - When a hat tool is called, load the `.md` content and prepend to the next prompt round
+   - Support stacked hats (concatenate in call order)
+   - Clear hat stack when Archie judges the current task complete
+4. Write `agent/hats/critic.md` — the LLM-based critique reasoning
+5. Write `agent/hats/governor.md` — the LLM-based governance reasoning
+6. Write `agent/safety_rules.py` — deterministic block rules only (≤100 lines, no LLM calls)
+7. Delete `agent/critic_agent.py` (currently a one-line re-export)
+8. Delete `agent/governor_agent.py` (LLM logic now in hats; deterministic logic in safety_rules.py)
 
-**Backend:** remove API routes that only served removed form UIs. Keep all routes that
-`ChatInterface` uses. Do not remove `/upload-bom` until confirmed unused.
+**Do not touch in this phase:**
+- Sub-agents
+- UI
 
-**Acceptance:** UI builds, chat works, no broken imports, all UI tests pass or are deleted with the components they tested.
+**Acceptance:**
+- Archie's tool list includes `use_hat_critic`, `use_hat_governor`, `use_hat_diagram_builder`, etc.
+- A conversation log shows Archie calling a hat before delegating to a sub-agent
+- Two hats can be active simultaneously; both are injected at round start
+- `agent/critic_agent.py` and `agent/governor_agent.py` are deleted
+- All existing tests pass
 
 ---
 
-### Phase 5 — Cleanup
+### Phase 4 — Cleanup
 
 **Goal:** leave no dead code, no stale config, no orphaned branches.
 
-- Delete `agent/governor_agent.py` (shim from Phase 1, now unused)
 - Delete `agent/orchestrator_skill_engine.py` (replaced by hat engine)
 - Delete `agent/skill_loader.py` (replaced by hat engine)
-- Delete `agent/langgraph_orchestrator.py` and `agent/langgraph_specialists.py` (nominal; real logic is in archie_loop.py)
+- Delete `agent/langgraph_orchestrator.py` and `agent/langgraph_specialists.py`
 - Delete `agent/graphs/` directory (thin wrappers with no logic)
 - Delete `SESSION_CHECKPOINT.md`
 - Remove `archie-cross-path-drafting` branch from remote
 - Update `AGENTS.md` to reflect final state
 - Update `CLAUDE.md` to reflect final state
+
+### UI — Deferred, Low Priority
+
+The existing UI works and is not blocking anything. Form-based modes (BOM Advisor,
+Generate Diagram, etc.) stay alongside chat until there is a specific reason to
+remove them. No UI work is planned in the current phase sequence.
 
 ---
 
@@ -345,36 +396,40 @@ Step-by-step instructions specific enough that there is only one correct impleme
 
 ---
 
-## File Ownership After Phase 3
+## File Ownership After Phase 4
 
 ```
 agent/
-  archie_loop.py          ← ReAct loop, tool dispatch
-  hat_engine.py           ← Hat discovery, injection, stacking
-  archie_memory.py        ← Conversation, context, canonical memory
-  sub_agent_client.py     ← A2A calls to sub-agents
-  safety_rules.py         ← Deterministic safety blocks only (≤100 lines)
-  orchestrator_agent.py   ← 50-line entry point, re-exports run_turn
-  hats/                   ← .md files only, no Python
-  layout_engine.py        ← unchanged
-  intent_compiler.py      ← unchanged
-  drawio_generator.py     ← unchanged
-  bom_parser.py           ← unchanged (used by diagram sub-agent)
-  document_store.py       ← unchanged
-  context_store.py        ← unchanged
-  decision_context.py     ← unchanged
+  archie_loop.py            ← ReAct loop, tool dispatch
+  hat_engine.py             ← Hat discovery, injection, stacking
+  archie_memory.py          ← Customer/engagement/session hierarchy, context
+  sub_agent_client.py       ← A2A calls, agent card cache, prompt construction
+  safety_rules.py           ← Deterministic safety blocks only (≤100 lines)
+  orchestrator_agent.py     ← ~30-line entry point, re-exports run_turn
+  hats/                     ← .md files only, no Python
+  layout_engine.py          ← unchanged (used by diagram sub-agent)
+  intent_compiler.py        ← unchanged (used by diagram sub-agent)
+  drawio_generator.py       ← unchanged (used by diagram sub-agent)
+  bom_parser.py             ← unchanged (used by bom sub-agent)
+  document_store.py         ← unchanged
+  context_store.py          ← unchanged (superseded by archie_memory.py over time)
+  decision_context.py       ← unchanged
   persistence_objectstore.py ← unchanged
-  object_store_oci.py     ← unchanged
-  llm_inference_client.py ← unchanged
-  runtime_config.py       ← unchanged
-  oci_standards.py        ← unchanged (do not edit)
+  object_store_oci.py       ← unchanged
+  llm_inference_client.py   ← unchanged
+  runtime_config.py         ← unchanged
+  oci_standards.py          ← unchanged (do not edit)
   reference_architecture.py ← unchanged
   external_corpus_scorer.py ← unchanged
-  jep_lifecycle.py        ← unchanged
-  notifications.py        ← unchanged
+  jep_lifecycle.py          ← unchanged
+  notifications.py          ← unchanged
 
 sub_agents/
   bom/
+    server.py
+    system_prompt.md
+    config.yaml
+    README.md
   diagram/
   pov/
   jep/
