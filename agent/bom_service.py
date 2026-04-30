@@ -43,6 +43,10 @@ DEFAULT_PRICE_TABLE: dict[str, dict[str, Any]] = {
     "B91962": {"description": "Storage - Block Volume - Performance Units", "unit_price": 0.0017, "metric": "Performance Unit Per Gigabyte Per Month", "category": "storage"},
     "B93030": {"description": "Load Balancer Base", "unit_price": 0.0113, "metric": "Load Balancer Base Instance Per Hour", "category": "network"},
     "B91628": {"description": "Object Storage - Storage", "unit_price": 0.0255, "metric": "Gigabyte Storage Capacity Per Month", "category": "storage"},
+    "B99060": {"description": "Oracle Autonomous Database - ECPU", "unit_price": 0.0672, "metric": "ECPU Per Hour", "category": "database"},
+    "B88325": {"description": "FastConnect - 1 Gbps Port Hour", "unit_price": 0.212, "metric": "Port Hour", "category": "network"},
+    "BFILE01": {"description": "File Storage - Capacity", "unit_price": 0.0255, "metric": "Gigabyte Storage Capacity Per Month", "category": "storage"},
+    "BWAF01": {"description": "Web Application Firewall Policy", "unit_price": 0.6, "metric": "Policy Per Hour", "category": "network"},
 }
 
 NON_OCI_PROVIDER_PATTERNS: tuple[str, ...] = (
@@ -511,6 +515,12 @@ class BomService:
             },
             "workloads": [str(item).strip() for item in src.get("workloads", []) or [] if str(item).strip()],
             "os_mix": [str(item).strip() for item in src.get("os_mix", []) or [] if str(item).strip()],
+            "target_services": [str(item).strip() for item in src.get("target_services", []) or [] if str(item).strip()],
+            "workload_service_mapping": [
+                dict(item)
+                for item in src.get("workload_service_mapping", []) or []
+                if isinstance(item, dict)
+            ],
             "output_format": str(src.get("output_format", "") or "xlsx").strip(),
         }
         return normalized, list(dict.fromkeys(blockers))
@@ -557,21 +567,30 @@ class BomService:
         storage = normalized.get("storage", {}) if isinstance(normalized.get("storage"), dict) else {}
         connectivity = normalized.get("connectivity", {}) if isinstance(normalized.get("connectivity"), dict) else {}
         dr = normalized.get("dr", {}) if isinstance(normalized.get("dr"), dict) else {}
+        target_services = [str(item).strip() for item in normalized.get("target_services", []) or [] if str(item).strip()]
+        workloads = [str(item).strip() for item in normalized.get("workloads", []) or [] if str(item).strip()]
+        target_text = " ".join([str(normalized.get("architecture_option", "") or ""), " ".join(target_services), " ".join(workloads)]).lower()
+        is_native = "native" in target_text
 
         is_gpu = bool(compute.get("gpu"))
         ocpu = float(compute.get("ocpu") or 0.0)
         mem_gb = float(memory.get("gb") or 0.0)
         block_gb = float(storage.get("block_gb") or 0.0)
-        cpu_sku = "B94176"
+        cpu_sku = "B97384" if is_native else "B94176"
         mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
 
-        line_items = [
-            self._build_line(cpu_sku, ocpu, price_table, "compute", "Structured input: compute.ocpu"),
-        ]
+        line_items = []
+        cpu_line = self._build_line(cpu_sku, ocpu, price_table, "compute", "Structured input: compute.ocpu")
+        if is_native:
+            cpu_line["description"] = "VM.Standard.E5.Flex compute VMs - OCPU"
+            cpu_line["notes"] = "OCI Native Services target: VM.Standard.E5.Flex compute VMs for application, SQL Server, and lift/shift workloads"
+        line_items.append(cpu_line)
         if not is_gpu:
-            line_items.append(
-                self._build_line(mem_sku, mem_gb, price_table, "compute", "Structured input: memory.gb")
-            )
+            mem_line = self._build_line(mem_sku, mem_gb, price_table, "compute", "Structured input: memory.gb")
+            if is_native:
+                mem_line["description"] = "VM.Standard.E5.Flex compute VMs - Memory"
+                mem_line["notes"] = "OCI Native Services target: VM.Standard.E5.Flex memory for compute VMs"
+            line_items.append(mem_line)
         line_items.append(
             self._build_line("B91961", block_gb, price_table, "storage", "Structured input: storage.block_tb")
         )
@@ -584,6 +603,14 @@ class BomService:
                 "Block Volume performance units; Balanced 10 VPU/GB from structured storage input",
             )
         )
+        if is_native:
+            line_items.extend(
+                self._native_service_lines_from_inputs(
+                    normalized=normalized,
+                    price_table=price_table,
+                    block_gb=block_gb,
+                )
+            )
 
         assumptions = [
             "Pricing is estimate-only and non-binding.",
@@ -594,6 +621,18 @@ class BomService:
             assumptions.append(f"Requested OCI region: {normalized['region']}.")
         if normalized.get("architecture_option"):
             assumptions.append(f"Architecture option: {normalized['architecture_option']}.")
+        if is_native:
+            assumptions.append("OCI Native Services selected; do not model OCVS, vCenter, NSX, or ESXi as target components.")
+        if target_services:
+            assumptions.append("Native target services: " + ", ".join(target_services) + ".")
+        if normalized.get("workload_service_mapping"):
+            formatted = [
+                f"{item.get('workload')} -> {item.get('target_service')}"
+                for item in normalized.get("workload_service_mapping", [])[:8]
+                if isinstance(item, dict) and item.get("workload") and item.get("target_service")
+            ]
+            if formatted:
+                assumptions.append("Workload-to-service mapping: " + "; ".join(formatted) + ".")
         if connectivity.get("internet_mbps"):
             assumptions.append(f"Internet connectivity target: {connectivity['internet_mbps']:g} Mbps.")
         if connectivity.get("mpls"):
@@ -618,6 +657,86 @@ class BomService:
             "structured_inputs": normalized,
         }
         return payload
+
+    def _native_service_lines_from_inputs(
+        self,
+        *,
+        normalized: dict[str, Any],
+        price_table: dict[str, dict[str, Any]],
+        block_gb: float,
+    ) -> list[dict[str, Any]]:
+        connectivity = normalized.get("connectivity", {}) if isinstance(normalized.get("connectivity"), dict) else {}
+        dr = normalized.get("dr", {}) if isinstance(normalized.get("dr"), dict) else {}
+        workloads = [str(item).strip() for item in normalized.get("workloads", []) or [] if str(item).strip()]
+        target_services = [str(item).strip() for item in normalized.get("target_services", []) or [] if str(item).strip()]
+        text = " ".join(
+            [str(normalized.get("architecture_option", "") or ""), " ".join(workloads), " ".join(target_services)]
+        ).lower()
+        rows: list[dict[str, Any]] = []
+
+        def _has(*markers: str) -> bool:
+            return any(marker in text for marker in markers)
+
+        if _has("autonomous database", "oracle database", "oracle databases", "oracle db", "adb", "atp", "adw"):
+            rows.append(
+                self._build_line(
+                    "B99060",
+                    max(2.0, float((normalized.get("compute", {}) or {}).get("ocpu") or 0.0) * 0.25),
+                    price_table,
+                    "database",
+                    "OCI Native Services target: Autonomous Database for Oracle database workloads",
+                )
+            )
+        if _has("file storage", "file server", "file servers", "file share", "file shares", "nfs", "smb"):
+            rows.append(
+                self._build_line(
+                    "BFILE01",
+                    max(1024.0, block_gb * 0.25),
+                    price_table,
+                    "storage",
+                    "OCI Native Services target: File Storage for file shares and file server workloads",
+                )
+            )
+        if _has("load balancer", "waf", "web", "http", "https", "ingress", "public"):
+            rows.append(
+                self._build_line(
+                    "B93030",
+                    1.0,
+                    price_table,
+                    "network",
+                    "OCI Native Services target: Load Balancer for application ingress",
+                )
+            )
+            rows.append(
+                self._build_line(
+                    "BWAF01",
+                    1.0,
+                    price_table,
+                    "network",
+                    "OCI Native Services target: WAF policy for protected ingress",
+                )
+            )
+        if _has("object storage", "backup", "archive") or dr.get("rto_hours") or dr.get("cross_region_restore"):
+            rows.append(
+                self._build_line(
+                    "B91628",
+                    max(1024.0, block_gb * 0.2),
+                    price_table,
+                    "storage",
+                    "OCI Native Services target: Object Storage backups/archive and recovery copies",
+                )
+            )
+        if connectivity.get("mpls") or connectivity.get("sd_wan") or _has("drg", "fastconnect", "mpls", "sd-wan", "sd wan", "vpn"):
+            rows.append(
+                self._build_line(
+                    "B88325",
+                    1.0,
+                    price_table,
+                    "network",
+                    "OCI Native Services target: DRG/FastConnect/MPLS private connectivity",
+                )
+            )
+        return rows
 
     @staticmethod
     def _resolved_inputs_from_structured_bom(normalized: dict[str, Any]) -> list[dict[str, str]]:
