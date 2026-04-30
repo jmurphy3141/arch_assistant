@@ -93,6 +93,84 @@ class TestComputePositions:
         nodes, groups = compute_positions(json.dumps(MINIMAL_SPEC))
         assert len(nodes) > 0
 
+    def test_single_ad_renders_fault_domain_local_subnets(self):
+        spec = {
+            "deployment_type": "single_ad",
+            "regions": [
+                {
+                    "id": "region_1",
+                    "label": "us-ashburn-1",
+                    "availability_domains": [
+                        {
+                            "id": "ad_1",
+                            "label": "AD 1",
+                            "fault_domains": [
+                                {
+                                    "id": "fd_1",
+                                    "label": "FD 1",
+                                    "subnets": [
+                                        {
+                                            "id": "fd_1_bm_subnet",
+                                            "label": "FD 1 BM Subnet",
+                                            "tier": "app",
+                                            "nodes": [
+                                                {
+                                                    "id": "bm_fd_1",
+                                                    "type": "bare metal",
+                                                    "label": "BM.Standard.X9.64 FD1",
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                },
+                                {
+                                    "id": "fd_2",
+                                    "label": "FD 2",
+                                    "subnets": [
+                                        {
+                                            "id": "fd_2_bm_subnet",
+                                            "label": "FD 2 BM Subnet",
+                                            "tier": "app",
+                                            "nodes": [
+                                                {
+                                                    "id": "bm_fd_2",
+                                                    "type": "bare metal",
+                                                    "label": "BM.Standard.X9.64 FD2",
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "external": [],
+            "edges": [],
+        }
+
+        nodes, boxes = compute_positions(spec)
+        nodes_by_id = {node.id: node for node in nodes}
+        boxes_by_id = {box.id: box for box in boxes}
+
+        assert {"bm_fd_1", "bm_fd_2"}.issubset(nodes_by_id)
+        assert {"fd_1", "fd_2", "fd_1_bm_subnet", "fd_2_bm_subnet"}.issubset(boxes_by_id)
+
+        for fd_id, subnet_id, node_id in [
+            ("fd_1", "fd_1_bm_subnet", "bm_fd_1"),
+            ("fd_2", "fd_2_bm_subnet", "bm_fd_2"),
+        ]:
+            fd_box = boxes_by_id[fd_id]
+            subnet_box = boxes_by_id[subnet_id]
+            node = nodes_by_id[node_id]
+            assert fd_box.x < subnet_box.x
+            assert subnet_box.x + subnet_box.w < fd_box.x + fd_box.w
+            assert fd_box.x < node.x
+            assert node.x + node.w < fd_box.x + fd_box.w
+
+        assert boxes_by_id["fd_1"].x < boxes_by_id["fd_2"].x
+
 
 class TestSpecToDrawDict:
     def _make_items_by_id(self):

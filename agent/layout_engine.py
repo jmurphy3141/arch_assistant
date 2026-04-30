@@ -275,6 +275,7 @@ def _layout_ad_single(
     """
     fault_domains = ad_spec.get("fault_domains", [])
     ad_subnets    = ad_spec.get("subnets", [])
+    has_fd_subnets = any(fd.get("subnets") for fd in fault_domains)
 
     all_boxes: list[PositionedBox] = []
     all_nodes: list[PositionedNode] = []
@@ -282,6 +283,67 @@ def _layout_ad_single(
     inner_x = origin_x + AD_PAD_X
     inner_w = available_w - 2 * AD_PAD_X
     fd_origin_y = origin_y + AD_PAD_TOP
+
+    if fault_domains and has_fd_subnets:
+        cur_y = fd_origin_y
+
+        # Preserve AD-level subnet support for mixed specs, then render
+        # FD-local subnets inside true side-by-side FD columns below.
+        if ad_subnets:
+            ad_sub_boxes, ad_sub_nodes, ad_subs_h = _layout_subnets_vertical(
+                ad_subnets, inner_x, cur_y, inner_w
+            )
+            all_boxes.extend(ad_sub_boxes)
+            all_nodes.extend(ad_sub_nodes)
+            cur_y += ad_subs_h + SUB_GAP_Y
+
+        n_fds = len(fault_domains)
+        fd_w = (inner_w - (n_fds - 1) * FD_GAP_X) / n_fds
+        fd_boxes: list[PositionedBox] = []
+        fd_sub_boxes: list[PositionedBox] = []
+        fd_sub_nodes: list[PositionedNode] = []
+        max_fd_h = FD_PAD_TOP + FD_PAD_BOT
+
+        for i, fd in enumerate(fault_domains):
+            fd_x = inner_x + i * (fd_w + FD_GAP_X)
+            fd_inner_x = fd_x + FD_PAD_X
+            fd_inner_y = cur_y + FD_PAD_TOP
+            fd_inner_w = fd_w - 2 * FD_PAD_X
+            sub_boxes, sub_nodes, content_h = _layout_subnets_vertical(
+                fd.get("subnets", []), fd_inner_x, fd_inner_y, fd_inner_w
+            )
+            fd_h = FD_PAD_TOP + content_h + FD_PAD_BOT
+            max_fd_h = max(max_fd_h, fd_h)
+            fd_boxes.append(PositionedBox(
+                id=fd["id"],
+                label=fd.get("label", fd["id"]),
+                box_type="_fd_box",
+                x=fd_x,
+                y=cur_y,
+                w=fd_w,
+                h=fd_h,
+            ))
+            fd_sub_boxes.extend(sub_boxes)
+            fd_sub_nodes.extend(sub_nodes)
+
+        for fd_box in fd_boxes:
+            fd_box.h = max_fd_h
+
+        all_boxes.extend(fd_boxes)
+        all_boxes.extend(fd_sub_boxes)
+        all_nodes.extend(fd_sub_nodes)
+
+        ad_h = (cur_y + max_fd_h) - origin_y + AD_PAD_BOT
+        ad_box = PositionedBox(
+            id=ad_spec["id"],
+            label=ad_spec.get("label", ad_spec["id"]),
+            box_type="_ad_box",
+            x=origin_x,
+            y=origin_y,
+            w=available_w,
+            h=ad_h,
+        )
+        return ad_box, all_boxes, all_nodes
 
     # Subnets start just below the FD label strip (FD_PAD_TOP = label area height)
     sub_start_y = fd_origin_y + (FD_PAD_TOP if fault_domains else 0)
