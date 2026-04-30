@@ -3957,6 +3957,48 @@ def _attach_bom_resolved_inputs(
     payload["resolved_inputs"] = list(by_id.values())
 
 
+def _decision_context_with_auto_answers(
+    decision_context: dict[str, Any],
+    answers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    updated = dict(decision_context or {})
+    if not updated or not answers:
+        return updated
+    missing = [str(item).strip() for item in updated.get("missing_inputs", []) or [] if str(item).strip()]
+    remove_missing: set[str] = set()
+    constraints = dict(updated.get("constraints", {}) or {})
+    assumptions = list(updated.get("assumptions", []) or [])
+    for item in answers:
+        qid = _normalize_specialist_question_id(str(item.get("question_id", "") or item.get("id", "") or ""))
+        answer = str(item.get("final_answer", "") or item.get("suggested_answer", "") or "").strip()
+        if not answer:
+            continue
+        if qid in _specialist_question_id_aliases("constraints.region"):
+            remove_missing.add("preferred OCI region")
+            if re.fullmatch(r"[a-z]{2,}-[a-z]+-\d", answer):
+                constraints["region"] = answer
+            elif "pricing-only estimate" in answer.lower():
+                assumptions = _merge_assumption_lists(
+                    assumptions,
+                    [
+                        {
+                            "id": "bom_region_pricing_consistent",
+                            "statement": "Region not specified; BOM pricing is treated as region-consistent for this draft estimate.",
+                            "reason": "BOM pricing-only flow can proceed without a pinned OCI deployment region.",
+                            "risk": "low",
+                        }
+                    ],
+                )
+        if qid in _specialist_question_id_aliases("bom.budget"):
+            remove_missing.add("monthly budget cap")
+    if remove_missing:
+        updated["missing_inputs"] = [item for item in missing if item not in remove_missing]
+    if constraints:
+        updated["constraints"] = constraints
+    updated["assumptions"] = assumptions
+    return updated
+
+
 async def _mediate_specialist_questions(
     *,
     tool_name: str,
@@ -4029,6 +4071,8 @@ async def _mediate_specialist_questions(
 
     context_store.clear_pending_checkpoint(context)
     context_store.set_open_questions(context, [])
+    decision_context = _decision_context_with_auto_answers(decision_context, auto_answered)
+    context_store.set_latest_decision_context(context, decision_context)
     context_store.write_context(store, customer_id, context)
     rerun_args = _apply_resolved_answers_to_tool_args(tool_name=tool_name, args=args, answers=auto_answered)
     rerun_summary, rerun_key, rerun_data = await _execute_tool(
