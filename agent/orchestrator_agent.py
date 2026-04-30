@@ -2042,11 +2042,11 @@ def _structured_bom_memory_gb(profile: dict[str, Any], text: str) -> float | Non
     for key in ("gb", "target_gb", "oci_equivalent_gb", "total_gb", "used_gb"):
         value = _coerce_positive_float(memory.get(key))
         if value is not None:
-            return value
+            return _normalize_ram_gb(value)
     match = re.search(r"(?:oci[-\s]?equiv(?:alent)?|target)[^\d]{0,32}(\d+(?:\.\d+)?)\s*(tb|gb)\b[^\n]{0,32}(?:ram|memory)", text, re.I)
     if not match:
         match = re.search(r"(\d+(?:\.\d+)?)\s*(tb|gb)\s*(?:of\s+)?(?:ram|memory)\b", text, re.I)
-    return _capacity_match_to_gb(match) if match else None
+    return _ram_capacity_match_to_gb(match) if match else None
 
 
 def _structured_bom_block_tb(profile: dict[str, Any], text: str) -> float | None:
@@ -2065,9 +2065,12 @@ def _structured_bom_block_tb(profile: dict[str, Any], text: str) -> float | None
         re.I,
     )
     if not match:
-        return None
+        return _extract_block_storage_tb_from_text(text)
     gb = _capacity_match_to_gb(match)
-    return gb / 1024.0 if gb is not None else None
+    direct_tb = gb / 1024.0 if gb is not None else None
+    window_tb = _extract_block_storage_tb_from_text(text)
+    values = [value for value in (direct_tb, window_tb) if value is not None and value > 0]
+    return max(values) if values else None
 
 
 def _structured_bom_connectivity(
@@ -2117,7 +2120,7 @@ def _structured_bom_dr(
 def _structured_bom_gpu_requested(facts: dict[str, Any], text: str) -> bool:
     exclusions = [str(item).lower() for item in facts.get("exclusions", []) or []]
     lower = text.lower()
-    if "gpu" in exclusions or re.search(r"\b(?:no|exclude|excluding|out of scope)\s+gpu\b", lower):
+    if "gpu" in exclusions or re.search(r"\b(?:no|exclude|excluding|out of scope|non[-\s])\s*gpu\b", lower):
         return False
     return bool(re.search(r"\bgpu\b", lower))
 
@@ -2141,6 +2144,43 @@ def _capacity_match_to_gb(match: re.Match[str]) -> float | None:
     except Exception:
         return None
     return value * 1024.0 if unit == "tb" else value
+
+
+def _ram_capacity_match_to_gb(match: re.Match[str]) -> float | None:
+    try:
+        value = float(match.group(1))
+        unit = str(match.group(2) or "gb").lower()
+    except Exception:
+        return None
+    if unit == "tb":
+        return value if value >= 128 else value * 1024.0
+    return value
+
+
+def _normalize_ram_gb(value: float) -> float:
+    if value >= 128 * 1024 and (value / 1024.0) <= 4096:
+        return value / 1024.0
+    return value
+
+
+def _extract_block_storage_tb_from_text(text: str) -> float | None:
+    markers = ("block storage", "block volume", "storage", "vsan", "hci", "capacity")
+    values: list[float] = []
+    raw = str(text or "")
+    lowered = raw.lower()
+    for match in re.finditer(r"\b(\d+(?:\.\d+)?)\s*(tb|gb)\b", raw, flags=re.IGNORECASE):
+        start, end = match.span()
+        window = lowered[max(0, start - 48):min(len(lowered), end + 48)]
+        if not any(marker in window for marker in markers):
+            continue
+        if any(skip in window for skip in ("ram", "memory", "egress", "traffic")) and not any(
+            marker in window for marker in ("block storage", "block volume", "vsan", "hci")
+        ):
+            continue
+        gb = _capacity_match_to_gb(match)
+        if gb is not None and gb > 0:
+            values.append(gb / 1024.0)
+    return max(values) if values else None
 
 
 def _merge_structured_bom_dicts(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
@@ -3271,6 +3311,13 @@ def _extract_used_total_capacity(text: str, markers: tuple[str, ...], *, default
     )
     for pattern in standalone_patterns:
         for match in re.finditer(pattern, str(text or ""), flags=re.IGNORECASE):
+            matched_text = match.group(0).lower()
+            trailing_text = str(text or "")[match.end():min(len(str(text or "")), match.end() + 32)].lower()
+            if default_unit.lower() == "gb" and any(
+                marker in f"{matched_text} {trailing_text}"
+                for marker in ("block", "storage", "volume", "vsan", "hci", "capacity")
+            ):
+                continue
             value = _capacity_to_unit(float(match.group(1).replace(",", "")), match.group(2), default_unit)
             if value > 0:
                 standalone_values.append(value)
@@ -3283,6 +3330,8 @@ def _capacity_to_unit(value: float, unit: str, target_unit: str) -> float:
     source = str(unit or "").lower()
     target = str(target_unit or "").lower()
     value_gb = value * 1024.0 if source in {"tb", "tib"} else value
+    if target == "gb" and source in {"tb", "tib"} and value >= 128:
+        value_gb = value
     converted = value_gb / 1024.0 if target == "tb" else value_gb
     return int(converted) if float(converted).is_integer() else round(converted, 2)
 

@@ -1960,6 +1960,70 @@ def test_bom_handoff_builds_structured_inputs_from_kr1_memory() -> None:
     assert inputs["output_format"] == "xlsx"
 
 
+def test_bom_handoff_recovers_block_storage_from_prior_context_text() -> None:
+    ctx = context_store.read_context(InMemoryObjectStore(), "kr1-storage-recovery", "KR1")
+    context_store.merge_archie_client_facts(
+        ctx,
+        {
+            "region": "af-johannesburg-1",
+            "platform": "VxRail / VMware ESXi",
+            "workloads": ["SQL databases", "Oracle databases"],
+            "os_mix": ["Linux", "Windows"],
+            "infrastructure": {
+                "cpu": {"logical_cores": 64},
+                "memory": {"total_gb": 1146.88},
+                "connectivity": {"mpls": True},
+                "dr": {"sla_hours": 24},
+            },
+        },
+    )
+
+    prepared = orchestrator_agent._prepare_bom_tool_args(
+        args={
+            "prompt": (
+                "Updated primary option: 64 OCPU, 1.12TB RAM, "
+                "29TB storage (of 44TB), and the resolved answer says block storage."
+            )
+        },
+        user_message="yes the storage needs to be block storage",
+        context=ctx,
+        decision_context={},
+    )
+
+    inputs = prepared["inputs"]
+    assert inputs["compute"]["ocpu"] == 64
+    assert inputs["memory"]["gb"] == 1146.88
+    assert inputs["storage"]["block_tb"] == 44
+    assert inputs["compute"]["gpu"] is False
+
+
+def test_bom_handoff_treats_large_tb_ram_as_gb_typo() -> None:
+    ctx = context_store.read_context(InMemoryObjectStore(), "kr1-ram-typo", "KR1")
+    context_store.merge_archie_client_facts(
+        ctx,
+        {
+            "region": "af-johannesburg-1",
+            "platform": "VxRail / VMware ESXi",
+            "infrastructure": {
+                "cpu": {"logical_cores": 64},
+                "storage": {"total_tb": 44},
+            },
+        },
+    )
+
+    prepared = orchestrator_agent._prepare_bom_tool_args(
+        args={"prompt": "we need 64 ocpu and 1150TB of ram with 44 TB block storage"},
+        user_message="we need 64 ocpu and 1150TB of ram",
+        context=ctx,
+        decision_context={},
+    )
+
+    inputs = prepared["inputs"]
+    assert inputs["compute"]["ocpu"] == 64
+    assert inputs["memory"]["gb"] == 1150
+    assert inputs["storage"]["block_tb"] == 44
+
+
 def test_new_xlsx_with_incorrect_prior_bom_builds_revision_brief(monkeypatch) -> None:
     store = InMemoryObjectStore()
     ctx = context_store.read_context(store, "revision-bom", "Revision BOM")
