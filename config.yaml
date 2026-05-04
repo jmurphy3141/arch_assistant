@@ -126,6 +126,14 @@ agents:
     timeout_seconds: 240
     retries: 1
 
+sub_agents:
+  diagram:   "http://localhost:8082"
+  bom:       "http://localhost:8083"
+  pov:       "http://localhost:8084"
+  jep:       "http://localhost:8085"
+  waf:       "http://localhost:8086"
+  terraform: "http://localhost:8087"
+
 # Auth is configured entirely via environment variables (see .env.example).
 # No auth settings belong here — they contain secrets or per-deployment values.
 

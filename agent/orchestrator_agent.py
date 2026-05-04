@@ -10,10 +10,10 @@ Conversation history is persisted per customer_id in OCI Object Storage at
   conversations/{customer_id}/history.json
 
 Inter-agent calls:
-  generate_diagram  → POST /message:send  (A2A v1.0 self-call via httpx)
-  generate_pov      → pov_agent.generate_pov()     [in-process]
-  generate_waf      → waf_agent.generate_waf()     [in-process]
-  generate_jep      → jep_agent.generate_jep()     [in-process]
+  generate_diagram  → sub_agent_client.call_sub_agent("diagram", ...)
+  generate_pov      → sub_agent_client.call_sub_agent("pov", ...)
+  generate_waf      → sub_agent_client.call_sub_agent("waf", ...)
+  generate_jep      → sub_agent_client.call_sub_agent("jep", ...)
   save_notes        → document_store.save_note()   [in-process]
   get_summary       → context_store               [in-process]
   get_document      → document_store.get_latest_doc() [in-process]
@@ -42,15 +42,22 @@ from agent.orchestrator_skill_engine import (
     OrchestratorSkillEngine,
 )
 from agent.skill_loader import discover_skills, select_skills_for_call
-from agent.bom_service import CPU_SKU_TO_MEM_SKU, get_shared_bom_service, new_trace_id
 from agent.reference_architecture import (
     build_reference_context_lines,
     select_reference_architecture,
     select_standards_bundle,
 )
+from agent.sub_agent_client import call_sub_agent
 
 logger = logging.getLogger(__name__)
 _PENDING_UPDATE_WORKFLOWS: dict[str, dict[str, Any]] = {}
+CPU_SKU_TO_MEM_SKU = {
+    "B93113": "B93114",
+    "B97384": "B97385",
+    "B111129": "B111130",
+    "B94176": "B94177",
+    "B93297": "B93298",
+}
 
 # ── System message ─────────────────────────────────────────────────────────────
 
@@ -1439,62 +1446,106 @@ async def _execute_tool_core(
         return summary or "No engagement activity yet.", "", {}
 
     if tool_name == "generate_pov":
-        from agent import pov_agent
-
         raw_feedback = str(args.get("feedback", "") or "")
         feedback = raw_feedback if "[Archie Canonical Memory]" in raw_feedback else str(args.get("_user_request_text", "") or raw_feedback or "")
-        result = await asyncio.to_thread(
-            pov_agent.generate_pov,
-            customer_id,
-            customer_name,
-            store,
-            text_runner,
-            feedback=feedback,
+        task = _compose_specialist_request_text(
+            clean_request=feedback or "Generate a customer POV from current engagement context.",
             architect_brief=dict(args.get("_architect_brief", {}) or {}),
         )
-        key = result.get("key", "")
-        return f"POV v{result.get('version')} saved. Key: {key}", key, {}
+        response = await call_sub_agent(
+            "pov",
+            task,
+            {
+                "customer_id": customer_id,
+                "customer_name": customer_name,
+                "feedback": feedback,
+                "architect_brief": dict(args.get("_architect_brief", {}) or {}),
+            },
+            str(uuid.uuid4()),
+        )
+        if str(response.get("status") or "").lower() == "needs_input":
+            return str(response.get("result") or "POV needs more input."), "", response
+        saved = await asyncio.to_thread(
+            document_store.save_doc,
+            store,
+            "pov",
+            customer_id,
+            str(response.get("result") or ""),
+            {"trace": response.get("trace", {}), "source": "sub_agent_client"},
+        )
+        key = str(saved.get("key", "") or "")
+        return f"POV v{saved.get('version')} saved. Key: {key}", key, response
 
     if tool_name == "generate_diagram":
         s, k, d = await _call_generate_diagram(args, customer_id, a2a_base_url)
         return s, k, d
 
     if tool_name == "generate_waf":
-        from agent import waf_agent
-
-        feedback = args.get("feedback", "")
-        result = await asyncio.to_thread(
-            waf_agent.generate_waf,
-            customer_id,
-            customer_name,
-            store,
-            text_runner,
-            feedback=feedback,
+        feedback = str(args.get("feedback", "") or "")
+        task = _compose_specialist_request_text(
+            clean_request=feedback or "Run an OCI Well-Architected Framework review for the current architecture.",
+            architect_brief=dict(args.get("_architect_brief", {}) or {}),
         )
-        key = result.get("key", "")
-        rating = result.get("overall_rating", "")
-        return f"WAF review {rating} saved. Key: {key}", key, {}
+        response = await call_sub_agent(
+            "waf",
+            task,
+            {
+                "customer_id": customer_id,
+                "customer_name": customer_name,
+                "feedback": feedback,
+                "architect_brief": dict(args.get("_architect_brief", {}) or {}),
+            },
+            str(uuid.uuid4()),
+        )
+        if str(response.get("status") or "").lower() == "needs_input":
+            return str(response.get("result") or "WAF review needs more input."), "", response
+        saved = await asyncio.to_thread(
+            document_store.save_doc,
+            store,
+            "waf",
+            customer_id,
+            str(response.get("result") or ""),
+            {"trace": response.get("trace", {}), "source": "sub_agent_client"},
+        )
+        key = str(saved.get("key", "") or "")
+        return f"WAF review saved. Key: {key}", key, response
 
     if tool_name == "generate_jep":
-        from agent import jep_agent
-
-        feedback = args.get("feedback", "")
-        result = await asyncio.to_thread(
-            jep_agent.generate_jep,
-            customer_id,
-            customer_name,
-            store,
-            text_runner,
-            feedback=feedback,
+        feedback = str(args.get("feedback", "") or "")
+        task = _compose_specialist_request_text(
+            clean_request=feedback or "Generate a Joint Engagement Plan from current engagement context.",
+            architect_brief=dict(args.get("_architect_brief", {}) or {}),
         )
-        key = result.get("key", "")
+        response = await call_sub_agent(
+            "jep",
+            task,
+            {
+                "customer_id": customer_id,
+                "customer_name": customer_name,
+                "feedback": feedback,
+                "architect_brief": dict(args.get("_architect_brief", {}) or {}),
+            },
+            str(uuid.uuid4()),
+        )
+        if str(response.get("status") or "").lower() == "needs_input":
+            return str(response.get("result") or "JEP needs more input."), "", response
+        saved = await asyncio.to_thread(
+            document_store.save_doc,
+            store,
+            "jep",
+            customer_id,
+            str(response.get("result") or ""),
+            {"trace": response.get("trace", {}), "source": "sub_agent_client"},
+        )
+        key = str(saved.get("key", "") or "")
         jep_state = await asyncio.to_thread(jep_lifecycle.mark_generated, store, customer_id)
-        return f"JEP v{result.get('version')} saved. Key: {key}", key, {
+        response.update({
             "jep_state": jep_state,
             "reason_codes": [],
             "required_next_step": jep_state.get("required_next_step", ""),
             "lock_outcome": "allowed",
-        }
+        })
+        return f"JEP v{saved.get('version')} saved. Key: {key}", key, response
 
     if tool_name == "generate_bom":
         response = await _execute_bom_tool_request(
@@ -1506,12 +1557,35 @@ async def _execute_tool_core(
         return summary, "", response
 
     if tool_name == "generate_terraform":
-        return (
-            "Terraform generation is not yet enabled in legacy mode. "
-            "Enable orchestrator.specialists_langgraph_enabled to use the v1.5 chain.",
-            "",
-            {},
+        raw_prompt = str(args.get("prompt", "") or "")
+        task = _compose_specialist_request_text(
+            clean_request=raw_prompt or str(args.get("_user_request_text", "") or "Generate Terraform for the current architecture."),
+            architect_brief=dict(args.get("_architect_brief", {}) or {}),
         )
+        response = await call_sub_agent(
+            "terraform",
+            task,
+            {
+                "customer_id": customer_id,
+                "customer_name": customer_name,
+                "architect_brief": dict(args.get("_architect_brief", {}) or {}),
+            },
+            str(uuid.uuid4()),
+        )
+        if str(response.get("status") or "").lower() == "needs_input":
+            return str(response.get("result") or "Terraform needs more input."), "", response
+        files = _parse_terraform_sub_agent_result(response.get("result"))
+        saved = await asyncio.to_thread(
+            document_store.save_terraform_bundle,
+            store,
+            customer_id,
+            files,
+            {"trace": response.get("trace", {}), "source": "sub_agent_client"},
+        )
+        key = str((saved.get("files") or {}).get("main.tf") or saved.get("latest_key") or "")
+        response["terraform_files"] = files
+        response["terraform_bundle"] = saved
+        return f"Terraform bundle v{saved.get('version')} saved. Key: {key}", key, response
 
     if tool_name == "get_document":
         doc_type = args.get("type", "pov")
@@ -1561,7 +1635,7 @@ async def _execute_bom_tool_request(
     text_runner: Callable,
     model_id: str,
 ) -> dict[str, Any]:
-    trace_id = new_trace_id()
+    trace_id = str(uuid.uuid4())
     context_source = str(args.get("_bom_context_source", "") or "direct_request")
     direct_reply = str(args.get("_bom_direct_reply", "") or "").strip()
     if direct_reply:
@@ -1595,92 +1669,58 @@ async def _execute_bom_tool_request(
     )
     if not prompt:
         prompt = "Generate a BOM from current request context."
-    service = get_shared_bom_service()
-    cache_before = await asyncio.to_thread(service.health)
-    cache_status_before_attempt = "ready" if cache_before.get("ready") else "not_ready"
     structured_inputs = args.get("inputs") if isinstance(args.get("inputs"), dict) else {}
     use_structured_inputs = bool(structured_inputs)
-    if use_structured_inputs:
-        response = await asyncio.to_thread(
-            service.generate_from_inputs,
-            inputs=structured_inputs,
-            trace_id=trace_id,
-            model_id=model_id,
-        )
-    else:
-        response = await asyncio.to_thread(
-            service.chat,
-            message=prompt,
-            conversation=[],
-            trace_id=trace_id,
-            model_id=model_id,
-            text_runner=text_runner,
-        )
-
-    refresh_attempted = False
-    refresh_status = "not_attempted"
-    retry_count = 0
-    retry_succeeded = False
-    if _bom_response_needs_refresh(response):
-        refresh_attempted = True
+    a2a_response = await call_sub_agent(
+        "bom",
+        prompt,
+        {
+            "structured_inputs": structured_inputs,
+            "model_id": model_id,
+            "bom_context_source": context_source,
+        },
+        trace_id,
+    )
+    status = str(a2a_response.get("status") or "").lower()
+    raw_result = str(a2a_response.get("result") or "")
+    trace = a2a_response.get("trace", {}) if isinstance(a2a_response.get("trace"), dict) else {}
+    parsed_payload: Any = None
+    if raw_result.strip():
         try:
-            refresh_result = await asyncio.to_thread(service.refresh_data)
-            refresh_status = "succeeded" if refresh_result.get("ready") else "failed"
-        except Exception as exc:
-            logger.warning("Archie BOM cache refresh failed: %s", exc)
-            refresh_status = "failed"
-        if refresh_status == "succeeded":
-            retry_count = 1
-            if use_structured_inputs:
-                response = await asyncio.to_thread(
-                    service.generate_from_inputs,
-                    inputs=structured_inputs,
-                    trace_id=trace_id,
-                    model_id=model_id,
-                )
-            else:
-                response = await asyncio.to_thread(
-                    service.chat,
-                    message=prompt,
-                    conversation=[],
-                    trace_id=trace_id,
-                    model_id=model_id,
-                    text_runner=text_runner,
-                )
-            retry_succeeded = not _bom_response_needs_refresh(response)
-        if refresh_status != "succeeded" or not retry_succeeded:
-            response = {
-                "type": "normal",
-                "reply": (
-                    "I could not initialize the internal OCI BOM pricing data for this chat request. "
-                    "Retry in a moment; if it persists, the BOM service data source needs attention."
-                ),
-                "trace_id": trace_id,
-                "error_code": "bom_data_init_failed",
-                "trace": {
-                    "model_id": model_id,
-                    "type": "normal",
-                    "repair_attempts": 0,
-                    "cache_ready": False,
-                    "cache_source": "none",
-                    "latency_ms": 0,
-                },
-            }
-
-    trace = response.get("trace", {}) if isinstance(response.get("trace"), dict) else {}
+            parsed_payload = json.loads(raw_result)
+        except Exception:
+            parsed_payload = None
+    if status == "needs_input":
+        response = {
+            "type": "question",
+            "reply": raw_result or "BOM clarification required.",
+            "trace_id": trace_id,
+            "trace": trace,
+            "bom_context_source": context_source,
+        }
+    else:
+        response = {
+            "type": "final",
+            "reply": "Final BOM prepared via BOM sub-agent.",
+            "trace_id": trace_id,
+            "trace": trace,
+            "json_bom": raw_result,
+            "bom_payload": parsed_payload if isinstance(parsed_payload, dict) else {},
+            "bom_context_source": context_source,
+        }
     trace.update(
         {
-            "bom_cache_status_before_attempt": cache_status_before_attempt,
-            "bom_cache_refresh_attempted": refresh_attempted,
-            "bom_cache_refresh_status": refresh_status,
+            "bom_cache_status_before_attempt": "sub_agent",
+            "bom_cache_refresh_attempted": False,
+            "bom_cache_refresh_status": "not_attempted",
             "bom_context_source": context_source,
-            "bom_retry_count": retry_count,
-            "bom_retry_succeeded": retry_succeeded,
+            "bom_retry_count": 0,
+            "bom_retry_succeeded": False,
             "bom_request_shape": "internal_a2a_generate_bom" if use_structured_inputs else "legacy_prompt",
             "bom_trace_stages": [
                 "BOM hat selected",
                 "structured inputs built" if use_structured_inputs else "legacy prompt prepared",
-                "BOM agent called",
+                "BOM sub-agent called",
                 "payload reviewed" if response.get("bom_payload") else "payload pending clarification",
             ],
         }
@@ -1709,6 +1749,31 @@ def _tool_to_path_id(tool_name: str) -> str | None:
     if tool_name in {"get_summary", "get_document"}:
         return "summary_document"
     return None
+
+
+def _parse_terraform_sub_agent_result(result: Any) -> dict[str, str]:
+    raw = str(result or "").strip()
+    data: dict[str, Any] = {}
+    if raw:
+        try:
+            loaded = json.loads(raw)
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {"main_tf": raw}
+    mapping = {
+        "main_tf": "main.tf",
+        "variables_tf": "variables.tf",
+        "outputs_tf": "outputs.tf",
+        "readme_md": "README.md",
+    }
+    files = {
+        filename: str(data.get(source_key) or "")
+        for source_key, filename in mapping.items()
+    }
+    if not any(content.strip() for content in files.values()):
+        files["main.tf"] = raw
+    return files
 
 
 def _build_context_summary_for_skills(
@@ -6924,6 +6989,8 @@ def _diagram_result_payload_from_outputs(
         result_data["draw_dict"] = dict(outputs.get("draw_dict", {}) or {})
     if isinstance(outputs.get("spec"), dict):
         result_data["spec"] = dict(outputs.get("spec", {}) or {})
+    if outputs.get("drawio_xml"):
+        result_data["drawio_xml"] = str(outputs.get("drawio_xml") or "")
     return result_data
 
 
@@ -6932,12 +6999,50 @@ async def _post_diagram_a2a_task(
     payload: dict[str, Any],
     a2a_base_url: str,
 ) -> dict[str, Any]:
-    import httpx
-
-    async with httpx.AsyncClient(timeout=180) as client:
-        resp = await client.post(f"{a2a_base_url}/api/a2a/task", json=payload)
-    body = resp.json()
-    return body if isinstance(body, dict) else {}
+    inputs = payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {}
+    notes = str(inputs.get("notes") or payload.get("task") or "")
+    context = str(inputs.get("context") or "")
+    task = "\n\n".join(part for part in (notes.strip(), context.strip()) if part)
+    response = await call_sub_agent(
+        "diagram",
+        task or "Generate a diagram for this engagement.",
+        {
+            "diagram_name": str(payload.get("task_id") or "diagram"),
+            "customer_id": str(payload.get("client_id") or ""),
+            "reference_architecture": inputs.get("reference_architecture") or {},
+            "standards_bundle_version": str(inputs.get("standards_bundle_version") or ""),
+        },
+        str(payload.get("task_id") or ""),
+    )
+    status = str(response.get("status") or "error").lower()
+    if status == "ok":
+        return {
+            "status": "ok",
+            "task_id": str(payload.get("task_id") or ""),
+            "outputs": {
+                "drawio_xml": str(response.get("result") or ""),
+                "trace": response.get("trace", {}),
+            },
+        }
+    if status == "needs_input":
+        questions: Any = []
+        raw_result = str(response.get("result") or "")
+        if raw_result:
+            try:
+                questions = json.loads(raw_result)
+            except Exception:
+                questions = [{"question": raw_result}]
+        return {
+            "status": "need_clarification",
+            "task_id": str(payload.get("task_id") or ""),
+            "outputs": {"questions": questions if isinstance(questions, list) else []},
+        }
+    return {
+        "status": "error",
+        "task_id": str(payload.get("task_id") or ""),
+        "error_message": str(response.get("result") or "Diagram sub-agent failed."),
+        "outputs": {"trace": response.get("trace", {})},
+    }
 
 
 def _diagram_reply_assumptions(
