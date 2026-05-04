@@ -1,0 +1,6 @@
+name: diagram
+port: 8082
+llm:
+  model_id: ""          # inherits from main config if empty
+  max_tokens: 4000
+  temperature: 0.0
