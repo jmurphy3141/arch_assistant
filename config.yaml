@@ -55,7 +55,7 @@ git_push:
   enabled: true           # auto-push generated diagrams to git for review
   repo_path: "/home/opc/drawing-agent"
   output_subdir: "tests/fixtures/outputs"
-  branch: "claude/webapp-fastapi-tests-sWH4S"
+  branch: "main"
 
 # Writing agents (POV + JEP document generation)
 # These share the same OCI GenAI inference endpoint but use different
