@@ -8,6 +8,7 @@ import drawing_agent_server as srv
 from drawing_agent_server import _run_orchestrator_turn, OrchestratorChatRequest
 from agent.bom_parser import ServiceItem
 from agent import context_store
+from agent import sub_agent_client
 from agent.drawio_inspector import inspect_drawio_xml
 from agent.persistence_objectstore import InMemoryObjectStore
 import agent.orchestrator_agent as orchestrator_agent
@@ -81,41 +82,25 @@ def test_diagram_graph_uses_a2a_task_endpoint(monkeypatch):
 
     captured = {}
 
-    class _FakeResponse:
-        def json(self):
-            return {
-                "task_id": "orch-1",
-                "status": "ok",
-                "outputs": {
-                    "object_key": "agent3/acme/arch/v1/diagram.drawio",
-                    "render_manifest": {"node_count": 6},
-                    "node_to_resource_map": {
-                        "oke_1": {"oci_type": "container engine", "layer": "compute", "label": "OKE"}
-                    },
-                    "draw_dict": {"boxes": [{"id": "app", "box_type": "_subnet_box", "tier": "app"}]},
-                    "spec": {"deployment_type": "single_ad"},
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        captured["name"] = name
+        captured["task"] = task
+        captured["engagement_context"] = engagement_context or {}
+        captured["trace_id"] = trace_id
+        return {
+            "status": "ok",
+            "result": "<mxfile />",
+            "trace": {
+                "render_manifest": {"node_count": 6},
+                "node_to_resource_map": {
+                    "oke_1": {"oci_type": "container engine", "layer": "compute", "label": "OKE"}
                 },
-            }
+                "draw_dict": {"boxes": [{"id": "app", "box_type": "_subnet_box", "tier": "app"}]},
+                "spec": {"deployment_type": "single_ad"},
+            },
+        }
 
-    class _FakeClient:
-        def __init__(self, *args, **kwargs):
-            _ = (args, kwargs)
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
-        async def post(self, url, json):
-            captured["url"] = url
-            captured["json"] = json
-            return _FakeResponse()
-
-    import httpx
-
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, key, result_data = asyncio.run(
         diagram_graph.run(
@@ -125,13 +110,11 @@ def test_diagram_graph_uses_a2a_task_endpoint(monkeypatch):
         )
     )
 
-    assert captured["url"] == "http://localhost:8080/api/a2a/task"
-    assert captured["json"]["skill"] == "generate_diagram"
-    assert captured["json"]["inputs"]["notes"] == "Generate an OKE diagram"
-    assert summary == "Diagram generated. Key: agent3/acme/arch/v1/diagram.drawio"
-    assert key == "agent3/acme/arch/v1/diagram.drawio"
-    assert result_data["render_manifest"]["node_count"] == 6
-    assert "node_to_resource_map" in result_data
+    assert captured["name"] == "diagram"
+    assert captured["task"].startswith("Generate an OKE diagram")
+    assert summary.startswith("Diagram generated (task ")
+    assert key == ""
+    assert result_data["drawio_xml"] == "<mxfile />"
 
 
 def test_diagram_pipeline_applies_ocvs_bm_x9_fd_local_overlay(monkeypatch, tmp_path):

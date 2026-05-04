@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 import agent.orchestrator_agent as orchestrator_agent
+from agent import sub_agent_client
 from agent import context_store
 from agent import document_store
 from agent.persistence_objectstore import InMemoryObjectStore
@@ -294,27 +296,23 @@ def test_generate_bom_followup_uses_latest_diagram_and_auto_refreshes(monkeypatc
     )
     context_store.write_context(store, "acme", ctx)
 
-    fake_service = _FakeBomService(
-        [
-            {
-                "type": "normal",
-                "reply": "BOM data is not ready. Run /api/bom/refresh-data, then retry.",
-                "trace": {"cache_ready": False, "cache_source": "none"},
-            },
-            {
-                "type": "final",
-                "reply": "Review line items, then export JSON or XLSX.",
-                "trace_id": "trace-123",
-                "trace": {"cache_ready": True, "cache_source": "fallback"},
-                "bom_payload": {
-                    "line_items": [{"sku": "B94176"}, {"sku": "B94177"}],
-                    "assumptions": ["Ballpark defaults applied."],
-                    "totals": {"estimated_monthly_cost": 1234.5},
-                },
-            },
-        ]
-    )
-    monkeypatch.setattr(orchestrator_agent, "get_shared_bom_service", lambda: fake_service)
+    captured_tasks: list[str] = []
+    bom_payload = {
+        "line_items": [{"sku": "B94176"}, {"sku": "B94177"}],
+        "assumptions": ["Ballpark defaults applied."],
+        "totals": {"estimated_monthly_cost": 1234.5},
+    }
+
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "bom"
+        captured_tasks.append(task)
+        return {
+            "status": "ok",
+            "result": json.dumps(bom_payload),
+            "trace": {"cache_ready": True, "cache_source": "fallback", "trace_id": trace_id},
+        }
+
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -330,16 +328,15 @@ def test_generate_bom_followup_uses_latest_diagram_and_auto_refreshes(monkeypatc
         )
     )
 
-    assert summary.startswith("Final BOM prepared.")
-    assert fake_service.refresh_calls == 1
-    assert "Generate BOM for the latest OCI architecture diagram." in fake_service.chat_messages[0]
-    assert "single_region_oke_app" in fake_service.chat_messages[0]
+    assert summary.startswith("Final BOM prepared")
+    assert "Generate BOM for the latest OCI architecture diagram." in captured_tasks[0]
+    assert "single_region_oke_app" in captured_tasks[0]
     assert "/api/bom/refresh-data" not in summary
     assert data["trace"]["bom_context_source"] == "latest_diagram"
-    assert data["trace"]["bom_cache_refresh_attempted"] is True
-    assert data["trace"]["bom_cache_refresh_status"] == "succeeded"
-    assert data["trace"]["bom_retry_count"] == 1
-    assert data["trace"]["bom_retry_succeeded"] is True
+    assert data["trace"]["bom_cache_refresh_attempted"] is False
+    assert data["trace"]["bom_cache_refresh_status"] == "not_attempted"
+    assert data["trace"]["bom_retry_count"] == 0
+    assert data["trace"]["bom_retry_succeeded"] is False
 
     refreshed_ctx = context_store.read_context(store, "acme", "ACME Corp")
     bom_ctx = refreshed_ctx["agents"]["bom"]
@@ -366,17 +363,15 @@ def test_generate_bom_followup_refresh_failure_stays_internal(monkeypatch) -> No
     )
     context_store.write_context(store, "acme", ctx)
 
-    fake_service = _FakeBomService(
-        [
-            {
-                "type": "normal",
-                "reply": "BOM data is not ready. Run /api/bom/refresh-data, then retry.",
-                "trace": {"cache_ready": False, "cache_source": "none"},
-            }
-        ],
-        refresh_error=RuntimeError("upstream unavailable"),
-    )
-    monkeypatch.setattr(orchestrator_agent, "get_shared_bom_service", lambda: fake_service)
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "bom"
+        return {
+            "status": "needs_input",
+            "result": "BOM data is not ready. Retry after the BOM sub-agent refreshes pricing data.",
+            "trace": {"cache_ready": False, "cache_source": "none", "trace_id": trace_id},
+        }
+
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -392,17 +387,21 @@ def test_generate_bom_followup_refresh_failure_stays_internal(monkeypatch) -> No
         )
     )
 
-    assert "could not initialize the internal oci bom pricing data" in summary.lower()
+    assert "Question ID: generate_bom.q1" in summary
     assert "/api/bom/refresh-data" not in summary
-    assert fake_service.refresh_calls == 1
-    assert data["trace"]["bom_cache_refresh_attempted"] is True
-    assert data["trace"]["bom_cache_refresh_status"] == "failed"
+    assert data["trace"]["bom_cache_refresh_attempted"] is False
+    assert data["trace"]["bom_cache_refresh_status"] == "not_attempted"
     assert data["trace"]["bom_retry_count"] == 0
 
 
 def test_generate_bom_followup_without_prior_diagram_asks_for_context(monkeypatch) -> None:
-    fake_service = _FakeBomService([])
-    monkeypatch.setattr(orchestrator_agent, "get_shared_bom_service", lambda: fake_service)
+    calls: list[str] = []
+
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        calls.append(name)
+        raise AssertionError("BOM sub-agent should not be called for unresolved follow-up")
+
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -420,8 +419,7 @@ def test_generate_bom_followup_without_prior_diagram_asks_for_context(monkeypatc
 
     assert "`this` is not grounded to a prior diagram or workload yet" in summary
     assert "rough sizing for OCPU, memory, storage" in summary
-    assert fake_service.refresh_calls == 0
-    assert fake_service.chat_messages == []
+    assert calls == []
     assert data["trace"]["bom_context_source"] == "unresolved_followup"
 
 
@@ -713,22 +711,26 @@ def test_save_notes_then_bom_request_hydrates_archie_context(monkeypatch) -> Non
         )
     )
 
-    fake_service = _FakeBomService(
-        [
-            {
-                "type": "final",
-                "reply": "Review line items, then export JSON or XLSX.",
-                "trace_id": "trace-notes",
-                "trace": {"cache_ready": True, "cache_source": "fallback"},
-                "bom_payload": {
+    captured_tasks: list[str] = []
+    captured_contexts: list[dict] = []
+
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "bom"
+        captured_tasks.append(task)
+        captured_contexts.append(dict(engagement_context or {}))
+        return {
+            "status": "ok",
+            "result": json.dumps(
+                {
                     "line_items": [{"sku": "B94176"}],
                     "assumptions": [],
                     "totals": {"estimated_monthly_cost": 999.0},
-                },
-            }
-        ]
-    )
-    monkeypatch.setattr(orchestrator_agent, "get_shared_bom_service", lambda: fake_service)
+                }
+            ),
+            "trace": {"cache_ready": True, "cache_source": "fallback", "trace_id": trace_id},
+        }
+
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, _key, _data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -744,9 +746,9 @@ def test_save_notes_then_bom_request_hydrates_archie_context(monkeypatch) -> Non
         )
     )
 
-    assert summary.startswith("Final BOM prepared.")
-    assert "private OKE platform" in fake_service.chat_messages[0]
-    assert "Autonomous Database" in fake_service.chat_messages[0]
+    assert summary.startswith("Final BOM prepared")
+    assert "private OKE platform" in captured_tasks[0]
+    assert "Autonomous Database" in captured_tasks[0]
     ctx = context_store.read_context(store, "notes-bom", "Notes BOM")
     assert "private OKE platform" in ctx["archie"]["engagement_summary"]
 
@@ -788,14 +790,17 @@ def test_note_capture_only_does_not_generate_bom_and_followup_uses_notes(monkeyp
     assert "768 GB RAM" in recall["reply"]
     assert "42 TB block storage" in recall["reply"]
 
-    fake_service = _FakeBomService(
-        [
-            {
-                "type": "final",
-                "reply": "Review line items, then export JSON or XLSX.",
-                "trace_id": "trace-context",
-                "trace": {"cache_ready": True, "cache_source": "fallback"},
-                "bom_payload": {
+    captured_tasks: list[str] = []
+    captured_contexts: list[dict] = []
+
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "bom"
+        captured_tasks.append(task)
+        captured_contexts.append(dict(engagement_context or {}))
+        return {
+            "status": "ok",
+            "result": json.dumps(
+                {
                     "line_items": [
                         {"sku": "B94176", "description": "Compute E4 OCPU", "category": "compute", "quantity": 48},
                         {"sku": "B94177", "description": "Compute E4 Memory GB", "category": "compute", "quantity": 768},
@@ -803,11 +808,12 @@ def test_note_capture_only_does_not_generate_bom_and_followup_uses_notes(monkeyp
                     ],
                     "assumptions": [],
                     "totals": {"estimated_monthly_cost": 1859.424},
-                },
-            }
-        ]
-    )
-    monkeypatch.setattr(orchestrator_agent, "get_shared_bom_service", lambda: fake_service)
+                }
+            ),
+            "trace": {"cache_ready": True, "cache_source": "fallback", "trace_id": trace_id},
+        }
+
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     final = asyncio.run(
         orchestrator_agent.run_turn(
@@ -822,10 +828,11 @@ def test_note_capture_only_does_not_generate_bom_and_followup_uses_notes(monkeyp
     )
     data = final["tool_calls"][0]["result_data"]
 
-    assert final["reply"].startswith("Final BOM prepared.")
-    assert "'ocpu': 48.0" in fake_service.chat_messages[0]
-    assert "'gb': 768.0" in fake_service.chat_messages[0]
-    assert "'block_tb': 42.0" in fake_service.chat_messages[0]
+    assert final["reply"].startswith("Final BOM prepared")
+    structured_inputs = captured_contexts[0]["structured_inputs"]
+    assert structured_inputs["compute"]["ocpu"] == 48.0
+    assert structured_inputs["memory"]["gb"] == 768.0
+    assert structured_inputs["storage"]["block_tb"] == 42.0
     assert data["trace"]["bom_context_source"] == "persisted_notes"
     assert data["trace"]["review_verdict"] == "pass"
 
