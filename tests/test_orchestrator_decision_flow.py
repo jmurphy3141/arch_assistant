@@ -6,6 +6,7 @@ import json
 import pytest
 
 import agent.orchestrator_agent as orchestrator_agent
+import agent.archie_memory as archie_memory
 from agent import sub_agent_client
 from agent import context_store
 from agent import document_store
@@ -456,14 +457,14 @@ def test_hydrate_tool_args_builds_clean_architect_brief_for_pov_and_terraform() 
         "requires_user_confirmation": False,
     }
 
-    pov_args = orchestrator_agent._hydrate_tool_args_from_context(
+    pov_args = archie_memory._hydrate_tool_args_from_context(
         tool_name="generate_pov",
         args={"feedback": "Draft the POV.\n\n[Decision Context]\nsecret\n[End Decision Context]"},
         context=context,
         decision_context=decision_context,
         user_message="Draft the POV.",
     )
-    tf_args = orchestrator_agent._hydrate_tool_args_from_context(
+    tf_args = archie_memory._hydrate_tool_args_from_context(
         tool_name="generate_terraform",
         args={"prompt": "Create Terraform.\n\n[Injected Skill Guidance]\nsecret\n[End Skill Guidance]"},
         context=context,
@@ -493,7 +494,7 @@ def test_generate_pov_from_sparse_notes_with_context_produces_draft(monkeypatch)
         return ("POV v1 saved. Key: pov/pov-sparse/v1.md", "pov/pov-sparse/v1.md", {})
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -1334,12 +1335,12 @@ def test_components_scope_and_region_aliases_auto_fill_from_context() -> None:
         },
     )
 
-    component_answer, component_basis, component_confidence = orchestrator_agent._suggest_answer_for_question(
+    component_answer, component_basis, component_confidence = archie_memory._suggest_answer_for_question(
         {"question_id": "components.scope", "question": "What major OCI components should be shown?"},
         context=ctx,
         user_message="Use all components.",
     )
-    region_answer, _region_basis, region_confidence = orchestrator_agent._suggest_answer_for_question(
+    region_answer, _region_basis, region_confidence = archie_memory._suggest_answer_for_question(
         {"question_id": "regions.mode", "question": "Should I assume single-region, multi-AD, or multi-region?"},
         context=ctx,
         user_message="Create the diagram.",
@@ -1918,7 +1919,7 @@ def test_specialist_memory_contract_applies_to_all_generation_tools(monkeypatch)
         )
 
     for tool_name, args in captured.items():
-        primary = orchestrator_agent._tool_primary_input_key(tool_name)
+        primary = archie_memory._tool_primary_input_key(tool_name)
         assert isinstance(args.get("_memory_snapshot"), dict), tool_name
         assert args.get("_memory_snapshot_hash"), tool_name
         assert primary and "[Archie Canonical Memory]" in args[primary], tool_name
@@ -1946,7 +1947,7 @@ def test_bom_handoff_builds_structured_inputs_from_kr1_memory() -> None:
         },
     )
 
-    prepared = orchestrator_agent._prepare_bom_tool_args(
+    prepared = archie_memory._prepare_bom_tool_args(
         args={"prompt": "Generate the BOM XLSX"},
         user_message="Generate the BOM XLSX",
         context=ctx,
@@ -1989,7 +1990,7 @@ def test_bom_handoff_oci_native_approval_overrides_vxrail_history() -> None:
         },
     )
 
-    prepared = orchestrator_agent._prepare_bom_tool_args(
+    prepared = archie_memory._prepare_bom_tool_args(
         args={"prompt": "Prior recommendation: migrate to OCI native services. Generate the BOM XLSX"},
         user_message="approve, we need the bom and diagram for the OCI native option",
         context=ctx,
@@ -2095,7 +2096,7 @@ def test_bom_handoff_recovers_block_storage_from_prior_context_text() -> None:
         },
     )
 
-    prepared = orchestrator_agent._prepare_bom_tool_args(
+    prepared = archie_memory._prepare_bom_tool_args(
         args={
             "prompt": (
                 "Updated primary option: 64 OCPU, 1.12TB RAM, "
@@ -2128,7 +2129,7 @@ def test_bom_handoff_treats_large_tb_ram_as_gb_typo() -> None:
         },
     )
 
-    prepared = orchestrator_agent._prepare_bom_tool_args(
+    prepared = archie_memory._prepare_bom_tool_args(
         args={"prompt": "we need 64 ocpu and 1150TB of ram with 44 TB block storage"},
         user_message="we need 64 ocpu and 1150TB of ram",
         context=ctx,
@@ -2952,7 +2953,7 @@ def test_deliverable_requests_invoke_only_matching_specialist(monkeypatch, messa
         return (f"{tool_name} completed", f"{tool_name}/artifact" if tool_name != "generate_bom" else "", {})
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
-    monkeypatch.setattr(orchestrator_agent, "_terraform_scope_details_are_bounded", lambda **_kwargs: True)
+    monkeypatch.setattr(archie_memory, "_terraform_scope_details_are_bounded", lambda **_kwargs: True)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
