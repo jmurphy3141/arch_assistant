@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 import agent.orchestrator_agent as orchestrator_agent
+import agent.archie_loop as archie_loop
 import agent.archie_memory as archie_memory
 from agent.persistence_objectstore import InMemoryObjectStore
 
@@ -50,7 +51,7 @@ def test_run_turn_refinement_flow_0_to_3(monkeypatch, fail_count: int):
     ]
     critic_iter = iter(critic_sequence)
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes present")
     monkeypatch.setattr(archie_memory, "_pov_has_sufficient_context", lambda **_kwargs: True)
     monkeypatch.setattr(
