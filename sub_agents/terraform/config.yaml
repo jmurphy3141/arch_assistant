@@ -1,0 +1,6 @@
+name: terraform
+port: 8087
+llm:
+  model_id: ""    # set to code-optimised model OCID when available; falls back to default
+  max_tokens: 6000
+  temperature: 0.2

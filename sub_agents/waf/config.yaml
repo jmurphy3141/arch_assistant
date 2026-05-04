@@ -1,0 +1,6 @@
+name: waf
+port: 8086
+llm:
+  model_id: ""
+  max_tokens: 4000
+  temperature: 0.5
