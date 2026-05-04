@@ -47,7 +47,7 @@ from agent.reference_architecture import (
     select_reference_architecture,
     select_standards_bundle,
 )
-from agent.sub_agent_client import call_sub_agent
+from agent import sub_agent_client
 
 logger = logging.getLogger(__name__)
 _PENDING_UPDATE_WORKFLOWS: dict[str, dict[str, Any]] = {}
@@ -1452,7 +1452,7 @@ async def _execute_tool_core(
             clean_request=feedback or "Generate a customer POV from current engagement context.",
             architect_brief=dict(args.get("_architect_brief", {}) or {}),
         )
-        response = await call_sub_agent(
+        response = await sub_agent_client.call_sub_agent(
             "pov",
             task,
             {
@@ -1486,7 +1486,7 @@ async def _execute_tool_core(
             clean_request=feedback or "Run an OCI Well-Architected Framework review for the current architecture.",
             architect_brief=dict(args.get("_architect_brief", {}) or {}),
         )
-        response = await call_sub_agent(
+        response = await sub_agent_client.call_sub_agent(
             "waf",
             task,
             {
@@ -1516,7 +1516,7 @@ async def _execute_tool_core(
             clean_request=feedback or "Generate a Joint Engagement Plan from current engagement context.",
             architect_brief=dict(args.get("_architect_brief", {}) or {}),
         )
-        response = await call_sub_agent(
+        response = await sub_agent_client.call_sub_agent(
             "jep",
             task,
             {
@@ -1562,7 +1562,7 @@ async def _execute_tool_core(
             clean_request=raw_prompt or str(args.get("_user_request_text", "") or "Generate Terraform for the current architecture."),
             architect_brief=dict(args.get("_architect_brief", {}) or {}),
         )
-        response = await call_sub_agent(
+        response = await sub_agent_client.call_sub_agent(
             "terraform",
             task,
             {
@@ -1671,7 +1671,7 @@ async def _execute_bom_tool_request(
         prompt = "Generate a BOM from current request context."
     structured_inputs = args.get("inputs") if isinstance(args.get("inputs"), dict) else {}
     use_structured_inputs = bool(structured_inputs)
-    a2a_response = await call_sub_agent(
+    a2a_response = await sub_agent_client.call_sub_agent(
         "bom",
         prompt,
         {
@@ -7003,7 +7003,7 @@ async def _post_diagram_a2a_task(
     notes = str(inputs.get("notes") or payload.get("task") or "")
     context = str(inputs.get("context") or "")
     task = "\n\n".join(part for part in (notes.strip(), context.strip()) if part)
-    response = await call_sub_agent(
+    response = await sub_agent_client.call_sub_agent(
         "diagram",
         task or "Generate a diagram for this engagement.",
         {

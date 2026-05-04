@@ -8,6 +8,7 @@ import pytest
 
 import agent.orchestrator_agent as orchestrator_agent
 from agent import context_store
+from agent import sub_agent_client
 from agent.persistence_objectstore import InMemoryObjectStore
 
 
@@ -302,39 +303,16 @@ def test_diagram_request_forces_tool_when_llm_freewrites_mermaid(monkeypatch) ->
 
 
 def test_call_generate_diagram_surfaces_clarification_questions(monkeypatch) -> None:
-    class _FakeResponse:
-        def json(self):
-            return {
-                "task_id": "task-123",
-                "status": "need_clarification",
-                "outputs": {
-                    "questions": [
-                        {
-                            "id": "regions.count",
-                            "question": "How many OCI regions should this cover?",
-                            "blocking": True,
-                        }
-                    ]
-                },
-            }
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "diagram"
+        assert task.startswith("Need a drawio diagram.")
+        return {
+            "status": "needs_input",
+            "result": '[{"id":"regions.count","question":"How many OCI regions should this cover?","blocking":true}]',
+            "trace": {"trace_id": trace_id},
+        }
 
-    class _FakeAsyncClient:
-        def __init__(self, timeout):
-            assert timeout == 180
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def post(self, url, json):
-            assert url == "http://localhost:8080/api/a2a/task"
-            assert json["skill"] == "generate_diagram"
-            assert json["inputs"]["notes"] == "Need a drawio diagram."
-            return _FakeResponse()
-
-    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, key, result_data = asyncio.run(
         orchestrator_agent._call_generate_diagram(
@@ -354,30 +332,14 @@ def test_call_generate_diagram_surfaces_clarification_questions(monkeypatch) -> 
 def test_call_generate_diagram_strips_injected_guidance_from_notes(monkeypatch) -> None:
     seen = {}
 
-    class _FakeResponse:
-        def json(self):
-            return {
-                "task_id": "task-456",
-                "status": "ok",
-                "outputs": {"object_key": "agent3/acme/arch/v1/diagram.drawio"},
-            }
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        seen["name"] = name
+        seen["task"] = task
+        seen["engagement_context"] = engagement_context or {}
+        seen["trace_id"] = trace_id
+        return {"status": "ok", "result": "<mxfile />", "trace": {"trace_id": trace_id}}
 
-    class _FakeAsyncClient:
-        def __init__(self, timeout):
-            assert timeout == 180
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def post(self, url, json):
-            seen["url"] = url
-            seen["payload"] = json
-            return _FakeResponse()
-
-    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, key, result_data = asyncio.run(
         orchestrator_agent._call_generate_diagram(
@@ -401,15 +363,15 @@ def test_call_generate_diagram_strips_injected_guidance_from_notes(monkeypatch) 
         )
     )
 
-    assert seen["url"] == "http://localhost:8080/api/a2a/task"
-    assert seen["payload"]["inputs"]["notes"] == "Need a rough diagram from meeting notes."
-    assert "Decision Context" not in seen["payload"]["inputs"]["notes"]
-    assert "load balancer database internet" not in seen["payload"]["inputs"]["notes"]
-    assert "Assumption mode requested" in seen["payload"]["inputs"]["context"]
-    assert key == "agent3/acme/arch/v1/diagram.drawio"
+    assert seen["name"] == "diagram"
+    assert seen["task"].startswith("Need a rough diagram from meeting notes.")
+    assert "Decision Context" not in seen["task"]
+    assert "load balancer database internet" not in seen["task"]
+    assert "Assumption mode requested" in seen["task"]
+    assert key == ""
     assert result_data["diagram_recovery_status"] == "none"
     assert result_data["backend_error_message"] == ""
-    assert summary == "Diagram generated. Key: agent3/acme/arch/v1/diagram.drawio"
+    assert summary.startswith("Diagram generated (task ")
 
 
 def test_call_generate_diagram_retries_with_assumptions_and_preserves_backend_error(monkeypatch) -> None:
@@ -432,29 +394,15 @@ def test_call_generate_diagram_retries_with_assumptions_and_preserves_backend_er
         ]
     )
 
-    class _FakeResponse:
-        def __init__(self, body):
-            self._body = body
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "diagram"
+        seen_payloads.append({"task": task, "engagement_context": engagement_context or {}, "trace_id": trace_id})
+        body = next(responses)
+        if body["status"] == "ok":
+            return {"status": "ok", "result": "<mxfile />", "trace": body["outputs"]}
+        return {"status": "error", "result": body["error_message"], "trace": {}}
 
-        def json(self):
-            return self._body
-
-    class _FakeAsyncClient:
-        def __init__(self, timeout):
-            assert timeout == 180
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def post(self, url, json):
-            assert url == "http://localhost:8080/api/a2a/task"
-            seen_payloads.append(json)
-            return _FakeResponse(next(responses))
-
-    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, key, result_data = asyncio.run(
         orchestrator_agent._call_generate_diagram(
@@ -475,9 +423,9 @@ def test_call_generate_diagram_retries_with_assumptions_and_preserves_backend_er
     )
 
     assert len(seen_payloads) == 2
-    assert "bounded architect assumptions" in seen_payloads[1]["inputs"]["context"]
-    assert key == "agent3/acme/arch/v2/diagram.drawio"
-    assert summary == "Diagram generated. Key: agent3/acme/arch/v2/diagram.drawio"
+    assert "bounded architect assumptions" in seen_payloads[1]["task"]
+    assert key == ""
+    assert summary.startswith("Diagram generated (task ")
     assert result_data["backend_error_message"] == "Need multi-region posture, replication approach, and region pair."
     assert result_data["diagram_recovery_status"] == "retried_with_assumptions"
     assert result_data["diagram_final_disposition"] == "completed_with_assumptions"
@@ -489,30 +437,16 @@ def test_call_generate_diagram_retries_with_assumptions_and_preserves_backend_er
 
 
 def test_call_generate_diagram_turns_unrecoverable_error_into_actionable_reply(monkeypatch) -> None:
-    class _FakeResponse:
-        def json(self):
-            return {
-                "task_id": "task-2",
-                "status": "error",
-                "error_message": "Cross-region invariant violation: active-active with a single writable database is unsupported.",
-            }
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "diagram"
+        assert "active-active" in task.lower()
+        return {
+            "status": "error",
+            "result": "Cross-region invariant violation: active-active with a single writable database is unsupported.",
+            "trace": {"trace_id": trace_id},
+        }
 
-    class _FakeAsyncClient:
-        def __init__(self, timeout):
-            assert timeout == 180
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def post(self, url, json):
-            assert url == "http://localhost:8080/api/a2a/task"
-            assert "active-active" in json["inputs"]["notes"].lower()
-            return _FakeResponse()
-
-    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, key, result_data = asyncio.run(
         orchestrator_agent._call_generate_diagram(
@@ -532,30 +466,16 @@ def test_call_generate_diagram_turns_unrecoverable_error_into_actionable_reply(m
 
 
 def test_call_generate_diagram_error_can_request_concrete_clarification(monkeypatch) -> None:
-    class _FakeResponse:
-        def json(self):
-            return {
-                "task_id": "task-clarify-after-error",
-                "status": "error",
-                "error_message": "Insufficient topology detail to build the diagram.",
-            }
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "diagram"
+        assert task.startswith("Need a diagram.")
+        return {
+            "status": "error",
+            "result": "Insufficient topology detail to build the diagram.",
+            "trace": {"trace_id": trace_id},
+        }
 
-    class _FakeAsyncClient:
-        def __init__(self, timeout):
-            assert timeout == 180
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def post(self, url, json):
-            assert url == "http://localhost:8080/api/a2a/task"
-            assert json["inputs"]["notes"] == "Need a diagram."
-            return _FakeResponse()
-
-    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, key, result_data = asyncio.run(
         orchestrator_agent._call_generate_diagram(
