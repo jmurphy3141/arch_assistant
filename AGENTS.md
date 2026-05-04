@@ -51,6 +51,9 @@ with `PLAN.md`, stop and flag it — do not improvise.
   orchestration glue.
 - `agent/orchestrator_agent.py`: Agent 0 chat routing, specialist mode routing,
   and high-level workflow decisions.
+- `agent/archie_memory.py`: canonical Archie memory/context assembly, BOM
+  handoff hydration, specialist-question management, and memory contract
+  enforcement used by the orchestrator.
 - `agent/document_store.py`: generated artifacts and document persistence.
 - `agent/context_store.py`: per-client/customer context and uploaded note state.
 - `agent/orchestrator_skill_engine.py`: skill loading/execution support for
@@ -80,9 +83,10 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - Decision Context is generated per turn, persisted to context, injected into
   skills, passed to governor evaluation, included in traces, and recorded in
   the Decision Log.
-- Canonical Archie memory is refreshed after user turns, saved notes, and
-  specialist results. Specialist tool arguments include `_memory_snapshot`,
-  and final specialist prompts must contain `[Archie Canonical Memory]`.
+- Canonical Archie memory is assembled and enforced in `agent/archie_memory.py`,
+  then refreshed after user turns, saved notes, and specialist results.
+  Specialist tool arguments include `_memory_snapshot`, and final specialist
+  prompts must contain `[Archie Canonical Memory]`.
 - Management Summary rendering is deterministic and consolidates applied
   skills, refinements, governor/critic summary, tradeoffs, artifact refs, and
   checkpoint status.

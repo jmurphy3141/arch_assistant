@@ -7,6 +7,7 @@ import types
 import pytest
 
 import agent.orchestrator_agent as orchestrator_agent
+import agent.archie_memory as archie_memory
 from agent import context_store
 from agent import sub_agent_client
 from agent.persistence_objectstore import InMemoryObjectStore
@@ -70,7 +71,7 @@ def test_parallel_pov_jep_fast_path_returns_deterministic_tool_summary(monkeypat
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_args, **_kwargs: "notes exist and milestones captured",
     )
@@ -188,7 +189,7 @@ def test_sparse_notes_bom_and_diagram_request_runs_both_and_merges_checkpoint(mo
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_args, **_kwargs: "notes exist and milestones captured",
     )
@@ -242,7 +243,7 @@ def test_plain_bom_and_diagram_wording_still_triggers_parallel_fast_path(monkeyp
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_args, **_kwargs: "notes exist and milestones captured",
     )

@@ -12,6 +12,7 @@ from agent import sub_agent_client
 from agent.drawio_inspector import inspect_drawio_xml
 from agent.persistence_objectstore import InMemoryObjectStore
 import agent.orchestrator_agent as orchestrator_agent
+import agent.archie_memory as archie_memory
 from agent import skill_loader
 
 
@@ -52,7 +53,7 @@ def test_execute_tool_routes_to_langgraph_specialists(monkeypatch):
 
     monkeypatch.setattr(langgraph_specialists, "execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_args, **_kwargs: "notes captured for customer",
     )
@@ -360,7 +361,7 @@ def test_orchestrator_gates_unrequested_generation_tools(monkeypatch):
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_args, **_kwargs: "diagram exists with baseline architecture",
     )
@@ -485,7 +486,7 @@ def test_orchestrator_runs_pov_jep_in_parallel(monkeypatch):
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_args, **_kwargs: "notes captured for customer",
     )
@@ -614,7 +615,7 @@ def test_bom_diagram_pair_does_not_treat_scenario_prompt_as_ungrounded_followup(
         raise AssertionError("Scenario workflow should not call the planner LLM")
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -711,7 +712,7 @@ def test_fresh_generation_request_supersedes_stale_specialist_checkpoint(monkeyp
         raise AssertionError("Fresh workflow should not answer the stale checkpoint or call the planner LLM")
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -759,7 +760,7 @@ def test_orchestrator_blocks_completion_when_postflight_fails(monkeypatch):
     def _text_runner(_prompt: str, _system_message: str) -> str:
         return '{"tool": "generate_pov", "args": {}}'
 
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
 
     result = asyncio.run(
@@ -791,7 +792,7 @@ def test_orchestrator_blocks_preflight_and_skips_tool_execution(monkeypatch):
         return '{"tool": "generate_diagram", "args": {}}'
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "")
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1098,7 +1099,7 @@ def test_orchestrator_critic_refines_once(monkeypatch):
     )
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -1174,7 +1175,7 @@ def test_execute_tool_diagram_trace_includes_reference_metadata(monkeypatch):
         return ("Diagram generated. Key: diagrams/acme/v1/diagram.drawio", "diagrams/acme/v1/diagram.drawio", {})
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
     monkeypatch.setattr(
         orchestrator_agent,
         "_build_expert_mode_metadata",
@@ -1238,7 +1239,7 @@ def test_execute_tool_diagram_trace_preserves_backend_error_metadata(monkeypatch
         )
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
 
     summary, key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -1307,7 +1308,7 @@ def test_execute_tool_diagram_artifact_review_retries_missing_bm_split_fd(monkey
         )
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
     summary, key, data = asyncio.run(
@@ -1373,7 +1374,7 @@ def test_execute_tool_diagram_retry_promotes_ocvs_review_feedback_to_user_notes(
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_a, **_k: "OCVS migration from VMware/VxRail to OCI Dedicated VMware Solution.",
     )
@@ -1444,7 +1445,7 @@ def test_execute_tool_diagram_auto_answers_ha_ads_for_explicit_bm_fd_request(mon
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_a, **_k: "OCVS migration from VMware/VxRail to OCI Dedicated VMware Solution.",
     )
@@ -1501,7 +1502,7 @@ def test_execute_tool_diagram_artifact_review_blocks_after_failed_retry(monkeypa
         return (f"Diagram generated. Key: {key}", key, {"render_manifest": {"node_count": 3}})
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
     summary, key, data = asyncio.run(
@@ -1586,7 +1587,7 @@ def test_execute_tool_bom_expert_review_blocks_undersized_retry(monkeypatch):
         )
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
     summary, key, data = asyncio.run(
@@ -1633,7 +1634,7 @@ def test_execute_tool_bom_expert_review_passes_matching_sizing(monkeypatch):
         )
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
     summary, key, data = asyncio.run(
@@ -1689,7 +1690,7 @@ def test_orchestrator_critic_respects_max_refinements(monkeypatch):
     )
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -1725,7 +1726,7 @@ def test_orchestrator_critic_fail_open_on_error(monkeypatch):
         return ("POV v1 saved. Key: pov/acme/v1.md", "pov/acme/v1.md", {})
 
     monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
