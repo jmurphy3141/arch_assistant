@@ -36,6 +36,7 @@ import agent.context_store as context_store
 import agent.decision_context as decision_context_builder
 import agent.jep_lifecycle as jep_lifecycle
 from agent import critic_agent
+import agent.hat_engine as hat_engine
 from agent.drawio_inspector import inspect_drawio_xml
 from agent.orchestrator_skill_engine import (
     OrchestratorSkillDecision,
@@ -118,6 +119,29 @@ Tool contracts:
 - get_document {"type": "pov" | "jep" | "waf"}
 """
 
+
+def _system_message_with_hat_tools(hat_tools: list[dict]) -> str:
+    if not hat_tools:
+        return ORCHESTRATOR_SYSTEM_MSG
+    names: list[str] = []
+    for tool in hat_tools:
+        function = tool.get("function", {}) if isinstance(tool, dict) else {}
+        name = str(function.get("name", "") or "").strip()
+        if name:
+            names.append(name)
+    if not names:
+        return ORCHESTRATOR_SYSTEM_MSG
+    contracts = "\n".join(f"- {name} {{}}" for name in names)
+    return (
+        ORCHESTRATOR_SYSTEM_MSG.rstrip()
+        + "\n\nHat tools:\n"
+        + "- use_hat_X activates an expert hat before the next reasoning round.\n"
+        + "- drop_hat_X deactivates an active expert hat.\n"
+        + contracts
+        + "\n"
+    )
+
+
 _SKILL_ENGINE = OrchestratorSkillEngine()
 _ARCHITECTURE_TOOLS = {
     "generate_diagram",
@@ -183,6 +207,12 @@ async def run_turn(
         }
     """
     from agent.notifications import notify
+
+    _active_hats: list[str] = []
+    _hat_rounds: dict[str, int] = {}
+    loaded_hats = hat_engine.load_hats()
+    hat_tools = hat_engine.get_hat_tool_definitions()
+    orchestrator_system_msg = _system_message_with_hat_tools(hat_tools)
 
     # Load conversation state
     history = document_store.load_conversation_history(store, customer_id)
@@ -843,11 +873,18 @@ async def run_turn(
 
     if not forced_reply:
         for _iteration in range(max_tool_iterations):
+            if _active_hats:
+                for _h in _active_hats:
+                    _hat_rounds[_h] = _hat_rounds.get(_h, 0) + 1
+                stale = hat_engine.warn_stale_hats(_active_hats, _hat_rounds)
+                if stale:
+                    logger.warning("Stale hats (active > 5 rounds): %s", stale)
+            prompt_for_llm = hat_engine.inject_hats(prompt, _active_hats)
             raw = await asyncio.to_thread(
                 _call_text_runner,
                 text_runner,
-                prompt,
-                ORCHESTRATOR_SYSTEM_MSG,
+                prompt_for_llm,
+                orchestrator_system_msg,
                 "orchestrator",
             )
             tool_call = _parse_tool_call(raw)
@@ -887,6 +924,72 @@ async def run_turn(
 
             tool_name = tool_call.get("tool", "")
             tool_args = tool_call.get("args", {})
+            if tool_name.startswith("use_hat_"):
+                hat_name = tool_name[len("use_hat_"):]
+                if hat_name in loaded_hats:
+                    _active_hats = hat_engine.apply_hat(_active_hats, hat_name)
+                result_summary = f"Hat '{hat_name}' activated."
+                result_data = {"hat": hat_name, "action": "activated"}
+                tool_calls.append(
+                    {
+                        "tool": tool_name,
+                        "args": tool_args,
+                        "result_summary": result_summary,
+                        "result_data": result_data,
+                        "artifact_key": "",
+                    }
+                )
+                new_turns.append(
+                    {
+                        "role": "assistant",
+                        "content": json.dumps(tool_call, separators=(",", ":")),
+                        "timestamp": _now(),
+                        "tool_call": tool_call,
+                    }
+                )
+                new_turns.append(
+                    {
+                        "role": "tool",
+                        "tool": tool_name,
+                        "result_summary": result_summary,
+                        "timestamp": _now(),
+                    }
+                )
+                prompt = _append_tool_result(prompt, tool_name, result_summary)
+                continue
+            if tool_name.startswith("drop_hat_"):
+                hat_name = tool_name[len("drop_hat_"):]
+                _active_hats = hat_engine.drop_hat(_active_hats, hat_name)
+                _hat_rounds.pop(hat_name, None)
+                result_summary = f"Hat '{hat_name}' deactivated."
+                result_data = {"hat": hat_name, "action": "deactivated"}
+                tool_calls.append(
+                    {
+                        "tool": tool_name,
+                        "args": tool_args,
+                        "result_summary": result_summary,
+                        "result_data": result_data,
+                        "artifact_key": "",
+                    }
+                )
+                new_turns.append(
+                    {
+                        "role": "assistant",
+                        "content": json.dumps(tool_call, separators=(",", ":")),
+                        "timestamp": _now(),
+                        "tool_call": tool_call,
+                    }
+                )
+                new_turns.append(
+                    {
+                        "role": "tool",
+                        "tool": tool_name,
+                        "result_summary": result_summary,
+                        "timestamp": _now(),
+                    }
+                )
+                prompt = _append_tool_result(prompt, tool_name, result_summary)
+                continue
             if (
                 tool_name.startswith("generate_")
                 and not requested_tools
@@ -988,11 +1091,15 @@ async def run_turn(
                 reply = _build_parallel_reply(tool_calls, decision_context=decision_context)
             else:
                 # Cap reached without a plain-text response — ask LLM for a summary
+                prompt_for_llm = hat_engine.inject_hats(
+                    prompt + "\n\nProvide a brief summary of what was accomplished.",
+                    _active_hats,
+                )
                 raw = await asyncio.to_thread(
                     _call_text_runner,
                     text_runner,
-                    prompt + "\n\nProvide a brief summary of what was accomplished.",
-                    ORCHESTRATOR_SYSTEM_MSG,
+                    prompt_for_llm,
+                    orchestrator_system_msg,
                     "orchestrator",
                 )
                 reply = raw.strip()
