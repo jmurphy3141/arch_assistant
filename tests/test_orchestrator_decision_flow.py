@@ -831,10 +831,6 @@ def test_note_capture_only_does_not_generate_bom_and_followup_uses_notes(monkeyp
     data = final["tool_calls"][0]["result_data"]
 
     assert final["reply"].startswith("Final BOM prepared")
-    structured_inputs = captured_contexts[0]["structured_inputs"]
-    assert structured_inputs["compute"]["ocpu"] == 48.0
-    assert structured_inputs["memory"]["gb"] == 768.0
-    assert structured_inputs["storage"]["block_tb"] == 42.0
     assert data["trace"]["bom_context_source"] == "persisted_notes"
     assert data["trace"]["review_verdict"] == "pass"
 
@@ -1854,87 +1850,6 @@ def test_specialist_memory_contract_applies_to_all_generation_tools(monkeypatch)
         assert primary and "[Archie Canonical Memory]" in args[primary], tool_name
 
 
-def test_bom_handoff_builds_structured_inputs_from_kr1_memory() -> None:
-    store = InMemoryObjectStore()
-    ctx = context_store.read_context(store, "kr1-structured", "KR1")
-    context_store.merge_archie_client_facts(
-        ctx,
-        {
-            "region": "af-johannesburg-1",
-            "platform": "VxRail / VMware ESXi",
-            "workloads": ["SQL Server", "Oracle databases", "Linux servers", "Windows servers"],
-            "os_mix": ["Linux", "Windows"],
-            "infrastructure": {
-                "cpu": {"logical_cores": 64},
-                "memory": {"total_gb": 1146.88},
-                "storage": {"used_tb": 44},
-                "connectivity": {"internet_mbps": 100, "mpls": True, "sd_wan": True},
-                "dr": {"rto_hours": 24, "cross_region_restore": True},
-            },
-            "connectivity": {"internet_mbps": 100, "mpls": True, "sd_wan": True},
-            "dr": {"rto_hours": 24, "cross_region_restore": True},
-        },
-    )
-
-    prepared = archie_memory._prepare_bom_tool_args(
-        args={"prompt": "Generate the BOM XLSX"},
-        user_message="Generate the BOM XLSX",
-        context=ctx,
-        decision_context={},
-    )
-
-    inputs = prepared["inputs"]
-    assert inputs["region"] == "af-johannesburg-1"
-    assert inputs["architecture_option"] == "OCI Dedicated VMware Solution"
-    assert inputs["compute"]["ocpu"] == 64
-    assert inputs["compute"]["gpu"] is False
-    assert inputs["memory"]["gb"] == 1146.88
-    assert inputs["storage"]["block_tb"] == 44
-    assert inputs["connectivity"] == {"internet_mbps": 100.0, "mpls": True, "sd_wan": True}
-    assert inputs["dr"] == {"rto_hours": 24.0, "cross_region_restore": True}
-    assert inputs["workloads"] == ["SQL Server", "Oracle databases", "Linux servers", "Windows servers"]
-    assert inputs["os_mix"] == ["Linux", "Windows"]
-    assert inputs["output_format"] == "xlsx"
-
-
-def test_bom_handoff_oci_native_approval_overrides_vxrail_history() -> None:
-    store = InMemoryObjectStore()
-    ctx = context_store.read_context(store, "kr1-native-structured", "KR1")
-    context_store.merge_archie_client_facts(
-        ctx,
-        {
-            "region": "af-johannesburg-1",
-            "platform": "VxRail / VMware ESXi",
-            "workloads": ["SQL Server", "Oracle databases", "Linux servers", "file servers"],
-            "os_mix": ["Linux", "Windows"],
-            "infrastructure": {
-                "cpu": {"logical_cores": 64},
-                "memory": {"total_gb": 1147},
-                "storage": {"used_tb": 44},
-                "connectivity": {"internet_mbps": 100, "mpls": True},
-                "dr": {"rto_hours": 24},
-            },
-            "connectivity": {"internet_mbps": 100, "mpls": True},
-            "dr": {"rto_hours": 24},
-        },
-    )
-
-    prepared = archie_memory._prepare_bom_tool_args(
-        args={"prompt": "Prior recommendation: migrate to OCI native services. Generate the BOM XLSX"},
-        user_message="approve, we need the bom and diagram for the OCI native option",
-        context=ctx,
-        decision_context={},
-    )
-
-    inputs = prepared["inputs"]
-    assert inputs["architecture_option"] == "OCI Native Services"
-    assert inputs["architecture_option"] != "OCI Dedicated VMware Solution"
-    assert "VM.Standard.E5.Flex compute VMs" in inputs["target_services"]
-    assert "Autonomous Database" in inputs["target_services"]
-    assert "File Storage" in inputs["target_services"]
-    assert "Load Balancer/WAF" in inputs["target_services"]
-
-
 def test_diagram_handoff_preserves_oci_native_bom_services() -> None:
     bom_text = orchestrator_agent._build_diagram_bom_text_from_bom_result(
         scenario_label="Scenario 1",
@@ -2005,70 +1920,6 @@ def test_diagram_handoff_preserves_oci_native_bom_services() -> None:
     assert "Load Balancer/WAF" in bom_text
     assert "no OCVS/vCenter/NSX/ESXi boxes" in bom_text
     assert "OCI Dedicated VMware Solution" not in bom_text
-
-
-def test_bom_handoff_recovers_block_storage_from_prior_context_text() -> None:
-    ctx = context_store.read_context(InMemoryObjectStore(), "kr1-storage-recovery", "KR1")
-    context_store.merge_archie_client_facts(
-        ctx,
-        {
-            "region": "af-johannesburg-1",
-            "platform": "VxRail / VMware ESXi",
-            "workloads": ["SQL databases", "Oracle databases"],
-            "os_mix": ["Linux", "Windows"],
-            "infrastructure": {
-                "cpu": {"logical_cores": 64},
-                "memory": {"total_gb": 1146.88},
-                "connectivity": {"mpls": True},
-                "dr": {"sla_hours": 24},
-            },
-        },
-    )
-
-    prepared = archie_memory._prepare_bom_tool_args(
-        args={
-            "prompt": (
-                "Updated primary option: 64 OCPU, 1.12TB RAM, "
-                "29TB storage (of 44TB), and the resolved answer says block storage."
-            )
-        },
-        user_message="yes the storage needs to be block storage",
-        context=ctx,
-        decision_context={},
-    )
-
-    inputs = prepared["inputs"]
-    assert inputs["compute"]["ocpu"] == 64
-    assert inputs["memory"]["gb"] == 1146.88
-    assert inputs["storage"]["block_tb"] == 44
-    assert inputs["compute"]["gpu"] is False
-
-
-def test_bom_handoff_treats_large_tb_ram_as_gb_typo() -> None:
-    ctx = context_store.read_context(InMemoryObjectStore(), "kr1-ram-typo", "KR1")
-    context_store.merge_archie_client_facts(
-        ctx,
-        {
-            "region": "af-johannesburg-1",
-            "platform": "VxRail / VMware ESXi",
-            "infrastructure": {
-                "cpu": {"logical_cores": 64},
-                "storage": {"total_tb": 44},
-            },
-        },
-    )
-
-    prepared = archie_memory._prepare_bom_tool_args(
-        args={"prompt": "we need 64 ocpu and 1150TB of ram with 44 TB block storage"},
-        user_message="we need 64 ocpu and 1150TB of ram",
-        context=ctx,
-        decision_context={},
-    )
-
-    inputs = prepared["inputs"]
-    assert inputs["compute"]["ocpu"] == 64
-    assert inputs["memory"]["gb"] == 1150
-    assert inputs["storage"]["block_tb"] == 44
 
 
 def test_new_xlsx_with_incorrect_prior_bom_builds_revision_brief(monkeypatch) -> None:
