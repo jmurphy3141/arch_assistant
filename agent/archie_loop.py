@@ -220,6 +220,7 @@ async def run_turn(
     from agent.notifications import notify
 
     _active_hats: list[str] = []
+    _hat_rounds: dict[str, int] = {}
     loaded_hats = hat_engine.load_hats()
     hat_tools = hat_engine.get_hat_tool_definitions()
     orchestrator_system_msg = _system_message_with_hat_tools(hat_tools)
@@ -883,6 +884,12 @@ async def run_turn(
 
     if not forced_reply:
         for _iteration in range(max_tool_iterations):
+            if _active_hats:
+                for _h in _active_hats:
+                    _hat_rounds[_h] = _hat_rounds.get(_h, 0) + 1
+                stale = hat_engine.warn_stale_hats(_active_hats, _hat_rounds)
+                if stale:
+                    logger.warning("Stale hats (active > 5 rounds): %s", stale)
             prompt_for_llm = hat_engine.inject_hats(prompt, _active_hats)
             raw = await asyncio.to_thread(
                 _call_text_runner,
@@ -930,8 +937,8 @@ async def run_turn(
             tool_args = tool_call.get("args", {})
             if tool_name.startswith("use_hat_"):
                 hat_name = tool_name[len("use_hat_"):]
-                if hat_name in loaded_hats and hat_name not in _active_hats:
-                    _active_hats.append(hat_name)
+                if hat_name in loaded_hats:
+                    _active_hats = hat_engine.apply_hat(_active_hats, hat_name)
                 result_summary = f"Hat '{hat_name}' activated."
                 result_data = {"hat": hat_name, "action": "activated"}
                 tool_calls.append(
@@ -963,8 +970,8 @@ async def run_turn(
                 continue
             if tool_name.startswith("drop_hat_"):
                 hat_name = tool_name[len("drop_hat_"):]
-                if hat_name in _active_hats:
-                    _active_hats.remove(hat_name)
+                _active_hats = hat_engine.drop_hat(_active_hats, hat_name)
+                _hat_rounds.pop(hat_name, None)
                 result_summary = f"Hat '{hat_name}' deactivated."
                 result_data = {"hat": hat_name, "action": "deactivated"}
                 tool_calls.append(
