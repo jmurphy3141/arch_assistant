@@ -2574,7 +2574,7 @@ def _diagram_actual_text(result_data: dict[str, Any]) -> str:
         json.dumps(result_data.get("draw_dict", {}) or {}, ensure_ascii=True, sort_keys=True).lower(),
         json.dumps(result_data.get("spec", {}) or {}, ensure_ascii=True, sort_keys=True).lower(),
     ]
-    return "\n".join(part for part in parts if part.strip())
+    return "\n".join(part for part in parts if part.strip()).lower()
 
 
 def _count_actual_bm_nodes(result_data: dict[str, Any]) -> int:
