@@ -8,21 +8,21 @@ import drawing_agent_server as srv
 from drawing_agent_server import _run_orchestrator_turn, OrchestratorChatRequest
 from agent.bom_parser import ServiceItem
 from agent import context_store
+from agent import sub_agent_client
 from agent.drawio_inspector import inspect_drawio_xml
 from agent.persistence_objectstore import InMemoryObjectStore
 import agent.orchestrator_agent as orchestrator_agent
-from agent import skill_loader
+import agent.archie_loop as archie_loop
+import agent.archie_memory as archie_memory
 
 
-REQUIRED_GSTACK_SKILLS = (
-    "orchestrator",
-    "orchestrator_critic",
-    "oci_waf_reviewer",
-    "oci_jep_writer",
-    "oci_bom_expert",
-    "diagram_for_oci",
-    "oci_customer_pov_writer",
-    "terraform_for_oci",
+REQUIRED_HATS = (
+    "critic.md",
+    "governor.md",
+    "diagram_builder.md",
+    "bom_reviewer.md",
+    "terraform_reviewer.md",
+    "waf_reviewer.md",
 )
 
 
@@ -41,17 +41,19 @@ def _seed_pov_context(store: InMemoryObjectStore, customer_id: str = "acme", cus
 
 
 def test_execute_tool_routes_to_langgraph_specialists(monkeypatch):
-    called = {"count": 0}
+    captured = {"count": 0}
 
-    async def _fake_execute_tool(*args, **kwargs):
-        called["count"] += 1
-        return ("adapter-result", "artifact-key")
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        captured["count"] += 1
+        captured["name"] = name
+        captured["task"] = task
+        captured["engagement_context"] = engagement_context or {}
+        captured["trace_id"] = trace_id
+        return {"status": "ok", "result": "<mxfile />", "trace": {"render_manifest": {"node_count": 1}}}
 
-    import agent.langgraph_specialists as langgraph_specialists
-
-    monkeypatch.setattr(langgraph_specialists, "execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_args, **_kwargs: "notes captured for customer",
     )
@@ -69,69 +71,54 @@ def test_execute_tool_routes_to_langgraph_specialists(monkeypatch):
         )
     )
 
-    assert called["count"] == 1
-    assert result[0] == "adapter-result"
-    assert result[1] == "artifact-key"
+    assert captured["count"] == 1
+    assert captured["name"] == "diagram"
+    assert result[0].startswith("Diagram generated")
     assert result[2].get("skill_preflight", {}).get("status") == "allow"
     assert result[2].get("skill_postflight", {}).get("status") == "allow"
 
 
-def test_diagram_graph_uses_a2a_task_endpoint(monkeypatch):
-    from agent.graphs import diagram_graph
-
+def test_diagram_tool_uses_a2a_task_endpoint(monkeypatch):
     captured = {}
 
-    class _FakeResponse:
-        def json(self):
-            return {
-                "task_id": "orch-1",
-                "status": "ok",
-                "outputs": {
-                    "object_key": "agent3/acme/arch/v1/diagram.drawio",
-                    "render_manifest": {"node_count": 6},
-                    "node_to_resource_map": {
-                        "oke_1": {"oci_type": "container engine", "layer": "compute", "label": "OKE"}
-                    },
-                    "draw_dict": {"boxes": [{"id": "app", "box_type": "_subnet_box", "tier": "app"}]},
-                    "spec": {"deployment_type": "single_ad"},
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        captured["name"] = name
+        captured["task"] = task
+        captured["engagement_context"] = engagement_context or {}
+        captured["trace_id"] = trace_id
+        return {
+            "status": "ok",
+            "result": "<mxfile />",
+            "trace": {
+                "render_manifest": {"node_count": 6},
+                "node_to_resource_map": {
+                    "oke_1": {"oci_type": "container engine", "layer": "compute", "label": "OKE"}
                 },
-            }
+                "draw_dict": {"boxes": [{"id": "app", "box_type": "_subnet_box", "tier": "app"}]},
+                "spec": {"deployment_type": "single_ad"},
+            },
+        }
 
-    class _FakeClient:
-        def __init__(self, *args, **kwargs):
-            _ = (args, kwargs)
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
-        async def post(self, url, json):
-            captured["url"] = url
-            captured["json"] = json
-            return _FakeResponse()
-
-    import httpx
-
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, key, result_data = asyncio.run(
-        diagram_graph.run(
-            args={"bom_text": "Generate an OKE diagram", "_standards_bundle_version": "2026.04.24"},
+        orchestrator_agent._execute_tool_core(
+            "generate_diagram",
+            {"bom_text": "Generate an OKE diagram", "_standards_bundle_version": "2026.04.24"},
             customer_id="acme",
+            customer_name="ACME Corp",
+            store=InMemoryObjectStore(),
+            text_runner=_dummy_text_runner,
             a2a_base_url="http://localhost:8080",
+            specialist_mode="legacy",
         )
     )
 
-    assert captured["url"] == "http://localhost:8080/api/a2a/task"
-    assert captured["json"]["skill"] == "generate_diagram"
-    assert captured["json"]["inputs"]["notes"] == "Generate an OKE diagram"
-    assert summary == "Diagram generated. Key: agent3/acme/arch/v1/diagram.drawio"
-    assert key == "agent3/acme/arch/v1/diagram.drawio"
-    assert result_data["render_manifest"]["node_count"] == 6
-    assert "node_to_resource_map" in result_data
+    assert captured["name"] == "diagram"
+    assert captured["task"].startswith("Generate an OKE diagram")
+    assert summary.startswith("Diagram generated")
+    assert key == ""
+    assert result_data["drawio_xml"] == "<mxfile />"
 
 
 def test_diagram_pipeline_applies_ocvs_bm_x9_fd_local_overlay(monkeypatch, tmp_path):
@@ -247,7 +234,21 @@ def test_run_orchestrator_turn_passes_specialist_mode(monkeypatch):
     assert captured["max_refinements"] == 3
 
 
-def test_generate_terraform_langgraph_mode_returns_blocking_questions():
+def test_generate_terraform_langgraph_mode_uses_a2a_path(monkeypatch):
+    captured = {}
+
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        captured["name"] = name
+        captured["task"] = task
+        return {
+            "status": "ok",
+            "result": '{"main_tf": "resource \\"oci_core_vcn\\" \\"main\\" {}"}',
+            "summary": "Terraform generation completed",
+            "trace": {},
+        }
+
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
+
     result = asyncio.run(
         orchestrator_agent._execute_tool(
             "generate_terraform",
@@ -261,30 +262,25 @@ def test_generate_terraform_langgraph_mode_returns_blocking_questions():
         )
     )
 
-    assert "Terraform generation is gated until an architecture diagram/definition exists." in result[0]
+    assert captured["name"] == "terraform"
+    assert "secure VCN" in captured["task"]
+    assert "Terraform bundle" in result[0]
     assert isinstance(result[2], dict)
-    assert result[2].get("skill_decision", {}).get("status") == "block"
 
 
-def test_run_orchestrator_turn_falls_back_to_legacy_on_langgraph_error(monkeypatch):
-    import agent.langgraph_orchestrator as langgraph_orchestrator
-
-    async def _broken_langgraph(**_kwargs):
-        raise RuntimeError("langgraph failed")
-
+def test_run_orchestrator_turn_ignores_deprecated_langgraph_flag(monkeypatch):
     captured = {}
 
-    async def _fake_legacy_run_turn(**kwargs):
+    async def _fake_run_turn(**kwargs):
         captured.update(kwargs)
         return {
-            "reply": "legacy-fallback-ok",
+            "reply": "orchestrator-ok",
             "tool_calls": [],
             "artifacts": {},
             "history_length": 1,
         }
 
-    monkeypatch.setattr(langgraph_orchestrator, "run_turn", _broken_langgraph)
-    monkeypatch.setattr(orchestrator_agent, "run_turn", _fake_legacy_run_turn)
+    monkeypatch.setattr(orchestrator_agent, "run_turn", _fake_run_turn)
 
     req = OrchestratorChatRequest(
         customer_id="acme",
@@ -304,41 +300,7 @@ def test_run_orchestrator_turn_falls_back_to_legacy_on_langgraph_error(monkeypat
         )
     )
 
-    assert result["reply"] == "legacy-fallback-ok"
-    assert captured["specialist_mode"] == "legacy"
-
-
-def test_langgraph_orchestrator_module_falls_back_when_langgraph_unavailable(monkeypatch):
-    import agent.langgraph_orchestrator as langgraph_orchestrator
-
-    captured = {}
-
-    async def _fake_legacy_run_turn(**kwargs):
-        captured.update(kwargs)
-        return {
-            "reply": "legacy-path",
-            "tool_calls": [],
-            "artifacts": {},
-            "history_length": 1,
-        }
-
-    monkeypatch.setattr(langgraph_orchestrator, "_HAS_LANGGRAPH", False)
-    monkeypatch.setattr(orchestrator_agent, "run_turn", _fake_legacy_run_turn)
-
-    result = asyncio.run(
-        langgraph_orchestrator.run_turn(
-            customer_id="acme",
-            customer_name="ACME Corp",
-            user_message="hi",
-            store=InMemoryObjectStore(),
-            text_runner=_dummy_text_runner,
-            a2a_base_url="http://localhost:8080",
-            max_tool_iterations=5,
-            specialist_mode="langgraph",
-        )
-    )
-
-    assert result["reply"] == "legacy-path"
+    assert result["reply"] == "orchestrator-ok"
     assert captured["specialist_mode"] == "langgraph"
 
 
@@ -375,9 +337,9 @@ def test_orchestrator_gates_unrequested_generation_tools(monkeypatch):
         llm_calls["count"] += 1
         return '{"tool": "generate_terraform", "args": {"prompt":"now create terraform"}}'
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_args, **_kwargs: "diagram exists with baseline architecture",
     )
@@ -458,7 +420,7 @@ def test_orchestrator_change_request_confirmation_executes_in_order(monkeypatch)
         calls.append(tool_name)
         return (f"{tool_name}-ok", "", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -500,9 +462,9 @@ def test_orchestrator_runs_pov_jep_in_parallel(monkeypatch):
         _ = (prompt, system_message)
         return "Done."
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_args, **_kwargs: "notes captured for customer",
     )
@@ -561,7 +523,7 @@ def test_orchestrator_runs_bom_diagram_pairs_per_scenario(monkeypatch):
     def _text_runner(_prompt: str, _system_message: str) -> str:
         raise AssertionError("Paired BOM/diagram workflow should not call the planner LLM")
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -630,8 +592,8 @@ def test_bom_diagram_pair_does_not_treat_scenario_prompt_as_ungrounded_followup(
     def _text_runner(_prompt: str, _system_message: str) -> str:
         raise AssertionError("Scenario workflow should not call the planner LLM")
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -727,8 +689,8 @@ def test_fresh_generation_request_supersedes_stale_specialist_checkpoint(monkeyp
     def _text_runner(_prompt: str, _system_message: str) -> str:
         raise AssertionError("Fresh workflow should not answer the stale checkpoint or call the planner LLM")
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -764,7 +726,7 @@ def test_fresh_generation_request_supersedes_stale_specialist_checkpoint(monkeyp
     assert updated["archie"]["open_questions"] == []
 
 
-def test_orchestrator_blocks_completion_when_postflight_fails(monkeypatch):
+def test_orchestrator_allows_completion_without_skill_postflight(monkeypatch):
     calls = {"count": 0}
     store = InMemoryObjectStore()
     _seed_pov_context(store)
@@ -776,8 +738,8 @@ def test_orchestrator_blocks_completion_when_postflight_fails(monkeypatch):
     def _text_runner(_prompt: str, _system_message: str) -> str:
         return '{"tool": "generate_pov", "args": {}}'
 
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -793,8 +755,8 @@ def test_orchestrator_blocks_completion_when_postflight_fails(monkeypatch):
     )
 
     assert calls["count"] == 1
-    assert "could not verify a persisted document artifact" in result["reply"].lower()
-    assert result["artifacts"] == {}
+    assert "POV generated" in result["reply"]
+    assert result["artifacts"] == {"generate_pov": "pov/acme/v1.md"}
 
 
 def test_orchestrator_blocks_preflight_and_skips_tool_execution(monkeypatch):
@@ -807,8 +769,8 @@ def test_orchestrator_blocks_preflight_and_skips_tool_execution(monkeypatch):
     def _text_runner(_prompt: str, _system_message: str) -> str:
         return '{"tool": "generate_diagram", "args": {}}'
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "")
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -853,7 +815,7 @@ def test_orchestrator_runs_bom_diagram_waf_in_prerequisite_order(monkeypatch):
     def _text_runner(_prompt: str, _system_message: str) -> str:
         raise AssertionError("Prerequisite workflow should not call the planner LLM")
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -883,7 +845,7 @@ def test_orchestrator_runs_diagram_before_waf_without_existing_diagram(monkeypat
             return ("Diagram generated. Key: diagram.drawio", "diagram.drawio", {"render_manifest": {"node_count": 4}})
         return ("WAF review saved. Key: waf.md", "waf.md", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -910,7 +872,7 @@ def test_orchestrator_terraform_without_bounded_scope_asks_before_running(monkey
         calls.append(tool_name)
         return ("unexpected", "", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -938,7 +900,7 @@ def test_orchestrator_pov_jep_without_context_asks_before_running(monkeypatch):
         calls.append(tool_name)
         return ("unexpected", "", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -958,14 +920,12 @@ def test_orchestrator_pov_jep_without_context_asks_before_running(monkeypatch):
     assert "Management Summary" not in result["reply"]
 
 
-def test_required_gstack_skills_have_quality_and_critic_guidance():
-    specs = {spec.name: spec for spec in skill_loader.discover_skills()}
-    for name in REQUIRED_GSTACK_SKILLS:
-        spec = specs[name]
-        version = tuple(int(part) for part in str(spec.metadata.get("version", "0")).split("."))
-        assert version >= (1, 1)
-        assert spec.sections.get("Quality Bar", "").strip()
-        assert spec.sections.get("Critic Evaluation Guidance", "").strip()
+def test_required_hats_are_available():
+    hat_root = Path(__file__).resolve().parents[1] / "agent" / "hats"
+    for name in REQUIRED_HATS:
+        content = (hat_root / name).read_text(encoding="utf-8")
+        assert len(content.strip()) > 50
+        assert "hat" in content.lower()
 
 
 def test_react_prompt_includes_internal_orchestrator_self_guidance():
@@ -985,10 +945,7 @@ def test_react_prompt_includes_internal_orchestrator_self_guidance():
     assert prompt.startswith("[Internal Orchestrator Self-Guidance")
     assert "[Internal Plan]" in prompt
     assert "Requested deliverables: Architecture diagram, Well-Architected review" in prompt
-    assert "Selected skills:" in prompt
-    assert "orchestrator" in prompt
-    assert "diagram_for_oci" in prompt
-    assert "oci_waf_reviewer" in prompt
+    assert "use hats for expert review" in prompt
     assert "Relevant WAF pillars:" in prompt
 
 
@@ -1019,50 +976,45 @@ def test_react_followup_prompt_preserves_internal_orchestrator_self_guidance():
     assert followup.rstrip().endswith("ASSISTANT:")
 
 
-def test_skill_injection_applies_for_terraform_prompt():
+def test_tool_arg_enrichment_preserves_terraform_prompt_without_skill_loader():
     injected = orchestrator_agent._inject_skill_into_tool_args(
         "generate_terraform",
         {"prompt": "Build VCN"},
         user_message="Generate terraform for OCI",
     )
-    assert "terraform_for_oci" in injected.get("_skill_injected", [])
-    assert "orchestrator" in injected.get("_skill_injected", [])
-    assert "Injected Skill Guidance" in injected.get("prompt", "")
     assert "Build VCN" in injected.get("prompt", "")
-    assert injected.get("_skill_model_profile") == "terraform"
+    assert "Injected Skill Guidance" not in injected.get("prompt", "")
+    assert injected.get("_skill_injected", []) == []
 
 
-def test_skill_injection_applies_model_profile_for_pov():
+def test_tool_arg_enrichment_preserves_pov_feedback_without_skill_loader():
     injected = orchestrator_agent._inject_skill_into_tool_args(
         "generate_pov",
         {"feedback": "tighten wording"},
         user_message="Generate POV for exec stakeholder readout",
     )
-    assert "oci_customer_pov_writer" in injected.get("_skill_injected", [])
-    assert "orchestrator" in injected.get("_skill_injected", [])
-    assert injected.get("_skill_model_profile") == "pov"
+    assert injected.get("feedback") == "tighten wording"
+    assert injected.get("_skill_injected", []) == []
 
 
-def test_skill_injection_applies_model_profile_for_jep():
+def test_tool_arg_enrichment_preserves_jep_feedback_without_skill_loader():
     injected = orchestrator_agent._inject_skill_into_tool_args(
         "generate_jep",
         {"feedback": "focus milestones"},
         user_message="Generate JEP for OCI POC",
     )
-    assert "oci_jep_writer" in injected.get("_skill_injected", [])
-    assert "orchestrator" in injected.get("_skill_injected", [])
-    assert injected.get("_skill_model_profile") == "jep"
+    assert injected.get("feedback") == "focus milestones"
+    assert injected.get("_skill_injected", []) == []
 
 
-def test_skill_injection_applies_model_profile_for_waf():
+def test_tool_arg_enrichment_preserves_waf_feedback_without_skill_loader():
     injected = orchestrator_agent._inject_skill_into_tool_args(
         "generate_waf",
         {"feedback": "tighten findings"},
         user_message="Run OCI WAF review",
     )
-    assert "oci_waf_reviewer" in injected.get("_skill_injected", [])
-    assert "orchestrator" in injected.get("_skill_injected", [])
-    assert injected.get("_skill_model_profile") == "waf"
+    assert injected.get("feedback") == "tighten findings"
+    assert injected.get("_skill_injected", []) == []
 
 
 def test_runner_for_tool_uses_profile_aware_runner():
@@ -1114,8 +1066,8 @@ def test_orchestrator_critic_refines_once(monkeypatch):
         ]
     )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -1146,22 +1098,21 @@ def test_orchestrator_critic_refines_once(monkeypatch):
     assert data["trace"].get("max_refinements") == 3
 
 
-def test_skill_injection_applies_for_diagram():
+def test_tool_arg_enrichment_applies_expert_mode_for_diagram():
     injected = orchestrator_agent._inject_skill_into_tool_args(
         "generate_diagram",
         {"bom_text": "VCN with private subnet and LB"},
         user_message="Generate an OCI architecture diagram",
+        expert_mode={"enabled": True, "standards_bundle_version": "2026.04.24"},
     )
-    assert "Injected Skill Guidance" in injected.get("bom_text", "")
-    assert injected.get("_skill_injected")
-    assert "diagram_for_oci" in injected.get("_skill_injected", [])
-    assert "orchestrator" in injected.get("_skill_injected", [])
-    assert isinstance(injected.get("_skill_sections"), dict)
+    assert "Injected Skill Guidance" not in injected.get("bom_text", "")
+    assert injected.get("_standards_bundle_version") == "2026.04.24"
+    assert injected.get("_skill_injected", []) == []
 
 
 def test_execute_tool_blocks_diagram_without_selected_standards_bundle(monkeypatch):
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_loop,
         "_build_expert_mode_metadata",
         lambda **_kwargs: {"enabled": True, "reference_mode": "reference-backed"},
     )
@@ -1190,10 +1141,10 @@ def test_execute_tool_diagram_trace_includes_reference_metadata(monkeypatch):
         _ = (tool_name, args)
         return ("Diagram generated. Key: diagrams/acme/v1/diagram.drawio", "diagrams/acme/v1/diagram.drawio", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_loop,
         "_build_expert_mode_metadata",
         lambda **_kwargs: {
             "enabled": True,
@@ -1254,8 +1205,8 @@ def test_execute_tool_diagram_trace_preserves_backend_error_metadata(monkeypatch
             },
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
 
     summary, key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -1323,8 +1274,8 @@ def test_execute_tool_diagram_artifact_review_retries_missing_bm_split_fd(monkey
             {"render_manifest": {"node_count": 4}},
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
     summary, key, data = asyncio.run(
@@ -1388,9 +1339,9 @@ def test_execute_tool_diagram_retry_promotes_ocvs_review_feedback_to_user_notes(
         target_store.put(good_key, good_xml.encode("utf-8"), "text/xml")
         return (f"Diagram generated. Key: {good_key}", good_key, {"render_manifest": {"node_count": 5}})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_a, **_k: "OCVS migration from VMware/VxRail to OCI Dedicated VMware Solution.",
     )
@@ -1459,9 +1410,9 @@ def test_execute_tool_diagram_auto_answers_ha_ads_for_explicit_bm_fd_request(mon
         kwargs["store"].put(good_key, good_xml.encode("utf-8"), "text/xml")
         return (f"Diagram generated. Key: {good_key}", good_key, {"drawio_xml": good_xml})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_memory,
         "_build_context_summary_for_skills",
         lambda *_a, **_k: "OCVS migration from VMware/VxRail to OCI Dedicated VMware Solution.",
     )
@@ -1517,8 +1468,8 @@ def test_execute_tool_diagram_artifact_review_blocks_after_failed_retry(monkeypa
         kwargs["store"].put(key, bad_xml.encode("utf-8"), "text/xml")
         return (f"Diagram generated. Key: {key}", key, {"render_manifest": {"node_count": 3}})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
     summary, key, data = asyncio.run(
@@ -1562,7 +1513,7 @@ def test_diagram_revision_complaint_routes_to_diagram_without_diagram_word(monke
         calls.append((tool_name, dict(args)))
         return ("Diagram generated. Key: diagrams/acme/v2/diagram.drawio", "diagrams/acme/v2/diagram.drawio", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1602,8 +1553,8 @@ def test_execute_tool_bom_expert_review_blocks_undersized_retry(monkeypatch):
             },
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
     summary, key, data = asyncio.run(
@@ -1649,8 +1600,8 @@ def test_execute_tool_bom_expert_review_passes_matching_sizing(monkeypatch):
             },
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
     summary, key, data = asyncio.run(
@@ -1705,8 +1656,8 @@ def test_orchestrator_critic_respects_max_refinements(monkeypatch):
         ]
     )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -1741,8 +1692,8 @@ def test_orchestrator_critic_fail_open_on_error(monkeypatch):
         _ = (tool_name, args)
         return ("POV v1 saved. Key: pov/acme/v1.md", "pov/acme/v1.md", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -1767,38 +1718,14 @@ def test_orchestrator_critic_fail_open_on_error(monkeypatch):
     assert any("critic_error_fail_open" in w for w in data.get("warnings", []))
 
 
-def test_dynamic_skill_selector_prefers_tool_tag(tmp_path: Path):
-    root = tmp_path / "skills"
-    a = root / "alpha"
-    b = root / "beta"
-    a.mkdir(parents=True)
-    b.mkdir(parents=True)
-    (a / "SKILL.md").write_text(
-        "---\n"
-        "tool_tags: generate_terraform\n"
-        "model_profile: terraform\n"
-        "keywords: terraform,oci,network\n"
-        "---\n"
-        "# alpha\nterraform skill\n",
-        encoding="utf-8",
-    )
-    (b / "SKILL.md").write_text(
-        "---\n"
-        "tool_tags: generate_pov\n"
-        "model_profile: pov\n"
-        "keywords: writing,executive\n"
-        "---\n"
-        "# beta\npov skill\n",
-        encoding="utf-8",
-    )
-    selected = skill_loader.select_skills_for_call(
-        tool_name="generate_terraform",
-        user_message="Need OCI terraform networking baseline",
-        tool_args={"prompt": "build vcn"},
-        skill_root=root,
-    )
-    assert selected
-    assert selected[0].name == "alpha"
+def test_hat_tool_definitions_include_terraform_reviewer():
+    tools = archie_loop.hat_engine.get_hat_tool_definitions()
+    names = {
+        str((tool.get("function") or {}).get("name") or "")
+        for tool in tools
+        if isinstance(tool, dict)
+    }
+    assert "use_hat_terraform_reviewer" in names
 
 
 def test_parse_tool_call_accepts_tool_use_block():

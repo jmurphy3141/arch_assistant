@@ -7,7 +7,7 @@ Read this file first, then read `PLAN.md` before touching any code.
 the phase sequence, and what Codex must never do. If a task conflicts
 with `PLAN.md`, stop and flag it — do not improvise.
 
-`CLAUDE.md` is the codebase reference. `SESSION_CHECKPOINT.md` is stale — ignore it.
+`CLAUDE.md` is the codebase reference.
 
 ## Repo Snapshot
 
@@ -21,8 +21,8 @@ with `PLAN.md`, stop and flag it — do not improvise.
   injected into BOM, Diagram, WAF, Terraform, POV, and JEP prompts.
 - v1.9 completion evidence and guardrail status live in
   `docs/v1_9_status.md`.
-- Local specialist instructions live under `agent/orchestrator_skills/` and
-  `gstack_skills/`.
+- Expert hats live under `agent/hats/`; specialist services live under
+  `sub_agents/`.
 - Production service runs uvicorn on internal port `8080`.
 
 ## Read First
@@ -40,7 +40,6 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - Avoid `ui/dist/`; it is Vite build output.
 - Avoid `__pycache__/`, `.pytest_cache/`, coverage, log, and other cache/build
   output unless the task is explicitly about them.
-- Treat `SESSION_CHECKPOINT.md` as stale session residue unless requested.
 - Treat `CLAUDE.md` as historical onboarding, not the first-read source.
 - Do not scan generated `.drawio` fixtures unless layout/output behavior is the
   task.
@@ -49,19 +48,21 @@ with `PLAN.md`, stop and flag it — do not improvise.
 
 - `drawing_agent_server.py`: FastAPI app, API routes, static UI serving, server
   orchestration glue.
-- `agent/orchestrator_agent.py`: Agent 0 chat routing, specialist mode routing,
-  and high-level workflow decisions.
+- `agent/orchestrator_agent.py`: thin compatibility shim for existing Agent 0
+  imports.
+- `agent/archie_loop.py`: ReAct loop, tool dispatch, intent classification
+  (moved here from orchestrator_agent.py in Phase 2).
+- `agent/archie_memory.py`: context assembly, memory enforcement, BOM
+  hydration, and specialist-question management.
+- `agent/hat_engine.py`: loads markdown hats and exposes hat activation tools
+  for Archie.
+- `agent/safety_rules.py`: thin deterministic safety guard for hard blocks.
 - `agent/document_store.py`: generated artifacts and document persistence.
 - `agent/context_store.py`: per-client/customer context and uploaded note state.
-- `agent/orchestrator_skill_engine.py`: skill loading/execution support for
-  orchestrator skills.
 - `agent/decision_context.py`: per-turn Decision Context extraction,
   constraint tags, and deterministic summaries.
-- `agent/governor_agent.py`: deterministic governor/critic evaluation,
-  security and cost guardrails, checkpoint/block metadata.
 - `agent/bom_service.py`: BOM parsing, validation, readiness, and repair flows.
 - `agent/jep_lifecycle.py`: JEP draft/review lifecycle state.
-- `agent/graphs/`: graph helpers for diagram, WAF, POV, JEP, and Terraform.
 - `ui/src/App.tsx`: tab shell and top-level UI state.
 - `ui/src/components/ChatInterface.tsx`: chat experience and Agent 0 surface.
 - `ui/src/api/client.ts`: browser API client and endpoint contracts.
@@ -73,23 +74,20 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - Backend API: `drawing_agent_server.py` exposes health, artifact, chat,
   generate, clarify, upload, BOM, POV, JEP, WAF, and Terraform endpoints.
 - Static UI: the backend serves the Vite build from `ui/dist/` in production.
-- Orchestrator: `agent/orchestrator_agent.py` decides whether to answer,
+- Orchestrator: `agent/archie_loop.py` decides whether to answer,
   clarify, run deterministic fast paths, or delegate to specialist workflows.
 - ReAct prompts include internal orchestrator self-guidance; deterministic fast
   paths skip ReAct by design and are not self-guidance failures.
-- Decision Context is generated per turn, persisted to context, injected into
-  skills, passed to governor evaluation, included in traces, and recorded in
-  the Decision Log.
-- Canonical Archie memory is refreshed after user turns, saved notes, and
-  specialist results. Specialist tool arguments include `_memory_snapshot`,
-  and final specialist prompts must contain `[Archie Canonical Memory]`.
-- Management Summary rendering is deterministic and consolidates applied
-  skills, refinements, governor/critic summary, tradeoffs, artifact refs, and
-  checkpoint status.
-- Governor enforcement applies deterministic rules for public ingress without
-  WAF/justification, root compartment usage, missing encryption, budget
-  overruns, high-risk assumptions with missing inputs, and requirement
-  contradictions.
+- Decision Context is generated per turn, persisted to context, included in
+  traces, and recorded in the Decision Log.
+- Canonical Archie memory is assembled and enforced in `agent/archie_memory.py`,
+  then refreshed after user turns, saved notes, and specialist results.
+  Specialist tool arguments include `_memory_snapshot`, and final specialist
+  prompts must contain `[Archie Canonical Memory]`.
+- Management Summary rendering is deterministic and consolidates refinements,
+  safety review, tradeoffs, artifact refs, and checkpoint status.
+- Safety enforcement applies deterministic hard-block rules before artifact
+  exposure.
 - Archie expert review wraps shared tool calls after specialist execution and
   before artifact exposure. It records the selected lens, sanitized specialist
   input, review verdict/findings, and retry history in
@@ -105,8 +103,9 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - Persistence: document/context stores write local artifacts and can integrate
   with OCI Object Storage through `agent/object_store_oci.py` and related
   persistence modules.
-- Specialist skills: markdown `SKILL.md` files encode domain workflows for
-  BOM, diagram, POV, JEP, WAF, Terraform, critic, QA, and review behavior.
+- Hats: markdown files in `agent/hats/` encode Archie's expert lenses.
+- Sub-agents: `sub_agents/` contains independent A2A services for BOM,
+  diagram, POV, JEP, WAF, and Terraform.
 - React UI: `App.tsx` coordinates tabs; form components call typed helpers in
   `ui/src/api/client.ts`; chat lives in `ChatInterface.tsx`.
 - Tests: Python tests use `pytest.ini` markers; UI tests use Vitest,
@@ -132,9 +131,9 @@ python3.11 -m compileall drawing_agent_server.py agent tests
 # Focused pytest examples
 pytest tests/test_specialist_mode_routing.py -v
 pytest tests/test_orchestrator_decision_flow.py -v
-pytest tests/test_orchestrator_parallel_reply.py tests/test_governor_agent.py tests/test_decision_context.py -v
+pytest tests/test_orchestrator_parallel_reply.py tests/test_decision_context.py -v
 pytest tests/test_bom_service.py tests/test_bom_api.py -v
-pytest tests/test_terraform_api.py tests/test_terraform_graph.py -v
+pytest tests/test_terraform_api.py -v
 pytest tests/test_jep_lifecycle.py -v
 
 # Repo gates

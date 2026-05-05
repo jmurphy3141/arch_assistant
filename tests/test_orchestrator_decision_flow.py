@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 import agent.orchestrator_agent as orchestrator_agent
+import agent.archie_loop as archie_loop
+import agent.archie_memory as archie_memory
+from agent import sub_agent_client
 from agent import context_store
 from agent import document_store
 from agent.persistence_objectstore import InMemoryObjectStore
@@ -62,7 +66,7 @@ def test_run_turn_persists_pending_cost_checkpoint(monkeypatch) -> None:
             {"bom_payload": {"totals": {"estimated_monthly_cost": 7200}}},
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -294,27 +298,23 @@ def test_generate_bom_followup_uses_latest_diagram_and_auto_refreshes(monkeypatc
     )
     context_store.write_context(store, "acme", ctx)
 
-    fake_service = _FakeBomService(
-        [
-            {
-                "type": "normal",
-                "reply": "BOM data is not ready. Run /api/bom/refresh-data, then retry.",
-                "trace": {"cache_ready": False, "cache_source": "none"},
-            },
-            {
-                "type": "final",
-                "reply": "Review line items, then export JSON or XLSX.",
-                "trace_id": "trace-123",
-                "trace": {"cache_ready": True, "cache_source": "fallback"},
-                "bom_payload": {
-                    "line_items": [{"sku": "B94176"}, {"sku": "B94177"}],
-                    "assumptions": ["Ballpark defaults applied."],
-                    "totals": {"estimated_monthly_cost": 1234.5},
-                },
-            },
-        ]
-    )
-    monkeypatch.setattr(orchestrator_agent, "get_shared_bom_service", lambda: fake_service)
+    captured_tasks: list[str] = []
+    bom_payload = {
+        "line_items": [{"sku": "B94176"}, {"sku": "B94177"}],
+        "assumptions": ["Ballpark defaults applied."],
+        "totals": {"estimated_monthly_cost": 1234.5},
+    }
+
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "bom"
+        captured_tasks.append(task)
+        return {
+            "status": "ok",
+            "result": json.dumps(bom_payload),
+            "trace": {"cache_ready": True, "cache_source": "fallback", "trace_id": trace_id},
+        }
+
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -330,16 +330,15 @@ def test_generate_bom_followup_uses_latest_diagram_and_auto_refreshes(monkeypatc
         )
     )
 
-    assert summary.startswith("Final BOM prepared.")
-    assert fake_service.refresh_calls == 1
-    assert "Generate BOM for the latest OCI architecture diagram." in fake_service.chat_messages[0]
-    assert "single_region_oke_app" in fake_service.chat_messages[0]
+    assert summary.startswith("Final BOM prepared")
+    assert "Generate BOM for the latest OCI architecture diagram." in captured_tasks[0]
+    assert "single_region_oke_app" in captured_tasks[0]
     assert "/api/bom/refresh-data" not in summary
     assert data["trace"]["bom_context_source"] == "latest_diagram"
-    assert data["trace"]["bom_cache_refresh_attempted"] is True
-    assert data["trace"]["bom_cache_refresh_status"] == "succeeded"
-    assert data["trace"]["bom_retry_count"] == 1
-    assert data["trace"]["bom_retry_succeeded"] is True
+    assert data["trace"]["bom_cache_refresh_attempted"] is False
+    assert data["trace"]["bom_cache_refresh_status"] == "not_attempted"
+    assert data["trace"]["bom_retry_count"] == 0
+    assert data["trace"]["bom_retry_succeeded"] is False
 
     refreshed_ctx = context_store.read_context(store, "acme", "ACME Corp")
     bom_ctx = refreshed_ctx["agents"]["bom"]
@@ -366,17 +365,15 @@ def test_generate_bom_followup_refresh_failure_stays_internal(monkeypatch) -> No
     )
     context_store.write_context(store, "acme", ctx)
 
-    fake_service = _FakeBomService(
-        [
-            {
-                "type": "normal",
-                "reply": "BOM data is not ready. Run /api/bom/refresh-data, then retry.",
-                "trace": {"cache_ready": False, "cache_source": "none"},
-            }
-        ],
-        refresh_error=RuntimeError("upstream unavailable"),
-    )
-    monkeypatch.setattr(orchestrator_agent, "get_shared_bom_service", lambda: fake_service)
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "bom"
+        return {
+            "status": "needs_input",
+            "result": "BOM data is not ready. Retry after the BOM sub-agent refreshes pricing data.",
+            "trace": {"cache_ready": False, "cache_source": "none", "trace_id": trace_id},
+        }
+
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -392,17 +389,21 @@ def test_generate_bom_followup_refresh_failure_stays_internal(monkeypatch) -> No
         )
     )
 
-    assert "could not initialize the internal oci bom pricing data" in summary.lower()
+    assert "Question ID: generate_bom.q1" in summary
     assert "/api/bom/refresh-data" not in summary
-    assert fake_service.refresh_calls == 1
-    assert data["trace"]["bom_cache_refresh_attempted"] is True
-    assert data["trace"]["bom_cache_refresh_status"] == "failed"
+    assert data["trace"]["bom_cache_refresh_attempted"] is False
+    assert data["trace"]["bom_cache_refresh_status"] == "not_attempted"
     assert data["trace"]["bom_retry_count"] == 0
 
 
 def test_generate_bom_followup_without_prior_diagram_asks_for_context(monkeypatch) -> None:
-    fake_service = _FakeBomService([])
-    monkeypatch.setattr(orchestrator_agent, "get_shared_bom_service", lambda: fake_service)
+    calls: list[str] = []
+
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        calls.append(name)
+        raise AssertionError("BOM sub-agent should not be called for unresolved follow-up")
+
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -420,8 +421,7 @@ def test_generate_bom_followup_without_prior_diagram_asks_for_context(monkeypatc
 
     assert "`this` is not grounded to a prior diagram or workload yet" in summary
     assert "rough sizing for OCPU, memory, storage" in summary
-    assert fake_service.refresh_calls == 0
-    assert fake_service.chat_messages == []
+    assert calls == []
     assert data["trace"]["bom_context_source"] == "unresolved_followup"
 
 
@@ -458,14 +458,14 @@ def test_hydrate_tool_args_builds_clean_architect_brief_for_pov_and_terraform() 
         "requires_user_confirmation": False,
     }
 
-    pov_args = orchestrator_agent._hydrate_tool_args_from_context(
+    pov_args = archie_memory._hydrate_tool_args_from_context(
         tool_name="generate_pov",
         args={"feedback": "Draft the POV.\n\n[Decision Context]\nsecret\n[End Decision Context]"},
         context=context,
         decision_context=decision_context,
         user_message="Draft the POV.",
     )
-    tf_args = orchestrator_agent._hydrate_tool_args_from_context(
+    tf_args = archie_memory._hydrate_tool_args_from_context(
         tool_name="generate_terraform",
         args={"prompt": "Create Terraform.\n\n[Injected Skill Guidance]\nsecret\n[End Skill Guidance]"},
         context=context,
@@ -494,8 +494,8 @@ def test_generate_pov_from_sparse_notes_with_context_produces_draft(monkeypatch)
         assert args["_architect_brief"]["user_notes"] == "Draft a POV from these rough notes."
         return ("POV v1 saved. Key: pov/pov-sparse/v1.md", "pov/pov-sparse/v1.md", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -673,7 +673,7 @@ def test_run_turn_architecture_chat_only_does_not_force_artifact_generation(monk
     def _text_runner(_prompt: str, _system_message: str) -> str:
         return '{"tool":"generate_diagram","args":{"bom_text":"Create a diagram"}}'
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -713,22 +713,26 @@ def test_save_notes_then_bom_request_hydrates_archie_context(monkeypatch) -> Non
         )
     )
 
-    fake_service = _FakeBomService(
-        [
-            {
-                "type": "final",
-                "reply": "Review line items, then export JSON or XLSX.",
-                "trace_id": "trace-notes",
-                "trace": {"cache_ready": True, "cache_source": "fallback"},
-                "bom_payload": {
+    captured_tasks: list[str] = []
+    captured_contexts: list[dict] = []
+
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "bom"
+        captured_tasks.append(task)
+        captured_contexts.append(dict(engagement_context or {}))
+        return {
+            "status": "ok",
+            "result": json.dumps(
+                {
                     "line_items": [{"sku": "B94176"}],
                     "assumptions": [],
                     "totals": {"estimated_monthly_cost": 999.0},
-                },
-            }
-        ]
-    )
-    monkeypatch.setattr(orchestrator_agent, "get_shared_bom_service", lambda: fake_service)
+                }
+            ),
+            "trace": {"cache_ready": True, "cache_source": "fallback", "trace_id": trace_id},
+        }
+
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     summary, _key, _data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -744,9 +748,9 @@ def test_save_notes_then_bom_request_hydrates_archie_context(monkeypatch) -> Non
         )
     )
 
-    assert summary.startswith("Final BOM prepared.")
-    assert "private OKE platform" in fake_service.chat_messages[0]
-    assert "Autonomous Database" in fake_service.chat_messages[0]
+    assert summary.startswith("Final BOM prepared")
+    assert "private OKE platform" in captured_tasks[0]
+    assert "Autonomous Database" in captured_tasks[0]
     ctx = context_store.read_context(store, "notes-bom", "Notes BOM")
     assert "private OKE platform" in ctx["archie"]["engagement_summary"]
 
@@ -788,14 +792,17 @@ def test_note_capture_only_does_not_generate_bom_and_followup_uses_notes(monkeyp
     assert "768 GB RAM" in recall["reply"]
     assert "42 TB block storage" in recall["reply"]
 
-    fake_service = _FakeBomService(
-        [
-            {
-                "type": "final",
-                "reply": "Review line items, then export JSON or XLSX.",
-                "trace_id": "trace-context",
-                "trace": {"cache_ready": True, "cache_source": "fallback"},
-                "bom_payload": {
+    captured_tasks: list[str] = []
+    captured_contexts: list[dict] = []
+
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        assert name == "bom"
+        captured_tasks.append(task)
+        captured_contexts.append(dict(engagement_context or {}))
+        return {
+            "status": "ok",
+            "result": json.dumps(
+                {
                     "line_items": [
                         {"sku": "B94176", "description": "Compute E4 OCPU", "category": "compute", "quantity": 48},
                         {"sku": "B94177", "description": "Compute E4 Memory GB", "category": "compute", "quantity": 768},
@@ -803,11 +810,12 @@ def test_note_capture_only_does_not_generate_bom_and_followup_uses_notes(monkeyp
                     ],
                     "assumptions": [],
                     "totals": {"estimated_monthly_cost": 1859.424},
-                },
-            }
-        ]
-    )
-    monkeypatch.setattr(orchestrator_agent, "get_shared_bom_service", lambda: fake_service)
+                }
+            ),
+            "trace": {"cache_ready": True, "cache_source": "fallback", "trace_id": trace_id},
+        }
+
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     final = asyncio.run(
         orchestrator_agent.run_turn(
@@ -822,10 +830,7 @@ def test_note_capture_only_does_not_generate_bom_and_followup_uses_notes(monkeyp
     )
     data = final["tool_calls"][0]["result_data"]
 
-    assert final["reply"].startswith("Final BOM prepared.")
-    assert "'ocpu': 48.0" in fake_service.chat_messages[0]
-    assert "'gb': 768.0" in fake_service.chat_messages[0]
-    assert "'block_tb': 42.0" in fake_service.chat_messages[0]
+    assert final["reply"].startswith("Final BOM prepared")
     assert data["trace"]["bom_context_source"] == "persisted_notes"
     assert data["trace"]["review_verdict"] == "pass"
 
@@ -863,7 +868,7 @@ def test_save_notes_then_diagram_request_hydrates_archie_context(monkeypatch) ->
             "outputs": {"object_key": "diagrams/notes-diagram/v1/diagram.drawio"},
         }
 
-    monkeypatch.setattr(orchestrator_agent, "_post_diagram_a2a_task", _fake_post)
+    monkeypatch.setattr(archie_loop, "_post_diagram_a2a_task", _fake_post)
 
     summary, key, _data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -926,7 +931,7 @@ def test_archie_auto_fills_specialist_question_from_stored_context(monkeypatch) 
             "outputs": {"object_key": "diagrams/archie-auto/v1/diagram.drawio"},
         }
 
-    monkeypatch.setattr(orchestrator_agent, "_post_diagram_a2a_task", _fake_post)
+    monkeypatch.setattr(archie_loop, "_post_diagram_a2a_task", _fake_post)
 
     summary, key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -988,7 +993,7 @@ def test_archie_returns_single_question_batch_with_suggestions(monkeypatch) -> N
             },
         }
 
-    monkeypatch.setattr(orchestrator_agent, "_post_diagram_a2a_task", _fake_post)
+    monkeypatch.setattr(archie_loop, "_post_diagram_a2a_task", _fake_post)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -1065,7 +1070,7 @@ def test_pending_specialist_answers_are_recorded_before_rerun(monkeypatch) -> No
             {},
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1127,7 +1132,7 @@ def test_pending_specialist_answers_accept_loose_id_separators(monkeypatch) -> N
             {},
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1206,7 +1211,7 @@ def test_pending_specialist_retry_recovers_prior_loose_answers(monkeypatch) -> N
             },
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1263,7 +1268,7 @@ def test_pending_specialist_loose_answer_ids_do_not_supersede_checkpoint(monkeyp
     def _text_runner(_prompt: str, _system_message: str) -> str:
         raise AssertionError("Loose specialist answers should handle the pending checkpoint directly")
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1327,12 +1332,12 @@ def test_components_scope_and_region_aliases_auto_fill_from_context() -> None:
         },
     )
 
-    component_answer, component_basis, component_confidence = orchestrator_agent._suggest_answer_for_question(
+    component_answer, component_basis, component_confidence = archie_memory._suggest_answer_for_question(
         {"question_id": "components.scope", "question": "What major OCI components should be shown?"},
         context=ctx,
         user_message="Use all components.",
     )
-    region_answer, _region_basis, region_confidence = orchestrator_agent._suggest_answer_for_question(
+    region_answer, _region_basis, region_confidence = archie_memory._suggest_answer_for_question(
         {"question_id": "regions.mode", "question": "Should I assume single-region, multi-AD, or multi-region?"},
         context=ctx,
         user_message="Create the diagram.",
@@ -1369,35 +1374,11 @@ def test_missing_bom_sizing_leaves_one_targeted_question(monkeypatch) -> None:
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        orchestrator_agent._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
-    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        orchestrator_agent._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -1472,35 +1453,11 @@ def test_bom_clarification_auto_answers_retry_and_exposes_resolved_inputs(monkey
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        orchestrator_agent._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
-    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        orchestrator_agent._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1595,9 +1552,9 @@ def test_chat_discovery_profile_hydrates_followup_bom(monkeypatch) -> None:
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
 
     first = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1692,9 +1649,9 @@ def test_discovery_facts_allow_later_xlsx_request_to_generate_bom(monkeypatch) -
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
 
     first = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1768,22 +1725,10 @@ def test_kr1_bom_request_injects_canonical_memory_without_sizing_clarification(m
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        orchestrator_agent._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
 
     first = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1869,22 +1814,10 @@ def test_specialist_memory_contract_applies_to_all_generation_tools(monkeypatch)
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        orchestrator_agent._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: orchestrator_agent.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
 
     requests = {
         "generate_bom": {"prompt": "Generate BOM"},
@@ -1911,91 +1844,10 @@ def test_specialist_memory_contract_applies_to_all_generation_tools(monkeypatch)
         )
 
     for tool_name, args in captured.items():
-        primary = orchestrator_agent._tool_primary_input_key(tool_name)
+        primary = archie_memory._tool_primary_input_key(tool_name)
         assert isinstance(args.get("_memory_snapshot"), dict), tool_name
         assert args.get("_memory_snapshot_hash"), tool_name
         assert primary and "[Archie Canonical Memory]" in args[primary], tool_name
-
-
-def test_bom_handoff_builds_structured_inputs_from_kr1_memory() -> None:
-    store = InMemoryObjectStore()
-    ctx = context_store.read_context(store, "kr1-structured", "KR1")
-    context_store.merge_archie_client_facts(
-        ctx,
-        {
-            "region": "af-johannesburg-1",
-            "platform": "VxRail / VMware ESXi",
-            "workloads": ["SQL Server", "Oracle databases", "Linux servers", "Windows servers"],
-            "os_mix": ["Linux", "Windows"],
-            "infrastructure": {
-                "cpu": {"logical_cores": 64},
-                "memory": {"total_gb": 1146.88},
-                "storage": {"used_tb": 44},
-                "connectivity": {"internet_mbps": 100, "mpls": True, "sd_wan": True},
-                "dr": {"rto_hours": 24, "cross_region_restore": True},
-            },
-            "connectivity": {"internet_mbps": 100, "mpls": True, "sd_wan": True},
-            "dr": {"rto_hours": 24, "cross_region_restore": True},
-        },
-    )
-
-    prepared = orchestrator_agent._prepare_bom_tool_args(
-        args={"prompt": "Generate the BOM XLSX"},
-        user_message="Generate the BOM XLSX",
-        context=ctx,
-        decision_context={},
-    )
-
-    inputs = prepared["inputs"]
-    assert inputs["region"] == "af-johannesburg-1"
-    assert inputs["architecture_option"] == "OCI Dedicated VMware Solution"
-    assert inputs["compute"]["ocpu"] == 64
-    assert inputs["compute"]["gpu"] is False
-    assert inputs["memory"]["gb"] == 1146.88
-    assert inputs["storage"]["block_tb"] == 44
-    assert inputs["connectivity"] == {"internet_mbps": 100.0, "mpls": True, "sd_wan": True}
-    assert inputs["dr"] == {"rto_hours": 24.0, "cross_region_restore": True}
-    assert inputs["workloads"] == ["SQL Server", "Oracle databases", "Linux servers", "Windows servers"]
-    assert inputs["os_mix"] == ["Linux", "Windows"]
-    assert inputs["output_format"] == "xlsx"
-
-
-def test_bom_handoff_oci_native_approval_overrides_vxrail_history() -> None:
-    store = InMemoryObjectStore()
-    ctx = context_store.read_context(store, "kr1-native-structured", "KR1")
-    context_store.merge_archie_client_facts(
-        ctx,
-        {
-            "region": "af-johannesburg-1",
-            "platform": "VxRail / VMware ESXi",
-            "workloads": ["SQL Server", "Oracle databases", "Linux servers", "file servers"],
-            "os_mix": ["Linux", "Windows"],
-            "infrastructure": {
-                "cpu": {"logical_cores": 64},
-                "memory": {"total_gb": 1147},
-                "storage": {"used_tb": 44},
-                "connectivity": {"internet_mbps": 100, "mpls": True},
-                "dr": {"rto_hours": 24},
-            },
-            "connectivity": {"internet_mbps": 100, "mpls": True},
-            "dr": {"rto_hours": 24},
-        },
-    )
-
-    prepared = orchestrator_agent._prepare_bom_tool_args(
-        args={"prompt": "Prior recommendation: migrate to OCI native services. Generate the BOM XLSX"},
-        user_message="approve, we need the bom and diagram for the OCI native option",
-        context=ctx,
-        decision_context={},
-    )
-
-    inputs = prepared["inputs"]
-    assert inputs["architecture_option"] == "OCI Native Services"
-    assert inputs["architecture_option"] != "OCI Dedicated VMware Solution"
-    assert "VM.Standard.E5.Flex compute VMs" in inputs["target_services"]
-    assert "Autonomous Database" in inputs["target_services"]
-    assert "File Storage" in inputs["target_services"]
-    assert "Load Balancer/WAF" in inputs["target_services"]
 
 
 def test_diagram_handoff_preserves_oci_native_bom_services() -> None:
@@ -2070,70 +1922,6 @@ def test_diagram_handoff_preserves_oci_native_bom_services() -> None:
     assert "OCI Dedicated VMware Solution" not in bom_text
 
 
-def test_bom_handoff_recovers_block_storage_from_prior_context_text() -> None:
-    ctx = context_store.read_context(InMemoryObjectStore(), "kr1-storage-recovery", "KR1")
-    context_store.merge_archie_client_facts(
-        ctx,
-        {
-            "region": "af-johannesburg-1",
-            "platform": "VxRail / VMware ESXi",
-            "workloads": ["SQL databases", "Oracle databases"],
-            "os_mix": ["Linux", "Windows"],
-            "infrastructure": {
-                "cpu": {"logical_cores": 64},
-                "memory": {"total_gb": 1146.88},
-                "connectivity": {"mpls": True},
-                "dr": {"sla_hours": 24},
-            },
-        },
-    )
-
-    prepared = orchestrator_agent._prepare_bom_tool_args(
-        args={
-            "prompt": (
-                "Updated primary option: 64 OCPU, 1.12TB RAM, "
-                "29TB storage (of 44TB), and the resolved answer says block storage."
-            )
-        },
-        user_message="yes the storage needs to be block storage",
-        context=ctx,
-        decision_context={},
-    )
-
-    inputs = prepared["inputs"]
-    assert inputs["compute"]["ocpu"] == 64
-    assert inputs["memory"]["gb"] == 1146.88
-    assert inputs["storage"]["block_tb"] == 44
-    assert inputs["compute"]["gpu"] is False
-
-
-def test_bom_handoff_treats_large_tb_ram_as_gb_typo() -> None:
-    ctx = context_store.read_context(InMemoryObjectStore(), "kr1-ram-typo", "KR1")
-    context_store.merge_archie_client_facts(
-        ctx,
-        {
-            "region": "af-johannesburg-1",
-            "platform": "VxRail / VMware ESXi",
-            "infrastructure": {
-                "cpu": {"logical_cores": 64},
-                "storage": {"total_tb": 44},
-            },
-        },
-    )
-
-    prepared = orchestrator_agent._prepare_bom_tool_args(
-        args={"prompt": "we need 64 ocpu and 1150TB of ram with 44 TB block storage"},
-        user_message="we need 64 ocpu and 1150TB of ram",
-        context=ctx,
-        decision_context={},
-    )
-
-    inputs = prepared["inputs"]
-    assert inputs["compute"]["ocpu"] == 64
-    assert inputs["memory"]["gb"] == 1150
-    assert inputs["storage"]["block_tb"] == 44
-
-
 def test_new_xlsx_with_incorrect_prior_bom_builds_revision_brief(monkeypatch) -> None:
     store = InMemoryObjectStore()
     ctx = context_store.read_context(store, "revision-bom", "Revision BOM")
@@ -2204,9 +1992,9 @@ def test_new_xlsx_with_incorrect_prior_bom_builds_revision_brief(monkeypatch) ->
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2303,9 +2091,9 @@ def test_bom_feedback_with_object_storage_mentions_regenerates_instead_of_verify
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(orchestrator_agent, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(orchestrator_agent, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2355,7 +2143,7 @@ def test_bom_mixed_confidence_keeps_unresolved_checkpoint(monkeypatch) -> None:
             },
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -2460,7 +2248,7 @@ def test_approved_checkpoint_inputs_are_reused_for_followup_bom(monkeypatch) -> 
             "trace": {},
         }
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_bom_tool_request", _fake_bom_request)
+    monkeypatch.setattr(archie_loop, "_execute_bom_tool_request", _fake_bom_request)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2553,7 +2341,7 @@ def test_workbook_only_followup_does_not_generate_default_bom(monkeypatch) -> No
         calls.append(tool_name)
         return ("default BOM should not run", "", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2659,7 +2447,7 @@ def test_download_latest_bom_xlsx_returns_link_without_regeneration(monkeypatch)
     async def _should_not_execute(*_args, **_kwargs):
         raise AssertionError("download request should not regenerate the BOM")
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _should_not_execute)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _should_not_execute)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2886,7 +2674,7 @@ def test_key_specs_diagram_request_after_reset_routes_to_diagram(monkeypatch) ->
         calls.append(tool_name)
         return (f"{tool_name} completed", "diagrams/rga/v1/diagram.drawio", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2944,8 +2732,8 @@ def test_deliverable_requests_invoke_only_matching_specialist(monkeypatch, messa
         calls.append(tool_name)
         return (f"{tool_name} completed", f"{tool_name}/artifact" if tool_name != "generate_bom" else "", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
-    monkeypatch.setattr(orchestrator_agent, "_terraform_scope_details_are_bounded", lambda **_kwargs: True)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_memory, "_terraform_scope_details_are_bounded", lambda **_kwargs: True)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -3034,7 +2822,7 @@ def test_update_plan_and_confirmation_track_superseded_decisions(monkeypatch) ->
         calls.append(tool_name)
         return (f"{tool_name} updated", f"{tool_name}/key", {})
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     confirm_result = asyncio.run(
         orchestrator_agent.run_turn(

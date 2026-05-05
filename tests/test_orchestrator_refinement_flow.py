@@ -5,6 +5,8 @@ import asyncio
 import pytest
 
 import agent.orchestrator_agent as orchestrator_agent
+import agent.archie_loop as archie_loop
+import agent.archie_memory as archie_memory
 from agent.persistence_objectstore import InMemoryObjectStore
 
 
@@ -49,9 +51,9 @@ def test_run_turn_refinement_flow_0_to_3(monkeypatch, fail_count: int):
     ]
     critic_iter = iter(critic_sequence)
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool_core", _fake_execute_tool_core)
-    monkeypatch.setattr(orchestrator_agent, "_build_context_summary_for_skills", lambda *_a, **_k: "notes present")
-    monkeypatch.setattr(orchestrator_agent, "_pov_has_sufficient_context", lambda **_kwargs: True)
+    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes present")
+    monkeypatch.setattr(archie_memory, "_pov_has_sufficient_context", lambda **_kwargs: True)
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -71,7 +73,8 @@ def test_run_turn_refinement_flow_0_to_3(monkeypatch, fail_count: int):
         )
     )
 
-    assert result["reply"] == "POV completed."
+    assert f"POV v{fail_count + 1} saved. Key: pov/acme/v{fail_count + 1}.md" in result["reply"]
+    assert "Management Summary" in result["reply"]
     assert len(result["tool_calls"]) == 1
 
     tool_call = result["tool_calls"][0]

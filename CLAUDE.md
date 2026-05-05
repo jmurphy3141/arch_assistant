@@ -15,20 +15,34 @@ User (browser UI or API)
   │
   ▼
 drawing_agent_server.py  ← FastAPI, port 8080, v1.9.1
-  │   /api/chat           → orchestrator_agent.py (Agent 0, "Archie")
+  │   /api/chat           → archie_loop.py via orchestrator_agent.py shim
   │   /upload-bom         → direct diagram pipeline
   │   /api/bom/*          → bom_service.py
   │   /api/terraform/*    → jep/pov/waf/terraform agents
   │   /health, /download
   │
-  ├─ orchestrator_agent.py   ReAct loop; dispatches internal tools:
+  ├─ orchestrator_agent.py   26-line compatibility shim for existing imports
+  ├─ archie_loop.py          ReAct loop; dispatches internal tools:
   │    generate_diagram       → diagram pipeline (A2A self-call)
   │    generate_bom           → bom_service.py
   │    generate_pov           → pov_agent.py
   │    generate_jep           → jep_agent.py
   │    generate_waf           → waf_agent.py
-  │    generate_terraform     → graphs/terraform_graph.py
+  │    generate_terraform     → sub_agents/terraform/
   │    save_notes / get_summary / get_document
+  │
+  ├─ Hat system
+  │    hat_engine.py          Loads agent/hats/*.md and exposes use_hat_* tools
+  │    hats/critic.md         Critic lens for reviewing specialist output
+  │    hats/governor.md       Guardrail lens for cost/security/quality review
+  │
+  ├─ Sub-agents
+  │    sub_agents/bom/        BOM specialist A2A service
+  │    sub_agents/diagram/    Diagram specialist A2A service
+  │    sub_agents/pov/        POV specialist A2A service
+  │    sub_agents/jep/        JEP specialist A2A service
+  │    sub_agents/waf/        WAF specialist A2A service
+  │    sub_agents/terraform/  Terraform specialist A2A service
   │
   ├─ Diagram pipeline
   │    bom_parser.py          BOM.xlsx / inline text → ServiceItem list + LLM prompt
@@ -36,12 +50,6 @@ drawing_agent_server.py  ← FastAPI, port 8080, v1.9.1
   │    intent_compiler.py     LayoutIntent → validated layout spec
   │    layout_engine.py       Spec → absolute x,y positions
   │    drawio_generator.py    Positions → flat draw.io XML
-  │
-  ├─ Skills system
-  │    gstack_skills/         Prompt-based skill cards (SKILL.md files)
-  │    orchestrator_skills/   Orchestrator-facing skill cards
-  │    skill_loader.py        Discovers + selects skills per call
-  │    orchestrator_skill_engine.py  Preflight/postflight guardrails
   │
   ├─ Reference architecture
   │    reference_architecture.py     Selects Oracle reference patterns
@@ -71,7 +79,11 @@ arch_assistant/
 ├── deploy/oci-agent.service    # systemd unit for production
 │
 ├── agent/
-│   ├── orchestrator_agent.py   # Agent 0 — the conversational brain (8,400+ lines)
+│   ├── orchestrator_agent.py   # Thin compatibility shim for Agent 0 imports
+│   ├── archie_loop.py          # Agent 0 ReAct loop, routing, and tool dispatch
+│   ├── archie_memory.py        # Memory/context assembly and enforcement helpers
+│   ├── hat_engine.py           # Loads hats and exposes hat activation tools
+│   ├── safety_rules.py         # Thin deterministic safety checks
 │   ├── bom_parser.py           # BOM → ServiceItem list + LLM prompt
 │   ├── bom_service.py          # Live OCI pricing, BOM generation, repair loop
 │   ├── bom_stub.py             # Offline stub for tests
@@ -86,8 +98,6 @@ arch_assistant/
 │   ├── diagram_waf_orchestrator.py  # Diagram + WAF combined loop
 │   ├── reference_architecture.py    # Oracle reference pattern selector
 │   ├── external_corpus_scorer.py    # Diagram quality scorer vs. corpus
-│   ├── critic_agent.py         # Quality critic for all deliverables
-│   ├── governor_agent.py       # Guardrail governor
 │   ├── context_store.py        # Per-customer working context
 │   ├── document_store.py       # Notes, docs, history, Terraform bundles
 │   ├── decision_context.py     # Assembles context snapshot for LLM calls
@@ -97,31 +107,24 @@ arch_assistant/
 │   ├── llm_inference_client.py # Direct OCI GenAI inference client (active)
 │   ├── runtime_config.py       # Reads config.yaml, resolves per-agent LLM config
 │   ├── notifications.py        # Telegram bot integration (optional)
-│   ├── skill_loader.py         # Discovers + selects SKILL.md files
-│   ├── orchestrator_skill_engine.py # Preflight/postflight skill guardrails
-│   ├── langgraph_orchestrator.py    # LangGraph wiring (thin; delegates to orchestrator_agent.py)
-│   ├── langgraph_specialists.py     # LangGraph specialist adapters
 │   ├── layout_intent.py        # LayoutIntent dataclass + validator
 │   ├── png_exporter.py         # draw.io CLI → PNG (requires CLI)
 │   ├── diagram_orchestrator.py # DEPRECATED — do not add code here
 │   │
-│   ├── graphs/                 # LangGraph state graphs
-│   │   ├── diagram_graph.py    # Thin wrapper → orchestrator_agent._call_generate_diagram
-│   │   ├── jep_graph.py
-│   │   ├── pov_graph.py
-│   │   ├── terraform_graph.py
-│   │   └── waf_graph.py
-│   │
-│   ├── orchestrator_skills/    # Orchestrator-facing skill cards (SKILL.md)
-│   │   ├── bom/, diagram/, jep/, pov/, summary_document/, terraform/, waf/
-│   │
+│   ├── hats/                   # Archie expert lenses selected as tools
+│   │   ├── critic.md, governor.md, diagram_builder.md, bom_reviewer.md
+│   │   └── terraform_reviewer.md, waf_reviewer.md
+│
 │   └── standards/
 │       └── oracle_reference_bundle.json
 │
-├── gstack_skills/              # Prompt-based specialist skill definitions
-│   ├── cso/, diagram_for_oci/, oci_bom_expert/, oci_customer_pov_writer/
-│   ├── oci_jep_writer/, oci_waf_reviewer/, orchestrator/, orchestrator_critic/
-│   ├── plan-eng-review/, qa/, review/, terraform_for_oci/
+├── sub_agents/                 # Independent A2A specialist services
+│   ├── bom/
+│   ├── diagram/
+│   ├── pov/
+│   ├── jep/
+│   ├── waf/
+│   └── terraform/
 │
 ├── ui/                         # React + Vite frontend ("Archie")
 │   ├── src/
@@ -170,11 +173,20 @@ Layout engine overrides gateway X after computing subnet bounding boxes:
 - IGW, NAT, DRG: `x = vcn_left - icon_w/2`
 - SGW: `x = vcn_right - icon_w/2`
 
-### LangGraph is nominal
-`config.yaml` has `langgraph_enabled: true` but the graph modules in `agent/graphs/` are thin wrappers that call back into `orchestrator_agent.py`. The real execution logic lives in `orchestrator_agent.py`. Do not add logic to the graph modules.
+### Archie loop and hats
+`agent/orchestrator_agent.py` is only a compatibility shim. The real Agent 0
+implementation is `agent/archie_loop.py`; memory/context helpers live in
+`agent/archie_memory.py`. Expert lenses are markdown hats in `agent/hats/`,
+loaded by `agent/hat_engine.py` and selected by Archie via `use_hat_*` tools.
 
-### Skills are prompt files
-`gstack_skills/` and `agent/orchestrator_skills/` contain `SKILL.md` files loaded at runtime by `skill_loader.py`. They are not Python — they are structured prompt cards. Add skills by adding SKILL.md files, not by modifying the skill engine.
+### Sub-agents are A2A services
+Specialists live under `sub_agents/`: BOM, diagram, POV, JEP, WAF, and
+Terraform. Archie delegates to them through `agent/sub_agent_client.py`; do not
+reintroduce in-process graph wrappers.
+
+### Deterministic safety guard
+`agent/safety_rules.py` holds the thin deterministic hard-block checks. Critic
+and governor behavior now lives in hats, not Python modules.
 
 ### The server auto-commits diagrams to git
 `config.yaml` `git_push.enabled: true` causes the production server (`opc@agent-bastion`) to commit generated `.drawio` files directly to `tests/fixtures/outputs/`. This is intentional — it enables diagram quality regression tracking. Do not disable it without understanding the test impact.
@@ -247,17 +259,15 @@ curl -X POST http://10.0.3.47:8080/upload-bom \
 
 ## Known Debt — Do Not Make Worse
 
-1. **`orchestrator_agent.py` is 8,400+ lines.** Every session that touches it makes it harder to reason about. The natural split points are: (a) conversation/memory management, (b) tool dispatch loop, (c) specialist call adapters, (d) BOM flow. Do not add more code to this file without splitting something out first.
+1. **Keep `orchestrator_agent.py` thin.** New Agent 0 work belongs in
+   `archie_loop.py` or a focused helper module, not in the compatibility shim.
 
-2. **`diagram_orchestrator.py` is deprecated.** It has a `DeprecationWarning` at the top. Do not add code to it. It should be deleted once confirmed unused.
+2. **`diagram_orchestrator.py` is deprecated.** It has a `DeprecationWarning` at
+   the top. Do not add code to it. It should be deleted once confirmed unused.
 
-3. **`config.yaml` `git_push.branch`** may be stale (currently set to `claude/webapp-fastapi-tests-sWH4S`). Update it to `main` before the next server deployment.
-
-4. **`archie-cross-path-drafting`** is an orphaned branch with unmerged work (UI rename, sparse-note drafting generalization, reference corpus, OIDC). Review before it diverges further.
-
-5. **SESSION_CHECKPOINT.md** is stale (dated 2026-04-09). Ignore it.
-
-6. **`server/` directory** is a secondary FastAPI app for OCI Object Storage proxying. It is a separate process, not part of the main server startup. Do not merge its routes into `drawing_agent_server.py`.
+3. **`server/` directory** is a secondary FastAPI app for OCI Object Storage
+   proxying. It is a separate process, not part of the main server startup. Do
+   not merge its routes into `drawing_agent_server.py`.
 
 ---
 
