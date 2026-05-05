@@ -49,8 +49,11 @@ with `PLAN.md`, stop and flag it — do not improvise.
 
 - `drawing_agent_server.py`: FastAPI app, API routes, static UI serving, server
   orchestration glue.
-- `agent/orchestrator_agent.py`: Agent 0 chat routing, specialist mode routing,
-  and high-level workflow decisions.
+- `agent/orchestrator_agent.py`: thin compatibility shim for existing Agent 0
+  imports.
+- `agent/archie_loop.py`: Agent 0 chat loop, tool execution, specialist mode
+  routing, intent classification, prompt builders, artifact replies, and
+  high-level workflow decisions.
 - `agent/archie_memory.py`: canonical Archie memory/context assembly, BOM
   handoff hydration, specialist-question management, and memory contract
   enforcement used by the orchestrator.
@@ -76,7 +79,7 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - Backend API: `drawing_agent_server.py` exposes health, artifact, chat,
   generate, clarify, upload, BOM, POV, JEP, WAF, and Terraform endpoints.
 - Static UI: the backend serves the Vite build from `ui/dist/` in production.
-- Orchestrator: `agent/orchestrator_agent.py` decides whether to answer,
+- Orchestrator: `agent/archie_loop.py` decides whether to answer,
   clarify, run deterministic fast paths, or delegate to specialist workflows.
 - ReAct prompts include internal orchestrator self-guidance; deterministic fast
   paths skip ReAct by design and are not self-guidance failures.
