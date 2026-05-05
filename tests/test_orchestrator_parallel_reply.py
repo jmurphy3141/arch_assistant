@@ -7,6 +7,7 @@ import types
 import pytest
 
 import agent.orchestrator_agent as orchestrator_agent
+import agent.archie_loop as archie_loop
 import agent.archie_memory as archie_memory
 from agent import context_store
 from agent import sub_agent_client
@@ -33,7 +34,7 @@ def test_bom_parallel_fast_path_returns_tool_summary_without_llm_freewrite(monke
             {"trace": {"type": "final"}},
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -69,7 +70,7 @@ def test_parallel_pov_jep_fast_path_returns_deterministic_tool_summary(monkeypat
             return ("JEP v3 saved. Key: jep/acme/v3.md", "jep/acme/v3.md", {})
         raise AssertionError(f"unexpected tool {tool_name}")
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
         archie_memory,
         "_build_context_summary_for_skills",
@@ -123,7 +124,7 @@ def test_diagram_bom_fast_path_routes_without_llm(monkeypatch) -> None:
             )
         raise AssertionError(f"unexpected tool {tool_name}")
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -187,7 +188,7 @@ def test_sparse_notes_bom_and_diagram_request_runs_both_and_merges_checkpoint(mo
             )
         raise AssertionError(f"unexpected tool {tool_name}")
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
         archie_memory,
         "_build_context_summary_for_skills",
@@ -241,7 +242,7 @@ def test_plain_bom_and_diagram_wording_still_triggers_parallel_fast_path(monkeyp
             )
         raise AssertionError(f"unexpected tool {tool_name}")
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
         archie_memory,
         "_build_context_summary_for_skills",
@@ -284,7 +285,7 @@ def test_diagram_request_forces_tool_when_llm_freewrites_mermaid(monkeypatch) ->
             {},
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -522,7 +523,7 @@ def test_single_diagram_reply_includes_assumptions_from_result_data(monkeypatch)
             },
         )
 
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(

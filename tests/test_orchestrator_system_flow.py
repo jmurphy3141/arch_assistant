@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import drawing_agent_server as srv
+import agent.archie_loop as archie_loop
 from agent.persistence_objectstore import InMemoryObjectStore
 
 pytestmark = pytest.mark.system
@@ -38,14 +39,13 @@ def client(monkeypatch):
 
     monkeypatch.setattr(srv, "_make_orchestrator_text_runner", lambda: fake_text_runner)
 
-    import agent.orchestrator_agent as orchestrator_agent
-
     monkeypatch.setattr(
-        orchestrator_agent,
+        archie_loop,
         "_parse_tool_call",
         lambda raw: json.loads(raw) if raw.strip().startswith("{") else None,
     )
-    monkeypatch.setattr(orchestrator_agent, "_execute_tool", fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_execute_tool", fake_execute_tool)
+    monkeypatch.setattr(archie_loop, "_engagement_context_supports_documents", lambda **_kwargs: True)
 
     with TestClient(srv.app, raise_server_exceptions=True) as tc:
         yield tc, store
@@ -76,8 +76,9 @@ def test_notes_to_orchestrator_to_artifacts_and_history(client):
 
     body = chat.json()
     assert body["status"] == "ok"
-    assert body["reply"] == "POV generated and saved."
-    assert [c["tool"] for c in body["tool_calls"]] == ["get_summary", "generate_pov"]
+    assert "POV v1 saved. Key: pov/test/v1.md" in body["reply"]
+    assert "Management Summary" in body["reply"]
+    assert [c["tool"] for c in body["tool_calls"]] == ["generate_pov"]
 
     manifest = body.get("artifact_manifest", {})
     assert isinstance(manifest.get("downloads", []), list)
@@ -86,7 +87,6 @@ def test_notes_to_orchestrator_to_artifacts_and_history(client):
     assert history.status_code == 200
     hbody = history.json()
     turns = hbody["history"]
-    assert any(t.get("role") == "tool" and t.get("tool") == "get_summary" for t in turns)
     assert any(t.get("role") == "tool" and t.get("tool") == "generate_pov" for t in turns)
 
     # Verify notes and conversation were both persisted to the shared store.
