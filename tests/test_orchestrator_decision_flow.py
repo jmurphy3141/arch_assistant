@@ -1382,31 +1382,7 @@ def test_missing_bom_sizing_leaves_one_targeted_question(monkeypatch) -> None:
     monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
     monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
     monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        archie_loop._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: archie_loop.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
     monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        archie_loop._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: archie_loop.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -1485,31 +1461,7 @@ def test_bom_clarification_auto_answers_retry_and_exposes_resolved_inputs(monkey
     monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
     monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
     monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        archie_loop._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: archie_loop.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
     monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        archie_loop._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: archie_loop.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1781,18 +1733,6 @@ def test_kr1_bom_request_injects_canonical_memory_without_sizing_clarification(m
     monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
     monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
     monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        archie_loop._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: archie_loop.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
 
     first = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1882,18 +1822,6 @@ def test_specialist_memory_contract_applies_to_all_generation_tools(monkeypatch)
     monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
     monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
     monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        archie_loop._SKILL_ENGINE,
-        "postflight_check",
-        lambda **kwargs: archie_loop.OrchestratorSkillDecision(
-            path_id=kwargs.get("path_id", ""),
-            phase="postflight",
-            status="allow",
-            reasons=[],
-            pushback_message="",
-            retry_instructions=[],
-        ),
-    )
 
     requests = {
         "generate_bom": {"prompt": "Generate BOM"},

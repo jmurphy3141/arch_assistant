@@ -6,13 +6,10 @@ from pathlib import Path
 import pytest
 
 import agent.bom_parser as bom_parser
-import agent.gstack_specialists as gstack_specialists
 import agent.jep_agent as jep_agent
 import agent.orchestrator_agent as orchestrator_agent
-import agent.orchestrator_skill_engine as orchestrator_skill_engine
 import agent.pov_agent as pov_agent
 import agent.waf_agent as waf_agent
-from agent.graphs import terraform_graph
 from tests.prompt_quality.reporting import PromptQualityRow, write_report
 
 pytestmark = [pytest.mark.prompt_static, pytest.mark.system]
@@ -39,7 +36,9 @@ def _assert_all_pass(rows: list[PromptQualityRow]) -> None:
 def test_recursive_prompt_static_contracts_cover_core_paths() -> None:
     rows: list[PromptQualityRow] = []
 
-    orch_msg = orchestrator_agent.ORCHESTRATOR_SYSTEM_MSG
+    orch_msg = orchestrator_agent._system_message_with_hat_tools(
+        orchestrator_agent.hat_engine.get_hat_tool_definitions()
+    )
     required_tools = [
         "save_notes",
         "get_summary",
@@ -55,15 +54,14 @@ def test_recursive_prompt_static_contracts_cover_core_paths() -> None:
     for tool in required_tools:
         rows.append(_row("orchestrator", "orchestrator", "root", "tool_registry", tool in orch_msg, f"tool declared: {tool}"))
 
-    preflight_src = inspect.getsource(orchestrator_skill_engine.OrchestratorSkillEngine.preflight_check)
     rows.append(
         _row(
             "orchestrator",
             "orchestrator",
             "rules",
-            "cross_agent_dependency",
-            'if path_id == "pov"' in preflight_src and "Call get_summary and retry this generation." in preflight_src,
-            "POV preflight requires notes context and summary retry guidance",
+            "hat_tooling",
+            "use_hat_X activates an expert hat" in orch_msg,
+            "orchestrator exposes hats as tool-selected expert lenses",
         )
     )
     rows.append(
@@ -71,29 +69,9 @@ def test_recursive_prompt_static_contracts_cover_core_paths() -> None:
             "orchestrator",
             "orchestrator",
             "rules",
-            "cross_agent_dependency",
-            'if path_id == "diagram"' in preflight_src and "No BOM or equivalent diagram input provided." in preflight_src,
-            "Diagram preflight blocks when BOM/context input is missing",
-        )
-    )
-    rows.append(
-        _row(
-            "orchestrator",
-            "orchestrator",
-            "rules",
-            "skill_pre_post_enforcement",
-            "run preflight and postflight skill checks" in orch_msg,
-            "orchestrator requires pre/post path validation",
-        )
-    )
-    rows.append(
-        _row(
-            "orchestrator",
-            "orchestrator",
-            "rules",
-            "skill_block_enforcement",
-            "authoritative guardrails for allow/block behavior" in orch_msg,
-            "orchestrator treats skill checks as block/allow guardrails",
+            "delegation_boundary",
+            "Never run unrelated generation paths" in orch_msg,
+            "orchestrator keeps requested scope bounded",
         )
     )
 
@@ -115,33 +93,14 @@ def test_recursive_prompt_static_contracts_cover_core_paths() -> None:
     rows.append(_row("waf", "waf", "standalone_prompt", "required_sections", "## 1. Security and Compliance" in waf_agent._STANDALONE_PROMPT_TEMPLATE and "## 5. Distributed Cloud" in waf_agent._STANDALONE_PROMPT_TEMPLATE and "**Overall:**" in waf_agent._STANDALONE_PROMPT_TEMPLATE, "WAF standalone structure enforced"))
     rows.append(_row("waf", "waf", "orchestration_prompt", "handoff_consistency", "WAF_REFINEMENT_SUGGESTIONS" in waf_agent._ORCHESTRATION_PROMPT_TEMPLATE and "draw_instruction" in waf_agent._ORCHESTRATION_PROMPT_TEMPLATE, "WAF orchestration emits machine-readable downstream handoff"))
 
-    stage_prompt_src = inspect.getsource(terraform_graph._build_stage_prompt)
-    rows.append(_row("terraform", "terraform", "stage_prompt", "tool_contract", '"ok": true' in stage_prompt_src and '"output":' in stage_prompt_src and '"questions":' in stage_prompt_src, "Terraform stage contract enforces ok/output/questions"))
+    sub_agent_root = Path(__file__).resolve().parents[1] / "sub_agents"
+    for name in ["bom", "diagram", "pov", "jep", "waf", "terraform"]:
+        prompt_path = sub_agent_root / name / "system_prompt.md"
+        content = prompt_path.read_text(encoding="utf-8")
+        rows.append(_row(name, name, "system_prompt", "required_sections", len(content.strip()) > 50 and "#" in content, f"sub-agent prompt present: {prompt_path}"))
 
-    gstack_src = inspect.getsource(gstack_specialists.run_terraform_gstack_chain)
-    rows.append(_row("terraform", "terraform", "stage_chain", "handoff_consistency", 'stage_order = ["plan-eng-review", "review", "cso", "qa"]' in gstack_src, "Terraform stages are recursively chained in fixed order"))
-
-    skill_root = Path(__file__).resolve().parents[1] / "gstack_skills"
-    for stage in ["plan-eng-review", "review", "cso", "qa"]:
-        skill_path = skill_root / stage / "SKILL.md"
-        content = skill_path.read_text(encoding="utf-8")
-        rows.append(_row("terraform", "terraform", stage, "required_sections", len(content.strip()) > 50 and "#" in content, f"skill present: {skill_path}"))
-
-    orch_skill_root = Path(__file__).resolve().parents[1] / "agent" / "orchestrator_skills"
-    required_orch_paths = ["diagram", "pov", "jep", "waf", "terraform", "summary_document"]
-    required_sections = [
-        "## Intent",
-        "## Preconditions",
-        "## Input Validation Rules",
-        "## Expected Output Contract",
-        "## Pushback Rules",
-        "## Escalation Questions Template",
-        "## Retry Guidance",
-    ]
-    for path_id in required_orch_paths:
-        skill_path = orch_skill_root / path_id / "SKILL.md"
-        content = skill_path.read_text(encoding="utf-8")
-        rows.append(_row(path_id, "orchestrator_skill", "skill_file", "required_sections", all(s in content for s in required_sections), f"orchestrator skill contract present: {skill_path}"))
+    terraform_prompt = (sub_agent_root / "terraform" / "system_prompt.md").read_text(encoding="utf-8")
+    rows.append(_row("terraform", "terraform", "system_prompt", "tool_contract", "main_tf" in terraform_prompt and "variables_tf" in terraform_prompt and "outputs_tf" in terraform_prompt, "Terraform sub-agent prompt defines file output contract"))
 
     report_path = write_report(rows, "prompt_static_report.json")
     rows.append(_row("prompt_static", "framework", "artifact", "report_written", report_path.exists(), f"static report artifact: {report_path}"))

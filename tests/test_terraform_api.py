@@ -16,25 +16,21 @@ def _setup_client():
 def test_terraform_generate_and_download(monkeypatch):
     store = _setup_client()
 
-    async def _fake_run(*, args, skill_root, text_runner):
-        _ = (args, skill_root, text_runner)
-        return (
-            "Terraform generation completed",
-            "",
-            {
-                "ok": True,
-                "stages": [{"stage": "qa", "ok": True, "questions": [], "output_preview": "ok"}],
-                "blocking_questions": [],
-                "files": {
-                    "main.tf": 'resource "oci_core_vcn" "main" {}',
-                    "providers.tf": 'terraform { required_version = ">= 1.6.0" }',
-                },
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        _ = (task, engagement_context, trace_id)
+        assert name == "terraform"
+        return {
+            "status": "ok",
+            "result": {
+                "main.tf": 'resource "oci_core_vcn" "main" {}',
+                "providers.tf": 'terraform { required_version = ">= 1.6.0" }',
             },
-        )
+            "summary": "Terraform generation completed",
+            "trace": {},
+        }
 
-    import agent.graphs.terraform_graph as terraform_graph
-
-    monkeypatch.setattr(terraform_graph, "run", _fake_run)
+    from agent import sub_agent_client
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     with TestClient(app, raise_server_exceptions=True) as client:
         resp = client.post(
@@ -67,21 +63,18 @@ def test_terraform_generate_and_download(monkeypatch):
 def test_terraform_generate_clarification(monkeypatch):
     _setup_client()
 
-    async def _fake_run(*, args, skill_root, text_runner):
-        _ = (args, skill_root, text_runner)
-        return (
-            "Terraform generation blocked at stage `review`.",
-            "",
-            {
-                "ok": False,
-                "stages": [{"stage": "review", "ok": False, "questions": ["Need VCN CIDR"], "output_preview": ""}],
-                "blocking_questions": ["Need VCN CIDR"],
-            },
-        )
+    async def _fake_call_sub_agent(name, task, engagement_context=None, trace_id=""):
+        _ = (task, engagement_context, trace_id)
+        assert name == "terraform"
+        return {
+            "status": "needs_input",
+            "result": {},
+            "summary": "Terraform generation blocked at stage `review`.",
+            "blocking_questions": ["Need VCN CIDR"],
+        }
 
-    import agent.graphs.terraform_graph as terraform_graph
-
-    monkeypatch.setattr(terraform_graph, "run", _fake_run)
+    from agent import sub_agent_client
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
 
     with TestClient(app, raise_server_exceptions=True) as client:
         resp = client.post(
