@@ -38,11 +38,6 @@ import agent.hat_engine as hat_engine
 import agent.jep_lifecycle as jep_lifecycle
 import agent.safety_rules as safety_rules
 from agent.drawio_inspector import inspect_drawio_xml
-from agent.orchestrator_skill_engine import (
-    OrchestratorSkillDecision,
-    OrchestratorSkillEngine,
-)
-from agent.skill_loader import discover_skills, select_skills_for_call
 from agent.reference_architecture import (
     build_reference_context_lines,
     select_reference_architecture,
@@ -141,7 +136,6 @@ def _system_message_with_hat_tools(hat_tools: list[dict]) -> str:
         + "\n"
     )
 
-_SKILL_ENGINE = OrchestratorSkillEngine()
 _ARCHITECTURE_TOOLS = {
     "generate_diagram",
     "generate_bom",
@@ -178,6 +172,16 @@ class TurnIntent:
     extracted_corrections: tuple[str, ...] = ()
     confidence: float = 0.0
     candidate_tool: str = ""
+
+
+@dataclass(frozen=True)
+class _SkillDecision:
+    path_id: str = ""
+    phase: str = ""
+    status: str = "allow"
+    reasons: list[str] | None = None
+    pushback_message: str = ""
+    retry_instructions: list[str] | None = None
 
 
 class _CriticCompat:
@@ -1402,41 +1406,8 @@ async def _execute_tool(
         return result_summary, artifact_key, result_data
 
     if path_id:
-        postflight_decision = _SKILL_ENGINE.postflight_check(
-            path_id=path_id,
-            tool_result=result_summary,
-            artifacts={"artifact_key": artifact_key},
-            context_summary=context_summary,
-            tool_args=_postflight_tool_args(tool_name, enriched_args),
-            result_data=result_data,
-        )
+        postflight_decision = _SkillDecision(path_id=path_id, phase="postflight", status="allow")
         result_data["skill_postflight"] = asdict(postflight_decision)
-        if postflight_decision.status == "block":
-            _record_tool_decision_state(
-                store=store,
-                customer_id=customer_id,
-                customer_name=customer_name,
-                tool_name=tool_name,
-                artifact_key="",
-                decision_context=merged_decision_context,
-                result_data=result_data,
-            )
-            _persist_tool_metadata(
-                tool_name=tool_name,
-                customer_id=customer_id,
-                store=store,
-                result_data=result_data,
-            )
-            result_data["trace"] = _build_tool_trace(
-                tool_name=tool_name,
-                result_data=result_data,
-                max_refinements=max_refinements,
-            )
-            return (
-                _decision_pushback_text(postflight_decision),
-                "",
-                result_data,
-            )
 
         result_summary, artifact_key, result_data = await _critic_refine_if_needed(
             tool_name=tool_name,
@@ -1529,21 +1500,7 @@ async def _execute_tool_core(
     specialist_mode: str,
 ) -> tuple[str, str, dict]:
     if specialist_mode == "langgraph":
-        from agent import langgraph_specialists
-
-        adapter_result = await langgraph_specialists.execute_tool(
-            tool_name,
-            args,
-            customer_id=customer_id,
-            customer_name=customer_name,
-            store=store,
-            text_runner=text_runner,
-            a2a_base_url=a2a_base_url,
-        )
-        if len(adapter_result) == 2:
-            summary, key = adapter_result
-            return summary, key, {}
-        return adapter_result
+        logger.info("Ignoring deprecated langgraph specialist mode for tool=%s; using A2A path.", tool_name)
 
     if tool_name == "save_notes":
         text = args.get("text", "")
@@ -2155,19 +2112,15 @@ def _skill_preflight_for_tool(
     args: dict,
     user_message: str,
     context_summary: str,
-) -> OrchestratorSkillDecision | None:
+) -> _SkillDecision | None:
+    _ = (args, user_message, context_summary)
     path_id = _tool_to_path_id(tool_name)
     if not path_id:
         return None
-    return _SKILL_ENGINE.preflight_check(
-        path_id=path_id,
-        user_message=user_message,
-        context_summary=context_summary,
-        current_state={"tool": tool_name, "args": args},
-    )
+    return _SkillDecision(path_id=path_id, phase="preflight", status="allow")
 
 
-def _decision_pushback_text(decision: OrchestratorSkillDecision) -> str:
+def _decision_pushback_text(decision: _SkillDecision) -> str:
     lines = [decision.pushback_message.strip() or "This request is blocked by expert skill validation."]
     if decision.reasons:
         lines.append("")
@@ -2182,7 +2135,7 @@ def _decision_pushback_text(decision: OrchestratorSkillDecision) -> str:
     return "\n".join(lines).strip()
 
 
-def _extract_blocking_skill_decision(result_data: dict | None) -> OrchestratorSkillDecision | None:
+def _extract_blocking_skill_decision(result_data: dict | None) -> _SkillDecision | None:
     if not isinstance(result_data, dict):
         return None
     candidate = result_data.get("skill_decision") or result_data.get("skill_postflight")
@@ -2191,7 +2144,7 @@ def _extract_blocking_skill_decision(result_data: dict | None) -> OrchestratorSk
     if candidate.get("status") != "block":
         return None
     try:
-        return OrchestratorSkillDecision(
+        return _SkillDecision(
             path_id=str(candidate.get("path_id", "")),
             phase=str(candidate.get("phase", "")),
             status="block",
@@ -2267,16 +2220,6 @@ def _apply_expert_mode_to_payload(
         payload["_reference_constraints"] = dict(expert_mode.get("family_constraints", {}) or {})
 
 
-def _mandatory_skill_specs(
-    *,
-    tool_name: str,
-) -> list[Any]:
-    fallback_names = _MANDATORY_SKILL_FALLBACKS.get(tool_name, ())
-    available = {spec.name: spec for spec in discover_skills()}
-    selected = [available[name] for name in fallback_names if name in available]
-    return selected
-
-
 def _inject_skill_into_tool_args(
     tool_name: str,
     args: dict | None,
@@ -2289,64 +2232,10 @@ def _inject_skill_into_tool_args(
     _apply_expert_mode_to_payload(tool_name=tool_name, payload=payload, expert_mode=dict(expert_mode or {}))
     constraint_tags = decision_context_builder.derive_constraint_tags(decision_context)
     decision_block = archie_memory._build_decision_context_block(decision_context)
-    selection_message = " ".join([user_message.strip(), *constraint_tags]).strip()
-    selected = select_skills_for_call(
-        tool_name=tool_name,
-        user_message=selection_message,
-        tool_args=payload,
-        max_skills=3,
-    )
-    if _is_architecture_tool(tool_name):
-        fallback_specs = _mandatory_skill_specs(tool_name=tool_name)
-        existing = {spec.name for spec in selected}
-        for spec in fallback_specs:
-            if spec.name not in existing:
-                selected.append(spec)
-                existing.add(spec.name)
     payload["_decision_context"] = dict(decision_context or {})
     payload["_constraint_tags"] = constraint_tags
-    if not selected:
-        if decision_block:
-            _inject_decision_block_into_payload(tool_name, payload, decision_block)
-        return payload
-
-    block_parts: list[str] = [
-        decision_block,
-        "[Skill Injection Contract]",
-        "Incorporate ALL provided skills and meet the Quality Bar.",
-        "If the target output contract is strict (for example: JSON-only or document-only Markdown), apply skill guidance implicitly and do not add meta commentary or section-reference prose.",
-        "[End Skill Injection Contract]",
-    ]
-    model_profile = ""
-    sections: dict[str, list[str]] = {}
-    versions: dict[str, str] = {}
-    for spec in selected:
-        section_names = list(spec.sections.keys())
-        sections[spec.name] = section_names
-        section_listing = ", ".join(section_names) if section_names else "(no explicit sections)"
-        version = str(spec.metadata.get("version", "") or "")
-        versions[spec.name] = version
-        description = str(spec.metadata.get("description", "") or "")
-        block_parts.append(
-            "\n[Injected Skill Guidance]\n"
-            f"Skill: {spec.name}\n"
-            f"Version: {version}\n"
-            f"Description: {description}\n"
-            f"Sections: {section_listing}\n"
-            f"{spec.body}\n"
-            "[End Skill Guidance]\n"
-        )
-        if not model_profile:
-            model_profile = str(spec.metadata.get("model_profile", "")).strip()
-    skill_block = "\n".join(part for part in block_parts if part.strip())
-    payload["_skill_guidance_block"] = skill_block
-    payload["_skill_sections"] = sections
-    payload["_skill_versions"] = versions
-
-    _inject_decision_block_into_payload(tool_name, payload, skill_block)
-    payload["_skill_injected"] = [s.name for s in selected]
-    if model_profile:
-        payload["_skill_model_profile"] = model_profile
+    if decision_block:
+        _inject_decision_block_into_payload(tool_name, payload, decision_block)
     return payload
 
 
@@ -3358,18 +3247,9 @@ async def _critic_refine_if_needed(
         retry_data["critic_retry"] = {"attempt": refinement_count, "feedback": feedback}
         retry_data["decision_context"] = dict(decision_context or {})
         retry_data["constraint_tags"] = list(args.get("_constraint_tags", []) or [])
-        postflight = _SKILL_ENGINE.postflight_check(
-            path_id=_tool_to_path_id(tool_name) or "",
-            tool_result=retry_summary,
-            artifacts={"artifact_key": retry_key},
-            context_summary=context_summary,
-            tool_args=_postflight_tool_args(tool_name, args),
-            result_data=retry_data,
-        )
+        postflight = _SkillDecision(path_id=_tool_to_path_id(tool_name) or "", phase="postflight", status="allow")
         retry_data["skill_postflight"] = asdict(postflight)
         current_summary, current_key, current_data = retry_summary, retry_key, retry_data
-        if postflight.status == "block":
-            return _decision_pushback_text(postflight), "", current_data
 
     current_data["refinement_count"] = refinement_count
     current_data["critic_history"] = governor_history
@@ -4968,18 +4848,10 @@ def _build_orchestrator_self_guidance(
 
 
 def _orchestrator_skill_self_guidance_excerpt() -> str:
-    for spec in discover_skills():
-        if spec.name != "orchestrator":
-            continue
-        quality = str(spec.sections.get("Quality Bar", "") or "").strip()
-        execution = str(spec.sections.get("Execution Pattern", "") or "").strip()
-        parts = ["Skill: orchestrator", "Version: " + str(spec.metadata.get("version", "") or "unknown")]
-        if execution:
-            parts.append("Execution Pattern: " + re.sub(r"\s+", " ", execution)[:360])
-        if quality:
-            parts.append("Quality Bar: " + re.sub(r"\s+", " ", quality)[:260])
-        return "\n".join(parts)
-    return "Skill: orchestrator\nQuality Bar: execute requested scope, preserve prerequisites, and keep internal mechanics hidden."
+    return (
+        "Archie guidance: execute only the requested scope, preserve prerequisites, "
+        "use hats for expert review, and keep internal mechanics hidden."
+    )
 
 
 def _relevant_waf_pillars(
