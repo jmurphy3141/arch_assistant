@@ -26,6 +26,7 @@ class ToolSpec:
     skill_guidance: str = ""
     parallel_safe: bool = False
     retry_on_needs_input: bool = False
+    critique_enabled: bool = False
 
 
 class ToolRegistry:
@@ -59,6 +60,7 @@ class ToolRegistry:
         skill_guidance: str = "",
         parallel_safe: bool = False,
         retry_on_needs_input: bool = False,
+        critique_enabled: bool = False,
     ) -> None:
         """
         Register a domain tool.
@@ -72,6 +74,7 @@ class ToolRegistry:
         parallel_safe:        may run concurrently with other parallel_safe tools
         retry_on_needs_input: if True, append clarification to prompt and retry once
                               instead of immediately surfacing to user
+        critique_enabled:     reserve tool for post-tool critic review
         """
         if name in self._tools:
             raise ValueError(f"Tool {name!r} is already registered")
@@ -85,6 +88,7 @@ class ToolRegistry:
             skill_guidance=skill_guidance,
             parallel_safe=parallel_safe,
             retry_on_needs_input=retry_on_needs_input,
+            critique_enabled=critique_enabled,
         )
 
     def get(self, name: str) -> ToolSpec | None:
