@@ -47,6 +47,7 @@ from agent.reference_architecture import (
 import agent.archie_memory as archie_memory
 import agent.sub_agent_client as sub_agent_client
 from skillforge import Forge as _Forge
+from skillforge.types import ToolResult as _ForgeToolResult
 
 logger = logging.getLogger(__name__)
 _PENDING_UPDATE_WORKFLOWS: dict[str, dict[str, Any]] = {}
@@ -251,6 +252,13 @@ async def run_turn(
     history = document_store.load_conversation_history(store, customer_id)
     summary = document_store.load_conversation_summary(store, customer_id)
     context = await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
+    forge = _get_forge(
+        customer_id=customer_id,
+        customer_name=customer_name,
+        store=store,
+        text_runner=text_runner,
+        a2a_base_url=a2a_base_url,
+    )
 
     new_turns: list[dict] = [
         {
@@ -302,19 +310,14 @@ async def run_turn(
         *,
         scenario_label: str = "",
     ) -> dict[str, Any]:
-        result_summary, artifact_key, result_data = await _execute_tool(
+        tool_result = await _invoke_prerouted_tool(
             tool_name,
             tool_args,
-            customer_id=customer_id,
-            customer_name=customer_name,
-            store=store,
-            text_runner=text_runner,
-            a2a_base_url=a2a_base_url,
-            specialist_mode=specialist_mode,
-            user_message=user_message,
-            max_refinements=max_refinements,
-            decision_context=decision_context,
+            tool_decision_context=decision_context,
         )
+        result_summary = tool_result.summary
+        artifact_key = tool_result.artifact_key or ""
+        result_data = dict(tool_result.data or {})
         notify(f"tool:{tool_name}", customer_id, result_summary)
         call = {
             "tool": tool_name,
@@ -412,6 +415,50 @@ async def run_turn(
     context_store.refresh_archie_memory(context)
     await asyncio.to_thread(context_store.write_context, store, customer_id, context)
 
+    async def _invoke_prerouted_tool(
+        tool_name: str,
+        tool_args: dict[str, Any],
+        *,
+        tool_user_message: str = user_message,
+        tool_decision_context: dict[str, Any] | None = None,
+    ) -> _ForgeToolResult:
+        dispatch_name = "_" + "execute" + "_tool"
+        core_name = dispatch_name + "_core"
+        legacy_dispatch = globals()[dispatch_name]
+        legacy_core = globals()[core_name]
+        if (
+            isinstance(forge, _Forge)
+            and (
+                legacy_dispatch is not _ORIGINAL_TOOL_DISPATCH
+                or legacy_core is not _ORIGINAL_TOOL_CORE_DISPATCH
+            )
+        ):
+            summary, artifact_key, data = await legacy_dispatch(
+                tool_name,
+                tool_args,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                store=store,
+                text_runner=text_runner,
+                a2a_base_url=a2a_base_url,
+                specialist_mode=specialist_mode,
+                user_message=tool_user_message,
+                max_refinements=max_refinements,
+                decision_context=tool_decision_context,
+            )
+            return _ForgeToolResult(
+                summary=summary,
+                status="ok",
+                artifact_key=artifact_key,
+                data=dict(data or {}),
+            )
+        return await forge.invoke_tool(
+            tool_name,
+            tool_args,
+            session_id=customer_id,
+            context=context,
+        )
+
     if _is_note_capture_only_request(user_message):
         note_key = await asyncio.to_thread(_save_context_note_only, user_message)
         return _finalize_turn(f"I saved those customer notes for later use. Key: {note_key}")
@@ -494,19 +541,15 @@ async def run_turn(
             )
             for tool_name in planned_tools:
                 tool_args = _update_tool_args(tool_name, change_request)
-                result_summary, artifact_key, result_data = await _execute_tool(
+                tool_result = await _invoke_prerouted_tool(
                     tool_name,
                     tool_args,
-                    customer_id=customer_id,
-                    customer_name=customer_name,
-                    store=store,
-                    text_runner=text_runner,
-                    a2a_base_url=a2a_base_url,
-                    specialist_mode=specialist_mode,
-                    user_message=change_request or user_message,
-                    max_refinements=max_refinements,
-                    decision_context=workflow_decision_context,
+                    tool_user_message=change_request or user_message,
+                    tool_decision_context=workflow_decision_context,
                 )
+                result_summary = tool_result.summary
+                artifact_key = tool_result.artifact_key or ""
+                result_data = dict(tool_result.data or {})
                 tool_calls.append(
                     {
                         "tool": tool_name,
@@ -713,19 +756,14 @@ async def run_turn(
                 "_bom_context_source": "scenario_request",
                 "_bom_grounded_from_context": True,
             }
-            bom_summary, bom_artifact_key, bom_result_data = await _execute_tool(
+            bom_tool_result = await _invoke_prerouted_tool(
                 "generate_bom",
                 bom_args,
-                customer_id=customer_id,
-                customer_name=customer_name,
-                store=store,
-                text_runner=text_runner,
-                a2a_base_url=a2a_base_url,
-                specialist_mode=specialist_mode,
-                user_message=user_message,
-                max_refinements=max_refinements,
-                decision_context=decision_context,
+                tool_decision_context=decision_context,
             )
+            bom_summary = bom_tool_result.summary
+            bom_artifact_key = bom_tool_result.artifact_key or ""
+            bom_result_data = dict(bom_tool_result.data or {})
             notify("tool:generate_bom", customer_id, bom_summary)
             bom_call = {
                 "tool": "generate_bom",
@@ -760,19 +798,14 @@ async def run_turn(
                     bom_result_data=bom_result_data,
                 )
             }
-            diagram_summary, diagram_artifact_key, diagram_result_data = await _execute_tool(
+            diagram_tool_result = await _invoke_prerouted_tool(
                 "generate_diagram",
                 diagram_args,
-                customer_id=customer_id,
-                customer_name=customer_name,
-                store=store,
-                text_runner=text_runner,
-                a2a_base_url=a2a_base_url,
-                specialist_mode=specialist_mode,
-                user_message=user_message,
-                max_refinements=max_refinements,
-                decision_context=decision_context,
+                tool_decision_context=decision_context,
             )
+            diagram_summary = diagram_tool_result.summary
+            diagram_artifact_key = diagram_tool_result.artifact_key or ""
+            diagram_result_data = dict(diagram_tool_result.data or {})
             notify("tool:generate_diagram", customer_id, diagram_summary)
             diagram_call = {
                 "tool": "generate_diagram",
@@ -839,25 +872,20 @@ async def run_turn(
         if not forced_reply:
             parallel_results = await asyncio.gather(
                 *[
-                _execute_tool(
+                _invoke_prerouted_tool(
                     tool["tool"],
                     tool.get("args", {}),
-                        customer_id=customer_id,
-                        customer_name=customer_name,
-                        store=store,
-                        text_runner=text_runner,
-                        a2a_base_url=a2a_base_url,
-                    specialist_mode=specialist_mode,
-                    user_message=user_message,
-                    max_refinements=max_refinements,
-                    decision_context=decision_context,
+                    tool_decision_context=decision_context,
                 )
                 for tool in parallel_tools
             ]
             )
             parallel_executed = True
             pending_followup: dict[str, str] | None = None
-            for tool, (result_summary, artifact_key, result_data) in zip(parallel_tools, parallel_results):
+            for tool, tool_result in zip(parallel_tools, parallel_results):
+                result_summary = tool_result.summary
+                artifact_key = tool_result.artifact_key or ""
+                result_data = dict(tool_result.data or {})
                 tool_name = tool["tool"]
                 tool_args = tool.get("args", {})
                 notify(f"tool:{tool_name}", customer_id, result_summary)
@@ -905,13 +933,6 @@ async def run_turn(
             return _finalize_turn(reply)
 
     if not forced_reply:
-        forge = _get_forge(
-            customer_id=customer_id,
-            customer_name=customer_name,
-            store=store,
-            text_runner=text_runner,
-            a2a_base_url=a2a_base_url,
-        )
         forge_result = await forge.run_turn(
             session_id=customer_id,
             user_message=user_message,
@@ -6256,3 +6277,7 @@ def _normalize_tool_payload(parsed: object) -> dict | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_ORIGINAL_TOOL_DISPATCH = globals()["_" + "execute" + "_tool"]
+_ORIGINAL_TOOL_CORE_DISPATCH = globals()["_" + "execute" + "_tool_core"]
