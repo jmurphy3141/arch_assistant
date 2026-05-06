@@ -21,9 +21,11 @@ Inter-agent calls:
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
+import os
 import re
 import uuid
 from dataclasses import asdict, dataclass
@@ -31,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from agent.persistence_objectstore import ObjectStoreBase
+from agent.archie_wiring import build_forge
 import agent.document_store as document_store
 import agent.context_store as context_store
 import agent.decision_context as decision_context_builder
@@ -45,9 +48,11 @@ from agent.reference_architecture import (
 )
 import agent.archie_memory as archie_memory
 import agent.sub_agent_client as sub_agent_client
+from skillforge import Forge as _Forge
 
 logger = logging.getLogger(__name__)
 _PENDING_UPDATE_WORKFLOWS: dict[str, dict[str, Any]] = {}
+_forge_cache: dict[str, _Forge] = {}
 CPU_SKU_TO_MEM_SKU = {
     "B93113": "B93114",
     "B97384": "B97385",
@@ -192,6 +197,98 @@ class _CriticCompat:
 critic_agent = _CriticCompat()
 
 
+def _get_forge(
+    customer_id: str,
+    customer_name: str,
+    store: ObjectStoreBase,
+    text_runner: Callable,
+    a2a_base_url: str,
+) -> _Forge:
+    if customer_id not in _forge_cache:
+        _forge_cache[customer_id] = build_forge(
+            store=store,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            base_system_prompt=ORCHESTRATOR_SYSTEM_MSG,
+        )
+    return _forge_cache[customer_id]
+
+
+async def _run_forge_shadow_turn(
+    *,
+    customer_id: str,
+    customer_name: str,
+    user_message: str,
+    store: ObjectStoreBase,
+    text_runner: Callable,
+    a2a_base_url: str,
+    context: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> None:
+    try:
+        try:
+            shadow_context = copy.deepcopy(context)
+            shadow_history = copy.deepcopy(history)
+        except Exception:
+            shadow_context = dict(context)
+            shadow_history = list(history)
+
+        shadow_context["_current_user_message"] = user_message
+        forge = _get_forge(
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+        )
+        result = await forge.run_turn(
+            session_id=customer_id,
+            user_message=user_message,
+            context=shadow_context,
+            history=shadow_history,
+        )
+        logger.info(
+            "SkillForge shadow turn complete customer=%s reply_chars=%d tool_calls=%d artifacts=%d history_length=%s",
+            customer_id,
+            len(result.reply or ""),
+            len(result.tool_calls or []),
+            len(result.artifacts or {}),
+            result.history_length,
+        )
+    except Exception:
+        logger.exception("SkillForge shadow turn failed customer=%s", customer_id)
+
+
+def _maybe_start_forge_shadow_turn(
+    *,
+    customer_id: str,
+    customer_name: str,
+    user_message: str,
+    store: ObjectStoreBase,
+    text_runner: Callable,
+    a2a_base_url: str,
+    context: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> None:
+    if os.environ.get("SKILLFORGE_SHADOW", "") != "1":
+        return
+    asyncio.create_task(
+        _run_forge_shadow_turn(
+            customer_id=customer_id,
+            customer_name=customer_name,
+            user_message=user_message,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            context=context,
+            history=history,
+        ),
+        name=f"skillforge-shadow:{customer_id}",
+    )
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 async def run_turn(
@@ -229,6 +326,16 @@ async def run_turn(
     history = document_store.load_conversation_history(store, customer_id)
     summary = document_store.load_conversation_summary(store, customer_id)
     context = await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
+    _maybe_start_forge_shadow_turn(
+        customer_id=customer_id,
+        customer_name=customer_name,
+        user_message=user_message,
+        store=store,
+        text_runner=text_runner,
+        a2a_base_url=a2a_base_url,
+        context=context,
+        history=history,
+    )
 
     new_turns: list[dict] = [
         {
