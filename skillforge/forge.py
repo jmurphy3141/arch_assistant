@@ -336,6 +336,79 @@ class Forge:
             history_length=len(history or []) + 1,
         )
 
+    async def invoke_tool(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        session_id: str,
+        context: dict[str, Any],
+        trace_id: str | None = None,
+    ) -> ToolResult:
+        """
+        Execute a single registered tool handler and return its ToolResult.
+
+        Does NOT call the LLM. Does NOT modify conversation history.
+        Safety checks and memory refresh (for memory_contract tools) are applied.
+
+        Raises KeyError if tool_name is not registered.
+        Raises no other exceptions — handler errors are caught and returned
+        as ToolResult(status="blocked").
+        """
+        if trace_id is None:
+            trace_id = str(uuid.uuid4())
+
+        spec = self._registry.get(tool_name)
+        if spec is None:
+            raise KeyError(f"invoke_tool: tool {tool_name!r} is not registered")
+
+        # Inject skill_guidance into the task/prompt arg before dispatch.
+        if spec.skill_guidance:
+            task_key = "prompt" if "prompt" in args else "task"
+            existing = str(args.get(task_key) or "")
+            args = {**args, task_key: f"{spec.skill_guidance}\n\n{existing}".strip()}
+
+        memory_snapshot = (
+            self._memory.assemble(
+                session_id=session_id, context=context, user_message=""
+            )
+            if spec.memory_contract
+            else None
+        )
+
+        try:
+            result = await spec.handler(
+                args, memory=memory_snapshot, context=context, trace_id=trace_id
+            )
+        except Exception as exc:
+            logger.exception(
+                "invoke_tool handler %r raised: %s session=%s", tool_name, exc, session_id
+            )
+            return ToolResult(
+                summary=f"Tool {tool_name} failed internally.", status="blocked"
+            )
+
+        # Safety check (ok results only)
+        if spec.safety_checker is not None and result.status == "ok":
+            passed, reason = spec.safety_checker(tool_name, result)
+            if not passed:
+                return ToolResult(
+                    summary=f"Safety check blocked: {reason}",
+                    status="blocked",
+                    data=result.data,
+                )
+
+        # Refresh memory after memory_contract tool
+        if spec.memory_contract and result.status == "ok":
+            context = self._memory.update(
+                session_id=session_id,
+                tool_name=tool_name,
+                result=result,
+                context=context,
+            )
+
+        return result
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _get_system_msg(self) -> str:
