@@ -11,7 +11,19 @@ domain-agnostic reuse. No production code changes. No OCI imports in tests.
 python3.11 -c "from skillforge import Forge, ToolResult, MemorySnapshot; print('ok')"
 ```
 
-If this fails, stop and report. Do not proceed.
+Then verify the format instruction was added (p2a0 must be merged first):
+
+```bash
+python3.11 -c "
+from skillforge.forge import _assemble_system_prompt
+from skillforge.registry import ToolRegistry
+msg = _assemble_system_prompt('base', [], ToolRegistry())
+assert 'Tool call format' in msg, 'p2a0 not applied — merge p2a0 first'
+print('ok')
+"
+```
+
+If either fails, stop and report. Do not proceed.
 
 ## Scope
 
@@ -27,16 +39,19 @@ If this fails, stop and report. Do not proceed.
 ### `tests/test_forge.py`
 
 Use `pytest` with `pytest.mark.asyncio`. All dependencies are mocked:
-- `hat_engine`: a simple object with `get_hat_tool_definitions()` returning `[]`,
-  `apply_hat(active, name)` returning `active + [name]`,
-  `drop_hat(active, name)` returning `[h for h in active if h != name]`,
-  `warn_stale_hats(active, rounds, max_rounds=5)` returning `[]`,
-  `inject_hats(prompt, active)` returning `prompt`
-- `memory`: an object whose `assemble()` returns a `MemorySnapshot(session_id="s1")`
-  and `update()` returns the input context unchanged
+
+- `hat_engine`: a simple object with:
+  - `get_hat_tool_definitions()` returning `[]`
+  - `apply_hat(active, name)` returning `active + [name]`
+  - `drop_hat(active, name)` returning `[h for h in active if h != name]`
+  - `warn_stale_hats(active, rounds, max_rounds=5)` returning `[]`
+  - `inject_hats(prompt, active)` returning `prompt`
+- `memory`: an object whose:
+  - `assemble()` returns `MemorySnapshot(session_id="s1")`
+  - `update()` returns the input context unchanged
 - `text_runner`: an async function that returns a configurable string
 
-Create a `make_forge(text_runner)` fixture helper that returns a configured `Forge`
+Create a `make_forge(text_runner)` helper that returns a configured `Forge`
 with one registered tool `"test_tool"` whose handler returns
 `ToolResult(summary="done", status="ok", artifact_key="key/1")`.
 
@@ -49,7 +64,7 @@ Write these tests:
 2. `test_tool_call_ok`
    text_runner returns `'{"tool": "test_tool", "args": {}}'` on first call,
    then `"Done."` on second call.
-   Assert `result.artifacts == {"test_tool": "key/1"}` and len(result.tool_calls) == 1.
+   Assert `result.artifacts == {"test_tool": "key/1"}` and `len(result.tool_calls) == 1`.
 
 3. `test_needs_input_surfaces`
    Register a tool whose handler returns
@@ -69,21 +84,22 @@ Write these tests:
 6. `test_safety_check_blocks`
    Register tool with `safety_checker=lambda name, r: (False, "too expensive")`.
    Handler returns `ToolResult(summary="ok", status="ok", artifact_key="k")`.
-   Assert `result.artifacts == {}` and "too expensive" in result.tool_calls[-1].result.summary.
+   Assert `result.artifacts == {}` and `"too expensive"` in `result.tool_calls[-1].result.summary`.
 
 7. `test_hat_activation`
    text_runner returns `'{"tool": "use_hat_critic", "args": {}}'` then `"Done."`.
-   Verify hat_engine.apply_hat was called with `([], "critic")`.
-   (Use a mock that tracks calls.)
+   Use a mock hat_engine that tracks `apply_hat` calls.
+   Verify `apply_hat` was called with `([], "critic")`.
 
 8. `test_skill_guidance_injected`
    Register tool with `skill_guidance="## Guidance\nBe precise."`, `memory_contract=False`.
    Capture the `args` received by the handler.
-   Assert the `"prompt"` or `"task"` key in received args starts with `"## Guidance"`.
+   Assert `args.get("prompt", "") or args.get("task", "")` starts with `"## Guidance"`.
 
 9. `test_memory_refreshed_after_tool`
    Register tool with `memory_contract=True`.
    Handler returns `ToolResult(summary="ok", status="ok")`.
+   Use a mock memory that tracks `update` calls.
    Assert `memory.update` was called once after the tool ran.
 
 10. `test_unknown_tool_continues`
@@ -95,8 +111,22 @@ Write these tests:
     Assert both calls return the same object (`is`).
 
 12. `test_max_iterations_exhausted`
-    text_runner always returns a valid tool call (never a plain reply).
-    With `max_iterations=3`, assert the loop terminates and returns a TurnResult.
+    text_runner always returns `'{"tool": "test_tool", "args": {}}'` (never a plain reply).
+    Handler always returns `ToolResult(summary="ok", status="ok")`.
+    With `max_iterations=3`, assert the loop terminates and returns a `TurnResult`.
+
+13. `test_format_instruction_in_system_prompt`
+    Create a Forge with one registered tool.
+    Call `forge._get_system_msg()`.
+    Assert the string `'{"tool"'` appears in the system prompt.
+    Assert `"Tool call format"` appears in the system prompt.
+    This verifies p2a0's format instruction is present and the LLM will know the
+    exact JSON format to emit.
+
+14. `test_critique_enabled_stored`
+    Register a tool with `critique_enabled=True`.
+    Assert `forge._registry.get("tool_name").critique_enabled is True`.
+    (No behavior test yet — behavior is implemented in a follow-on task.)
 
 ### `tests/test_forge_aws.py`
 
@@ -124,7 +154,7 @@ Write one test:
 
 ## Acceptance Criteria
 
-1. `pytest tests/test_forge.py -v` — 12 passed, 0 failed
+1. `pytest tests/test_forge.py -v` — 14 passed, 0 failed
 2. `pytest tests/test_forge_aws.py -v` — 1 passed, 0 failed
 3. `grep -r "from agent" tests/test_forge_aws.py` — no matches
 4. `pytest tests/test_specialist_mode_routing.py -v` — no regressions

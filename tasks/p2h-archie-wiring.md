@@ -2,12 +2,14 @@
 
 ## Goal
 
-Create `agent/archie_wiring.py` with a `build_forge()` factory that wires every
-OCI tool handler into a `skillforge.Forge` instance. This is the single place
-where tool names are bound to handlers.
+Create `agent/archie_wiring.py` with:
+1. `build_forge()` — instantiates a `skillforge.Forge` wired with all 9 OCI tool handlers
+2. `ArchiePromptEnricher` — injects the per-round memory context (decision context, 
+   facts summary) into the prompt before each LLM call, keeping this OCI-specific
+   enrichment out of Forge core
 
-**Do not touch `agent/archie_loop.py` in this task.**
-Wiring is a new module; integration into archie_loop is a separate follow-on task.
+This is the single place where OCI tool names are bound to handlers.
+**Do not modify `agent/archie_loop.py` in this task.**
 
 ## Prerequisite Check
 
@@ -38,15 +40,15 @@ If either fails, stop and report.
 """
 archie_wiring.py — wire every OCI tool handler into a Forge instance.
 
-Call build_forge() once at startup to get a fully configured Forge.
-Inject the resulting instance into run_turn() when cutting over from
-archie_loop._execute_tool.
+Call build_forge() once per customer session to get a fully configured Forge.
+archie_loop.py imports build_forge() for the p2i cutover task.
 """
 from __future__ import annotations
 
 from typing import Any, Callable
 
 from skillforge import Forge
+from skillforge.types import MemorySnapshot
 from agent.archie_memory_impl import ArchieMemory
 from agent.persistence_objectstore import ObjectStoreBase
 import agent.hat_engine as hat_engine
@@ -56,6 +58,35 @@ from agent.tools.bom import BomHandler
 from agent.tools.diagram import DiagramHandler
 from agent.tools.terraform import TerraformHandler
 from agent.tools.specialists import PovHandler, JepHandler, WafHandler
+
+
+class ArchiePromptEnricher:
+    """
+    Injects per-round OCI context into the prompt before each LLM call.
+
+    Forge calls this before every ReAct round. This keeps OCI-specific
+    prompt assembly out of Forge core.
+
+    Injects:
+      - decision_context summary (constraints, approved region, sizing)
+      - facts_summary (accumulated SA-provided facts)
+    """
+
+    def __call__(self, prompt: str, memory: MemorySnapshot) -> str:
+        parts: list[str] = []
+
+        facts_summary = str((memory.facts or {}).get("facts_summary") or "").strip()
+        if facts_summary:
+            parts.append(f"[Archie Facts]\n{facts_summary}\n[/Archie Facts]")
+
+        if memory.constraints:
+            import json
+            constraints_text = json.dumps(memory.constraints, ensure_ascii=False)
+            parts.append(f"[Archie Constraints]\n{constraints_text}\n[/Archie Constraints]")
+
+        if not parts:
+            return prompt
+        return "\n\n".join(parts) + "\n\n" + prompt
 
 
 def build_forge(
@@ -71,20 +102,22 @@ def build_forge(
 
     Parameters
     ----------
-    store           : OCI Object Storage adapter (or in-memory stub for tests)
-    customer_id     : Archie customer/engagement ID
-    customer_name   : Human-readable customer name (for context hydration)
-    text_runner     : async (prompt, system_msg, label) -> str  (LLM call)
-    a2a_base_url    : Base URL for A2A sub-agent calls
+    store              : OCI Object Storage adapter (or in-memory stub for tests)
+    customer_id        : Archie customer/engagement ID
+    customer_name      : Human-readable customer name (for context hydration)
+    text_runner        : async (prompt, system_msg, label) -> str  (LLM call)
+    a2a_base_url       : Base URL for A2A sub-agent calls
     base_system_prompt : Archie orchestrator system prompt
     """
     memory = ArchieMemory(store=store)
+    enricher = ArchiePromptEnricher()
 
     forge = Forge(
         base_system_prompt=base_system_prompt,
         hat_engine=hat_engine,
         memory=memory,
         text_runner=text_runner,
+        prompt_enricher=enricher,
         max_iterations=5,
     )
 
@@ -147,73 +180,75 @@ def build_forge(
     return forge
 ```
 
+### Key constraint: no top-level `archie_loop` import
+
+`DiagramHandler.__call__` imports `_call_generate_diagram` from `archie_loop` at
+call time (not at module level). If it imports at module level, `test_no_archie_loop_import`
+below will fail. Verify and fix if needed before completing this task.
+
 ## Test: `tests/test_archie_wiring.py`
 
-Use in-memory stubs. Import `build_forge` and verify:
-
 1. `test_build_forge_returns_forge`
-   Call `build_forge(store=None, customer_id="c1", customer_name="Acme",
-   text_runner=dummy_runner)`.
+   Call `build_forge(store=None, customer_id="c1", customer_name="Acme", text_runner=dummy_runner)`.
    Assert the return value is an instance of `skillforge.Forge`.
 
 2. `test_all_tools_registered`
    Call `build_forge(...)`.
-   Check that all 9 tool names are registered:
+   Assert all 9 tool names are registered:
    `save_notes`, `get_summary`, `get_document`,
    `generate_bom`, `generate_diagram`, `generate_terraform`,
    `generate_pov`, `generate_jep`, `generate_waf`.
-   Use `forge._registry.get(name)` (or the public accessor) to verify each is not None.
+   Use `forge._registry.get(name) is not None` for each.
 
 3. `test_memory_contract_tools`
    Assert that `generate_bom`, `generate_diagram`, `generate_terraform`,
    `generate_pov`, `generate_jep`, `generate_waf` all have `memory_contract=True`.
-   (Use `forge._registry.requires_memory(name)`.)
+   Use `forge._registry.requires_memory(name)`.
 
-4. `test_no_archie_loop_import`
+4. `test_prompt_enricher_injects_facts`
+   Instantiate `ArchiePromptEnricher()`.
+   Create a `MemorySnapshot(session_id="s1", facts={"facts_summary": "3-tier app"})`.
+   Call `enricher("USER: hello", snapshot)`.
+   Assert `"[Archie Facts]"` in result and `"3-tier app"` in result.
+
+5. `test_prompt_enricher_empty_memory`
+   Create a `MemorySnapshot(session_id="s1")` (no facts, no constraints).
+   Call `enricher("USER: hello", snapshot)`.
+   Assert result == `"USER: hello"` (no injection when memory is empty).
+
+6. `test_no_archie_loop_import`
    ```python
-   import importlib, sys
-   # archie_loop must NOT be imported as a side-effect of importing archie_wiring
-   # (it would trigger OCI auth checks at import time)
-   for mod in list(sys.modules.keys()):
+   import sys
+   # Purge any previously loaded archie_loop from sys.modules
+   for mod in list(sys.modules):
        if "archie_loop" in mod:
            del sys.modules[mod]
-   import agent.archie_wiring  # should succeed without importing archie_loop
-   assert "agent.archie_loop" not in sys.modules
+   # Re-import archie_wiring — should succeed without pulling in archie_loop
+   import importlib
+   import agent.archie_wiring
+   importlib.reload(agent.archie_wiring)
+   assert "agent.archie_loop" not in sys.modules, (
+       "archie_wiring imported archie_loop at module level — move to lazy import inside __call__"
+   )
    ```
-
-   Note: if `DiagramHandler` imports `_call_generate_diagram` from `archie_loop` at
-   module level, this test will fail. Fix: use a lazy import inside `__call__`.
 
 ## Acceptance Criteria
 
 1. `python3.11 -m compileall agent/archie_wiring.py` exits 0
-2. `pytest tests/test_archie_wiring.py -v` — 4 passed
+2. `pytest tests/test_archie_wiring.py -v` — 6 passed
 3. `pytest tests/test_specialist_mode_routing.py -v` — no regressions
-4. `grep "from agent.archie_loop import\|import agent.archie_loop" agent/archie_wiring.py`
-   — no matches (lazy imports only, inside handler `__call__` methods)
+4. `grep "^from agent.archie_loop\|^import agent.archie_loop" agent/archie_wiring.py`
+   — no matches (all archie_loop references must be lazy imports inside `__call__`)
 
 ## Do NOT Do
 
 - Do not modify `agent/archie_loop.py`
-- Do not call `build_forge()` at module level in archie_wiring.py (caller does that)
-- Do not hardcode customer_id or customer_name defaults in build_forge
-
-## Note on DiagramHandler lazy import
-
-`DiagramHandler.__call__` imports `_call_generate_diagram` from `archie_loop`
-at call time (not at module import time):
-
-```python
-async def __call__(self, args, *, memory, context, trace_id):
-    from agent.archie_loop import _call_generate_diagram  # lazy — avoids circular import
-    ...
-```
-
-This keeps `archie_wiring.py` import-clean. If the import is at module level in
-`diagram.py`, move it inside `__call__` before completing this task.
+- Do not call `build_forge()` at module level in `archie_wiring.py`
+- Do not hardcode `customer_id` or `customer_name` defaults in `build_forge`
+- Do not add per-tool `skill_guidance` here — that belongs in each tool's handler or a skill file
 
 ## Commit Message
 
 ```
-p2h: add archie_wiring.build_forge() — register all OCI tool handlers with Forge
+p2h: add archie_wiring.build_forge() and ArchiePromptEnricher
 ```
