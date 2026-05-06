@@ -1,0 +1,317 @@
+import warnings
+
+import pytest
+
+from skillforge import Forge, MemorySnapshot, ToolResult, TurnResult
+
+
+warnings.filterwarnings(
+    "ignore", "Unknown pytest.mark.asyncio", pytest.PytestUnknownMarkWarning
+)
+pytestmark = [pytest.mark.asyncio, pytest.mark.anyio]
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+class FakeHatEngine:
+    def __init__(self):
+        self.apply_calls = []
+
+    def get_hat_tool_definitions(self):
+        return []
+
+    def apply_hat(self, active, name):
+        self.apply_calls.append((active, name))
+        return active + [name]
+
+    def drop_hat(self, active, name):
+        return [h for h in active if h != name]
+
+    def warn_stale_hats(self, active, rounds, max_rounds=5):
+        return []
+
+    def inject_hats(self, prompt, active):
+        return prompt
+
+
+class FakeMemory:
+    def __init__(self):
+        self.update_calls = []
+
+    def assemble(self, *, session_id, context, user_message):
+        return MemorySnapshot(session_id="s1")
+
+    def update(self, *, session_id, tool_name, result, context):
+        self.update_calls.append(
+            {
+                "session_id": session_id,
+                "tool_name": tool_name,
+                "result": result,
+                "context": context,
+            }
+        )
+        return context
+
+
+class QueueTextRunner:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    async def __call__(self, prompt, system_message, label):
+        self.calls.append(
+            {"prompt": prompt, "system_message": system_message, "label": label}
+        )
+        if len(self.responses) == 1:
+            return self.responses[0]
+        return self.responses.pop(0)
+
+
+async def ok_handler(args, *, memory, context, trace_id):
+    return ToolResult(summary="done", status="ok", artifact_key="key/1")
+
+
+def make_forge(text_runner, **kwargs):
+    forge = Forge(
+        base_system_prompt="test",
+        hat_engine=kwargs.pop("hat_engine", FakeHatEngine()),
+        memory=kwargs.pop("memory", FakeMemory()),
+        text_runner=text_runner,
+        **kwargs,
+    )
+    forge.register_tool("test_tool", ok_handler)
+    return forge
+
+
+@pytest.mark.asyncio
+async def test_plain_reply():
+    forge = make_forge(QueueTextRunner("Here is my answer"))
+
+    result = await forge.run_turn(session_id="s1", user_message="Hi", context={})
+
+    assert result.reply == "Here is my answer"
+    assert result.tool_calls == []
+
+
+@pytest.mark.asyncio
+async def test_tool_call_ok():
+    forge = make_forge(
+        QueueTextRunner('{"tool": "test_tool", "args": {}}', "Done.")
+    )
+
+    result = await forge.run_turn(session_id="s1", user_message="Run it", context={})
+
+    assert result.artifacts == {"test_tool": "key/1"}
+    assert len(result.tool_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_needs_input_surfaces():
+    async def needs_input_handler(args, *, memory, context, trace_id):
+        return ToolResult(
+            summary="x",
+            status="needs_input",
+            clarification="Please provide region.",
+        )
+
+    forge = Forge(
+        base_system_prompt="test",
+        hat_engine=FakeHatEngine(),
+        memory=FakeMemory(),
+        text_runner=QueueTextRunner('{"tool": "needs_tool", "args": {}}'),
+    )
+    forge.register_tool("needs_tool", needs_input_handler)
+
+    result = await forge.run_turn(session_id="s1", user_message="Run it", context={})
+
+    assert result.reply == "Please provide region."
+
+
+@pytest.mark.asyncio
+async def test_needs_input_retry():
+    async def needs_input_handler(args, *, memory, context, trace_id):
+        return ToolResult(
+            summary="x",
+            status="needs_input",
+            clarification="Please provide region.",
+        )
+
+    forge = Forge(
+        base_system_prompt="test",
+        hat_engine=FakeHatEngine(),
+        memory=FakeMemory(),
+        text_runner=QueueTextRunner('{"tool": "needs_tool", "args": {}}', "Got it."),
+    )
+    forge.register_tool(
+        "needs_tool", needs_input_handler, retry_on_needs_input=True
+    )
+
+    result = await forge.run_turn(session_id="s1", user_message="Run it", context={})
+
+    assert result.reply == "Got it."
+
+
+@pytest.mark.asyncio
+async def test_blocked_removes_artifact():
+    async def blocked_handler(args, *, memory, context, trace_id):
+        return ToolResult(summary="blocked", status="blocked")
+
+    forge = Forge(
+        base_system_prompt="test",
+        hat_engine=FakeHatEngine(),
+        memory=FakeMemory(),
+        text_runner=QueueTextRunner('{"tool": "blocked_tool", "args": {}}', "Done."),
+    )
+    forge.register_tool("blocked_tool", blocked_handler)
+
+    result = await forge.run_turn(session_id="s1", user_message="Run it", context={})
+
+    assert result.artifacts == {}
+
+
+@pytest.mark.asyncio
+async def test_safety_check_blocks():
+    async def artifact_handler(args, *, memory, context, trace_id):
+        return ToolResult(summary="ok", status="ok", artifact_key="k")
+
+    forge = Forge(
+        base_system_prompt="test",
+        hat_engine=FakeHatEngine(),
+        memory=FakeMemory(),
+        text_runner=QueueTextRunner('{"tool": "safe_tool", "args": {}}', "Done."),
+    )
+    forge.register_tool(
+        "safe_tool",
+        artifact_handler,
+        safety_checker=lambda name, result: (False, "too expensive"),
+    )
+
+    result = await forge.run_turn(session_id="s1", user_message="Run it", context={})
+
+    assert result.artifacts == {}
+    assert "too expensive" in result.tool_calls[-1].result.summary
+
+
+@pytest.mark.asyncio
+async def test_hat_activation():
+    hat_engine = FakeHatEngine()
+    forge = Forge(
+        base_system_prompt="test",
+        hat_engine=hat_engine,
+        memory=FakeMemory(),
+        text_runner=QueueTextRunner(
+            '{"tool": "use_hat_critic", "args": {}}', "Done."
+        ),
+    )
+
+    await forge.run_turn(session_id="s1", user_message="Review it", context={})
+
+    assert hat_engine.apply_calls == [([], "critic")]
+
+
+@pytest.mark.asyncio
+async def test_skill_guidance_injected():
+    captured = {}
+
+    async def guided_handler(args, *, memory, context, trace_id):
+        captured["args"] = args
+        return ToolResult(summary="ok", status="ok")
+
+    forge = Forge(
+        base_system_prompt="test",
+        hat_engine=FakeHatEngine(),
+        memory=FakeMemory(),
+        text_runner=QueueTextRunner(
+            '{"tool": "guided_tool", "args": {"prompt": "original"}}', "Done."
+        ),
+    )
+    forge.register_tool(
+        "guided_tool",
+        guided_handler,
+        skill_guidance="## Guidance\nBe precise.",
+        memory_contract=False,
+    )
+
+    await forge.run_turn(session_id="s1", user_message="Run it", context={})
+
+    injected = captured["args"].get("prompt", "") or captured["args"].get("task", "")
+    assert injected.startswith("## Guidance")
+
+
+@pytest.mark.asyncio
+async def test_memory_refreshed_after_tool():
+    memory = FakeMemory()
+
+    async def memory_handler(args, *, memory, context, trace_id):
+        return ToolResult(summary="ok", status="ok")
+
+    forge = Forge(
+        base_system_prompt="test",
+        hat_engine=FakeHatEngine(),
+        memory=memory,
+        text_runner=QueueTextRunner('{"tool": "memory_tool", "args": {}}', "Done."),
+    )
+    forge.register_tool("memory_tool", memory_handler, memory_contract=True)
+
+    await forge.run_turn(session_id="s1", user_message="Run it", context={})
+
+    assert len(memory.update_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_tool_continues():
+    forge = make_forge(
+        QueueTextRunner('{"tool": "nonexistent", "args": {}}', "Fallback reply.")
+    )
+
+    result = await forge.run_turn(session_id="s1", user_message="Run it", context={})
+
+    assert result.reply == "Fallback reply."
+
+
+def test_system_prompt_cached():
+    forge = make_forge(QueueTextRunner("Done."))
+
+    first = forge._get_system_msg()
+    second = forge._get_system_msg()
+
+    assert first is second
+
+
+@pytest.mark.asyncio
+async def test_max_iterations_exhausted():
+    forge = make_forge(
+        QueueTextRunner('{"tool": "test_tool", "args": {}}'), max_iterations=3
+    )
+
+    result = await forge.run_turn(session_id="s1", user_message="Run it", context={})
+
+    assert isinstance(result, TurnResult)
+    assert len(result.tool_calls) == 3
+
+
+def test_format_instruction_in_system_prompt():
+    forge = make_forge(QueueTextRunner("Done."))
+
+    system_msg = forge._get_system_msg()
+
+    assert '{"tool"' in system_msg
+    assert "Tool call format" in system_msg
+
+
+def test_critique_enabled_stored():
+    async def handler(args, *, memory, context, trace_id):
+        return ToolResult(summary="ok", status="ok")
+
+    forge = Forge(
+        base_system_prompt="test",
+        hat_engine=FakeHatEngine(),
+        memory=FakeMemory(),
+        text_runner=QueueTextRunner("Done."),
+    )
+    forge.register_tool("tool_name", handler, critique_enabled=True)
+
+    assert forge._registry.get("tool_name").critique_enabled is True
