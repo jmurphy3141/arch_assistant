@@ -329,6 +329,17 @@ class Forge:
 
             prompt = _append_result(prompt, tool_name, result.summary)
 
+            # Post-tool critic pass
+            if spec.critique_enabled and result.status == "ok":
+                prompt, active_hats = await self._run_critique_pass(
+                    prompt=prompt,
+                    tool_name=tool_name,
+                    result=result,
+                    active_hats=active_hats,
+                    system_msg=system_msg,
+                    session_id=session_id,
+                )
+
         return TurnResult(
             reply=reply,
             tool_calls=tool_calls,
@@ -408,6 +419,59 @@ class Forge:
             )
 
         return result
+
+    async def _run_critique_pass(
+        self,
+        *,
+        prompt: str,
+        tool_name: str,
+        result: ToolResult,
+        active_hats: list[str],
+        system_msg: str,
+        session_id: str,
+    ) -> tuple[str, list[str]]:
+        """
+        Fire a single critic review after a critique_enabled tool returns ok.
+
+        Returns the updated prompt and active_hats list.
+        The critic hat is activated for this call and deactivated immediately after.
+        """
+        critic_active = False
+        try:
+            active_hats = self._hat_engine.apply_hat(active_hats, "critic")
+            critic_active = True
+        except ValueError:
+            # No critic hat registered — skip critique silently
+            return prompt, active_hats
+
+        critic_prompt = (
+            f"{prompt}\n\n[CRITIC REVIEW REQUEST]\n"
+            f"Review the result of '{tool_name}' above.\n"
+            f"If the result is acceptable, call: {{\"tool\": \"critic_approve\", \"args\": {{}}}}\n"
+            f"If you have concerns, describe them as plain text."
+        )
+        enriched = self._hat_engine.inject_hats(critic_prompt, active_hats)
+
+        try:
+            raw = await self._text_runner(enriched, system_msg, "critic")
+        except Exception:
+            logger.exception("Critic pass failed session=%s tool=%s", session_id, tool_name)
+            raw = ""
+        finally:
+            if critic_active:
+                active_hats = self._hat_engine.drop_hat(active_hats, "critic")
+
+        parsed = _parse_tool_call(raw)
+        if parsed is not _NO_TOOL and parsed.get("tool") == "critic_approve":
+            # Approved — no change to prompt
+            return prompt, active_hats
+
+        # Critique injected — append as CRITIC note for next round
+        critique = raw.strip()
+        if critique:
+            prompt = f"{prompt}\n\nCRITIC: {critique}"
+
+        return prompt, active_hats
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
