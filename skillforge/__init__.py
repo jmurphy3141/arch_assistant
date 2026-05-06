@@ -1,16 +1,30 @@
 """
-SkillForge — domain-agnostic polymath orchestrator framework.
+SkillForge — domain-agnostic polymath agent orchestration framework.
 
-Public API surface:
+Public API:
 
-    from skillforge import Forge, ToolResult, TurnResult, MemorySnapshot
+    from skillforge import Forge, ToolResult, TurnResult, MemorySnapshot, ToolStatus
+    from skillforge.protocols import ToolHandler, Memory, SafetyChecker, HatEngine, PromptEnricher
 
-    forge = Forge(system_prompt=..., hat_engine=..., memory=..., store=...)
-    forge.register_tool("generate_bom", bom_handler, memory_contract=True)
-    result = await forge.run_turn(user_message=..., session_id=..., ...)
+    forge = Forge(
+        base_system_prompt=MY_SYSTEM_PROMPT,
+        hat_engine=hat_engine,
+        memory=MyMemory(),
+        text_runner=my_async_llm_call,
+    )
+    forge.register_tool("my_tool", my_handler, memory_contract=True,
+                        description='{"arg": "<description>"}')
+    result = await forge.run_turn(session_id=..., user_message=..., context={})
 """
 
-from skillforge.types import MemorySnapshot, ToolResult, TurnResult, ToolCall
+from skillforge.types import MemorySnapshot, ToolCall, ToolResult, ToolStatus, TurnResult
 from skillforge.forge import Forge
 
-__all__ = ["Forge", "MemorySnapshot", "ToolResult", "TurnResult", "ToolCall"]
+__all__ = [
+    "Forge",
+    "MemorySnapshot",
+    "ToolCall",
+    "ToolResult",
+    "ToolStatus",
+    "TurnResult",
+]

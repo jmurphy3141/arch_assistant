@@ -7,22 +7,32 @@ No dependencies on any other skillforge or agent module.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
-@dataclass
+# Validated status values — handlers must return one of these three strings.
+ToolStatus = Literal["ok", "needs_input", "blocked"]
+
+
+@dataclass(frozen=True)
 class MemorySnapshot:
     """
     Assembled view of what the orchestrator knows about the current session.
     Passed to every tool handler registered with memory_contract=True.
-    Constructed by Memory.assemble(); never mutated after construction.
+    Constructed by Memory.assemble(); frozen to prevent handler mutation.
+
+    facts:            accumulated session facts (region, sizing, constraints, etc.)
+    constraints:      hard constraints from decision context
+    prior_artifacts:  {tool_name: artifact_key} for latest known artifacts
+    decision_context: structured decision context dict
+    raw:              full context store blob for tools that need direct access
     """
     session_id: str
     facts: dict[str, Any] = field(default_factory=dict)
     constraints: dict[str, Any] = field(default_factory=dict)
-    prior_artifacts: dict[str, str] = field(default_factory=dict)   # tool_name -> artifact_key
+    prior_artifacts: dict[str, str] = field(default_factory=dict)
     decision_context: dict[str, Any] = field(default_factory=dict)
-    raw: dict[str, Any] = field(default_factory=dict)               # full context store blob
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -30,11 +40,18 @@ class ToolResult:
     """
     Returned by every tool handler.
     The orchestrator uses status to decide whether to present, retry, or block.
+
+    summary:       one-sentence human-readable outcome (always populated)
+    status:        "ok" | "needs_input" | "blocked"
+    data:          raw payload for critic/safety review
+    artifact_key:  object-store key if an artifact was produced (ok only)
+    clarification: message to surface to the user when status == "needs_input"
     """
-    summary: str                            # one-sentence human-readable outcome
-    status: str                             # "ok" | "needs_input" | "blocked"
-    data: dict[str, Any] = field(default_factory=dict)   # raw payload for critic/safety review
-    artifact_key: str = ""                  # object-store key if an artifact was produced
+    summary: str
+    status: ToolStatus
+    data: dict[str, Any] = field(default_factory=dict)
+    artifact_key: str = ""
+    clarification: str = ""
 
 
 @dataclass
@@ -54,5 +71,5 @@ class TurnResult:
     """
     reply: str
     tool_calls: list[ToolCall] = field(default_factory=list)
-    artifacts: dict[str, str] = field(default_factory=dict)   # tool_name -> artifact_key
+    artifacts: dict[str, str] = field(default_factory=dict)
     history_length: int = 0

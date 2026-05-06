@@ -1,188 +1,309 @@
-# SkillForge — Framework Spec
+# SkillForge — Interface Specification
 
 ## What it is
 
-SkillForge is the domain-agnostic orchestrator core extracted from Archie.
-It owns the ReAct loop, hat dispatch, and tool dispatch. It knows nothing
-about OCI, diagrams, BOMs, or Terraform. Domain knowledge lives in:
+SkillForge is a domain-agnostic polymath agent orchestration framework. It owns
+the ReAct loop, hat dispatch, and tool dispatch. It has zero domain knowledge.
+Domain knowledge lives in registered `ToolHandler` callables, hat markdown files,
+and a `Memory` implementation.
 
-- Registered `ToolHandler` callables (your OCI tools)
-- Hat markdown files (`agent/hats/*.md`)
-- Your `Memory` implementation (`agent/archie_memory.py`)
+**Boundary rule:** if `import oci` (or `import boto3`, or any domain SDK) appears
+inside `skillforge/`, it is a boundary violation.
+
+---
 
 ## Package layout
 
 ```
 skillforge/
-  __init__.py       # public API: Forge, ToolResult, TurnResult, MemorySnapshot
-  types.py          # MemorySnapshot, ToolResult, ToolCall, TurnResult (no deps)
-  protocols.py      # ToolHandler, Memory, SafetyChecker (typing.Protocol)
-  registry.py       # ToolRegistry — register_tool(), tool_contract_block()
-  forge.py          # Forge — run_turn(), the ReAct loop
+  __init__.py      public API surface
+  types.py         MemorySnapshot, ToolResult, ToolCall, TurnResult, ToolStatus
+  protocols.py     ToolHandler, Memory, SafetyChecker, HatEngine, PromptEnricher
+  registry.py      ToolRegistry — register_tool(), tool_contract_block()
+  forge.py         Forge — run_turn(), the ReAct loop
 ```
 
-## Framework / application boundary
+---
 
-```
-skillforge/          ← FRAMEWORK (no OCI knowledge)
-  Forge              orchestrator ReAct loop
-  ToolRegistry       tool registration and system-prompt assembly
-  MemorySnapshot     data contract between orchestrator and tools
-  protocols          ToolHandler, Memory, SafetyChecker interfaces
+## Core interfaces
 
-agent/               ← APPLICATION (OCI-specific)
-  archie_loop.py     thin: wire Forge, register OCI tools, call forge.run_turn()
-  archie_memory.py   implements Memory protocol (OCI-specific enrichment)
-  tools/             one file per OCI tool handler
-    bom.py           async def handle(args, *, memory, context, trace_id) -> ToolResult
-    diagram.py
-    terraform.py
-    pov.py / jep.py / waf.py
-  safety_rules.py    implements SafetyChecker protocol
-  hats/*.md          hat content (OCI-specific lens, framework-agnostic mechanism)
-```
-
-## Core contract: ToolHandler
+### `Forge.__init__`
 
 ```python
-async def my_tool_handler(
-    args: dict,
+Forge(
     *,
-    memory: MemorySnapshot | None,   # None if memory_contract=False
-    context: dict,                   # raw context store blob
+    base_system_prompt: str,          # domain-specific system prompt
+    hat_engine: HatEngine,            # agent/hat_engine.py (structurally typed)
+    memory: Memory,                   # domain Memory implementation
+    text_runner: AsyncTextRunner,     # async (prompt, system, label) -> str
+    prompt_enricher: PromptEnricher | None = None,  # per-round context injection
+    max_iterations: int = 5,
+    history_window: int = 20,         # prior turns included in prompt
+)
+```
+
+### `Forge.register_tool`
+
+```python
+forge.register_tool(
+    name: str,                        # exact string LLM emits in {"tool": "name"}
+    handler: ToolHandler,             # async callable — see ToolHandler below
+    *,
+    description: str = "",            # args schema shown in system prompt
+    args_schema: dict[str, str] | None = None,  # alternative to description
+    memory_contract: bool = False,    # pass MemorySnapshot to handler
+    safety_checker: SafetyChecker | None = None,  # deterministic, no LLM
+    skill_guidance: str = "",         # markdown prepended to task arg
+    parallel_safe: bool = False,      # may run concurrently with peers
+    retry_on_needs_input: bool = False,  # retry once on needs_input before surfacing
+)
+```
+
+### `Forge.run_turn`
+
+```python
+result: TurnResult = await forge.run_turn(
+    session_id: str,
+    user_message: str,
+    context: dict[str, Any],          # context store blob; Forge never mutates it
+    history: list[dict] | None = None,
+)
+```
+
+---
+
+## ToolHandler protocol
+
+```python
+async def my_handler(
+    args: dict[str, Any],
+    *,
+    memory: MemorySnapshot | None,    # None when memory_contract=False
+    context: dict[str, Any],          # raw context store blob (read-only)
     trace_id: str,
 ) -> ToolResult:
     ...
-    return ToolResult(
-        summary="BOM generated with 12 line items",
-        status="ok",                 # "ok" | "needs_input" | "blocked"
-        data={"bom_payload": ...},   # raw data for critic/safety review
-        artifact_key="bom/...",      # object-store key if artifact was produced
-    )
 ```
 
-Rules:
-- Must be `async`.
+**Rules:**
+- Must be async.
 - Must not raise — surface failures as `ToolResult(status="blocked")`.
-- Must not mutate `memory` or `context`.
-- If `memory_contract=True`, the `memory` snapshot contains all accumulated
-  facts and must be treated as authoritative (facts over defaults).
+- Must not mutate `memory` or `context` (`MemorySnapshot` is frozen).
+- When input is insufficient: `ToolResult(status="needs_input", clarification="...")`.
+- `memory` is the authoritative source of facts — do not ask for what is already there.
 
-## Core contract: Memory
+---
+
+## Memory protocol
 
 ```python
 class MyMemory:
-    def assemble(self, *, session_id, context, user_message) -> MemorySnapshot:
-        # Build the snapshot from context store — called once per turn before loop
+    def assemble(
+        self,
+        *,
+        session_id: str,
+        context: dict[str, Any],
+        user_message: str,
+    ) -> MemorySnapshot:
+        # Build snapshot from context store — called once per turn,
+        # and again after each memory_contract tool call.
         ...
 
-    def update(self, *, session_id, tool_name, result, context) -> dict:
-        # Refresh context after a tool call — return updated context blob
+    def update(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        result: ToolResult,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        # Incorporate tool result into context; return updated blob.
+        # Do not mutate context in place — return a new dict.
         ...
 ```
 
-`MemorySnapshot` fields:
-- `session_id` — str
-- `facts` — accumulated customer facts (region, sizing, constraints, etc.)
-- `constraints` — hard constraints from decision context
-- `prior_artifacts` — `{tool_name: artifact_key}` for latest known artifacts
-- `decision_context` — structured decision context dict
-- `raw` — full context store blob for tools that need direct access
+---
 
-## Wiring pattern (in archie_loop.py after migration)
+## MemorySnapshot fields
+
+| Field | Type | Purpose |
+|---|---|---|
+| `session_id` | `str` | stable session identifier |
+| `facts` | `dict` | accumulated domain facts (region, sizing, constraints, etc.) |
+| `constraints` | `dict` | hard constraints from decision context |
+| `prior_artifacts` | `dict[str, str]` | `{tool_name: artifact_key}` for latest artifacts |
+| `decision_context` | `dict` | structured decision context for this turn |
+| `raw` | `dict` | full context store blob for tools needing direct access |
+
+`MemorySnapshot` is **frozen** — handlers cannot mutate it.
+
+---
+
+## ToolResult fields
+
+| Field | Type | Purpose |
+|---|---|---|
+| `summary` | `str` | one sentence outcome, always populated |
+| `status` | `"ok" \| "needs_input" \| "blocked"` | drives Forge behaviour |
+| `data` | `dict` | raw payload for safety/critic review |
+| `artifact_key` | `str` | object-store key for produced artifact |
+| `clarification` | `str` | message surfaced to user when `needs_input` |
+
+---
+
+## ReAct loop behaviour by status
+
+| status | Forge action |
+|---|---|
+| `ok` | record artifact, refresh memory, append result, continue loop |
+| `needs_input` | surface `clarification` as reply; or retry once if `retry_on_needs_input=True` |
+| `blocked` | remove artifact if recorded, append block reason, continue loop |
+
+---
+
+## HatEngine protocol
 
 ```python
-from skillforge import Forge
-from agent.archie_memory import ArchieMemory
-from agent import tools
-from agent.safety_rules import check as safety_check
+class HatEngine(Protocol):
+    def get_hat_tool_definitions(self) -> list[dict]: ...
+    def apply_hat(self, active_hats: list[str], hat_name: str) -> list[str]: ...
+    def drop_hat(self, active_hats: list[str], hat_name: str) -> list[str]: ...
+    def warn_stale_hats(self, active_hats, rounds, max_rounds=5) -> list[str]: ...
+    def inject_hats(self, prompt: str, active_hats: list[str]) -> str: ...
+```
+
+`agent/hat_engine.py` already satisfies this protocol. A different hat engine
+(e.g. loading from a database instead of the filesystem) can be substituted.
+
+---
+
+## PromptEnricher hook
+
+```python
+class MyEnricher:
+    def __call__(self, prompt: str, memory: MemorySnapshot) -> str:
+        summary = build_memory_summary(memory.facts)
+        dc = summarize_decision_context(memory.decision_context)
+        return f"{prompt}\n\n[Session Context]\n{summary}\n{dc}\n[End Session Context]"
+```
+
+Keeps domain-specific prompt assembly (memory summary, decision context,
+conversation summary) out of `forge.py`. Pass as `prompt_enricher=MyEnricher()`
+at Forge init.
+
+---
+
+## Minimal non-OCI example (AWS)
+
+```python
+from skillforge import Forge, ToolResult, MemorySnapshot
+from skillforge.protocols import AsyncTextRunner
+import agent.hat_engine as hat_engine   # mechanism is domain-agnostic
+
+# 1. Tool handlers
+
+async def ec2_sizing_handler(args, *, memory, context, trace_id):
+    region = (memory.facts.get("region") if memory else None) or "us-east-1"
+    # ... call AWS Pricing API ...
+    return ToolResult(
+        summary=f"EC2 sizing complete for {region}.",
+        status="ok",
+        data={"instances": [...]},
+    )
+
+async def cloudformation_handler(args, *, memory, context, trace_id):
+    if not (memory and memory.facts.get("architecture_defined")):
+        return ToolResult(
+            summary="Architecture not yet defined.",
+            status="needs_input",
+            clarification="Please define the target architecture before generating CloudFormation.",
+        )
+    return ToolResult(
+        summary="CloudFormation template generated.",
+        status="ok",
+        artifact_key="cf/template.yaml",
+    )
+
+# 2. Memory (minimal no-op)
+
+class AWSMemory:
+    def assemble(self, *, session_id, context, user_message) -> MemorySnapshot:
+        return MemorySnapshot(
+            session_id=session_id,
+            facts=context.get("facts", {}),
+            constraints=context.get("constraints", {}),
+        )
+    def update(self, *, session_id, tool_name, result, context) -> dict:
+        return context   # no-op; real impl would persist result.data
+
+# 3. Wire up
+
+async def my_llm_call(prompt: str, system: str, label: str) -> str:
+    # ... call Bedrock, OpenAI, etc.
+    ...
 
 forge = Forge(
-    base_system_prompt=ARCHIE_SYSTEM_PROMPT,
+    base_system_prompt="You are an AWS solutions architect assistant...",
     hat_engine=hat_engine,
-    memory=ArchieMemory(),
-    store=object_store,
-    text_runner=llm_call,
+    memory=AWSMemory(),
+    text_runner=my_llm_call,
 )
-
-forge.register_tool("generate_bom",
-    tools.bom.handle,
+forge.register_tool("size_ec2",
+    ec2_sizing_handler,
     memory_contract=True,
-    description='{"prompt": "<workload sizing / BOM request>"}',
-    safety_checker=safety_check,
+    description='{"workload": "<description of workload to size>"}',
 )
-forge.register_tool("generate_diagram",
-    tools.diagram.handle,
+forge.register_tool("generate_cloudformation",
+    cloudformation_handler,
     memory_contract=True,
-    description='{"bom_text": "<optional inline BOM/context>"}',
+    description='{"modules": "<optional list of modules to include>"}',
 )
-forge.register_tool("generate_terraform",
-    tools.terraform.handle,
-    memory_contract=True,
-    description='{"prompt": "<optional module/constraints text>"}',
-    safety_checker=safety_check,
-)
-forge.register_tool("save_notes",
-    tools.notes.handle,
-    memory_contract=False,
-    description='{"text": "<notes text>"}',
-)
-# ... etc
 
 result = await forge.run_turn(
-    session_id=customer_id,
-    user_message=user_message,
-    context=context_blob,
-    history=conversation_history,
+    session_id="aws-eng-001",
+    user_message="Size a 3-tier web app for 10k concurrent users in us-west-2",
+    context={},
 )
 ```
 
-## Migration phases
+Zero OCI code. Same `Forge`, same `hat_engine`, different tools and `Memory`.
 
-### Phase 1 (now — complete)
-`skillforge/` package created with full interface stubs.
-No production code changed. `archie_loop.py` still owns the loop.
+---
 
-### Phase 2 (next)
-Create `agent/tools/` with one file per OCI tool. Each file contains a single
-`async def handle(args, *, memory, context, trace_id) -> ToolResult` function
-extracted from `archie_loop._execute_tool()`. No behavior change — just moving
-code to the right home.
+## Migration phases (Archie → SkillForge)
 
-### Phase 3 (after phase 2 stable)
-Refactor `archie_loop.py` to instantiate `Forge`, register tools, and delegate
-`run_turn()` to `forge.run_turn()`. The OCI system prompt stays in `agent/`.
-`archie_memory.py` implements `Memory` protocol. `safety_rules.check` becomes
-the `SafetyChecker`.
+### Phase 1 — Skeleton (this PR)
+`skillforge/` package present with full interfaces and working Forge.
+No production code changed. `archie_loop.py` still owns its own loop.
 
-### Phase 4 (SkillForge v1 stable)
-Move `skillforge/` to its own package. At this point `agent/` is purely the
-OCI application. A different domain (AWS, Azure, GCP) can use SkillForge by
-implementing `Memory` and registering domain-specific tool handlers.
+### Phase 2 — Extract tool handlers
+Create `agent/tools/` with one file per OCI tool. Each exports
+`async def handle(args, *, memory, context, trace_id) -> ToolResult`.
+Extraction order (safest first): `save_notes` → `generate_bom` →
+`generate_diagram` → `generate_terraform` → `pov/jep/waf`.
+Run `pytest tests/test_specialist_mode_routing.py -v` after each file.
 
-## What does NOT move to skillforge/
+### Phase 3 — Wire Forge into archie_loop
+Create `agent/archie_wiring.py` that instantiates `Forge` and registers all
+OCI tool handlers. Shadow-run both `archie_loop.run_turn()` and
+`forge.run_turn()` in parallel with `SKILLFORGE_SHADOW=1` for validation.
 
-- OCI tool implementations (BOM, diagram, Terraform, etc.)
-- `archie_memory.py` BOM enrichment and deictic detection
-- `decision_context.py` OCI-specific fact extraction
-- `safety_rules.py` OCI-specific rule implementations
-- Hat content in `agent/hats/*.md` (the mechanism is framework; the content is OCI)
+### Phase 4 — Cut over
+Replace `archie_loop.run_turn()` body with a ~30-line wrapper around
+`forge.run_turn()`. Delete the inline `_execute_tool()` dispatcher.
+
+### Phase 5 — Extract SkillForge
+Move `skillforge/` to its own package. `agent/` is now purely the OCI
+application layer.
+
+---
+
+## What stays in agent/ (never moves to skillforge/)
+
+- OCI tool implementations (`agent/tools/`)
+- `archie_memory.py` — OCI-specific memory enrichment (BOM grounding, etc.)
+- `decision_context.py` — OCI fact extraction
+- `safety_rules.py` — OCI-specific safety rule implementations
+- Hat content in `agent/hats/*.md` (mechanism is framework; content is OCI)
+- All sub-agent servers in `sub_agents/`
 - `bom_service.py`, `drawio_generator.py`, etc.
-- Sub-agent servers in `sub_agents/`
-
-## Design principles
-
-1. **ToolHandler is the only seam.** Forge never calls `bom_service` or
-   `drawio_generator` directly. All domain work goes through registered handlers.
-
-2. **Memory is a hard contract.** Every `memory_contract=True` handler receives
-   the same `MemorySnapshot`. Handlers must not ask for facts already in `memory.facts`.
-
-3. **Safety is deterministic.** `SafetyChecker` must not call an LLM.
-   LLM-based review lives in hats (critic, governor), not safety checkers.
-
-4. **Hats are content, not code.** Adding a new hat is dropping a `.md` file.
-   The framework loads and injects it; no code change needed.
-
-5. **Forge has no OCI imports.** If `import oci` appears in `skillforge/`, it's
-   a boundary violation.

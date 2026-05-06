@@ -3,9 +3,8 @@ skillforge/registry.py
 -----------------------
 ToolRegistry: maps tool names to handlers and their configuration.
 
-This is the "register a domain tool" API that archie_loop.py currently
-replaces with hardcoded dicts (_ARCHITECTURE_TOOLS, _MANDATORY_SKILL_FALLBACKS,
-_MEMORY_CONTRACT_TOOLS). The registry makes all of that explicit and extensible.
+Replaces the hardcoded dicts in archie_loop.py:
+  _ARCHITECTURE_TOOLS, _MANDATORY_SKILL_FALLBACKS, _MEMORY_CONTRACT_TOOLS
 """
 from __future__ import annotations
 
@@ -20,12 +19,13 @@ class ToolSpec:
     """Everything Forge needs to know about one registered domain tool."""
     name: str
     handler: ToolHandler
-    description: str = ""           # injected into system prompt tool-contract block
-    args_schema: dict = field(default_factory=dict)  # {"key": "description"} pairs
-    memory_contract: bool = False   # inject MemorySnapshot before calling handler
+    description: str = ""
+    args_schema: dict = field(default_factory=dict)
+    memory_contract: bool = False
     safety_checker: SafetyChecker | None = None
-    skill_guidance: str = ""        # markdown prepended to the specialist task string
-    parallel_safe: bool = False     # may run concurrently with other parallel_safe tools
+    skill_guidance: str = ""
+    parallel_safe: bool = False
+    retry_on_needs_input: bool = False
 
 
 class ToolRegistry:
@@ -58,7 +58,21 @@ class ToolRegistry:
         safety_checker: SafetyChecker | None = None,
         skill_guidance: str = "",
         parallel_safe: bool = False,
+        retry_on_needs_input: bool = False,
     ) -> None:
+        """
+        Register a domain tool.
+
+        name:                 tool name the LLM emits in its JSON tool call
+        handler:              async callable matching ToolHandler protocol
+        description:          args schema string shown in system prompt
+        memory_contract:      if True, pass MemorySnapshot to handler
+        safety_checker:       deterministic post-result check; no LLM calls
+        skill_guidance:       markdown prepended to the task arg before handler call
+        parallel_safe:        may run concurrently with other parallel_safe tools
+        retry_on_needs_input: if True, append clarification to prompt and retry once
+                              instead of immediately surfacing to user
+        """
         if name in self._tools:
             raise ValueError(f"Tool {name!r} is already registered")
         self._tools[name] = ToolSpec(
@@ -70,6 +84,7 @@ class ToolRegistry:
             safety_checker=safety_checker,
             skill_guidance=skill_guidance,
             parallel_safe=parallel_safe,
+            retry_on_needs_input=retry_on_needs_input,
         )
 
     def get(self, name: str) -> ToolSpec | None:
@@ -81,9 +96,8 @@ class ToolRegistry:
 
     def tool_contract_block(self) -> str:
         """
-        Returns the tool-contract section to append to the system prompt.
-        Format matches what archie_loop.py already uses:
-            - tool_name {"arg": "description"}
+        Returns the tool-contract section for the system prompt.
+        Each line: - tool_name {"arg": "description"}
         """
         lines: list[str] = []
         for spec in self._tools.values():

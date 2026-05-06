@@ -3,33 +3,32 @@ skillforge/forge.py
 --------------------
 Forge: the domain-agnostic ReAct orchestrator.
 
-Forge owns the ReAct loop, hat dispatch, tool dispatch, and turn lifecycle.
-It knows nothing about OCI, diagrams, BOMs, or Terraform. Domain knowledge
-lives in registered ToolHandlers, hat markdown files, and the Memory impl.
+Forge owns the ReAct loop, hat dispatch, and tool dispatch.
+It has zero domain-specific knowledge — no OCI, no AWS, no Kubernetes.
+Domain knowledge lives entirely in registered ToolHandlers, hat markdown
+files, and the Memory implementation.
 
-Wiring example (in your application entry point):
+Minimal wiring for a new domain (e.g. AWS):
 
-    import agent.hat_engine as hat_engine
     from skillforge import Forge
-    from agent.archie_memory import ArchieMemory
-    from agent.tools import bom_handler, diagram_handler, ...
+    from my_aws import ec2_handler, cfn_handler, AWSMemory
 
     forge = Forge(
-        base_system_prompt=ARCHIE_SYSTEM_PROMPT,
-        hat_engine=hat_engine,
-        memory=ArchieMemory(),
-        store=object_store,
-        text_runner=llm_call,
+        base_system_prompt="You are an AWS solutions architect...",
+        hat_engine=hat_engine,   # agent/hat_engine.py — mechanism is domain-agnostic
+        memory=AWSMemory(),
+        text_runner=my_llm_call,
     )
-    forge.register_tool("generate_bom",     bom_handler,     memory_contract=True,  description='{"prompt": "<workload sizing>"}')
-    forge.register_tool("generate_diagram", diagram_handler, memory_contract=True,  description='{"bom_text": "<optional context>"}')
-    forge.register_tool("generate_pov",     pov_handler,     memory_contract=True,  description='{"feedback": "<optional correction>"}')
-    forge.register_tool("save_notes",       notes_handler,   memory_contract=False, description='{"text": "<notes>"}')
+    forge.register_tool("size_ec2",               ec2_handler, memory_contract=True,
+                        description='{"workload": "<description>"}')
+    forge.register_tool("generate_cloudformation", cfn_handler, memory_contract=True,
+                        description='{"modules": "<optional list>"}',
+                        safety_checker=cfn_safety_check)
 
     result = await forge.run_turn(
-        session_id="customer-123",
-        user_message="Build me a BOM for a 3-tier web app",
-        context=context_blob,
+        session_id="session-1",
+        user_message="Size a 3-tier web app for 10k concurrent users",
+        context={},
     )
 """
 from __future__ import annotations
@@ -37,78 +36,92 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
-from typing import Any, Callable
+from typing import Any
 
-from skillforge.protocols import Memory, SafetyChecker, TextRunner, ToolHandler
-from skillforge.registry import ToolRegistry
+from skillforge.protocols import (
+    AsyncTextRunner,
+    HatEngine,
+    Memory,
+    PromptEnricher,
+)
+from skillforge.registry import ToolRegistry, ToolSpec
 from skillforge.types import MemorySnapshot, ToolCall, ToolResult, TurnResult
 
 logger = logging.getLogger(__name__)
 
-# Sentinel returned when the LLM emits a plain reply (no tool call)
-_NO_TOOL = object()
-
+_NO_TOOL = object()   # sentinel: LLM emitted a plain reply, no tool call
 _MAX_ITERATIONS_DEFAULT = 5
+_HISTORY_WINDOW_DEFAULT = 20
 
 
 class Forge:
     """
     Domain-agnostic polymath orchestrator.
 
-    The ReAct loop:
-      1. Assemble memory snapshot for this turn.
-      2. Inject active hats into prompt.
-      3. Call LLM → parse tool call or plain reply.
-      4. If hat tool: activate/drop hat, continue loop.
-      5. If domain tool: run handler (with memory if required), run safety
-         check, append result, continue loop.
-      6. If plain reply: finalize turn.
+    ReAct loop per turn:
+      1. Assemble MemorySnapshot.
+      2. [Optional] enrich prompt with per-turn context via PromptEnricher.
+      3. Inject active hats into prompt.
+      4. Call LLM → parse tool call or plain reply.
+      5. Hat tool  → apply/drop hat, continue loop.
+      6. Domain tool → inject skill_guidance, call handler, run safety check,
+                       refresh memory, append result, continue loop.
+      7. needs_input → surface clarification (or retry once if configured).
+      8. blocked     → remove artifact, append block reason, continue loop.
+      9. Plain reply → return TurnResult.
     """
 
     def __init__(
         self,
         *,
         base_system_prompt: str,
-        hat_engine: Any,          # agent.hat_engine module (duck-typed)
+        hat_engine: HatEngine,
         memory: Memory,
-        store: Any,               # ObjectStoreBase (duck-typed)
-        text_runner: TextRunner,
+        text_runner: AsyncTextRunner,
+        prompt_enricher: PromptEnricher | None = None,
         max_iterations: int = _MAX_ITERATIONS_DEFAULT,
+        history_window: int = _HISTORY_WINDOW_DEFAULT,
     ) -> None:
         self._base_system_prompt = base_system_prompt
         self._hat_engine = hat_engine
         self._memory = memory
-        self._store = store
         self._text_runner = text_runner
+        self._prompt_enricher = prompt_enricher
         self._max_iterations = max_iterations
+        self._history_window = history_window
         self._registry = ToolRegistry()
+        # System prompt is rebuilt lazily after register_tool() calls.
+        self._system_msg: str | None = None
 
     # ── Registration API ──────────────────────────────────────────────────────
 
     def register_tool(
         self,
         name: str,
-        handler: ToolHandler,
+        handler: Any,   # ToolHandler — Any to avoid Protocol runtime overhead
         *,
         description: str = "",
         args_schema: dict[str, str] | None = None,
         memory_contract: bool = False,
-        safety_checker: SafetyChecker | None = None,
+        safety_checker: Any | None = None,   # SafetyChecker
         skill_guidance: str = "",
         parallel_safe: bool = False,
+        retry_on_needs_input: bool = False,
     ) -> None:
         """
         Register a domain tool.
 
-        name:             tool name the LLM emits in its tool-call JSON
-        handler:          async callable matching ToolHandler protocol
-        description:      args description appended to system prompt tool list
-        memory_contract:  if True, assemble MemorySnapshot and pass it to handler
-        safety_checker:   deterministic check run after handler returns; blocks
-                          delivery if it returns (False, reason)
-        skill_guidance:   markdown prepended to the task string inside the handler
-        parallel_safe:    if True, may run concurrently with other parallel_safe tools
+        name:                 exact string the LLM emits in {"tool": "name"}
+        handler:              async (args, *, memory, context, trace_id) -> ToolResult
+        description:          args schema injected into system prompt tool list
+        memory_contract:      pass assembled MemorySnapshot to handler as `memory`
+        safety_checker:       (tool_name, result) -> (bool, str); no LLM calls
+        skill_guidance:       markdown prepended to task/prompt arg before dispatch
+        parallel_safe:        tool may run concurrently with other parallel_safe tools
+        retry_on_needs_input: append clarification to prompt and retry once instead
+                              of immediately surfacing to user
         """
         self._registry.register(
             name,
@@ -119,7 +132,9 @@ class Forge:
             safety_checker=safety_checker,
             skill_guidance=skill_guidance,
             parallel_safe=parallel_safe,
+            retry_on_needs_input=retry_on_needs_input,
         )
+        self._system_msg = None   # invalidate cached system prompt
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
@@ -134,109 +149,163 @@ class Forge:
         """
         Process one user message and return a TurnResult.
 
-        context:  the full context store blob for this session (read-only from
-                  Forge's perspective; Memory.update() returns the updated blob)
-        history:  prior conversation turns (for prompt construction)
+        session_id:  stable identifier for the user/customer session
+        context:     full context store blob (read-only by Forge; Memory.update
+                     returns the refreshed blob which Forge adopts locally)
+        history:     prior conversation turns for prompt construction
         """
         trace_id = str(uuid.uuid4())
         active_hats: list[str] = []
         hat_rounds: dict[str, int] = {}
         tool_calls: list[ToolCall] = []
         artifacts: dict[str, str] = {}
+        reply = ""
 
-        hat_tools = self._hat_engine.get_hat_tool_definitions()
-        system_msg = self._build_system_prompt(hat_tools)
+        system_msg = self._get_system_msg()
         prompt = self._build_initial_prompt(user_message, history or [])
-
-        # Assemble memory once at turn start; refreshed after each tool call
         memory_snapshot = self._memory.assemble(
             session_id=session_id,
             context=context,
             user_message=user_message,
         )
 
-        reply = ""
-
         for iteration in range(self._max_iterations):
-            # Stale-hat warning
+
+            # Stale-hat warning (no side effect — caller logs if desired)
             for h in active_hats:
                 hat_rounds[h] = hat_rounds.get(h, 0) + 1
             stale = self._hat_engine.warn_stale_hats(active_hats, hat_rounds)
             if stale:
-                logger.warning("Stale hats active > 5 rounds: %s session=%s", stale, session_id)
+                logger.warning(
+                    "Stale hats active > 5 rounds: %s session=%s", stale, session_id
+                )
 
-            # Inject hats and call LLM
-            prompt_with_hats = self._hat_engine.inject_hats(prompt, active_hats)
-            raw = await asyncio.to_thread(
-                self._text_runner, prompt_with_hats, system_msg, "orchestrator"
+            # Per-round prompt enrichment (memory summary, decision context, etc.)
+            enriched = (
+                self._prompt_enricher(prompt, memory_snapshot)
+                if self._prompt_enricher
+                else prompt
             )
+            prompt_for_llm = self._hat_engine.inject_hats(enriched, active_hats)
 
+            raw = await self._text_runner(prompt_for_llm, system_msg, "orchestrator")
             parsed = _parse_tool_call(raw)
 
-            # Plain reply — done
+            # ── Plain reply — done ────────────────────────────────────────────
             if parsed is _NO_TOOL:
                 reply = raw.strip()
                 break
 
             tool_name: str = parsed.get("tool", "")
-            tool_args: dict = parsed.get("args", {}) or {}
+            tool_args: dict[str, Any] = dict(parsed.get("args") or {})
 
-            # Hat activation
+            # ── Hat activation ────────────────────────────────────────────────
             if tool_name.startswith("use_hat_"):
                 hat_name = tool_name[len("use_hat_"):]
-                active_hats = self._hat_engine.apply_hat(active_hats, hat_name)
-                result = ToolResult(summary=f"Hat '{hat_name}' activated.", status="ok")
-                tool_calls.append(ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration))
+                try:
+                    active_hats = self._hat_engine.apply_hat(active_hats, hat_name)
+                except ValueError:
+                    pass   # unknown hat — ignore silently
+                result = ToolResult(
+                    summary=f"Hat '{hat_name}' activated.", status="ok"
+                )
+                tool_calls.append(
+                    ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration)
+                )
                 prompt = _append_result(prompt, tool_name, result.summary)
                 continue
 
-            # Hat deactivation
+            # ── Hat deactivation ──────────────────────────────────────────────
             if tool_name.startswith("drop_hat_"):
                 hat_name = tool_name[len("drop_hat_"):]
                 active_hats = self._hat_engine.drop_hat(active_hats, hat_name)
                 hat_rounds.pop(hat_name, None)
-                result = ToolResult(summary=f"Hat '{hat_name}' deactivated.", status="ok")
-                tool_calls.append(ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration))
+                result = ToolResult(
+                    summary=f"Hat '{hat_name}' deactivated.", status="ok"
+                )
+                tool_calls.append(
+                    ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration)
+                )
                 prompt = _append_result(prompt, tool_name, result.summary)
                 continue
 
-            # Unknown tool
+            # ── Unknown tool ──────────────────────────────────────────────────
             spec = self._registry.get(tool_name)
             if spec is None:
-                logger.warning("LLM called unregistered tool %r session=%s", tool_name, session_id)
-                result = ToolResult(summary=f"Unknown tool: {tool_name}", status="blocked")
-                tool_calls.append(ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration))
+                logger.warning(
+                    "LLM called unregistered tool %r session=%s", tool_name, session_id
+                )
+                result = ToolResult(
+                    summary=f"Unknown tool: {tool_name}", status="blocked"
+                )
+                tool_calls.append(
+                    ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration)
+                )
                 prompt = _append_result(prompt, tool_name, result.summary)
                 continue
 
-            # Domain tool — call handler
+            # ── Domain tool ───────────────────────────────────────────────────
+
+            # Inject skill_guidance into the task/prompt arg before dispatch.
+            if spec.skill_guidance:
+                task_key = "prompt" if "prompt" in tool_args else "task"
+                existing = str(tool_args.get(task_key) or "")
+                tool_args = {
+                    **tool_args,
+                    task_key: f"{spec.skill_guidance}\n\n{existing}".strip(),
+                }
+
             mem = memory_snapshot if spec.memory_contract else None
             try:
-                result = await spec.handler(tool_args, memory=mem, context=context, trace_id=trace_id)
+                result = await spec.handler(
+                    tool_args, memory=mem, context=context, trace_id=trace_id
+                )
             except Exception as exc:
-                logger.exception("Tool handler %r raised: %s session=%s", tool_name, exc, session_id)
-                result = ToolResult(summary=f"Tool {tool_name} failed: {exc}", status="blocked")
+                logger.exception(
+                    "Tool handler %r raised: %s session=%s", tool_name, exc, session_id
+                )
+                result = ToolResult(
+                    summary=f"Tool {tool_name} failed internally.", status="blocked"
+                )
 
-            # Safety check
+            # Safety check (ok results only)
             if spec.safety_checker is not None and result.status == "ok":
                 passed, reason = spec.safety_checker(tool_name, result)
                 if not passed:
                     result = ToolResult(
-                        summary=f"Blocked by safety check: {reason}",
+                        summary=f"Safety check blocked: {reason}",
                         status="blocked",
                         data=result.data,
                     )
 
-            call_record = ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration)
-            tool_calls.append(call_record)
+            # needs_input: surface or retry once
+            if result.status == "needs_input":
+                clarification = result.clarification or result.summary
+                if spec.retry_on_needs_input and iteration == 0:
+                    prompt = _append_result(
+                        prompt, tool_name, f"NEEDS_INPUT: {clarification}"
+                    )
+                    tool_calls.append(
+                        ToolCall(
+                            tool=tool_name, args=tool_args, result=result, iteration=iteration
+                        )
+                    )
+                    continue
+                # Surface directly — stop loop
+                reply = clarification
+                tool_calls.append(
+                    ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration)
+                )
+                break
 
-            if result.artifact_key:
+            tool_calls.append(
+                ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration)
+            )
+
+            if result.artifact_key and result.status == "ok":
                 artifacts[tool_name] = result.artifact_key
 
-            if result.status == "blocked":
-                artifacts.pop(tool_name, None)
-
-            # Refresh memory after tool completes
+            # Refresh memory after memory_contract tool
             if spec.memory_contract:
                 context = self._memory.update(
                     session_id=session_id,
@@ -261,21 +330,22 @@ class Forge:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _build_system_prompt(self, hat_tools: list[dict]) -> str:
-        tool_block = self._registry.tool_contract_block()
-        hat_block = _hat_tool_block(hat_tools)
-        parts = [self._base_system_prompt.rstrip()]
-        if tool_block:
-            parts.append("\nTool contracts:\n" + tool_block)
-        if hat_block:
-            parts.append("\nHat tools:\n" + hat_block)
-        return "\n".join(parts)
+    def _get_system_msg(self) -> str:
+        """Build once after all tools are registered; cache thereafter."""
+        if self._system_msg is None:
+            hat_tools = self._hat_engine.get_hat_tool_definitions()
+            self._system_msg = _assemble_system_prompt(
+                self._base_system_prompt, hat_tools, self._registry
+            )
+        return self._system_msg
 
-    def _build_initial_prompt(self, user_message: str, history: list[dict]) -> str:
+    def _build_initial_prompt(
+        self, user_message: str, history: list[dict[str, Any]]
+    ) -> str:
         lines: list[str] = []
-        for turn in history[-20:]:  # last 20 turns max
-            role = turn.get("role", "")
-            content = str(turn.get("content", "") or "")
+        for turn in history[-self._history_window :]:
+            role = str(turn.get("role") or "")
+            content = str(turn.get("content") or "")
             if role and content:
                 lines.append(f"{role.upper()}: {content}")
         lines.append(f"USER: {user_message}")
@@ -284,36 +354,81 @@ class Forge:
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
 
-def _parse_tool_call(raw: str) -> dict | object:
+def _parse_tool_call(raw: str) -> dict[str, Any] | object:
     """
-    Parse the LLM output. Returns a dict if a tool call was found,
-    or _NO_TOOL sentinel if the LLM replied in plain text.
+    Parse LLM output into a tool-call dict or return _NO_TOOL.
+    Handles: inline JSON, markdown-fenced JSON, JSON mid-paragraph,
+    nested args objects.
     """
     text = raw.strip()
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("{") and '"tool"' in line:
-            try:
-                parsed = json.loads(line)
-                if isinstance(parsed, dict) and "tool" in parsed:
-                    return parsed
-            except json.JSONDecodeError:
-                pass
+
+    # Strip markdown code fences
+    text = re.sub(r"```(?:json)?\s*\n?", "", text)
+    text = re.sub(r"\s*```", "", text)
+
+    # Try each `{` as a potential start; scan forward to find balanced `}`
+    for start in (m.start() for m in re.finditer(r"\{", text)):
+        candidate = _extract_balanced(text, start)
+        if candidate is None or '"tool"' not in candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict) and "tool" in parsed:
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
     return _NO_TOOL
+
+
+def _extract_balanced(text: str, start: int) -> str | None:
+    """Return the smallest balanced {...} substring starting at `start`, or None."""
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_str:
+            escape = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
 
 
 def _append_result(prompt: str, tool_name: str, summary: str) -> str:
     return prompt + f"\nTOOL_RESULT({tool_name}): {summary}"
 
 
-def _hat_tool_block(hat_tools: list[dict]) -> str:
-    lines = [
-        "- use_hat_X activates an expert hat before the next reasoning round.",
-        "- drop_hat_X deactivates an active expert hat.",
-    ]
-    for tool in hat_tools:
-        fn = tool.get("function", {}) if isinstance(tool, dict) else {}
-        name = str(fn.get("name", "") or "").strip()
-        if name:
-            lines.append(f"- {name} {{}}")
-    return "\n".join(lines)
+def _assemble_system_prompt(
+    base: str, hat_tools: list[dict], registry: ToolRegistry | None
+) -> str:
+    parts = [base.rstrip()]
+    if registry:
+        tool_block = registry.tool_contract_block()
+        if tool_block:
+            parts.append("\nTool contracts:\n" + tool_block)
+    if hat_tools:
+        hat_lines = [
+            "- use_hat_X activates an expert hat before the next reasoning round.",
+            "- drop_hat_X deactivates an active expert hat.",
+        ]
+        for tool in hat_tools:
+            fn = tool.get("function", {}) if isinstance(tool, dict) else {}
+            name = str(fn.get("name") or "").strip()
+            if name:
+                hat_lines.append(f"- {name} {{}}")
+        parts.append("\nHat tools:\n" + "\n".join(hat_lines))
+    return "\n".join(parts)
