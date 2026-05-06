@@ -51,6 +51,11 @@ from skillforge.types import MemorySnapshot, ToolCall, ToolResult, TurnResult
 
 logger = logging.getLogger(__name__)
 
+_TOOL_CALL_FORMAT_INSTRUCTION = (
+    "\n\nTool call format — when calling a tool output ONLY this JSON on a single line:\n"
+    '{"tool": "<tool_name>", "args": {<key>: <value>}}\n'
+    "To reply without calling a tool, output plain prose — no JSON."
+)
 _NO_TOOL = object()   # sentinel: LLM emitted a plain reply, no tool call
 _MAX_ITERATIONS_DEFAULT = 5
 _HISTORY_WINDOW_DEFAULT = 20
@@ -109,6 +114,7 @@ class Forge:
         skill_guidance: str = "",
         parallel_safe: bool = False,
         retry_on_needs_input: bool = False,
+        critique_enabled: bool = False,
     ) -> None:
         """
         Register a domain tool.
@@ -122,6 +128,7 @@ class Forge:
         parallel_safe:        tool may run concurrently with other parallel_safe tools
         retry_on_needs_input: append clarification to prompt and retry once instead
                               of immediately surfacing to user
+        critique_enabled:     reserve tool for post-tool critic review
         """
         self._registry.register(
             name,
@@ -133,6 +140,7 @@ class Forge:
             skill_guidance=skill_guidance,
             parallel_safe=parallel_safe,
             retry_on_needs_input=retry_on_needs_input,
+            critique_enabled=critique_enabled,
         )
         self._system_msg = None   # invalidate cached system prompt
 
@@ -431,4 +439,5 @@ def _assemble_system_prompt(
             if name:
                 hat_lines.append(f"- {name} {{}}")
         parts.append("\nHat tools:\n" + "\n".join(hat_lines))
+    parts.append(_TOOL_CALL_FORMAT_INSTRUCTION)
     return "\n".join(parts)
