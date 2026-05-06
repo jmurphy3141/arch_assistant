@@ -326,16 +326,6 @@ async def run_turn(
     history = document_store.load_conversation_history(store, customer_id)
     summary = document_store.load_conversation_summary(store, customer_id)
     context = await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
-    _maybe_start_forge_shadow_turn(
-        customer_id=customer_id,
-        customer_name=customer_name,
-        user_message=user_message,
-        store=store,
-        text_runner=text_runner,
-        a2a_base_url=a2a_base_url,
-        context=context,
-        history=history,
-    )
 
     new_turns: list[dict] = [
         {
@@ -990,237 +980,32 @@ async def run_turn(
             return _finalize_turn(reply)
 
     if not forced_reply:
-        for _iteration in range(max_tool_iterations):
-            if _active_hats:
-                for _h in _active_hats:
-                    _hat_rounds[_h] = _hat_rounds.get(_h, 0) + 1
-                stale = hat_engine.warn_stale_hats(_active_hats, _hat_rounds)
-                if stale:
-                    logger.warning("Stale hats (active > 5 rounds): %s", stale)
-            prompt_for_llm = hat_engine.inject_hats(prompt, _active_hats)
-            raw = await asyncio.to_thread(
-                _call_text_runner,
-                text_runner,
-                prompt_for_llm,
-                orchestrator_system_msg,
-                "orchestrator",
-            )
-            tool_call = _parse_tool_call(raw)
-
-            if tool_call is None:
-                forced_tool = _single_requested_tool_to_force(requested_tools, tool_calls)
-                if forced_tool:
-                    tool_call = {
-                        "tool": forced_tool,
-                        "args": _default_generation_tool_args(forced_tool, user_message),
-                    }
-                    logger.info(
-                        "Orchestrator forced requested specialist tool after non-tool reply tool=%s customer=%s raw_preview=%s",
-                        forced_tool,
-                        customer_id,
-                        raw.strip()[:120],
-                    )
-                elif requested_tools:
-                    reply = _deliverable_requires_specialist_reply(requested_tools)
-                    logger.info(
-                        "Orchestrator blocked requested deliverable after non-tool reply customer=%s raw_preview=%s",
-                        customer_id,
-                        raw.strip()[:120],
-                    )
-                    break
-                elif action_intent:
-                    reply = _tool_required_blocker_reply(user_message, action_intent)
-                    logger.info(
-                        "Orchestrator blocked tool-backed action after non-tool reply customer=%s raw_preview=%s",
-                        customer_id,
-                        raw.strip()[:120],
-                    )
-                    break
-                else:
-                    reply = raw.strip()
-                    break
-
-            tool_name = tool_call.get("tool", "")
-            tool_args = tool_call.get("args", {})
-            if tool_name.startswith("use_hat_"):
-                hat_name = tool_name[len("use_hat_"):]
-                if hat_name in loaded_hats:
-                    _active_hats = hat_engine.apply_hat(_active_hats, hat_name)
-                result_summary = f"Hat '{hat_name}' activated."
-                result_data = {"hat": hat_name, "action": "activated"}
-                tool_calls.append(
-                    {
-                        "tool": tool_name,
-                        "args": tool_args,
-                        "result_summary": result_summary,
-                        "result_data": result_data,
-                        "artifact_key": "",
-                    }
-                )
-                new_turns.append(
-                    {
-                        "role": "assistant",
-                        "content": json.dumps(tool_call, separators=(",", ":")),
-                        "timestamp": _now(),
-                        "tool_call": tool_call,
-                    }
-                )
-                new_turns.append(
-                    {
-                        "role": "tool",
-                        "tool": tool_name,
-                        "result_summary": result_summary,
-                        "timestamp": _now(),
-                    }
-                )
-                prompt = _append_tool_result(prompt, tool_name, result_summary)
-                continue
-            if tool_name.startswith("drop_hat_"):
-                hat_name = tool_name[len("drop_hat_"):]
-                _active_hats = hat_engine.drop_hat(_active_hats, hat_name)
-                _hat_rounds.pop(hat_name, None)
-                result_summary = f"Hat '{hat_name}' deactivated."
-                result_data = {"hat": hat_name, "action": "deactivated"}
-                tool_calls.append(
-                    {
-                        "tool": tool_name,
-                        "args": tool_args,
-                        "result_summary": result_summary,
-                        "result_data": result_data,
-                        "artifact_key": "",
-                    }
-                )
-                new_turns.append(
-                    {
-                        "role": "assistant",
-                        "content": json.dumps(tool_call, separators=(",", ":")),
-                        "timestamp": _now(),
-                        "tool_call": tool_call,
-                    }
-                )
-                new_turns.append(
-                    {
-                        "role": "tool",
-                        "tool": tool_name,
-                        "result_summary": result_summary,
-                        "timestamp": _now(),
-                    }
-                )
-                prompt = _append_tool_result(prompt, tool_name, result_summary)
-                continue
-            if (
-                tool_name.startswith("generate_")
-                and not requested_tools
-                and _is_architecture_chat_only_request(user_message, decision_context)
-            ):
-                reply = _build_architecture_chat_reply(
-                    user_message=user_message,
-                    decision_context=decision_context,
-                )
-                break
-            if (
-                requested_tools
-                and tool_name.startswith("generate_")
-                and tool_name not in requested_tools
-            ):
-                forced_reply = (
-                    "I limited execution to the tools you asked for in this turn. "
-                    f"Skipped `{tool_name}` because it was not requested."
-                )
-                logger.info(
-                    "Orchestrator tool gating: requested=%s skipped=%s customer=%s",
-                    sorted(requested_tools),
-                    tool_name,
-                    customer_id,
-                )
-                break
-            logger.info("Orchestrator tool call: %s args=%s customer=%s", tool_name, tool_args, customer_id)
-
-            result_summary, artifact_key, result_data = await _execute_tool(
-                tool_name,
-                tool_args,
-                customer_id=customer_id,
-                customer_name=customer_name,
-                store=store,
-                text_runner=text_runner,
-                a2a_base_url=a2a_base_url,
-                specialist_mode=specialist_mode,
-                user_message=user_message,
-                max_refinements=max_refinements,
-                decision_context=decision_context,
-            )
-
-            notify(f"tool:{tool_name}", customer_id, result_summary)
-
+        forge = _get_forge(
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+        )
+        forge_result = await forge.run_turn(
+            session_id=customer_id,
+            user_message=user_message,
+            context=context,
+            history=history,
+        )
+        reply = forge_result.reply
+        for tc in forge_result.tool_calls:
             tool_calls.append(
                 {
-                    "tool": tool_name,
-                    "args": tool_args,
-                    "result_summary": result_summary,
-                    "result_data": result_data,
+                    "tool": tc.tool,
+                    "args": tc.args,
+                    "result_summary": tc.result.summary,
+                    "result_data": dict(tc.result.data or {}),
+                    "artifact_key": tc.result.artifact_key or "",
                 }
             )
-            if artifact_key:
-                artifacts[tool_name] = artifact_key
+        artifacts.update(forge_result.artifacts)
 
-            tool_turn = {
-                "role": "tool",
-                "tool": tool_name,
-                "result_summary": result_summary,
-                "timestamp": _now(),
-            }
-            new_turns.append(
-                {
-                    "role": "assistant",
-                    "content": json.dumps(tool_call, separators=(",", ":")),
-                    "timestamp": _now(),
-                    "tool_call": tool_call,
-                }
-            )
-            new_turns.append(tool_turn)
-
-            decision = _extract_blocking_skill_decision(result_data)
-            if decision:
-                forced_followup = {
-                    "kind": "blocked",
-                    "message": _decision_pushback_text(decision),
-                }
-                forced_reply = _decision_pushback_text(decision)
-                artifacts.pop(tool_name, None)
-                break
-
-            followup = _extract_governor_followup(result_data)
-            if followup:
-                forced_followup = followup
-                if followup["kind"] == "blocked":
-                    artifacts.pop(tool_name, None)
-                forced_reply = followup["message"]
-                break
-
-            if tool_name == "generate_diagram" and requested_tools == {"generate_diagram"}:
-                reply = _build_parallel_reply(tool_calls, decision_context=decision_context)
-                break
-
-            # Feed tool result back into next prompt
-            prompt = _append_tool_result(prompt, tool_name, result_summary)
-
-        else:
-            if "generate_diagram" in requested_tools and tool_calls:
-                reply = _build_parallel_reply(tool_calls, decision_context=decision_context)
-            else:
-                # Cap reached without a plain-text response — ask LLM for a summary
-                prompt_for_llm = hat_engine.inject_hats(
-                    prompt + "\n\nProvide a brief summary of what was accomplished.",
-                    _active_hats,
-                )
-                raw = await asyncio.to_thread(
-                    _call_text_runner,
-                    text_runner,
-                    prompt_for_llm,
-                    orchestrator_system_msg,
-                    "orchestrator",
-                )
-                reply = raw.strip()
 
     if forced_reply:
         if forced_followup and tool_calls:
