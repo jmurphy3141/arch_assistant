@@ -14,6 +14,34 @@ from agent.sub_agent_client import SubAgentError
 from skillforge.types import MemorySnapshot, ToolResult
 
 
+def build_inference_runner(app_state, *, inference_config: dict):
+    """
+    Return a text_runner callable using app.state if available,
+    otherwise build one from inference_config.
+
+    inference_config keys: endpoint, model_id, compartment_id,
+    max_tokens, temperature, top_p, top_k.
+    """
+    existing = getattr(app_state, "text_runner", None)
+    if existing:
+        return existing
+
+    def runner(prompt, system_message=""):
+        from agent.llm_inference_client import run_inference as _ri
+        return _ri(
+            prompt,
+            endpoint=inference_config["endpoint"],
+            model_id=inference_config["model_id"],
+            compartment_id=inference_config["compartment_id"],
+            max_tokens=inference_config.get("max_tokens", 4096),
+            temperature=inference_config.get("temperature", 0.7),
+            top_p=inference_config.get("top_p", 0.9),
+            top_k=inference_config.get("top_k", 50),
+            system_message=system_message,
+        )
+    return runner
+
+
 class _SpecialistHandler:
     """Base pattern for sub-agent specialist tools (pov, jep, waf)."""
 
