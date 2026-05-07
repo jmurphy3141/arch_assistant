@@ -97,6 +97,7 @@ class Forge:
         self._max_iterations = max_iterations
         self._history_window = history_window
         self._registry = ToolRegistry()
+        self._global_skills: list[str] = []
         # System prompt is rebuilt lazily after register_tool() calls.
         self._system_msg: str | None = None
 
@@ -112,6 +113,25 @@ class Forge:
         """
         with open(path) as f:
             self._base_system_prompt = f.read()
+        self._system_msg = None  # invalidate cache
+
+    def register_skill_file(self, path: str) -> None:
+        """
+        Register a global skill file whose content is injected into the
+        system prompt on every turn, before tool-specific guidance.
+
+        Call after construction, before the first run_turn().
+        Can be called multiple times — files are appended in order.
+        Invalidates the system message cache.
+
+        Parameters
+        ----------
+        path : Path to a .md file. Read immediately at registration time.
+        """
+        with open(path) as f:
+            content = f.read().strip()
+        if content:
+            self._global_skills.append(content)
         self._system_msg = None  # invalidate cache
 
     def register_tool(
@@ -592,7 +612,10 @@ class Forge:
         if self._system_msg is None:
             hat_tools = self._hat_engine.get_hat_tool_definitions()
             self._system_msg = _assemble_system_prompt(
-                self._base_system_prompt, hat_tools, self._registry
+                self._base_system_prompt,
+                hat_tools,
+                self._registry,
+                global_skills=self._global_skills,
             )
         return self._system_msg
 
@@ -670,26 +693,47 @@ def _append_result(prompt: str, tool_name: str, summary: str) -> str:
 
 
 def _assemble_system_prompt(
-    base: str, hat_tools: list[dict], registry: ToolRegistry | None
+    base: str,
+    hat_tools: list[dict],
+    registry: ToolRegistry,
+    global_skills: list[str] | None = None,
 ) -> str:
-    parts = [base.rstrip()]
-    if registry:
-        tool_block = registry.tool_contract_block()
-        if tool_block:
-            parts.append("\nTool contracts:\n" + tool_block)
+    parts: list[str] = []
+
+    if base:
+        parts.append(base.strip())
+
+    # Global skill files (routing guidance, safety rules, etc.)
+    for skill in (global_skills or []):
+        if skill.strip():
+            parts.append(skill.strip())
+
+    # Tool list with inline skill guidance
+    tool_entries = []
+    for name, spec in registry._tools.items():
+        entry = f"- {name}"
+        if spec.description:
+            entry += f": {spec.description}"
+        if spec.skill_guidance:
+            entry += f"\n  Guidance: {spec.skill_guidance.strip()[:300]}"
+            if len(spec.skill_guidance) > 300:
+                entry += "..."
+        tool_entries.append(entry)
+
+    if tool_entries:
+        parts.append("Available tools:\n" + "\n".join(tool_entries))
+
+    # Hat tool definitions
     if hat_tools:
-        hat_lines = [
-            "- use_hat_X activates an expert hat before the next reasoning round.",
-            "- drop_hat_X deactivates an active expert hat.",
-        ]
-        for tool in hat_tools:
-            fn = tool.get("function", {}) if isinstance(tool, dict) else {}
-            name = str(fn.get("name") or "").strip()
-            if name:
-                hat_lines.append(f"- {name} {{}}")
-        parts.append("\nHat tools:\n" + "\n".join(hat_lines))
-    parts.append(_TOOL_CALL_FORMAT_INSTRUCTION)
-    return "\n".join(parts)
+        hat_names = [t.get("name", "") for t in hat_tools]
+        parts.append("Hat tools (expert lenses): " + ", ".join(hat_names))
+
+    # Format instruction (must always be present — see p2a0)
+    parts.append(
+        'Tool call format (JSON on a single line):\n{"tool": "<name>", "args": {<key>: <value>}}'
+    )
+
+    return "\n\n".join(parts)
 
 
 def _import_symbol(dotted_path: str) -> Any:
