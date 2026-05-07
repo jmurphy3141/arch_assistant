@@ -102,6 +102,18 @@ class Forge:
 
     # ── Registration API ──────────────────────────────────────────────────────
 
+    def set_base_prompt_file(self, path: str) -> None:
+        """
+        Load the base system prompt from a .md file, replacing any previously
+        set base_system_prompt. Invalidates the cached system message.
+
+        Call before the first run_turn(). Calling after turns have started
+        resets the cache — the new prompt takes effect on the next turn.
+        """
+        with open(path) as f:
+            self._base_system_prompt = f.read()
+        self._system_msg = None  # invalidate cache
+
     def register_tool(
         self,
         name: str,
@@ -130,6 +142,13 @@ class Forge:
                               of immediately surfacing to user
         critique_enabled:     reserve tool for post-tool critic review
         """
+        # Resolve skill_guidance from file if it looks like a path
+        if skill_guidance and not skill_guidance.strip().startswith(("#", "\n", " ")):
+            import os
+            if os.path.isfile(skill_guidance):
+                with open(skill_guidance) as f:
+                    skill_guidance = f.read()
+
         self._registry.register(
             name,
             handler,
