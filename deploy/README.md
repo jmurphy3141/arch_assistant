@@ -1,0 +1,34 @@
+# Deployment
+
+## Install all services
+
+Copy service files to systemd and enable:
+
+    sudo cp deploy/oci-*.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable oci-agent oci-bom oci-diagram oci-pov oci-jep oci-waf oci-terraform
+    sudo systemctl start  oci-agent oci-bom oci-diagram oci-pov oci-jep oci-waf oci-terraform
+
+## Check status
+
+    sudo systemctl status oci-bom oci-diagram oci-pov oci-jep oci-waf oci-terraform
+
+## Restart a single sub-agent
+
+    sudo systemctl restart oci-bom
+
+## View logs
+
+    journalctl -u oci-bom -f
+
+## Port map
+
+| Service          | Port |
+|------------------|------|
+| oci-agent        | 8080 |
+| oci-diagram      | 8082 |
+| oci-bom          | 8083 |
+| oci-pov          | 8084 |
+| oci-jep          | 8085 |
+| oci-waf          | 8086 |
+| oci-terraform    | 8087 |
