@@ -1720,7 +1720,6 @@ async def logout(request: Request):
 
 # ── Endpoints ───────────────────────────────────────────────────────────────────
 
-@app.post("/upload-to-bucket")
 @app.post("/api/upload-to-bucket")
 async def upload_to_bucket(
     file:        UploadFile = File(...),
@@ -1758,7 +1757,6 @@ async def upload_to_bucket(
     return {"object_key": object_key, "filename": filename, "size": len(content), "bom_type": bom_type}
 
 
-@app.post("/upload-bom")
 @app.post("/api/upload-bom")
 async def upload_bom(
     file:          UploadFile = File(...),
@@ -1903,7 +1901,6 @@ async def upload_bom(
     return JSONResponse(status_code=202, content={"status": "pending", "job_id": job_id})
 
 
-@app.post("/clarify")
 @app.post("/api/clarify")
 async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
     """
@@ -2063,7 +2060,6 @@ async def clarify(req: ClarifyRequest, _user: dict = Depends(require_user)):
     return JSONResponse(status_code=202, content={"status": "pending", "job_id": job_id})
 
 
-@app.post("/refine")
 @app.post("/api/refine")
 async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)):
     """
@@ -2333,7 +2329,6 @@ async def refine_diagram(req: RefineRequest, _user: dict = Depends(require_user)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/generate")
 @app.post("/api/generate")
 async def generate_from_resources(req: GenerateRequest, _user: dict = Depends(require_user)):
     """Generate diagram from a pre-parsed resource list (JSON body)."""
@@ -2404,16 +2399,6 @@ async def generate_from_resources(req: GenerateRequest, _user: dict = Depends(re
         raise HTTPException(status_code=422, detail=f"LLM returned invalid JSON: {exc}")
     except Exception as exc:
         logger.error("Error in /generate: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@app.post("/chat")
-async def chat(req: ChatRequest, _user: dict = Depends(require_user)):
-    """Free-form chat with the drawing agent."""
-    try:
-        result = call_llm(req.message, req.client_id)
-        return {"response": str(result), "client_id": req.client_id}
-    except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -2692,67 +2677,6 @@ def refresh_data(_user: dict = Depends(require_user)):
     return {"status": "refreshing", "agent_version": AGENT_VERSION}
 
 
-@app.get("/mcp/tools")
-def mcp_tools():
-    return {"tools": [
-        {
-            "name": "upload_bom",
-            "description": "Upload an Excel BOM and optional context file to generate an OCI architecture diagram.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "file":             {"type": "string", "format": "binary"},
-                    "context_file":     {"type": "string", "format": "binary"},
-                    "context":          {"type": "string"},
-                    "diagram_name":     {"type": "string"},
-                    "client_id":        {"type": "string"},
-                },
-                "required": ["file"],
-            },
-        },
-        {
-            "name": "generate_diagram",
-            "description": "Generate an OCI architecture diagram from a pre-parsed resource list.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "resources":        {"type": "array"},
-                    "context":          {"type": "string"},
-                    "questionnaire":    {"type": "string", "description": "Answers to pre-flight questionnaire"},
-                    "notes":            {"type": "string", "description": "Meeting notes or free-form context"},
-                    "diagram_name":     {"type": "string"},
-                    "client_id":        {"type": "string"},
-                    "deployment_hints": {"type": "object"},
-                },
-                "required": ["resources"],
-            },
-        },
-        {
-            "name": "clarify",
-            "description": "Submit answers to clarification questions returned by upload_bom.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "answers":      {"type": "string"},
-                    "client_id":    {"type": "string"},
-                    "diagram_name": {"type": "string"},
-                },
-                "required": ["answers", "client_id"],
-            },
-        },
-        {
-            "name": "get_oci_catalogue",
-            "description": "List all known OCI resource types.",
-            "inputSchema": {"type": "object", "properties": {}},
-        },
-    ]}
-
-
-@app.get("/mcp/tools/get_oci_catalogue")
-def get_catalogue():
-    return {"catalogue": get_catalogue_summary()}
-
-
 # ── Agent card (A2A discovery) ───────────────────────────────────────────────
 
 def _build_agent_card(host: str) -> dict:
@@ -2943,13 +2867,6 @@ def agent_card():
             "total_agents": FLEET_CFG.get("total_agents", 7),
         },
     })
-
-
-@app.get("/.well-known/agent-card-legacy.json")
-def agent_card_legacy():
-    """Legacy schema_version 0.1 card — kept for backward compatibility."""
-    host = os.environ.get("AGENT_PUBLIC_HOST", "http://localhost:8000")
-    return JSONResponse(_build_agent_card(host))
 
 
 # ── A2A v1.0 (Oracle Agent Spec 26.1.0) endpoints ────────────────────────────
@@ -4347,7 +4264,6 @@ def _require_object_store():
 
 # ── Notes endpoints ──────────────────────────────────────────────────────────
 
-@app.post("/notes/upload")
 @app.post("/api/notes/upload")
 async def upload_note(
     customer_id: str        = Form(...),
@@ -4374,7 +4290,6 @@ async def upload_note(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/notes/{customer_id}")
 @app.get("/api/notes/{customer_id}")
 async def list_customer_notes(customer_id: str):
     """List all notes for a customer."""
@@ -4391,7 +4306,6 @@ async def list_customer_notes(customer_id: str):
 
 # ── POV endpoints ────────────────────────────────────────────────────────────
 
-@app.post("/pov/generate")
 @app.post("/api/pov/generate")
 async def pov_generate(req: PovRequest):
     """
@@ -4444,7 +4358,6 @@ async def pov_generate(req: PovRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/pov/{customer_id}/latest")
 @app.get("/api/pov/{customer_id}/latest")
 async def pov_latest(customer_id: str):
     """Return the latest POV document for a customer."""
@@ -4457,7 +4370,6 @@ async def pov_latest(customer_id: str):
     return {"status": "ok", "customer_id": customer_id, "doc_type": "pov", "content": content}
 
 
-@app.get("/pov/{customer_id}/versions")
 @app.get("/api/pov/{customer_id}/versions")
 async def pov_versions(customer_id: str):
     """List all POV versions for a customer."""
@@ -4470,7 +4382,6 @@ async def pov_versions(customer_id: str):
 
 # ── JEP endpoints ────────────────────────────────────────────────────────────
 
-@app.post("/jep/generate")
 @app.post("/api/jep/generate")
 async def jep_generate(req: JepRequest):
     """
@@ -4542,7 +4453,6 @@ async def jep_generate(req: JepRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/jep/{customer_id}/latest")
 @app.get("/api/jep/{customer_id}/latest")
 async def jep_latest(customer_id: str):
     """Return the latest JEP document for a customer."""
@@ -4564,7 +4474,6 @@ async def jep_latest(customer_id: str):
     }
 
 
-@app.get("/jep/{customer_id}/versions")
 @app.get("/api/jep/{customer_id}/versions")
 async def jep_versions(customer_id: str):
     """List all JEP versions for a customer."""
@@ -4796,7 +4705,6 @@ async def jep_get_questions(customer_id: str):
 
 # ── WAF endpoints ─────────────────────────────────────────────────────────────
 
-@app.post("/waf/generate")
 @app.post("/api/waf/generate")
 async def waf_generate(req: WafRequest):
     """
@@ -4853,7 +4761,6 @@ async def waf_generate(req: WafRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/waf/{customer_id}/latest")
 @app.get("/api/waf/{customer_id}/latest")
 async def waf_latest(customer_id: str):
     """Return the latest WAF review for a customer."""
@@ -4871,7 +4778,6 @@ async def waf_latest(customer_id: str):
     }
 
 
-@app.get("/waf/{customer_id}/versions")
 @app.get("/api/waf/{customer_id}/versions")
 async def waf_versions(customer_id: str):
     """List all WAF review versions for a customer."""
@@ -4884,7 +4790,6 @@ async def waf_versions(customer_id: str):
 
 # ── Terraform endpoints ────────────────────────────────────────────────────────
 
-@app.post("/terraform/generate")
 @app.post("/api/terraform/generate")
 async def terraform_generate(req: TerraformGenerateRequest):
     """
@@ -5042,7 +4947,6 @@ async def terraform_generate(req: TerraformGenerateRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/terraform/{customer_id}/latest")
 @app.get("/api/terraform/{customer_id}/latest")
 async def terraform_latest(customer_id: str):
     store = _require_object_store()
@@ -5068,7 +4972,6 @@ async def terraform_latest(customer_id: str):
     }
 
 
-@app.get("/terraform/{customer_id}/versions")
 @app.get("/api/terraform/{customer_id}/versions")
 async def terraform_versions(customer_id: str):
     store = _require_object_store()
@@ -5084,7 +4987,6 @@ async def terraform_versions(customer_id: str):
     }
 
 
-@app.get("/context/{customer_id}")
 @app.get("/api/context/{customer_id}")
 async def get_customer_context(customer_id: str):
     """Return accumulated per-customer cross-agent context."""
