@@ -96,3 +96,75 @@ async def test_diagram_artifact_key_persists_and_flows_to_next_diagram_call(
     assert result.artifact_key == "test/v2.drawio"
     assert captured["payload"]["prior_diagram_key"] == "test/v1.drawio"
     assert captured["payload"]["drawio_key"] == "test/v1.drawio"
+
+
+async def test_pov_artifact_key_persists_to_context_and_prior_artifacts():
+    store = InMemoryObjectStore()
+    context = {"customer_id": "acme", "customer_name": "ACME"}
+    memory = ArchieMemory(store=store)
+
+    updated = memory.update(
+        session_id="s1",
+        tool_name="generate_pov",
+        result=ToolResult(
+            summary="POV v1 saved.",
+            status="ok",
+            artifact_key="pov/acme/v1.md",
+        ),
+        context=context,
+    )
+
+    assert updated["agents"]["pov"]["latest_key"] == "pov/acme/v1.md"
+    assert read_context(store, "acme")["agents"]["pov"]["latest_key"] == (
+        "pov/acme/v1.md"
+    )
+    snapshot = memory.assemble(session_id="s1", context=updated, user_message="")
+    assert snapshot.prior_artifacts["generate_pov"] == "pov/acme/v1.md"
+
+
+async def test_waf_artifact_key_persists_to_context_and_prior_artifacts():
+    store = InMemoryObjectStore()
+    context = {"customer_id": "acme", "customer_name": "ACME"}
+    memory = ArchieMemory(store=store)
+
+    updated = memory.update(
+        session_id="s1",
+        tool_name="generate_waf",
+        result=ToolResult(
+            summary="WAF v1 saved.",
+            status="ok",
+            artifact_key="waf/acme/v1.md",
+        ),
+        context=context,
+    )
+
+    assert updated["agents"]["waf"]["latest_key"] == "waf/acme/v1.md"
+    assert read_context(store, "acme")["agents"]["waf"]["latest_key"] == (
+        "waf/acme/v1.md"
+    )
+    snapshot = memory.assemble(session_id="s1", context=updated, user_message="")
+    assert snapshot.prior_artifacts["generate_waf"] == "waf/acme/v1.md"
+
+
+async def test_jep_artifact_key_persists_to_context_and_prior_artifacts():
+    store = InMemoryObjectStore()
+    context = {"customer_id": "acme", "customer_name": "ACME"}
+    memory = ArchieMemory(store=store)
+
+    updated = memory.update(
+        session_id="s1",
+        tool_name="generate_jep",
+        result=ToolResult(
+            summary="JEP v1 saved.",
+            status="ok",
+            artifact_key="jep/acme/v1.md",
+        ),
+        context=context,
+    )
+
+    assert updated["agents"]["jep"]["latest_key"] == "jep/acme/v1.md"
+    assert read_context(store, "acme")["agents"]["jep"]["latest_key"] == (
+        "jep/acme/v1.md"
+    )
+    snapshot = memory.assemble(session_id="s1", context=updated, user_message="")
+    assert snapshot.prior_artifacts["generate_jep"] == "jep/acme/v1.md"
