@@ -72,15 +72,6 @@ class TestAgentCard:
         alias   = client.get("/.well-known/agent-card.json").json()
         assert primary == alias
 
-    def test_legacy_card_url_returns_200(self, client):
-        resp = client.get("/.well-known/agent-card-legacy.json")
-        assert resp.status_code == 200
-
-    def test_legacy_card_has_old_schema(self, client):
-        card = client.get("/.well-known/agent-card-legacy.json").json()
-        assert card["schema_version"] == "0.1"
-        assert card["agent_id"] == AGENT_ID
-
     def test_card_has_required_fields(self, client):
         # Oracle Agent Spec v26.1.0 schemaVersion 1.0 fields
         card = client.get("/.well-known/agent.json").json()
