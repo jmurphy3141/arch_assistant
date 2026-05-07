@@ -436,10 +436,6 @@ async def run_turn(
             context=context,
         )
 
-    if _is_note_capture_only_request(user_message):
-        note_key = await asyncio.to_thread(_save_context_note_only, user_message)
-        return _finalize_turn(f"I saved those customer notes for later use. Key: {note_key}")
-
     turn_intent = _classify_turn_intent(
         user_message=user_message,
         requested_tools=requested_tools,
@@ -472,11 +468,6 @@ async def run_turn(
         decision_context=decision_context,
         pending_checkpoint=context_store.get_pending_checkpoint(context),
     )
-
-    if _is_recall_intent(user_message) and not requested_tools:
-        if _is_migration_target_recall_intent(user_message) and not persisted_context_summary_before_turn:
-            return _finalize_turn("I don't have a verified migration target recorded for this customer yet.")
-        return _finalize_turn(_build_recall_reply(context))
 
     pending = context_store.get_pending_update(context) or _PENDING_UPDATE_WORKFLOWS.get(customer_id)
     if pending:
