@@ -138,6 +138,7 @@ from agent.context_store import (
 )
 from agent.runtime_config import resolve_agent_llm_config
 from agent.bom_service import get_shared_bom_service, new_trace_id
+from agent.chat_stream import stream_chat_turn, stream_chat_turn_sse
 from agent.tools.terraform import generate_terraform_bundle
 
 try:
@@ -3508,205 +3509,17 @@ async def api_chat_stream(
     req: OrchestratorChatRequest,
     mode: str = Query(default="sse", pattern="^(sse|chunked)$"),
 ):
-    """
-    Streaming chat endpoint for v1.5 UI.
-    Modes:
-      - sse: text/event-stream
-      - chunked: NDJSON (application/x-ndjson)
-    """
     store = _require_object_store()
-    text_runner = _make_orchestrator_text_runner()
-    orch_cfg = _cfg.get("orchestrator", {})
-    trace_id = _current_trace_id()
-
-    async def _run_orchestrator_with_stream_notifications(queue: asyncio.Queue[dict]):
-        from agent.notifications import notification_sink
-
-        loop = asyncio.get_running_loop()
-
-        def _sink(event: str, customer_id: str, _detail: str = "") -> None:
-            payload = _tool_started_stream_event(
-                event=event,
-                customer_id=customer_id,
-                trace_id=trace_id,
-            )
-            if payload is not None:
-                loop.call_soon_threadsafe(queue.put_nowait, payload)
-
-        with notification_sink(_sink):
-            result = await _run_orchestrator_turn(
-                req=req,
-                store=store,
-                text_runner=text_runner,
-                orch_cfg=orch_cfg,
-            )
-        result = await _persist_bom_xlsx_downloads(req.customer_id, store, result)
-        project_membership = _persist_chat_project_membership(store, req)
-        return result, project_membership
-
-    async def _drain_status_queue(queue: asyncio.Queue[dict], task: asyncio.Task, formatter):
-        while not task.done():
-            try:
-                payload = await asyncio.wait_for(queue.get(), timeout=0.1)
-            except asyncio.TimeoutError:
-                continue
-            yield formatter(payload)
-        while not queue.empty():
-            yield formatter(queue.get_nowait())
-
-    async def _sse_events():
-        started = {
-            "trace_id": trace_id,
-            "customer_id": req.customer_id,
-            "event_type": "status",
-            "status": "started",
-        }
-        yield f"event: status\ndata: {json.dumps(started)}\n\n"
-        try:
-            status_queue: asyncio.Queue[dict] = asyncio.Queue()
-            task = asyncio.create_task(_run_orchestrator_with_stream_notifications(status_queue))
-            async for event_text in _drain_status_queue(
-                status_queue,
-                task,
-                lambda payload: f"event: status\ndata: {json.dumps(payload)}\n\n",
-            ):
-                yield event_text
-            result, project_membership = await task
-            for tool_call in result.get("tool_calls", []):
-                if (
-                    tool_call.get("tool") == "generate_terraform"
-                    and isinstance(tool_call.get("result_data"), dict)
-                ):
-                    for stage in tool_call.get("result_data", {}).get("stages", []):
-                        stage_payload = {
-                            "trace_id": trace_id,
-                            "customer_id": req.customer_id,
-                            "event_type": "terraform_stage",
-                            "stage": stage,
-                        }
-                        yield f"event: terraform_stage\ndata: {json.dumps(stage_payload)}\n\n"
-                payload = {
-                    "trace_id": trace_id,
-                    "customer_id": req.customer_id,
-                    "event_type": "tool",
-                    "tool_call": tool_call,
-                }
-                yield f"event: tool\ndata: {json.dumps(payload)}\n\n"
-            for chunk in _chunk_reply_text(result.get("reply", "")):
-                payload = {
-                    "trace_id": trace_id,
-                    "customer_id": req.customer_id,
-                    "event_type": "token",
-                    "delta": chunk,
-                }
-                yield f"event: token\ndata: {json.dumps(payload)}\n\n"
-            completed = {
-                "trace_id": trace_id,
-                "customer_id": req.customer_id,
-                "project_id": project_membership["project_id"],
-                "project_name": project_membership["project_name"],
-                "engagement_id": req.customer_id,
-                "event_type": "completion",
-                "reply": result.get("reply", ""),
-                "tool_calls": result.get("tool_calls", []),
-                "artifacts": result.get("artifacts", {}),
-                "artifact_manifest": _build_artifact_manifest(req.customer_id, result),
-                "history_length": result.get("history_length", 0),
-            }
-            yield f"event: completion\ndata: {json.dumps(completed)}\n\n"
-        except Exception as exc:
-            logger.error(
-                "/api/chat/stream error customer=%s trace_id=%s: %s",
-                req.customer_id,
-                trace_id,
-                exc,
-            )
-            error_payload = {
-                "trace_id": trace_id,
-                "customer_id": req.customer_id,
-                "event_type": "error",
-                "error": str(exc),
-            }
-            yield f"event: error\ndata: {json.dumps(error_payload)}\n\n"
-
-    async def _ndjson_events():
-        started = {
-            "trace_id": trace_id,
-            "customer_id": req.customer_id,
-            "event_type": "status",
-            "status": "started",
-        }
-        yield json.dumps(started) + "\n"
-        try:
-            status_queue: asyncio.Queue[dict] = asyncio.Queue()
-            task = asyncio.create_task(_run_orchestrator_with_stream_notifications(status_queue))
-            async for event_text in _drain_status_queue(
-                status_queue,
-                task,
-                lambda payload: json.dumps(payload) + "\n",
-            ):
-                yield event_text
-            result, project_membership = await task
-            for tool_call in result.get("tool_calls", []):
-                if (
-                    tool_call.get("tool") == "generate_terraform"
-                    and isinstance(tool_call.get("result_data"), dict)
-                ):
-                    for stage in tool_call.get("result_data", {}).get("stages", []):
-                        stage_payload = {
-                            "trace_id": trace_id,
-                            "customer_id": req.customer_id,
-                            "event_type": "terraform_stage",
-                            "stage": stage,
-                        }
-                        yield json.dumps(stage_payload) + "\n"
-                payload = {
-                    "trace_id": trace_id,
-                    "customer_id": req.customer_id,
-                    "event_type": "tool",
-                    "tool_call": tool_call,
-                }
-                yield json.dumps(payload) + "\n"
-            for chunk in _chunk_reply_text(result.get("reply", "")):
-                payload = {
-                    "trace_id": trace_id,
-                    "customer_id": req.customer_id,
-                    "event_type": "token",
-                    "delta": chunk,
-                }
-                yield json.dumps(payload) + "\n"
-            completed = {
-                "trace_id": trace_id,
-                "customer_id": req.customer_id,
-                "project_id": project_membership["project_id"],
-                "project_name": project_membership["project_name"],
-                "engagement_id": req.customer_id,
-                "event_type": "completion",
-                "reply": result.get("reply", ""),
-                "tool_calls": result.get("tool_calls", []),
-                "artifacts": result.get("artifacts", {}),
-                "artifact_manifest": _build_artifact_manifest(req.customer_id, result),
-                "history_length": result.get("history_length", 0),
-            }
-            yield json.dumps(completed) + "\n"
-        except Exception as exc:
-            logger.error(
-                "/api/chat/stream error customer=%s trace_id=%s: %s",
-                req.customer_id,
-                trace_id,
-                exc,
-            )
-            error_payload = {
-                "trace_id": trace_id,
-                "customer_id": req.customer_id,
-                "event_type": "error",
-                "error": str(exc),
-            }
-            yield json.dumps(error_payload) + "\n"
-
-    if mode == "chunked":
-        return StreamingResponse(_ndjson_events(), media_type="application/x-ndjson")
-    return StreamingResponse(_sse_events(), media_type="text/event-stream")
+    stream = stream_chat_turn if mode == "chunked" else stream_chat_turn_sse
+    return StreamingResponse(
+        stream(
+            customer_id=req.customer_id, customer_name=req.customer_name, message=req.message,
+            store=store, text_runner=_make_orchestrator_text_runner(),
+            a2a_base_url=getattr(app.state, "a2a_base_url", ""),
+            project_id=req.project_id, project_name=req.project_name,
+        ),
+        media_type="application/x-ndjson" if mode == "chunked" else "text/event-stream",
+    )
 
 
 @app.get("/api/chat/{customer_id}/history")
