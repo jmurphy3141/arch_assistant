@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.context_store import get_archie_state
+from agent.context_store import get_archie_state, write_context
 from agent.persistence_objectstore import ObjectStoreBase
 from skillforge.types import MemorySnapshot, ToolResult
 
@@ -70,8 +70,23 @@ class ArchieMemory:
         context: dict[str, Any],
     ) -> dict[str, Any]:
         """
-        Return context unchanged; Archie's tool handlers manage persistence.
+        Return updated context; most tool handlers manage their own persistence.
         """
+        if tool_name == "generate_diagram" and result.artifact_key:
+            agents = context.setdefault("agents", {})
+            diagram_ctx = agents.setdefault("diagram", {})
+            diagram_ctx["diagram_key"] = result.artifact_key
+            diagram_ctx["drawio_key"] = result.artifact_key
+            if result.data:
+                if result.data.get("diagram_name"):
+                    diagram_ctx["diagram_name"] = result.data["diagram_name"]
+                if result.summary:
+                    diagram_ctx["summary"] = result.summary
+
+            customer_id = str(context.get("customer_id") or "").strip()
+            if customer_id and self._store is not None:
+                write_context(self._store, customer_id, context)
+
         return context
 
 
