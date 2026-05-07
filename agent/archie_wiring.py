@@ -6,6 +6,7 @@ archie_loop.py imports build_forge() for the p2i cutover task.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
 
 import agent.hat_engine as hat_engine
@@ -18,6 +19,9 @@ from agent.tools.specialists import JepHandler, PovHandler, WafHandler
 from agent.tools.terraform import TerraformHandler
 from skillforge import Forge
 from skillforge.types import MemorySnapshot
+
+
+_INTENT_ROUTING_SKILL = Path(__file__).parent.parent / "skills" / "intent_routing.md"
 
 
 class ArchiePromptEnricher:
@@ -74,9 +78,14 @@ def build_forge(
     """
     memory = ArchieMemory(store=store)
     enricher = ArchiePromptEnricher()
+    routing_guidance = ""
+    if _INTENT_ROUTING_SKILL.exists():
+        routing_guidance = _INTENT_ROUTING_SKILL.read_text()
+
+    full_prompt = (routing_guidance + "\n\n" + base_system_prompt).strip()
 
     forge = Forge(
-        base_system_prompt=base_system_prompt,
+        base_system_prompt=full_prompt,
         hat_engine=hat_engine,
         memory=memory,
         text_runner=text_runner,
