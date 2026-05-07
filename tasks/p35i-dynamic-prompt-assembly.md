@@ -34,11 +34,11 @@ prepending skill content to `base_system_prompt`.
 ## Prerequisite Check
 
 ```bash
-python3.11 -m compileall skillforge/forge.py skillforge/registry.py
-pytest tests/test_forge.py tests/test_skill_files.py -v --tb=short 2>&1 | tail -4
+python3.11 -m compileall skillforge/forge.py skillforge/registry.py skillforge/memory.py
+pytest tests/test_forge.py tests/test_skill_files.py tests/test_simple_memory.py -v --tb=short 2>&1 | tail -4
 ```
 
-Both must pass. If `tests/test_skill_files.py` does not exist, p35b is
+All must pass. If `tests/test_skill_files.py` does not exist, p35b is
 incomplete — stop.
 
 ---
@@ -48,6 +48,7 @@ incomplete — stop.
 **Only modify:**
 - `skillforge/forge.py` — add `register_skill_file()`, update `_get_system_msg()`
 - `skillforge/forge.py` — update `_assemble_system_prompt()` signature
+- `skillforge/memory.py` — fix `SimpleMemory.assemble()` frozen dataclass workaround (see below)
 
 **Only create:**
 - `tests/test_dynamic_prompt_assembly.py`
@@ -155,6 +156,29 @@ def _assemble_system_prompt(
 **Important:** The existing format instruction (`Tool call format`) must remain
 in the assembled prompt. Do not remove it. Check that `test_format_instruction_in_system_prompt`
 in `test_forge.py` still passes.
+
+---
+
+### 4. Fix `SimpleMemory.assemble()` — remove frozen dataclass workaround
+
+The current implementation in `skillforge/memory.py` uses:
+```python
+object.__setattr__(snapshot, "artifacts", artifacts)
+```
+This bypasses the frozen dataclass and is fragile. Fix it by checking the
+actual fields on `MemorySnapshot` and using the correct constructor argument.
+
+Run this first to see what fields `MemorySnapshot` accepts:
+```bash
+python3.11 -c "import inspect; from skillforge.types import MemorySnapshot; print(inspect.signature(MemorySnapshot))"
+```
+
+Replace the `object.__setattr__` hack with the proper field name. If
+`MemorySnapshot` uses `prior_artifacts` rather than `artifacts`, update
+`SimpleMemory.assemble()` to pass it correctly and remove the workaround
+entirely. The `test_simple_memory.py` tests (specifically
+`test_update_stores_artifact_key` and `test_assemble_empty_session`) must
+still pass after the fix.
 
 ---
 
@@ -278,13 +302,15 @@ def test_system_prompt_cached_after_skill_registration(tmp_path):
 
 ## Acceptance Criteria
 
-1. `python3.11 -m compileall skillforge/forge.py` exits 0
+1. `python3.11 -m compileall skillforge/forge.py skillforge/memory.py` exits 0
 2. `pytest tests/test_dynamic_prompt_assembly.py -v` — 7 passed
 3. `pytest tests/test_forge.py -v` — 14 passed, including
    `test_format_instruction_in_system_prompt` and `test_system_prompt_cached`
 4. `pytest tests/test_skill_files.py -v` — 5 passed (no regression)
-5. `grep "register_skill_file\|global_skills" skillforge/forge.py` — matches
-6. `pytest tests/test_specialist_mode_routing.py -v` — 45 passed
+5. `pytest tests/test_simple_memory.py -v` — all passed (no regression)
+6. `grep "register_skill_file\|global_skills" skillforge/forge.py` — matches
+7. `grep "object.__setattr__" skillforge/memory.py` — no output (workaround removed)
+8. `pytest tests/test_specialist_mode_routing.py -v` — 45 passed
 
 ---
 
@@ -295,11 +321,13 @@ def test_system_prompt_cached_after_skill_registration(tmp_path):
 - Do not make `_assemble_system_prompt` import from `agent/`
 - Do not remove the format instruction — `test_format_instruction_in_system_prompt`
   must stay green
+- Do not use `object.__setattr__` anywhere in `skillforge/` — if a frozen
+  dataclass field needs setting, use the constructor correctly
 
 ---
 
 ## Commit Message
 
 ```
-p35i: dynamic system prompt assembly — global skill files and tool guidance auto-injected
+p35i: dynamic system prompt assembly + fix SimpleMemory frozen dataclass workaround
 ```
