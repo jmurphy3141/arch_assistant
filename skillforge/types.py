@@ -10,8 +10,15 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
-# Validated status values — handlers must return one of these three strings.
-ToolStatus = Literal["ok", "needs_input", "blocked"]
+@dataclass
+class ParallelToolCall:
+    """Declares one tool to be executed as part of a parallel group."""
+    tool: str
+    args: dict
+
+
+# Validated status values — handlers must return one of these four strings.
+ToolStatus = Literal["ok", "needs_input", "blocked", "parallel"]
 
 
 @dataclass(frozen=True)
@@ -46,12 +53,14 @@ class ToolResult:
     data:          raw payload for critic/safety review
     artifact_key:  object-store key if an artifact was produced (ok only)
     clarification: message to surface to the user when status == "needs_input"
+    parallel_tools: tools to execute concurrently when status == "parallel"
     """
     summary: str
     status: ToolStatus
     data: dict[str, Any] = field(default_factory=dict)
     artifact_key: str = ""
     clarification: str = ""
+    parallel_tools: list[ParallelToolCall] | None = None
 
 
 @dataclass

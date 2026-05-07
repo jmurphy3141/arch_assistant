@@ -1,0 +1,11 @@
+# Minimal example showing declarative tool registration.
+# Used by the quickstart — not imported by any production code.
+tools:
+  - name: save_notes
+    handler: skillforge.memory:SimpleMemory   # placeholder — replace with real handler
+    memory_contract: false
+
+  - name: my_tool
+    handler: skillforge.memory:SimpleMemory   # placeholder
+    memory_contract: true
+    critique_enabled: false

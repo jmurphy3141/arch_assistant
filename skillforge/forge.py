@@ -102,6 +102,18 @@ class Forge:
 
     # ── Registration API ──────────────────────────────────────────────────────
 
+    def set_base_prompt_file(self, path: str) -> None:
+        """
+        Load the base system prompt from a .md file, replacing any previously
+        set base_system_prompt. Invalidates the cached system message.
+
+        Call before the first run_turn(). Calling after turns have started
+        resets the cache — the new prompt takes effect on the next turn.
+        """
+        with open(path) as f:
+            self._base_system_prompt = f.read()
+        self._system_msg = None  # invalidate cache
+
     def register_tool(
         self,
         name: str,
@@ -130,6 +142,13 @@ class Forge:
                               of immediately surfacing to user
         critique_enabled:     reserve tool for post-tool critic review
         """
+        # Resolve skill_guidance from file if it looks like a path
+        if skill_guidance and not skill_guidance.strip().startswith(("#", "\n", " ")):
+            import os
+            if os.path.isfile(skill_guidance):
+                with open(skill_guidance) as f:
+                    skill_guidance = f.read()
+
         self._registry.register(
             name,
             handler,
@@ -143,6 +162,64 @@ class Forge:
             critique_enabled=critique_enabled,
         )
         self._system_msg = None   # invalidate cached system prompt
+
+    def register_tools_from_config(
+        self,
+        config: str | dict,
+        *,
+        base_dir: str | None = None,
+    ) -> None:
+        """
+        Register tools from a YAML file path or a dict.
+
+        Parameters
+        ----------
+        config   : Path to a YAML file, or a dict already parsed from YAML.
+        base_dir : Base directory for resolving relative skill_guidance paths.
+                   Defaults to the directory containing the config file (if path
+                   given) or the current working directory.
+        """
+        import importlib
+        import os
+        import yaml
+
+        if isinstance(config, str):
+            config_path = config
+            if base_dir is None:
+                base_dir = os.path.dirname(os.path.abspath(config_path))
+            with open(config_path) as f:
+                data = yaml.safe_load(f)
+        else:
+            data = config
+            if base_dir is None:
+                base_dir = os.getcwd()
+
+        for tool_cfg in data.get("tools", []):
+            name = tool_cfg["name"]
+            handler = _import_symbol(tool_cfg["handler"])
+            handler_kwargs = tool_cfg.get("handler_kwargs") or {}
+            if handler_kwargs:
+                handler = handler(**handler_kwargs)
+
+            # Resolve skill_guidance
+            skill_guidance = tool_cfg.get("skill_guidance", "")
+            if skill_guidance and os.path.exists(os.path.join(base_dir, skill_guidance)):
+                with open(os.path.join(base_dir, skill_guidance)) as f:
+                    skill_guidance = f.read()
+
+            # Resolve safety_checker
+            safety_checker = None
+            if tool_cfg.get("safety_checker"):
+                safety_checker = _import_symbol(tool_cfg["safety_checker"])
+
+            self.register_tool(
+                name,
+                handler,
+                memory_contract=bool(tool_cfg.get("memory_contract", False)),
+                critique_enabled=bool(tool_cfg.get("critique_enabled", False)),
+                skill_guidance=skill_guidance or "",
+                safety_checker=safety_checker,
+            )
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
@@ -305,6 +382,41 @@ class Forge:
                     ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration)
                 )
                 break
+
+            # ── Parallel group dispatch ───────────────────────────────────────────
+            if result.status == "parallel" and result.parallel_tools:
+                parallel_results = await asyncio.gather(*[
+                    self.invoke_tool(
+                        pt.tool,
+                        dict(pt.args),
+                        session_id=session_id,
+                        context=context,
+                        trace_id=trace_id,
+                    )
+                    for pt in result.parallel_tools
+                ])
+                for pt, pr in zip(result.parallel_tools, parallel_results):
+                    tool_calls.append(
+                        ToolCall(tool=pt.tool, args=pt.args, result=pr, iteration=iteration)
+                    )
+                    if pr.artifact_key and pr.status == "ok":
+                        artifacts[pt.tool] = pr.artifact_key
+                    if pr.status == "ok" and self._registry.requires_memory(pt.tool):
+                        context = self._memory.update(
+                            session_id=session_id,
+                            tool_name=pt.tool,
+                            result=pr,
+                            context=context,
+                        )
+                combined_summary = "; ".join(
+                    f"{pt.tool}: {pr.summary}"
+                    for pt, pr in zip(result.parallel_tools, parallel_results)
+                )
+                tool_calls.append(
+                    ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration)
+                )
+                prompt = _append_result(prompt, tool_name, combined_summary)
+                continue
 
             tool_calls.append(
                 ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration)
@@ -578,3 +690,13 @@ def _assemble_system_prompt(
         parts.append("\nHat tools:\n" + "\n".join(hat_lines))
     parts.append(_TOOL_CALL_FORMAT_INSTRUCTION)
     return "\n".join(parts)
+
+
+def _import_symbol(dotted_path: str) -> Any:
+    """Import 'package.module:ClassName' or 'package.module:function'."""
+    if ":" not in dotted_path:
+        raise ValueError(f"handler must be 'module:symbol', got: {dotted_path!r}")
+    module_path, symbol = dotted_path.rsplit(":", 1)
+    import importlib
+    mod = importlib.import_module(module_path)
+    return getattr(mod, symbol)
