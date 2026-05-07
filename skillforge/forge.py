@@ -306,6 +306,41 @@ class Forge:
                 )
                 break
 
+            # ── Parallel group dispatch ───────────────────────────────────────────
+            if result.status == "parallel" and result.parallel_tools:
+                parallel_results = await asyncio.gather(*[
+                    self.invoke_tool(
+                        pt.tool,
+                        dict(pt.args),
+                        session_id=session_id,
+                        context=context,
+                        trace_id=trace_id,
+                    )
+                    for pt in result.parallel_tools
+                ])
+                for pt, pr in zip(result.parallel_tools, parallel_results):
+                    tool_calls.append(
+                        ToolCall(tool=pt.tool, args=pt.args, result=pr, iteration=iteration)
+                    )
+                    if pr.artifact_key and pr.status == "ok":
+                        artifacts[pt.tool] = pr.artifact_key
+                    if pr.status == "ok" and self._registry.requires_memory(pt.tool):
+                        context = self._memory.update(
+                            session_id=session_id,
+                            tool_name=pt.tool,
+                            result=pr,
+                            context=context,
+                        )
+                combined_summary = "; ".join(
+                    f"{pt.tool}: {pr.summary}"
+                    for pt, pr in zip(result.parallel_tools, parallel_results)
+                )
+                tool_calls.append(
+                    ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration)
+                )
+                prompt = _append_result(prompt, tool_name, combined_summary)
+                continue
+
             tool_calls.append(
                 ToolCall(tool=tool_name, args=tool_args, result=result, iteration=iteration)
             )
