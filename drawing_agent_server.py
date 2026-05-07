@@ -139,6 +139,7 @@ from agent.context_store import (
 from agent.runtime_config import resolve_agent_llm_config
 from agent.bom_service import get_shared_bom_service, new_trace_id
 from agent.chat_stream import stream_chat_turn, stream_chat_turn_sse
+from agent.tools.specialists import build_inference_runner
 from agent.tools.terraform import generate_terraform_bundle
 
 try:
@@ -230,6 +231,15 @@ WRITING_MAX_TOKENS     = int(_writing_cfg.get("max_tokens", 4000))
 WRITING_TEMPERATURE    = float(_writing_cfg.get("temperature", 0.7))
 WRITING_TOP_P          = float(_writing_cfg.get("top_p", 0.9))
 WRITING_TOP_K          = int(_writing_cfg.get("top_k", 0))
+_WRITING_INFERENCE_CONFIG = {
+    "endpoint": INFERENCE_ENDPOINT,
+    "model_id": INFERENCE_MODEL_ID,
+    "compartment_id": COMPARTMENT_ID,
+    "max_tokens": WRITING_MAX_TOKENS,
+    "temperature": WRITING_TEMPERATURE,
+    "top_p": WRITING_TOP_P,
+    "top_k": WRITING_TOP_K,
+}
 
 # ── Terraform agent config ────────────────────────────────────────────────────
 _terraform_cfg          = _cfg.get("terraform", {})
@@ -4068,29 +4078,19 @@ async def pov_generate(req: PovRequest):
     Saves to: pov/{customer_id}/v{n}.md + LATEST.md
     """
     store = _require_object_store()
-
-    def _run_pov():
-        def runner(prompt, system_message=""):
-            from agent.llm_inference_client import run_inference as _ri
-            return _ri(
-                prompt,
-                endpoint=INFERENCE_ENDPOINT,
-                model_id=INFERENCE_MODEL_ID,
-                compartment_id=COMPARTMENT_ID,
-                max_tokens=WRITING_MAX_TOKENS,
-                temperature=WRITING_TEMPERATURE,
-                top_p=WRITING_TOP_P,
-                top_k=WRITING_TOP_K,
-                system_message=system_message,
-            )
-        text_runner = getattr(app.state, "text_runner", None) or runner
-        return generate_pov(
-            req.customer_id, req.customer_name, store, text_runner,
-            feedback=req.feedback or "",
-        )
+    text_runner = build_inference_runner(app.state, inference_config=_WRITING_INFERENCE_CONFIG)
 
     try:
-        result = await anyio.to_thread.run_sync(_run_pov)
+        result = await anyio.to_thread.run_sync(
+            functools.partial(
+                generate_pov,
+                req.customer_id,
+                req.customer_name,
+                store,
+                text_runner,
+                feedback=req.feedback or "",
+            )
+        )
         return {
             "status":        "ok",
             "agent_version": AGENT_VERSION,
@@ -4147,30 +4147,7 @@ async def jep_generate(req: JepRequest):
     store = _require_object_store()
     persistence_cfg = getattr(app.state, "persistence_config", None) or {}
     prefix = persistence_cfg.get("prefix", "agent3")
-
-    def _run_jep():
-        text_runner = getattr(app.state, "text_runner", None)
-        if text_runner is None:
-            from agent.llm_inference_client import run_inference as _ri
-            def text_runner(prompt, system_message=""):
-                return _ri(
-                    prompt,
-                    endpoint=INFERENCE_ENDPOINT,
-                    model_id=INFERENCE_MODEL_ID,
-                    compartment_id=COMPARTMENT_ID,
-                    max_tokens=WRITING_MAX_TOKENS,
-                    temperature=WRITING_TEMPERATURE,
-                    top_p=WRITING_TOP_P,
-                    top_k=WRITING_TOP_K,
-                    system_message=system_message,
-                )
-        return generate_jep(
-            req.customer_id, req.customer_name, store, text_runner,
-            feedback=req.feedback or "",
-            diagram_key=req.diagram_key,
-            diagram_url=req.diagram_url,
-            persistence_prefix=prefix,
-        )
+    text_runner = build_inference_runner(app.state, inference_config=_WRITING_INFERENCE_CONFIG)
 
     try:
         policy_block = await anyio.to_thread.run_sync(
@@ -4179,7 +4156,19 @@ async def jep_generate(req: JepRequest):
         if policy_block is not None:
             return JSONResponse(status_code=409, content=policy_block)
 
-        result = await anyio.to_thread.run_sync(_run_jep)
+        result = await anyio.to_thread.run_sync(
+            functools.partial(
+                generate_jep,
+                req.customer_id,
+                req.customer_name,
+                store,
+                text_runner,
+                feedback=req.feedback or "",
+                diagram_key=req.diagram_key,
+                diagram_url=req.diagram_url,
+                persistence_prefix=prefix,
+            )
+        )
         jep_state = await anyio.to_thread.run_sync(
             functools.partial(mark_jep_generated, store, req.customer_id)
         )
@@ -4469,29 +4458,19 @@ async def waf_generate(req: WafRequest):
     Saves to: waf/{customer_id}/v{n}.md + LATEST.md
     """
     store = _require_object_store()
-
-    def _run_waf():
-        def runner(prompt, system_message=""):
-            from agent.llm_inference_client import run_inference as _ri
-            return _ri(
-                prompt,
-                endpoint=INFERENCE_ENDPOINT,
-                model_id=INFERENCE_MODEL_ID,
-                compartment_id=COMPARTMENT_ID,
-                max_tokens=WRITING_MAX_TOKENS,
-                temperature=WRITING_TEMPERATURE,
-                top_p=WRITING_TOP_P,
-                top_k=WRITING_TOP_K,
-                system_message=system_message,
-            )
-        text_runner = getattr(app.state, "text_runner", None) or runner
-        return generate_waf(
-            req.customer_id, req.customer_name, store, text_runner,
-            feedback=req.feedback or "",
-        )
+    text_runner = build_inference_runner(app.state, inference_config=_WRITING_INFERENCE_CONFIG)
 
     try:
-        result = await anyio.to_thread.run_sync(_run_waf)
+        result = await anyio.to_thread.run_sync(
+            functools.partial(
+                generate_waf,
+                req.customer_id,
+                req.customer_name,
+                store,
+                text_runner,
+                feedback=req.feedback or "",
+            )
+        )
         content = _ensure_waf_test_pillars(result["content"])
         return {
             "status":         "ok",
