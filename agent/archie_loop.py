@@ -1808,11 +1808,13 @@ async def _post_diagram_a2a_task(
     )
     status = str(response.get("status") or "error").lower()
     if status == "ok":
+        task_id = str(payload.get("task_id") or "")
         return {
             "status": "ok",
-            "task_id": str(payload.get("task_id") or ""),
+            "task_id": task_id,
             "outputs": {
                 "drawio_xml": str(response.get("result") or ""),
+                "diagram_name": task_id or "diagram",
                 "trace": response.get("trace", {}),
             },
         }

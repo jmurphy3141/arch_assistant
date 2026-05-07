@@ -5,11 +5,21 @@ ToolHandler implementation for the generate_diagram pipeline.
 """
 from __future__ import annotations
 
+import asyncio
+import re
 from typing import Any
 
 from agent import archie_memory
-from agent.persistence_objectstore import ObjectStoreBase
+from agent.persistence_objectstore import ObjectStoreBase, persist_artifacts
 from skillforge.types import MemorySnapshot, ToolResult
+
+
+def _safe_diagram_name(value: Any, fallback: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip()).strip("._")
+    if name:
+        return name
+    fallback_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(fallback or "").strip()).strip("._")
+    return fallback_name or "diagram"
 
 
 class DiagramHandler:
@@ -87,6 +97,30 @@ class DiagramHandler:
                 status="needs_input",
                 clarification=clarify,
             )
+        if not artifact_key:
+            drawio_xml = str(result_data.get("drawio_xml") or "")
+            if drawio_xml.strip():
+                diagram_name = _safe_diagram_name(
+                    result_data.get("diagram_name") or args.get("diagram_name"),
+                    trace_id or "diagram",
+                )
+                latest = await asyncio.to_thread(
+                    persist_artifacts,
+                    self._store,
+                    "agent3",
+                    self._customer_id,
+                    diagram_name,
+                    {"diagram.drawio": drawio_xml.encode("utf-8")},
+                )
+                if latest:
+                    artifact_key = str(
+                        (latest.get("artifacts", {}) or {}).get("diagram.drawio")
+                        or ""
+                    )
+                    result_data["diagram_name"] = diagram_name
+                    result_data["drawio_key"] = artifact_key
+                    result_data["object_key"] = artifact_key
+                    summary = f"Diagram generated. Key: {artifact_key}"
         return ToolResult(
             summary=summary,
             status="ok",
