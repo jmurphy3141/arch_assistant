@@ -2989,12 +2989,12 @@ async def cancel_task(task_id: str):
 
 def _make_orchestrator_text_runner():
     """
-    Return a sync callable (prompt, system_msg) -> str for the orchestrator.
+    Return an async callable (prompt, system_msg) -> str for the orchestrator.
     Uses the inference runner already wired to app.state.
     """
     runner = getattr(app.state, "llm_runner", None)
 
-    def _text_runner(prompt: str, system_msg: str, model_profile: str = "orchestrator") -> str:
+    def _sync_runner(prompt: str, system_msg: str, model_profile: str = "orchestrator") -> str:
         if runner is None:
             raise RuntimeError("LLM runner not initialised.")
         # The inference runner is a (prompt, client_id) callable that returns
@@ -3017,7 +3017,11 @@ def _make_orchestrator_text_runner():
             )
         raise RuntimeError("Inference not enabled — cannot run orchestrator.")
 
-    return _text_runner
+    async def _async_runner(prompt: str, system_msg: str, model_profile: str = "orchestrator") -> str:
+        import asyncio
+        return await asyncio.to_thread(_sync_runner, prompt, system_msg, model_profile)
+
+    return _async_runner
 
 
 def _make_terraform_text_runner():
