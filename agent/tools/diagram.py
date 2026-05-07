@@ -62,6 +62,13 @@ class DiagramHandler:
             args=args,
             context=ctx,
         )
+        prior_diagram_key = _prior_diagram_key(memory=memory, context=ctx)
+        if prior_diagram_key:
+            args = {
+                **args,
+                "prior_diagram_key": prior_diagram_key,
+                "drawio_key": prior_diagram_key,
+            }
 
         if ctx and not archie_memory._diagram_has_sufficient_context(
             context=ctx,
@@ -127,3 +134,24 @@ class DiagramHandler:
             artifact_key=artifact_key,
             data=result_data,
         )
+
+
+def _prior_diagram_key(
+    *,
+    memory: MemorySnapshot | None,
+    context: dict[str, Any],
+) -> str:
+    if memory:
+        prior_artifacts = memory.prior_artifacts or {}
+        value = prior_artifacts.get("generate_diagram", "")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    agents = context.get("agents", {}) if isinstance(context, dict) else {}
+    if not isinstance(agents, dict):
+        return ""
+    diagram_ctx = agents.get("diagram", {})
+    if not isinstance(diagram_ctx, dict):
+        return ""
+    value = diagram_ctx.get("diagram_key", "")
+    return value.strip() if isinstance(value, str) and value.strip() else ""
