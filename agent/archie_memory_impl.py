@@ -72,6 +72,7 @@ class ArchieMemory:
         """
         Return updated context; most tool handlers manage their own persistence.
         """
+        updated = False
         if tool_name == "generate_diagram" and result.artifact_key:
             agents = context.setdefault("agents", {})
             diagram_ctx = agents.setdefault("diagram", {})
@@ -82,10 +83,26 @@ class ArchieMemory:
                     diagram_ctx["diagram_name"] = result.data["diagram_name"]
                 if result.summary:
                     diagram_ctx["summary"] = result.summary
+            updated = True
 
-            customer_id = str(context.get("customer_id") or "").strip()
-            if customer_id and self._store is not None:
-                write_context(self._store, customer_id, context)
+        if tool_name == "generate_pov" and result.artifact_key:
+            agents = context.setdefault("agents", {})
+            agents.setdefault("pov", {})["latest_key"] = result.artifact_key
+            updated = True
+
+        if tool_name == "generate_waf" and result.artifact_key:
+            agents = context.setdefault("agents", {})
+            agents.setdefault("waf", {})["latest_key"] = result.artifact_key
+            updated = True
+
+        if tool_name == "generate_jep" and result.artifact_key:
+            agents = context.setdefault("agents", {})
+            agents.setdefault("jep", {})["latest_key"] = result.artifact_key
+            updated = True
+
+        customer_id = str(context.get("customer_id") or "").strip()
+        if updated and customer_id and self._store is not None:
+            write_context(self._store, customer_id, context)
 
         return context
 
@@ -99,9 +116,15 @@ def _prior_artifacts(context: dict[str, Any]) -> dict[str, str]:
     prior = {
         "generate_diagram": _artifact_key(agents.get("diagram", {}), "diagram_key"),
         "generate_bom": _first_artifact_key(bom, ("xlsx_key", "artifact_key")),
-        "generate_pov": _artifact_key(agents.get("pov", {}), "artifact_key"),
-        "generate_jep": _artifact_key(agents.get("jep", {}), "artifact_key"),
-        "generate_waf": _artifact_key(agents.get("waf", {}), "artifact_key"),
+        "generate_pov": _first_artifact_key(
+            agents.get("pov", {}), ("latest_key", "artifact_key")
+        ),
+        "generate_jep": _first_artifact_key(
+            agents.get("jep", {}), ("latest_key", "artifact_key")
+        ),
+        "generate_waf": _first_artifact_key(
+            agents.get("waf", {}), ("latest_key", "artifact_key")
+        ),
         "generate_terraform": _artifact_key(
             agents.get("terraform", {}), "artifact_key"
         ),
