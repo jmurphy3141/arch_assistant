@@ -30,7 +30,7 @@ def test_prompt_judge_recursive_scorecards() -> None:
     import agent.pov_agent as pov_agent
     import agent.jep_agent as jep_agent
     import agent.waf_agent as waf_agent
-    from agent.graphs import terraform_graph
+    from pathlib import Path
 
     scenario_prompts = {
         "orchestrator": orchestrator_agent.ORCHESTRATOR_SYSTEM_MSG,
@@ -55,7 +55,7 @@ def test_prompt_judge_recursive_scorecards() -> None:
         "pov": pov_agent._PROMPT_TEMPLATE,
         "jep": jep_agent._PROMPT_TEMPLATE,
         "waf": waf_agent._STANDALONE_PROMPT_TEMPLATE + "\n" + waf_agent._ORCHESTRATION_PROMPT_TEMPLATE,
-        "terraform": terraform_graph._build_stage_prompt("review", "input", "# skill"),
+        "terraform": (Path(__file__).resolve().parents[1] / "sub_agents" / "terraform" / "system_prompt.md").read_text(encoding="utf-8"),
     }
 
     dependency_map = {

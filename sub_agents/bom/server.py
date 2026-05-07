@@ -62,9 +62,15 @@ async def lifespan(app: FastAPI):
 
 async def handle(req: A2ARequest) -> A2AResponse:
     service = get_shared_bom_service()
+    task_msg = req.task
+    if req.engagement_context:
+        ctx_block = json.dumps(req.engagement_context, ensure_ascii=False, indent=2)
+        task_msg = (
+            f"[Archie Canonical Memory]\n{ctx_block}\n[End Archie Canonical Memory]\n\n{req.task}"
+        )
     response = await anyio.to_thread.run_sync(
         lambda: service.chat(
-            message=req.task,
+            message=task_msg,
             conversation=[],
             trace_id=req.trace_id,
             model_id=_model_id,

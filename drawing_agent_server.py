@@ -3195,28 +3195,6 @@ async def _run_orchestrator_turn(
         orch_cfg.get("specialists_langgraph_enabled", False)
     ) else "legacy"
 
-    if bool(orch_cfg.get("langgraph_enabled", False)):
-        try:
-            from agent import langgraph_orchestrator
-
-            return await langgraph_orchestrator.run_turn(
-                customer_id=req.customer_id,
-                customer_name=req.customer_name,
-                user_message=req.message,
-                store=store,
-                text_runner=text_runner,
-                a2a_base_url=a2a_base_url,
-                max_tool_iterations=max_tool_iterations,
-                specialist_mode=specialist_mode,
-                max_refinements=max_refinements,
-            )
-        except Exception as exc:
-            logger.warning(
-                "LangGraph orchestrator path failed; falling back to legacy orchestrator. error=%s",
-                exc,
-            )
-            specialist_mode = "legacy"
-
     from agent import orchestrator_agent
 
     return await orchestrator_agent.run_turn(
@@ -4910,11 +4888,10 @@ async def waf_versions(customer_id: str):
 @app.post("/api/terraform/generate")
 async def terraform_generate(req: TerraformGenerateRequest):
     """
-    Generate Terraform bundle using the v1.5 graph chain and persist files.
+    Generate Terraform bundle using the Terraform sub-agent and persist files.
     """
     store = _require_object_store()
-    text_runner = _make_terraform_text_runner()
-    from agent.graphs import terraform_graph
+    from agent import sub_agent_client
 
     try:
         context = await anyio.to_thread.run_sync(
@@ -4948,13 +4925,52 @@ async def terraform_generate(req: TerraformGenerateRequest):
                 "- Make pragmatic defaults when details are missing.\n"
             )
 
-        summary, _artifact_key, result_data = await terraform_graph.run(
-            args={"prompt": prompt},
-            skill_root=Path(__file__).parent / "gstack_skills",
-            text_runner=text_runner,
+        response = await sub_agent_client.call_sub_agent(
+            "terraform",
+            prompt,
+            {
+                "customer_id": req.customer_id,
+                "customer_name": req.customer_name,
+                "architecture_summary": context_summary,
+                "engagement_context": {
+                    "new_notes": new_notes_text,
+                    "context_summary": context_summary,
+                },
+            },
+            _current_trace_id(),
         )
+        status = str(response.get("status") or "").lower()
+        raw_result = response.get("result", {})
+        if isinstance(raw_result, str):
+            try:
+                parsed_result = json.loads(raw_result)
+            except json.JSONDecodeError:
+                parsed_result = {"main_tf": raw_result}
+        elif isinstance(raw_result, dict):
+            parsed_result = raw_result
+        else:
+            parsed_result = {}
+
+        file_aliases = {
+            "main_tf": "main.tf",
+            "variables_tf": "variables.tf",
+            "outputs_tf": "outputs.tf",
+            "readme_md": "README.md",
+        }
+        files = {
+            file_aliases.get(str(name), str(name)): str(content)
+            for name, content in parsed_result.items()
+            if str(content or "").strip()
+        }
+        summary = str(response.get("summary") or "Terraform generation completed")
+        result_data = {
+            "ok": status == "ok" and bool(files),
+            "files": files,
+            "stages": [],
+            "blocking_questions": list(response.get("questions", []) or response.get("blocking_questions", []) or []),
+            "trace": dict(response.get("trace", {}) or {}),
+        }
         used_fallback = False
-        files = result_data.get("files", {})
         if not result_data.get("ok"):
             if (req.prompt or "").strip():
                 return {

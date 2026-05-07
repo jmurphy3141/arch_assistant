@@ -86,7 +86,7 @@ class TestAgentCard:
         card = client.get("/.well-known/agent.json").json()
         assert card["schemaVersion"] == "1.0"
         assert "humanReadableId" in card
-        assert card["agentVersion"] == "1.5.0"
+        assert card["agentVersion"] == "1.9.1"
         assert "url" in card
         assert "fleet" in card
         assert "capabilities" in card

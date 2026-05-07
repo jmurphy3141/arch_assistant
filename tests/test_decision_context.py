@@ -38,3 +38,24 @@ def test_architecture_chat_prompt_is_marked_conversational() -> None:
 
     assert result["conversational_architecture"] is True
     assert result["risk_level"] in {"low", "medium", "high"}
+
+
+def test_decision_context_extracts_constraints_and_tags() -> None:
+    result = decision_context.build_decision_context(
+        user_message=(
+            "Design an OCI architecture in us-phoenix-1 with 99.99% availability, "
+            "budget under $5000 monthly, private networking, and PCI controls."
+        )
+    )
+
+    assert result["constraints"]["region"] == "us-phoenix-1"
+    assert result["constraints"]["availability_target"] == "99.99%"
+    assert result["constraints"]["cost_max_monthly"] == 5000.0
+    assert "private-only networking" in result["constraints"]["security_requirements"]
+    assert "pci" in result["constraints"]["compliance_requirements"]
+
+    tags = decision_context.derive_constraint_tags(result)
+    assert "cost_sensitive" in tags
+    assert "ha_required" in tags
+    assert "region_pinned" in tags
+    assert "security_sensitive" in tags

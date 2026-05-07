@@ -25,66 +25,21 @@ from agent.persistence_objectstore import ObjectStoreBase
 
 logger = logging.getLogger(__name__)
 
-_MEMORY_CONTRACT_TOOLS = {
-    "generate_diagram",
-    "generate_bom",
-    "generate_pov",
-    "generate_jep",
-    "generate_waf",
-    "generate_terraform",
-}
+_MEMORY_CONTRACT_TOOLS = {"generate_diagram", "generate_bom", "generate_pov", "generate_jep", "generate_waf", "generate_terraform"}
 
 _BOM_DEICTIC_MARKERS: tuple[str, ...] = (
-    "for this",
-    "from this",
-    "use this",
-    "use that",
-    "use that information",
-    "use that info",
-    "that information",
-    "that info",
-    "for that",
-    "from that",
-    "from the notes",
-    "from saved notes",
-    "from the conversation",
-    "what it has",
-    "this diagram",
-    "that diagram",
-    "previous diagram",
-    "latest diagram",
+    "for this", "from this", "use this", "use that", "use that information", "use that info", "that information", "that info", "for that", "from that", "from the notes", "from saved notes", "from the conversation", "what it has", "this diagram", "that diagram", "previous diagram", "latest diagram",
 )
 
 _INJECTED_GUIDANCE_BLOCKS: tuple[tuple[str, str], ...] = (
-    ("[Decision Context]", "[End Decision Context]"),
-    ("[Archie Canonical Memory]", "[End Archie Canonical Memory]"),
-    ("[Skill Injection Contract]", "[End Skill Injection Contract]"),
-    ("[Injected Skill Guidance]", "[End Skill Guidance]"),
+    ("[Decision Context]", "[End Decision Context]"), ("[Archie Canonical Memory]", "[End Archie Canonical Memory]"),
+    ("[Skill Injection Contract]", "[End Skill Injection Contract]"), ("[Injected Skill Guidance]", "[End Skill Guidance]"),
 )
 
 _DIAGRAM_COMPONENT_MARKERS = (
-    "oke",
-    "kubernetes",
-    "container engine",
-    "database",
-    "db",
-    "load balancer",
-    "lb",
-    "waf",
-    "object storage",
-    "bucket",
-    "bastion",
-    "web",
-    "app tier",
-    "data tier",
-    "private subnet",
-    "public subnet",
-    "vcn",
-    "subnet",
-    "dr",
-    "disaster recovery",
-    "multi-region",
-    "multi region",
+    "oke", "kubernetes", "container engine", "database", "db", "load balancer", "lb", "waf",
+    "object storage", "bucket", "bastion", "web", "app tier", "data tier", "private subnet",
+    "public subnet", "vcn", "subnet", "dr", "disaster recovery", "multi-region", "multi region",
 )
 
 
@@ -110,108 +65,9 @@ def _build_context_summary_for_skills(
         logger.warning("Failed to build context summary for skill checks: %s", exc)
         return ""
 
-def _is_bom_deictic_followup(prompt: str, user_message: str) -> bool:
-    combined = " ".join(part.strip().lower() for part in (user_message, prompt) if str(part).strip())
-    if not combined:
-        return False
-    if "bom" not in combined and "bill of materials" not in combined and "cost" not in combined and "pricing" not in combined:
-        return False
-    return any(marker in combined for marker in _BOM_DEICTIC_MARKERS)
-
-def _has_meaningful_decision_context(decision_context: dict[str, Any] | None) -> bool:
-    if not isinstance(decision_context, dict):
-        return False
-    if str(decision_context.get("goal", "") or "").strip():
-        return True
-    if list(decision_context.get("success_criteria", []) or []):
-        return True
-    constraints = dict(decision_context.get("constraints", {}) or {})
-    return any(value not in (None, "", [], {}) for value in constraints.values())
-
-def _diagram_context_supports_bom(
-    diagram_ctx: dict[str, Any] | None,
-    decision_context: dict[str, Any] | None,
-) -> bool:
-    if not isinstance(diagram_ctx, dict):
-        return False
-    if not str(diagram_ctx.get("diagram_key", "") or "").strip():
-        return False
-    if int(diagram_ctx.get("node_count", 0) or 0) > 0:
-        return True
-    for key in ("deployment_summary", "spec_summary", "reference_family", "decision_context_summary", "summary"):
-        if str(diagram_ctx.get(key, "") or "").strip():
-            return True
-    if list(diagram_ctx.get("assumptions_used", []) or []):
-        return True
-    return _has_meaningful_decision_context(decision_context)
-
 def _diagram_request_has_topology_intent(text: str) -> bool:
     lowered = str(text or "").lower()
     return any(marker in lowered for marker in _DIAGRAM_COMPONENT_MARKERS)
-
-def _format_bom_followup_clarification() -> str:
-    return (
-        "I can build the BOM, but `this` is not grounded to a prior diagram or workload yet.\n"
-        "Please share the workload or diagram context plus rough sizing for OCPU, memory, storage, "
-        "and any load balancer, database, or Object Storage requirements."
-    )
-
-def _summarize_diagram_scope(diagram_ctx: dict[str, Any]) -> str:
-    parts: list[str] = []
-    deployment_summary = str(diagram_ctx.get("deployment_summary", "") or "").strip()
-    if deployment_summary:
-        parts.append(deployment_summary)
-    reference_family = str(diagram_ctx.get("reference_family", "") or "").strip()
-    if reference_family:
-        parts.append(f"reference family={reference_family}")
-    node_count = int(diagram_ctx.get("node_count", 0) or 0)
-    if node_count > 0:
-        parts.append(f"node_count={node_count}")
-    spec_summary = str(diagram_ctx.get("spec_summary", "") or "").strip()
-    if spec_summary and spec_summary not in parts:
-        parts.append(spec_summary)
-    return ", ".join(parts)
-
-def _build_bom_followup_prompt(
-    *,
-    prompt: str,
-    diagram_ctx: dict[str, Any],
-    decision_context: dict[str, Any] | None,
-) -> str:
-    current_decision_context = dict(decision_context or {})
-    lines = [
-        "Generate BOM for the latest OCI architecture diagram.",
-        "Treat this as a best-effort OCI BOM draft/finalization request, not a generic clarification-only question.",
-        "Use existing BOM draft defaults for missing numeric sizing and surface assumptions or checkpoint items instead of refusing the draft.",
-    ]
-    cleaned_prompt = _strip_injected_guidance_blocks(prompt).strip()
-    if cleaned_prompt:
-        lines.append(f"User follow-up: {cleaned_prompt}")
-    lines.append("[Latest Diagram Context]")
-    lines.append(f"- diagram_key: {diagram_ctx.get('diagram_key', '')}")
-    scope_summary = _summarize_diagram_scope(diagram_ctx)
-    if scope_summary:
-        lines.append(f"- scope_summary: {scope_summary}")
-    prior_decision_summary = str(diagram_ctx.get("decision_context_summary", "") or "").strip()
-    if prior_decision_summary:
-        lines.append(f"- prior_decision_context: {prior_decision_summary}")
-    if _has_meaningful_decision_context(current_decision_context):
-        lines.append(
-            f"- current_decision_context: {decision_context_builder.summarize_decision_context(current_decision_context)}"
-        )
-    assumptions = _merge_assumption_lists(
-        list(diagram_ctx.get("assumptions_used", []) or []),
-        list(current_decision_context.get("assumptions", []) or []),
-    )
-    if assumptions:
-        lines.append("- assumptions already applied:")
-        lines.extend(
-            f"  - {item.get('statement', '').strip()} (risk: {item.get('risk', 'low')})"
-            for item in assumptions
-            if str(item.get("statement", "")).strip()
-        )
-    lines.append("[End Latest Diagram Context]")
-    return "\n".join(lines).strip()
 
 def _prepare_bom_tool_args(
     *,
@@ -224,10 +80,34 @@ def _prepare_bom_tool_args(
     prompt = str(payload.get("prompt", "") or "").strip() or str(user_message or "").strip()
     payload["prompt"] = prompt or "Generate a BOM from current request context."
     payload["_bom_context_source"] = str(payload.get("_bom_context_source", "") or "direct_request")
-    payload["prompt"] = _append_reusable_bom_inputs(payload["prompt"], context)
+    if isinstance(context, dict):
+        archie = context_store.get_archie_state(context)
+        reusable: list[str] = []
+        facts_summary = str(archie.get("facts_summary", "") or "").strip()
+        if facts_summary:
+            reusable.append(f"- accumulated_client_facts: {facts_summary}")
+        reusable.extend(_infrastructure_profile_context_lines(context))
+        constraints = dict(archie.get("latest_approved_constraints", {}) or {})
+        if str(constraints.get("region", "") or "").strip():
+            reusable.append(f"- constraints.region: {constraints.get('region')}")
+        seen: set[str] = set()
+        for item in reversed(archie.get("resolved_questions", []) if isinstance(archie.get("resolved_questions"), list) else []):
+            if not isinstance(item, dict):
+                continue
+            question_id = str(item.get("question_id", "") or item.get("id", "") or "").strip()
+            if question_id not in {"components.scope", "workload.components", "regions.mode", "region.mode", "topology.scope", "regions.count"}:
+                continue
+            canonical = "components.scope" if question_id in {"components.scope", "workload.components"} else "regions.mode"
+            answer = _coerce_specialist_answer(canonical, str(item.get("final_answer", "") or item.get("suggested_answer", "") or ""))
+            if answer and canonical not in seen:
+                reusable.append(f"- {canonical}: {answer}")
+                seen.add(canonical)
+        if reusable:
+            payload["prompt"] = f"{payload['prompt']}\n\n[Archie Reusable Approved Inputs]\n" + "\n".join(reusable) + "\n[End Archie Reusable Approved Inputs]"
+            prompt = payload["prompt"]
 
     if bool(payload.get("_bom_grounded_from_context")):
-        return _attach_structured_bom_inputs(payload, context=context, user_message=user_message)
+        return payload
 
     if _is_bom_revision_request(prompt, user_message, context) or (
         _mentions_bom_work_product(user_message) and _latest_bom_fact_mismatches(context)
@@ -241,373 +121,93 @@ def _prepare_bom_tool_args(
         payload["_bom_context_source"] = "bom_revision"
         payload["_bom_grounded_from_context"] = True
         payload["_bom_grounding"] = "revision-grounded"
-        return _attach_structured_bom_inputs(payload, context=context, user_message=user_message)
+        return payload
 
-    if not _is_bom_deictic_followup(prompt, user_message):
-        return _attach_structured_bom_inputs(payload, context=context, user_message=user_message)
+    combined = " ".join(part.strip().lower() for part in (user_message, prompt) if str(part).strip())
+    is_deictic = (
+        bool(combined)
+        and any(marker in combined for marker in ("bom", "bill of materials", "cost", "pricing"))
+        and any(marker in combined for marker in _BOM_DEICTIC_MARKERS)
+    )
+    if not is_deictic:
+        return payload
 
     diagram_ctx = dict(((context or {}).get("agents", {}) or {}).get("diagram", {}) or {})
-    if _diagram_context_supports_bom(diagram_ctx, decision_context):
-        payload["prompt"] = _build_bom_followup_prompt(
-            prompt=prompt,
-            diagram_ctx=diagram_ctx,
-            decision_context=decision_context,
+    diagram_has_context = bool(str(diagram_ctx.get("diagram_key", "") or "").strip()) and (
+        int(diagram_ctx.get("node_count", 0) or 0) > 0
+        or any(str(diagram_ctx.get(key, "") or "").strip() for key in ("deployment_summary", "spec_summary", "reference_family", "decision_context_summary", "summary"))
+        or bool(list(diagram_ctx.get("assumptions_used", []) or []))
+    )
+    if diagram_has_context:
+        lines = [
+            "Generate BOM for the latest OCI architecture diagram.",
+            "Treat this as a best-effort OCI BOM draft/finalization request, not a generic clarification-only question.",
+            "Use existing BOM draft defaults for missing numeric sizing and surface assumptions or checkpoint items instead of refusing the draft.",
+        ]
+        cleaned_prompt = _strip_injected_guidance_blocks(prompt).strip()
+        if cleaned_prompt:
+            lines.append(f"User follow-up: {cleaned_prompt}")
+        lines.extend(("[Latest Diagram Context]", f"- diagram_key: {diagram_ctx.get('diagram_key', '')}"))
+        scope = ", ".join(
+            part
+            for part in (
+                str(diagram_ctx.get("deployment_summary", "") or "").strip(),
+                f"reference family={diagram_ctx.get('reference_family')}" if str(diagram_ctx.get("reference_family", "") or "").strip() else "",
+                f"node_count={int(diagram_ctx.get('node_count', 0) or 0)}" if int(diagram_ctx.get("node_count", 0) or 0) > 0 else "",
+                str(diagram_ctx.get("spec_summary", "") or "").strip(),
+            )
+            if part
         )
+        if scope:
+            lines.append(f"- scope_summary: {scope}")
+        if str(diagram_ctx.get("decision_context_summary", "") or "").strip():
+            lines.append(f"- prior_decision_context: {diagram_ctx.get('decision_context_summary')}")
+        lines.append("[End Latest Diagram Context]")
+        payload["prompt"] = "\n".join(lines).strip()
         payload["_bom_context_source"] = "latest_diagram"
         payload["_bom_grounded_from_context"] = True
-        return _attach_structured_bom_inputs(payload, context=context, user_message=user_message)
+        return payload
 
     archie_context = _build_archie_specialist_context(context, decision_context=decision_context)
-    if _text_has_bom_sizing(archie_context):
-        payload["prompt"] = _build_bom_context_followup_prompt(
-            prompt=prompt,
-            archie_context=archie_context,
-            decision_context=decision_context,
-        )
+    archie_lower = archie_context.lower()
+    has_compute = "ocpu" in archie_lower or re.search(r"\b\d+(?:\.\d+)?\s*(?:cpu|cores?)\b", archie_lower) is not None
+    has_memory = "ram" in archie_lower or "memory" in archie_lower
+    has_storage = (
+        "storage" in archie_lower
+        or "block volume" in archie_lower
+        or re.search(r"\b\d+(?:\.\d+)?\s*tb\b", archie_lower) is not None
+    )
+    if has_compute and has_memory and has_storage:
+        lines = [
+            "Generate BOM from the persisted customer notes and conversation context.",
+            "Use explicit sizing values from the context; do not fall back to default sizing when OCPU, RAM, or storage are present.",
+        ]
+        cleaned_prompt = _strip_injected_guidance_blocks(prompt).strip()
+        if cleaned_prompt:
+            lines.append(f"User follow-up: {cleaned_prompt}")
+        lines.extend(("[Persisted Customer Context]", archie_context))
+        current_decision_context = dict(decision_context or {})
+        constraints = dict(current_decision_context.get("constraints", {}) or {})
+        if (
+            str(current_decision_context.get("goal", "") or "").strip()
+            or list(current_decision_context.get("success_criteria", []) or [])
+            or any(value not in (None, "", [], {}) for value in constraints.values())
+        ):
+            lines.append(f"Current decision context: {decision_context_builder.summarize_decision_context(current_decision_context)}")
+        lines.append("[End Persisted Customer Context]")
+        payload["prompt"] = "\n".join(lines).strip()
         payload["_bom_context_source"] = "persisted_notes"
         payload["_bom_grounded_from_context"] = True
-        return _attach_structured_bom_inputs(payload, context=context, user_message=user_message)
+        return payload
 
-    payload["_bom_direct_reply"] = _format_bom_followup_clarification()
+    payload["_bom_direct_reply"] = (
+        "I can build the BOM, but `this` is not grounded to a prior diagram or workload yet.\n"
+        "Please share the workload or diagram context plus rough sizing for OCPU, memory, storage, "
+        "and any load balancer, database, or Object Storage requirements."
+    )
     payload["_bom_context_source"] = "unresolved_followup"
     payload["_bom_grounded_from_context"] = False
     return payload
-
-def _attach_structured_bom_inputs(
-    payload: dict[str, Any],
-    *,
-    context: dict[str, Any] | None,
-    user_message: str,
-) -> dict[str, Any]:
-    structured_inputs = _build_structured_bom_inputs(
-        context=context,
-        user_message=user_message,
-        prompt=str(payload.get("prompt", "") or ""),
-    )
-    if structured_inputs:
-        payload["inputs"] = structured_inputs
-        payload["_bom_request_shape"] = "internal_a2a_generate_bom"
-        payload["_bom_inputs_source"] = "archie_memory_and_current_turn"
-    else:
-        payload.pop("inputs", None)
-        payload.pop("_bom_request_shape", None)
-        payload.pop("_bom_inputs_source", None)
-    return payload
-
-def _build_structured_bom_inputs(
-    *,
-    context: dict[str, Any] | None,
-    user_message: str,
-    prompt: str,
-) -> dict[str, Any]:
-    memory = context_store.get_archie_memory(context or {}) if isinstance(context, dict) else {}
-    facts = memory.get("client_facts", {}) if isinstance(memory.get("client_facts"), dict) else {}
-    sizing = facts.get("sizing", {}) if isinstance(facts.get("sizing"), dict) else {}
-    current_profile = _extract_infrastructure_profile(" ".join([str(prompt or ""), str(user_message or "")]))
-    profile = _merge_structured_bom_dicts(sizing, current_profile) if current_profile else dict(sizing)
-    combined_text = " ".join(
-        part
-        for part in (
-            str(user_message or ""),
-            str(prompt or ""),
-            json.dumps(facts, ensure_ascii=True, sort_keys=True) if facts else "",
-        )
-        if part
-    )
-
-    region = _structured_bom_region(facts, combined_text)
-    architecture_option = _structured_bom_architecture_option(facts, profile, combined_text)
-    ocpu = _structured_bom_ocpu(profile, combined_text)
-    memory_gb = _structured_bom_memory_gb(profile, combined_text)
-    block_tb = _structured_bom_block_tb(profile, combined_text)
-    connectivity = _structured_bom_connectivity(facts, profile, combined_text)
-    dr = _structured_bom_dr(facts, profile, combined_text)
-    workloads = _structured_list(facts.get("workloads"))
-    os_mix = _structured_list(facts.get("os_mix"))
-    if not os_mix:
-        lower = combined_text.lower()
-        os_mix = [label for marker, label in (("linux", "Linux"), ("windows", "Windows")) if marker in lower]
-    native_target_services = _structured_bom_native_target_services(
-        architecture_option=architecture_option,
-        workloads=workloads,
-        connectivity=connectivity,
-        dr=dr,
-        text=combined_text,
-    )
-
-    inputs: dict[str, Any] = {
-        "region": region,
-        "architecture_option": architecture_option,
-        "compute": {"ocpu": ocpu, "gpu": _structured_bom_gpu_requested(facts, combined_text)},
-        "memory": {"gb": memory_gb},
-        "storage": {"block_tb": block_tb},
-        "connectivity": connectivity,
-        "dr": dr,
-        "workloads": workloads,
-        "os_mix": os_mix,
-        "output_format": "xlsx" if re.search(r"\b(?:xlsx|excel|spreadsheet|workbook)\b", combined_text, re.I) else "json",
-    }
-    if native_target_services:
-        inputs["target_services"] = native_target_services
-        inputs["workload_service_mapping"] = _structured_bom_native_workload_mapping(workloads, combined_text)
-    has_any_sizing = any(value not in (None, "", [], {}) for value in (ocpu, memory_gb, block_tb))
-    has_complete_sizing = all(value not in (None, "", [], {}) for value in (ocpu, memory_gb, block_tb))
-    return inputs if has_complete_sizing or has_any_sizing else {}
-
-def _structured_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, str) and value.strip():
-        return [part.strip() for part in re.split(r"[,;/]", value) if part.strip()]
-    return []
-
-def _structured_bom_region(facts: dict[str, Any], text: str) -> str:
-    explicit = _extract_oci_region(text)
-    if explicit:
-        return explicit
-    region = str(facts.get("region_geography", "") or facts.get("region", "") or "").strip()
-    if region.lower() == "south africa":
-        return "af-johannesburg-1"
-    return region
-
-def _structured_bom_architecture_option(
-    facts: dict[str, Any],
-    profile: dict[str, Any],
-    text: str,
-) -> str:
-    if _text_requests_oci_native(text):
-        return "OCI Native Services"
-    explicit = str(facts.get("architecture_option", "") or "").strip()
-    if explicit:
-        return explicit
-    haystack = " ".join(
-        [
-            str(facts.get("platform", "") or ""),
-            str(profile.get("platform", "") or ""),
-            text,
-        ]
-    ).lower()
-    if any(marker in haystack for marker in ("ocvs", "dedicated vmware", "vmware", "vxrail", "esxi")):
-        return "OCI Dedicated VMware Solution"
-    return ""
-
-def _text_requests_oci_native(text: str) -> bool:
-    lower = str(text or "").lower()
-    return bool(
-        re.search(r"\boci[-\s]?native\b", lower)
-        or "native services" in lower
-        or "migrate to oci native" in lower
-        or "migration to oci native" in lower
-        or "approve" in lower and "native" in lower and "oci" in lower
-        or "approved" in lower and "native" in lower and "oci" in lower
-    )
-
-def _structured_bom_native_target_services(
-    *,
-    architecture_option: str,
-    workloads: list[str],
-    connectivity: dict[str, Any],
-    dr: dict[str, Any],
-    text: str,
-) -> list[str]:
-    if "native" not in str(architecture_option or "").lower() and not _text_requests_oci_native(text):
-        return []
-    combined = " ".join([text, " ".join(workloads)]).lower()
-    services = ["VM.Standard.E5.Flex compute VMs", "Block Volumes"]
-    if re.search(r"\b(?:oracle\s+db|oracle\s+database|oracle\s+databases|autonomous|adb|atp|adw)\b", combined):
-        services.append("Autonomous Database")
-    if re.search(r"\b(?:file\s+server|file\s+servers|file\s+share|file\s+shares|nfs|smb)\b", combined):
-        services.append("File Storage")
-    if re.search(r"\b(?:backup|archive|object\s+storage|restore|dr)\b", combined) or dr.get("rto_hours") or dr.get("cross_region_restore"):
-        services.append("Object Storage backups/archive")
-    services.append("Load Balancer/WAF")
-    if connectivity.get("mpls") or connectivity.get("sd_wan") or re.search(r"\b(?:drg|fastconnect|mpls|sd[-\s]?wan|vpn)\b", combined):
-        services.append("DRG/FastConnect/MPLS")
-    return list(dict.fromkeys(services))
-
-def _structured_bom_native_workload_mapping(workloads: list[str], text: str) -> list[dict[str, str]]:
-    combined_workloads = workloads or [text]
-    mappings: list[dict[str, str]] = []
-    for workload in combined_workloads:
-        lower = str(workload or "").lower()
-        if not lower.strip():
-            continue
-        if "oracle" in lower and ("db" in lower or "database" in lower):
-            service = "Autonomous Database"
-        elif "file" in lower or "nfs" in lower or "smb" in lower:
-            service = "File Storage"
-        elif "sql server" in lower:
-            service = "VM.Standard.E5.Flex compute VMs"
-        else:
-            service = "VM.Standard.E5.Flex compute VMs"
-        mappings.append({"workload": str(workload).strip()[:120], "target_service": service})
-    return mappings
-
-def _structured_bom_ocpu(profile: dict[str, Any], text: str) -> float | None:
-    cpu = profile.get("cpu", {}) if isinstance(profile.get("cpu"), dict) else {}
-    for key in ("ocpu", "ocpu_equivalent", "target_ocpu", "logical_cores", "cores"):
-        value = _coerce_positive_float(cpu.get(key))
-        if value is not None:
-            return value
-    match = re.search(r"(?:equiv(?:alent)?|target|oci[-\s]?equiv(?:alent)?)[^\d]{0,24}(\d+(?:\.\d+)?)\s*o?cpu\b", text, re.I)
-    if match:
-        return float(match.group(1))
-    match = re.search(r"\b(\d+(?:\.\d+)?)\s*o?cpu\b", text, re.I)
-    if match:
-        return float(match.group(1))
-    return None
-
-def _structured_bom_memory_gb(profile: dict[str, Any], text: str) -> float | None:
-    memory = profile.get("memory", {}) if isinstance(profile.get("memory"), dict) else {}
-    for key in ("gb", "target_gb", "oci_equivalent_gb", "total_gb", "used_gb"):
-        value = _coerce_positive_float(memory.get(key))
-        if value is not None:
-            return _normalize_ram_gb(value)
-    match = re.search(r"(?:oci[-\s]?equiv(?:alent)?|target)[^\d]{0,32}(\d+(?:\.\d+)?)\s*(tb|gb)\b[^\n]{0,32}(?:ram|memory)", text, re.I)
-    if not match:
-        match = re.search(r"(\d+(?:\.\d+)?)\s*(tb|gb)\s*(?:of\s+)?(?:ram|memory)\b", text, re.I)
-    return _ram_capacity_match_to_gb(match) if match else None
-
-def _structured_bom_block_tb(profile: dict[str, Any], text: str) -> float | None:
-    storage = profile.get("storage", {}) if isinstance(profile.get("storage"), dict) else {}
-    for key in ("block_tb", "target_tb", "oci_equivalent_tb", "used_tb", "total_tb"):
-        value = _coerce_positive_float(storage.get(key))
-        if value is not None:
-            return value
-    for key in ("block_gb", "target_gb", "oci_equivalent_gb", "used_gb", "total_gb"):
-        value = _coerce_positive_float(storage.get(key))
-        if value is not None:
-            return value / 1024.0
-    match = re.search(
-        r"(\d+(?:\.\d+)?)\s*(tb|gb)\s*(?:of\s+)?(?:block\s+storage|block\s+volume|storage|vsan|hci|capacity)\b",
-        text,
-        re.I,
-    )
-    if not match:
-        return _extract_block_storage_tb_from_text(text)
-    gb = _capacity_match_to_gb(match)
-    direct_tb = gb / 1024.0 if gb is not None else None
-    window_tb = _extract_block_storage_tb_from_text(text)
-    values = [value for value in (direct_tb, window_tb) if value is not None and value > 0]
-    return max(values) if values else None
-
-def _structured_bom_connectivity(
-    facts: dict[str, Any],
-    profile: dict[str, Any],
-    text: str,
-) -> dict[str, Any]:
-    memory_conn = facts.get("connectivity", {}) if isinstance(facts.get("connectivity"), dict) else {}
-    profile_conn = profile.get("connectivity", {}) if isinstance(profile.get("connectivity"), dict) else {}
-    conn = _merge_structured_bom_dicts(memory_conn, profile_conn)
-    internet = _coerce_positive_float(conn.get("internet_mbps") or conn.get("internet_bandwidth_mbps"))
-    if internet is None:
-        bandwidth = str(conn.get("internet_bandwidth", "") or "")
-        internet = _coerce_positive_float(bandwidth)
-    if internet is None:
-        match = re.search(r"\b(\d+(?:\.\d+)?)\s*mbps\b", text, re.I)
-        internet = float(match.group(1)) if match else None
-    lower = text.lower()
-    return {
-        "internet_mbps": internet,
-        "mpls": bool(conn.get("mpls")) or "mpls" in lower,
-        "sd_wan": bool(conn.get("sd_wan")) or "sd-wan" in lower or "sd wan" in lower,
-    }
-
-def _structured_bom_dr(
-    facts: dict[str, Any],
-    profile: dict[str, Any],
-    text: str,
-) -> dict[str, Any]:
-    memory_dr = facts.get("dr", {}) if isinstance(facts.get("dr"), dict) else {}
-    profile_dr = profile.get("dr", {}) if isinstance(profile.get("dr"), dict) else {}
-    dr = _merge_structured_bom_dicts(memory_dr, profile_dr)
-    rto = _coerce_positive_float(dr.get("rto_hours") or dr.get("sla_hours"))
-    if rto is None:
-        match = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b[^\n]{0,24}(?:dr|rto|restore|sla)", text, re.I)
-        if not match:
-            match = re.search(r"(?:dr|rto|restore|sla)[^\d]{0,24}(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b", text, re.I)
-        rto = float(match.group(1)) if match else None
-    lower = text.lower()
-    return {
-        "rto_hours": rto,
-        "cross_region_restore": bool(dr.get("cross_region_restore")) or "cross-region restore" in lower or "cross region restore" in lower,
-    }
-
-def _structured_bom_gpu_requested(facts: dict[str, Any], text: str) -> bool:
-    exclusions = [str(item).lower() for item in facts.get("exclusions", []) or []]
-    lower = text.lower()
-    if "gpu" in exclusions or re.search(r"\b(?:no|exclude|excluding|out of scope|non[-\s])\s*gpu\b", lower):
-        return False
-    return bool(re.search(r"\bgpu\b", lower))
-
-def _coerce_positive_float(value: Any) -> float | None:
-    if value in (None, "", [], {}):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value) if float(value) > 0 else None
-    match = re.search(r"\d+(?:\.\d+)?", str(value).replace(",", ""))
-    if not match:
-        return None
-    parsed = float(match.group(0))
-    return parsed if parsed > 0 else None
-
-def _capacity_match_to_gb(match: re.Match[str]) -> float | None:
-    try:
-        value = float(match.group(1))
-        unit = str(match.group(2) or "gb").lower()
-    except Exception:
-        return None
-    return value * 1024.0 if unit == "tb" else value
-
-def _ram_capacity_match_to_gb(match: re.Match[str]) -> float | None:
-    try:
-        value = float(match.group(1))
-        unit = str(match.group(2) or "gb").lower()
-    except Exception:
-        return None
-    if unit == "tb":
-        return value if value >= 128 else value * 1024.0
-    return value
-
-def _normalize_ram_gb(value: float) -> float:
-    if value >= 128 * 1024 and (value / 1024.0) <= 4096:
-        return value / 1024.0
-    return value
-
-def _extract_block_storage_tb_from_text(text: str) -> float | None:
-    markers = ("block storage", "block volume", "storage", "vsan", "hci", "capacity")
-    values: list[float] = []
-    raw = str(text or "")
-    lowered = raw.lower()
-    for match in re.finditer(r"\b(\d+(?:\.\d+)?)\s*(tb|gb)\b", raw, flags=re.IGNORECASE):
-        start, end = match.span()
-        window = lowered[max(0, start - 48):min(len(lowered), end + 48)]
-        if not any(marker in window for marker in markers):
-            continue
-        if any(skip in window for skip in ("ram", "memory", "egress", "traffic")) and not any(
-            marker in window for marker in ("block storage", "block volume", "vsan", "hci")
-        ):
-            continue
-        gb = _capacity_match_to_gb(match)
-        if gb is not None and gb > 0:
-            values.append(gb / 1024.0)
-    return max(values) if values else None
-
-def _merge_structured_bom_dicts(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base or {})
-    for key, value in dict(incoming or {}).items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_structured_bom_dicts(merged[key], value)
-        elif value not in (None, "", [], {}):
-            merged[key] = value
-    return merged
-
-def _text_has_bom_sizing(text: str) -> bool:
-    lowered = str(text or "").lower()
-    has_compute = "ocpu" in lowered or re.search(r"\b\d+(?:\.\d+)?\s*(?:cpu|cores?)\b", lowered) is not None
-    has_memory = "ram" in lowered or "memory" in lowered
-    has_storage = "storage" in lowered or "block volume" in lowered or re.search(r"\b\d+(?:\.\d+)?\s*tb\b", lowered) is not None
-    return has_compute and has_memory and has_storage
 
 def _bom_followup_should_hydrate_from_context(
     *,
@@ -616,32 +216,8 @@ def _bom_followup_should_hydrate_from_context(
     context: dict[str, Any] | None,
     decision_context: dict[str, Any] | None,
 ) -> bool:
-    if not _is_bom_deictic_followup(prompt, user_message):
-        return False
-    archie_context = _build_archie_specialist_context(context, decision_context=decision_context)
-    return _text_has_bom_sizing(archie_context)
-
-def _build_bom_context_followup_prompt(
-    *,
-    prompt: str,
-    archie_context: str,
-    decision_context: dict[str, Any] | None,
-) -> str:
-    lines = [
-        "Generate BOM from the persisted customer notes and conversation context.",
-        "Use explicit sizing values from the context; do not fall back to default sizing when OCPU, RAM, or storage are present.",
-    ]
-    cleaned_prompt = _strip_injected_guidance_blocks(prompt).strip()
-    if cleaned_prompt:
-        lines.append(f"User follow-up: {cleaned_prompt}")
-    lines.append("[Persisted Customer Context]")
-    lines.append(archie_context)
-    if _has_meaningful_decision_context(decision_context):
-        lines.append(
-            f"Current decision context: {decision_context_builder.summarize_decision_context(decision_context)}"
-        )
-    lines.append("[End Persisted Customer Context]")
-    return "\n".join(lines).strip()
+    prepared = _prepare_bom_tool_args(args={"prompt": prompt}, user_message=user_message, context=context, decision_context=decision_context)
+    return bool(prepared.get("_bom_grounded_from_context")) and prepared.get("_bom_context_source") in {"latest_diagram", "persisted_notes"}
 
 def _is_bom_revision_request(prompt: str, user_message: str, context: dict[str, Any] | None) -> bool:
     if not _mentions_bom_work_product(" ".join([str(prompt or ""), str(user_message or "")])):
@@ -650,40 +226,12 @@ def _is_bom_revision_request(prompt: str, user_message: str, context: dict[str, 
         return False
     msg = f" {str(user_message or prompt or '').lower()} "
     revision_markers = (
-        " feedback",
-        " pushback",
-        " customer asked",
-        " customer requested",
-        " asked for",
-        " only have",
-        " you have",
-        " missing",
-        " too low",
-        " too small",
-        " should have",
-        " should be",
-        " need more",
-        " needs more",
-        " new bom",
-        " new xlsx",
-        " new workbook",
-        " new version",
-        " updated bom",
-        " updated xlsx",
-        " update bom",
-        " update the bom",
-        " update xlsx",
-        " current bom",
-        " current xlsx",
-        " regenerate",
-        " rebuild",
-        " revise",
-        " revision",
-        " incorrect",
-        " wrong",
-        " not correct",
-        " fix the bom",
-        " replace the bom",
+        " feedback", " pushback", " customer asked", " customer requested", " asked for", " only have",
+        " you have", " missing", " too low", " too small", " should have", " should be", " need more",
+        " needs more", " new bom", " new xlsx", " new workbook", " new version", " updated bom",
+        " updated xlsx", " update bom", " update the bom", " update xlsx", " current bom", " current xlsx",
+        " regenerate", " rebuild", " revise", " revision", " incorrect", " wrong", " not correct",
+        " fix the bom", " replace the bom",
     )
     if any(marker in msg for marker in revision_markers):
         return True
@@ -695,17 +243,7 @@ def _mentions_bom_work_product(text: str) -> bool:
     return any(
         marker in msg
         for marker in (
-            "bom",
-            "bill of materials",
-            "xlsx",
-            "xlxs",
-            "xlsc",
-            "excel",
-            "spreadsheet",
-            "workbook",
-            "pricing",
-            "priced",
-            "sku",
+            "bom", "bill of materials", "xlsx", "xlxs", "xlsc", "excel", "spreadsheet", "workbook", "pricing", "priced", "sku",
         )
     )
 
@@ -714,21 +252,8 @@ def _is_pure_download_or_link_request(user_message: str) -> bool:
     if not any(marker in msg for marker in ("download", "share", "link", "url", "presigned", "pre-signed")):
         return False
     revision_markers = (
-        " new ",
-        " updated ",
-        " update ",
-        " regenerate",
-        " rebuild",
-        " revise",
-        " revision",
-        " incorrect",
-        " wrong",
-        " not correct",
-        " fix ",
-        " replace ",
-        " current bom",
-        " current xlsx",
-        " current workbook",
+        " new ", " updated ", " update ", " regenerate", " rebuild", " revise", " revision", " incorrect",
+        " wrong", " not correct", " fix ", " replace ", " current bom", " current xlsx", " current workbook",
     )
     if any(marker in msg for marker in revision_markers):
         return False
@@ -800,9 +325,15 @@ def _build_bom_revision_prompt(
     if mismatches:
         lines.append("Explicit deltas/mismatches to correct:")
         lines.extend(f"- {item}" for item in mismatches)
-    if _has_meaningful_decision_context(decision_context):
+    current_decision_context = dict(decision_context or {})
+    constraints = dict(current_decision_context.get("constraints", {}) or {})
+    if (
+        str(current_decision_context.get("goal", "") or "").strip()
+        or list(current_decision_context.get("success_criteria", []) or [])
+        or any(value not in (None, "", [], {}) for value in constraints.values())
+    ):
         lines.append(
-            f"Current decision context: {decision_context_builder.summarize_decision_context(decision_context)}"
+            f"Current decision context: {decision_context_builder.summarize_decision_context(current_decision_context)}"
         )
     return "\n".join(lines).strip()
 
@@ -848,42 +379,6 @@ def _latest_bom_fact_mismatches(context: dict[str, Any] | None, *, as_list: bool
     if exclusions:
         mismatches.append("scope exclusions to honor: " + ", ".join(str(item) for item in exclusions))
     return mismatches if as_list else bool(mismatches)
-
-def _append_reusable_bom_inputs(prompt: str, context: dict[str, Any] | None) -> str:
-    if not isinstance(context, dict):
-        return str(prompt or "").strip()
-    archie = context_store.get_archie_state(context)
-    lines: list[str] = []
-    facts_summary = str(archie.get("facts_summary", "") or "").strip()
-    if facts_summary:
-        lines.append(f"- accumulated_client_facts: {facts_summary}")
-    lines.extend(_infrastructure_profile_context_lines(context))
-    constraints = dict(archie.get("latest_approved_constraints", {}) or {})
-    region = str(constraints.get("region", "") or "").strip()
-    if region:
-        lines.append(f"- constraints.region: {region}")
-    resolved = archie.get("resolved_questions", []) if isinstance(archie.get("resolved_questions"), list) else []
-    seen: set[str] = set()
-    for item in reversed(resolved):
-        if not isinstance(item, dict):
-            continue
-        question_id = str(item.get("question_id", "") or item.get("id", "") or "").strip()
-        if question_id not in {"components.scope", "workload.components", "regions.mode", "region.mode", "topology.scope", "regions.count"}:
-            continue
-        canonical = "components.scope" if question_id in {"components.scope", "workload.components"} else "regions.mode"
-        if canonical in seen:
-            continue
-        answer = _coerce_specialist_answer(canonical, str(item.get("final_answer", "") or item.get("suggested_answer", "") or ""))
-        if answer:
-            lines.append(f"- {canonical}: {answer}")
-            seen.add(canonical)
-    if not lines:
-        return str(prompt or "").strip()
-    block = "[Archie Reusable Approved Inputs]\n" + "\n".join(lines) + "\n[End Archie Reusable Approved Inputs]"
-    cleaned = str(prompt or "").strip()
-    if block in cleaned:
-        return cleaned
-    return f"{cleaned}\n\n{block}".strip()
 
 def _summarize_note_text(note_text: str, *, limit: int = 280) -> str:
     cleaned = re.sub(r"\s+", " ", str(note_text or "")).strip()
