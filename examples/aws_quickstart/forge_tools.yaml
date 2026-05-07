@@ -1,0 +1,13 @@
+# AWS Quickstart tool configuration
+tools:
+  - name: size_ec2
+    handler: aws_handlers:size_ec2_handler
+    memory_contract: true
+    skill_guidance: skills/size_ec2_guidance.md
+
+  - name: generate_cfn
+    handler: skillforge.delegate:A2ADelegate
+    handler_kwargs:
+      base_url: "http://localhost:9090"
+      endpoint: "/generate/cfn"
+    memory_contract: false
