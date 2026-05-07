@@ -122,6 +122,75 @@ def test_run_turn_persists_pending_cost_checkpoint(monkeypatch) -> None:
     assert ctx["latest_decision_context"]["constraints"]["cost_max_monthly"] == 5000.0
 
 
+def test_one_more_time_reruns_last_generation_tool(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    document_store.save_conversation_turns(
+        store,
+        "rerun-diagram",
+        [
+            {
+                "role": "user",
+                "content": "build me a diagram",
+                "timestamp": "2026-05-07T17:40:31+00:00",
+            },
+            {
+                "role": "tool",
+                "tool": "generate_diagram",
+                "result_summary": "Diagram generated. Key: agent3/rerun-diagram/old/v1/diagram.drawio",
+                "timestamp": "2026-05-07T17:40:48+00:00",
+            },
+            {
+                "role": "assistant",
+                "content": "Diagram generated. Key: agent3/rerun-diagram/old/v1/diagram.drawio",
+                "timestamp": "2026-05-07T17:40:48+00:00",
+            },
+        ],
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeForge:
+        async def invoke_tool(self, tool_name, args, *, session_id, context):
+            captured.update(
+                {
+                    "tool_name": tool_name,
+                    "args": args,
+                    "session_id": session_id,
+                }
+            )
+            return orchestrator_agent._ForgeToolResult(
+                summary="Diagram generated. Key: agent3/rerun-diagram/new/v1/diagram.drawio",
+                status="ok",
+                artifact_key="agent3/rerun-diagram/new/v1/diagram.drawio",
+                data={},
+            )
+
+        async def run_turn(self, **_kwargs):
+            raise AssertionError("rerun intent should not fall through to Forge chat")
+
+    monkeypatch.setattr(archie_loop, "_get_forge", lambda **_kwargs: FakeForge())
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="rerun-diagram",
+            customer_name="Rerun Diagram",
+            user_message="one more time",
+            store=store,
+            text_runner=lambda _prompt, _system: "ok",
+            max_tool_iterations=2,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert captured["tool_name"] == "generate_diagram"
+    assert captured["session_id"] == "rerun-diagram"
+    assert captured["args"] == {
+        "bom_text": "Regenerate the latest diagram from the current engagement context."
+    }
+    assert result["artifacts"]["generate_diagram"] == "agent3/rerun-diagram/new/v1/diagram.drawio"
+    assert result["tool_calls"][0]["tool"] == "generate_diagram"
+
+
 def test_run_turn_checkpoint_approval_clears_pending(monkeypatch) -> None:
     store = InMemoryObjectStore()
     ctx = context_store.read_context(store, "acme", "ACME Corp")

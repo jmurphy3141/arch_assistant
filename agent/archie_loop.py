@@ -436,6 +436,16 @@ async def run_turn(
             context=context,
         )
 
+    rerun_tool = _last_generation_tool_for_rerun(user_message, history)
+    if rerun_tool:
+        await _run_generation_step(
+            rerun_tool,
+            _rerun_generation_tool_args(rerun_tool),
+        )
+        return _finalize_turn(
+            _build_parallel_reply(tool_calls, decision_context=decision_context)
+        )
+
     turn_intent = _classify_turn_intent(
         user_message=user_message,
         requested_tools=requested_tools,
@@ -3364,6 +3374,55 @@ def _requested_generation_tools(user_message: str) -> set[str]:
     if "waf" in msg or "well-architected" in msg or "well architected" in msg:
         requested.add("generate_waf")
     return requested
+
+def _message_requests_generation_rerun(user_message: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(user_message or "").lower()).strip()
+    if not normalized:
+        return False
+    exact = {
+        "again",
+        "one more time",
+        "do it again",
+        "do that again",
+        "try again",
+        "retry",
+        "retry that",
+        "rerun",
+        "rerun it",
+        "run it again",
+        "run that again",
+        "same again",
+    }
+    phrases = ("one more time", "do it again", "try again", "retry", "rerun", "run it again", "run that again")
+    return normalized in exact or any(phrase in normalized for phrase in phrases)
+
+def _last_generation_tool_for_rerun(user_message: str, history: list[dict[str, Any]]) -> str:
+    if _requested_generation_tools(user_message) or not _message_requests_generation_rerun(user_message):
+        return ""
+    generation_tools = {
+        "generate_diagram",
+        "generate_bom",
+        "generate_terraform",
+        "generate_pov",
+        "generate_jep",
+        "generate_waf",
+    }
+    for turn in reversed(history or []):
+        if str(turn.get("role", "") or "") != "tool":
+            continue
+        tool_name = str(turn.get("tool", "") or "")
+        if tool_name in generation_tools:
+            return tool_name
+    return ""
+
+def _rerun_generation_tool_args(tool_name: str) -> dict[str, Any]:
+    if tool_name == "generate_diagram":
+        return {"bom_text": "Regenerate the latest diagram from the current engagement context."}
+    if tool_name == "generate_bom":
+        return {"prompt": "Regenerate the latest BOM from the current engagement context."}
+    if tool_name == "generate_terraform":
+        return {"prompt": "Regenerate the latest Terraform from the current engagement context."}
+    return {"feedback": "Regenerate the latest artifact from the current engagement context."}
 
 def _message_requests_diagram_generation(msg: str) -> bool:
     if "drawio" in msg or "draw.io" in msg or "topology file" in msg:
