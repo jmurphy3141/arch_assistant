@@ -19,10 +19,12 @@ Public API:
 
 from skillforge.types import MemorySnapshot, ToolCall, ToolResult, ToolStatus, TurnResult
 from skillforge.forge import Forge
+from skillforge.memory import SimpleMemory
 
 __all__ = [
     "Forge",
     "MemorySnapshot",
+    "SimpleMemory",
     "ToolCall",
     "ToolResult",
     "ToolStatus",
