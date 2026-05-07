@@ -20,8 +20,10 @@ Public API:
 from skillforge.types import MemorySnapshot, ToolCall, ToolResult, ToolStatus, TurnResult
 from skillforge.forge import Forge
 from skillforge.memory import SimpleMemory
+from skillforge.delegate import A2ADelegate
 
 __all__ = [
+    "A2ADelegate",
     "Forge",
     "MemorySnapshot",
     "SimpleMemory",
