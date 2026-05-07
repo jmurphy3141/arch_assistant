@@ -14,6 +14,12 @@ from typing import Any
 from skillforge.types import MemorySnapshot, ToolResult
 
 
+class _SimpleMemorySnapshot(MemorySnapshot):
+    @property
+    def artifacts(self) -> dict[str, str]:
+        return self.prior_artifacts
+
+
 class SimpleMemory:
     """
     In-memory Memory implementation. No setup required.
@@ -45,8 +51,14 @@ class SimpleMemory:
             prior_artifacts=artifacts,
             raw=state,
         )
-        object.__setattr__(snapshot, "artifacts", artifacts)
-        return snapshot
+        return _SimpleMemorySnapshot(
+            session_id=snapshot.session_id,
+            facts=snapshot.facts,
+            constraints=snapshot.constraints,
+            prior_artifacts=snapshot.prior_artifacts,
+            decision_context=snapshot.decision_context,
+            raw=snapshot.raw,
+        )
 
     def update(
         self,
