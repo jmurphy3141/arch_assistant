@@ -6,7 +6,117 @@ JEP documents, WAF reviews, and Terraform — in one chat session.
 
 ---
 
-## Architecture
+## SkillForge — Reusable Agent Orchestration Framework
+
+**SkillForge** is the lightweight, domain-agnostic framework that powers Archie.
+Any team can use it to build multi-agent systems with a consistent chat interface
+and an intelligent managing orchestrator — no OCI dependency required.
+
+### Vision
+
+SkillForge enables teams to create powerful agent systems where:
+- A central **polymath orchestrator** dynamically wears different expert "hats"
+- Behavior is primarily defined through **prompts and skill files** — not Python code
+- New domains (AWS, Kubernetes, Sales Ops, etc.) can be onboarded quickly with minimal code
+
+### Core Features
+
+| Feature | What it does |
+|---------|-------------|
+| **Dynamic Hats** | Orchestrator switches expert roles on demand with proper lifecycle management |
+| **Skill Files** | Domain expertise defined in clean `.md` files, injected into the system prompt |
+| **Forge Orchestrator** | ReAct loop with memory, delegation, parallel execution, and critique |
+| **A2ADelegate** | First-class delegation — wraps any A2A sub-agent endpoint as a callable tool |
+| **Parallel Execution** | Native support for running multiple specialists concurrently |
+| **Critique Pass** | Auto-runs a reviewer hat after any `critique_enabled=True` tool call |
+| **Declarative Registration** | Register tools from a YAML config — no boilerplate |
+| **Prompt-First Design** | Most new features and behavior changes happen in skill files, not code |
+
+### Architecture
+
+```
+Forge (skillforge/forge.py)
+  │
+  ├─ ToolRegistry          per-tool handler, skill_guidance, critique_enabled
+  ├─ Memory (interface)    assemble() → MemorySnapshot, update() → stores artifacts
+  ├─ HatEngine             loads agent/hats/*.md, exposes use_hat_* tools
+  │
+  ├─ run_turn(session_id, user_message, context)
+  │     │
+  │     ├─ Memory.assemble()        build MemorySnapshot for this turn
+  │     ├─ _get_system_msg()        base prompt + global skills + tool guidance
+  │     ├─ ReAct loop
+  │     │     ├─ LLM call (text_runner)
+  │     │     ├─ _parse_tool_call()
+  │     │     ├─ needs_input / parallel / hat / domain tool dispatch
+  │     │     └─ _run_critique_pass()   if critique_enabled=True
+  │     └─ Memory.update()          persist artifacts and facts
+  │
+  └─ invoke_tool(tool_name, args, session_id, context)
+        Direct tool call bypassing the LLM loop
+```
+
+### Quick Example
+
+```python
+from skillforge import Forge, SimpleMemory
+import agent.hat_engine as hat_engine
+
+async def my_runner(prompt, system, label=""):
+    # your LLM client here
+    return await call_my_llm(prompt, system)
+
+forge = Forge(
+    base_system_prompt="You are a helpful assistant.",
+    hat_engine=hat_engine,
+    memory=SimpleMemory(),
+    text_runner=my_runner,
+)
+
+# Register tools from YAML
+forge.register_tools_from_config("forge_tools.yaml")
+
+# Inject global skill guidance
+forge.register_skill_file("skills/intent_routing.md")
+
+# Run a turn
+result = await forge.run_turn(
+    session_id="customer-123",
+    user_message="Generate a BOM for my workload",
+    context={},
+)
+print(result.reply)
+```
+
+```yaml
+# forge_tools.yaml
+tools:
+  - name: generate_bom
+    handler: "agent.tools.bom:BomHandler"
+    description: "Generate an OCI BOM"
+    skill_guidance: "skills/bom_guidance.md"
+    critique_enabled: true
+
+  - name: call_cfn
+    handler:
+      type: a2a_delegate
+      base_url: "http://localhost:9090"
+      endpoint: "/a2a"
+    description: "Generate CloudFormation templates"
+```
+
+### AWS Quickstart
+
+See `examples/aws_quickstart/` for a self-contained example using SkillForge
+with zero OCI dependencies.
+
+---
+
+## Archie — OCI Architecture Assistant
+
+Archie is the production implementation of SkillForge for Oracle SA engagements.
+
+### System Architecture
 
 ```
 User (browser UI)
@@ -23,13 +133,6 @@ drawing_agent_server.py  ── FastAPI, port 8080
   ├─ agent/archie_wiring.py      Wires SkillForge Forge for Archie sessions
   ├─ agent/hat_engine.py         Expert lenses (critic, governor, bom_reviewer…)
   │
-  ├─ skillforge/                 Domain-agnostic ReAct orchestrator framework
-  │   ├─ forge.py                Forge class — run_turn, invoke_tool, register_tool
-  │   ├─ registry.py             ToolRegistry with skill_guidance and critique_enabled
-  │   ├─ memory.py               SimpleMemory — zero-config in-memory Memory
-  │   ├─ delegate.py             A2ADelegate — wraps A2A sub-agent endpoints as tools
-  │   └─ types.py                ToolResult, TurnResult, MemorySnapshot, ParallelToolCall
-  │
   ├─ Sub-agents (independent A2A services)
   │   ├─ sub_agents/diagram/     port 8082
   │   ├─ sub_agents/bom/         port 8083
@@ -39,15 +142,15 @@ drawing_agent_server.py  ── FastAPI, port 8080
   │   └─ sub_agents/terraform/   port 8087
   │
   ├─ Diagram pipeline
-  │   ├─ agent/bom_parser.py     BOM → ServiceItem list + LLM prompt
+  │   ├─ agent/bom_parser.py       BOM → ServiceItem list + LLM prompt
   │   ├─ agent/intent_compiler.py  LayoutIntent → validated spec
-  │   ├─ agent/layout_engine.py  Spec → x,y positions
-  │   └─ agent/drawio_generator.py  Positions → draw.io XML
+  │   ├─ agent/layout_engine.py    Spec → x,y positions
+  │   └─ agent/drawio_generator.py Positions → draw.io XML
   │
   └─ Persistence
-      ├─ agent/document_store.py   Notes, docs, history, Terraform bundles
-      ├─ agent/context_store.py    Per-customer working context
-      └─ agent/persistence_objectstore.py  OCI Object Storage adapter
+      ├─ agent/document_store.py            Notes, docs, history, Terraform bundles
+      ├─ agent/context_store.py             Per-customer working context
+      └─ agent/persistence_objectstore.py   OCI Object Storage adapter
 ```
 
 ---
@@ -56,8 +159,8 @@ drawing_agent_server.py  ── FastAPI, port 8080
 
 ### Prerequisites
 
-- Python 3.11+ (OCI ADK requires 3.11)
-- OCI Compute instance with Instance Principal auth configured
+- Python 3.11+
+- OCI Compute instance with Instance Principal auth
 - OCI GenAI service endpoint and model OCID
 
 ### Install
@@ -70,11 +173,10 @@ pip3.11 install -r requirements.txt
 
 ### Configure
 
-Edit `config.yaml` with your OCI settings (region, model OCID, compartment, bucket).
-Copy `.env.example` to `.env` and set `SESSION_SECRET`:
+Edit `config.yaml` with your OCI settings. Copy `.env.example` to `.env` and set:
 
 ```bash
-openssl rand -hex 32   # use this value for SESSION_SECRET
+SESSION_SECRET=$(openssl rand -hex 32)
 ```
 
 ### Start the main server
@@ -84,7 +186,6 @@ cd ~/drawing-agent
 SESSION_SECRET=<your-secret> \
 nohup python3.11 -m uvicorn drawing_agent_server:app \
   --host 0.0.0.0 --port 8080 > agent.log 2>&1 &
-
 sleep 3 && curl -s http://localhost:8080/health
 ```
 
@@ -110,8 +211,7 @@ cd ui && npm install && npm run build
 
 ## Production Deployment (systemd)
 
-Service files for all processes are in `deploy/`. See `deploy/README.md` for
-full install instructions.
+Service files for all processes are in `deploy/`. See `deploy/README.md` for full install instructions.
 
 ```bash
 sudo cp deploy/oci-*.service /etc/systemd/system/
@@ -119,7 +219,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now oci-agent oci-bom oci-diagram oci-pov oci-jep oci-waf oci-terraform
 ```
 
-### Port map
+### Port Map
 
 | Service | Port |
 |---------|------|
@@ -145,12 +245,9 @@ sudo systemctl enable --now oci-agent oci-bom oci-diagram oci-pov oci-jep oci-wa
 | `inference.service_endpoint` | OCI GenAI endpoint URL |
 | `persistence.bucket_name` | OCI Object Storage bucket (default: `agent_assistante`) |
 | `writing.max_tokens` | Token budget for POV/JEP/WAF generation |
-| `writing.temperature` | Sampling temperature for document writing (default: 0.7) |
+| `writing.temperature` | Sampling temperature (default: 0.7) |
 | `orchestrator.max_tool_iterations` | Forge ReAct loop max iterations (default: 5) |
 | `orchestrator.history_max_turns` | History turns per prompt (default: 30) |
-| `sub_agents.diagram` | Diagram sub-agent URL (default: `http://localhost:8082`) |
-| `sub_agents.bom` | BOM sub-agent URL |
-| `sub_agents.terraform` | Terraform sub-agent URL |
 
 ### .env — secrets
 
@@ -163,21 +260,18 @@ sudo systemctl enable --now oci-agent oci-bom oci-diagram oci-pov oci-jep oci-wa
 | `OIDC_ISSUER` | for auth | Identity Domain base URL |
 | `OIDC_REQUIRED_GROUP` | optional | Require membership in this group |
 
-Auth is enabled automatically when OIDC variables are set. Leave unset to run without auth.
-
 ---
 
 ## API Endpoints
 
-### Chat (primary path)
+### Chat
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/chat` | Single-turn chat: `{customer_id, customer_name, message}` |
+| `POST` | `/api/chat` | Single-turn chat |
 | `POST` | `/api/chat/stream` | Streaming chat (`?mode=sse` or `?mode=chunked`) |
 | `GET` | `/api/chat/{customer_id}/history` | Conversation history |
 | `GET` | `/api/chat/history` | Cross-customer history index |
-| `GET` | `/api/chat/projects` | Project index |
 | `DELETE` | `/api/chat/{customer_id}/history` | Clear history |
 | `POST` | `/api/chat/{customer_id}/reset-context` | Reset engagement context |
 
@@ -185,11 +279,9 @@ Auth is enabled automatically when OIDC variables are set. Leave unset to run wi
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/bom/health` | BOM service health |
 | `POST` | `/api/bom/chat` | BOM advisory chat |
 | `POST` | `/api/bom/generate-xlsx` | Export BOM as XLSX |
 | `GET` | `/api/bom/{customer_id}/download/{filename}` | Download BOM XLSX |
-| `POST` | `/api/bom/refresh-data` | Refresh BOM pricing cache |
 
 ### Diagram
 
@@ -200,96 +292,40 @@ Auth is enabled automatically when OIDC variables are set. Leave unset to run wi
 | `POST` | `/api/generate` | Generate from JSON resource list |
 | `POST` | `/api/refine` | Refine existing diagram |
 | `GET` | `/api/download/{filename}` | Download `.drawio` file |
-| `GET` | `/api/job/{job_id}` | Poll async job status |
 
-### Specialist Agents
+### Specialists
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/pov/generate` | Generate POV document |
-| `GET` | `/api/pov/{customer_id}/latest` | Latest POV |
-| `GET` | `/api/pov/{customer_id}/versions` | All POV versions |
-| `POST` | `/api/pov/approve` | Approve POV |
 | `POST` | `/api/jep/generate` | Generate JEP |
-| `GET` | `/api/jep/{customer_id}/latest` | Latest JEP |
 | `POST` | `/api/jep/approve` | Approve JEP |
 | `POST` | `/api/jep/kickoff` | Generate kickoff questions |
-| `POST` | `/api/jep/answers` | Save kickoff answers |
 | `POST` | `/api/jep/revision-request` | Request revision |
 | `POST` | `/api/waf/generate` | Generate WAF review |
-| `GET` | `/api/waf/{customer_id}/latest` | Latest WAF review |
 | `POST` | `/api/terraform/generate` | Generate Terraform bundle |
-| `GET` | `/api/terraform/{customer_id}/latest` | Latest Terraform bundle |
 | `GET` | `/api/terraform/{customer_id}/download/{filename}` | Download Terraform file |
 
-### Notes & Context
+### Notes, Context & System
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/notes/upload` | Upload meeting notes |
 | `GET` | `/api/notes/{customer_id}` | List notes |
 | `GET` | `/api/context/{customer_id}` | Read engagement context |
-
-### Discovery & System
-
-| Method | Path | Description |
-|--------|------|-------------|
 | `GET` | `/health` | Health check |
-| `GET` | `/api/config` | UI configuration |
 | `GET` | `/.well-known/agent.json` | A2A agent card |
-| `POST` | `/api/a2a/task` | A2A skill dispatch |
-
----
-
-## SkillForge Framework
-
-`skillforge/` is a domain-agnostic ReAct orchestrator that Archie is built on.
-It can be used independently by any agent team.
-
-### Key concepts
-
-- **Forge** — orchestrates LLM + tool calls in a ReAct loop
-- **ToolRegistry** — stores tool handlers with `skill_guidance` and `critique_enabled`
-- **A2ADelegate** — wraps any A2A sub-agent endpoint as a tool callable
-- **SimpleMemory** — zero-config in-memory Memory for new agent teams
-- **Parallel tools** — `ToolResult(status="parallel", parallel_tools=[...])` triggers concurrent dispatch
-- **Skill files** — `.md` files injected into system prompt via `register_skill_file()`
-- **Critique pass** — `critique_enabled=True` tools auto-trigger a critic hat review after `status="ok"`
-
-### Declarative registration
-
-```python
-forge.register_tools_from_config("forge_tools.yaml")
-```
-
-```yaml
-# forge_tools.yaml
-tools:
-  - name: generate_bom
-    handler: "agent.tools.bom:BomHandler"
-    description: "Generate an OCI BOM"
-    skill_guidance: "skills/bom_guidance.md"
-    critique_enabled: true
-```
-
-### AWS quickstart example
-
-See `examples/aws_quickstart/` for a self-contained example using SkillForge
-with zero OCI dependencies.
 
 ---
 
 ## Hat System
 
-Expert lenses in `agent/hats/` are loaded by `hat_engine.py` and exposed as
-`use_hat_*` tools. When `critique_enabled=True` is set on a tool, Forge
-automatically activates the `critic` hat after the tool returns `status="ok"`.
-
-Available hats:
+Expert lenses in `agent/hats/` activate automatically when `critique_enabled=True`
+is set on a tool, or can be invoked manually via `use_hat_*` tools.
 
 | Hat | Purpose |
 |-----|---------|
-| `critic` | Reviews specialist output and approves or injects critique |
+| `critic` | Reviews output and approves or injects critique |
 | `governor` | Guardrail lens for cost/security/quality |
 | `diagram_builder` | Diagram construction guidance |
 | `bom_reviewer` | BOM accuracy and completeness review |
@@ -300,7 +336,7 @@ Available hats:
 
 ## Skills
 
-Routing and domain guidance lives in `skills/`:
+Routing and domain guidance in `skills/`:
 
 | File | Purpose |
 |------|---------|
@@ -315,11 +351,10 @@ Routing and domain guidance lives in `skills/`:
 |---------|-------|
 | Host | `opc@10.0.3.47` |
 | Port | 8080 (internal), 443 (nginx) |
-| App dir | `~/drawing-agent/` |
 | Python | `python3.11` |
 | Auth | Instance Principal |
 | Region | `us-chicago-1` |
-| Object Storage bucket | `agent_assistante` (namespace: `oraclejamescalise`) |
+| Bucket | `agent_assistante` (namespace: `oraclejamescalise`) |
 
 ---
 
@@ -327,9 +362,6 @@ Routing and domain guidance lives in `skills/`:
 
 ```bash
 pytest tests/ -v -m "not live"
-
-# Include live OCI tests
-RUN_LIVE_TESTS=1 pytest tests/ -v
 ```
 
 ---
