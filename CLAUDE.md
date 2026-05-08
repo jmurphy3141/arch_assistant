@@ -109,7 +109,6 @@ arch_assistant/
 │   ├── notifications.py        # Telegram bot integration (optional)
 │   ├── layout_intent.py        # LayoutIntent dataclass + validator
 │   ├── png_exporter.py         # draw.io CLI → PNG (requires CLI)
-│   ├── diagram_orchestrator.py # DEPRECATED — do not add code here
 │   │
 │   ├── hats/                   # Archie expert lenses selected as tools
 │   │   ├── critic.md, governor.md, diagram_builder.md, bom_reviewer.md
@@ -262,10 +261,7 @@ curl -X POST http://10.0.3.47:8080/upload-bom \
 1. **Keep `orchestrator_agent.py` thin.** New Agent 0 work belongs in
    `archie_loop.py` or a focused helper module, not in the compatibility shim.
 
-2. **`diagram_orchestrator.py` is deprecated.** It has a `DeprecationWarning` at
-   the top. Do not add code to it. It should be deleted once confirmed unused.
-
-3. **`server/` directory** is a secondary FastAPI app for OCI Object Storage
+2. **`server/` directory** is a secondary FastAPI app for OCI Object Storage
    proxying. It is a separate process, not part of the main server startup. Do
    not merge its routes into `drawing_agent_server.py`.
 
