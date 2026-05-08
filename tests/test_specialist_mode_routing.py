@@ -324,6 +324,57 @@ def test_orchestrator_parallel_plan_detects_bom_intent():
     assert plan[0]["tool"] == "generate_bom"
 
 
+def test_prompt_file_intent_ignores_component_mentions():
+    cases = [
+        (
+            "Create an OCI XLSX bill of materials with WAF, load balancer, Object Storage, and Block Volume.",
+            {"generate_bom"},
+        ),
+        (
+            "Create a 14-day JEP for the OCI migration. Include overview, success criteria, bill of materials, and timeline.",
+            {"generate_jep"},
+        ),
+        (
+            "Draft a customer POV covering WAF, load balancer, database modernization, Object Storage, and business value.",
+            {"generate_pov"},
+        ),
+        (
+            "Generate an OCI Terraform bundle with main.tf, VCN, public/private subnets, load balancer/WAF evidence, and Object Storage.",
+            {"generate_terraform"},
+        ),
+        (
+            "Run an OCI Well-Architected review for the 3-tier architecture with WAF, load balancer, database, and Object Storage.",
+            {"generate_waf"},
+        ),
+    ]
+
+    for message, expected in cases:
+        assert archie_loop._requested_generation_tools(message) == expected
+
+
+def test_terraform_parser_fills_empty_tfvars_example():
+    files = archie_loop._parse_terraform_sub_agent_result(
+        '{"main_tf":"provider \\"oci\\" {}","variables_tf":"variable \\"region\\" {}","outputs_tf":"output \\"x\\" { value = 1 }","terraform_tfvars_example":""}'
+    )
+
+    assert files["terraform.tfvars.example"].strip()
+
+
+def test_waf_markdown_section_alignment_adds_expected_headings():
+    content = archie_loop._ensure_waf_markdown_sections(
+        "# Review\n\n## Security\nFindings.\n\n## Reliability\nFindings."
+    )
+    lowered = content.lower()
+    for marker in (
+        "security and compliance",
+        "reliability and resilience",
+        "performance and cost optimization",
+        "operational efficiency",
+        "distributed cloud",
+    ):
+        assert marker in lowered
+
+
 def test_orchestrator_gates_unrequested_generation_tools(monkeypatch):
     calls: list[str] = []
     llm_calls = {"count": 0}

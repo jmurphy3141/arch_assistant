@@ -24,6 +24,7 @@ pytestmark = [pytest.mark.live, pytest.mark.e2e]
 
 _RUN_LIVE = os.environ.get("RUN_ARCHIE_PROMPT_FILE_LIVE", "0") == "1"
 _BASE_URL = os.environ.get("AGENT_BASE_URL", "").rstrip("/")
+_SESSION_COOKIE = os.environ.get("AGENT_SESSION_COOKIE", "").strip()
 
 requires_live_prompt_file = pytest.mark.skipif(
     not _RUN_LIVE or not _BASE_URL,
@@ -39,9 +40,17 @@ def _url(path_or_url: str) -> str:
     return f"{_BASE_URL}{path_or_url}"
 
 
+def _headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+    headers = dict(extra or {})
+    if _SESSION_COOKIE:
+        headers["Cookie"] = _SESSION_COOKIE
+    return headers
+
+
 def _get_json(path: str, *, timeout: int = 120) -> dict:
+    request = urllib.request.Request(_url(path), headers=_headers(), method="GET")
     try:
-        with urllib.request.urlopen(_url(path), timeout=timeout) as resp:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
@@ -49,8 +58,9 @@ def _get_json(path: str, *, timeout: int = 120) -> dict:
 
 
 def _get_bytes(path: str, *, timeout: int = 120) -> bytes:
+    request = urllib.request.Request(_url(path), headers=_headers(), method="GET")
     try:
-        with urllib.request.urlopen(_url(path), timeout=timeout) as resp:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
             return resp.read()
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
@@ -61,7 +71,7 @@ def _post_json(path: str, body: dict, *, timeout: int = 420) -> dict:
     request = urllib.request.Request(
         _url(path),
         data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=_headers({"Content-Type": "application/json"}),
         method="POST",
     )
     try:

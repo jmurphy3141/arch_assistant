@@ -110,6 +110,39 @@ async def test_diagram_persists_drawio_xml_when_sub_agent_returns_no_key(monkeyp
     assert result.status == "ok"
     assert result.artifact_key == "agent3/cust-1/orch-1/v1/diagram.drawio"
     assert store.get(result.artifact_key) == b"<mxfile />"
+
+
+@pytest.mark.asyncio
+async def test_diagram_wraps_raw_mxgraphmodel_before_persisting(monkeypatch):
+    store = InMemoryObjectStore()
+
+    async def _fake_call_generate_diagram(*_args, **_kwargs):
+        return (
+            "Diagram generated.",
+            "",
+            {"drawio_xml": '<mxGraphModel><root><mxCell id="0" /></root></mxGraphModel>'},
+        )
+
+    monkeypatch.setattr("agent.archie_loop._call_generate_diagram", _fake_call_generate_diagram)
+
+    handler = DiagramHandler(
+        store=store,
+        customer_id="acme",
+        customer_name="ACME",
+        text_runner=lambda *_args: "",
+        a2a_base_url="http://localhost:8080",
+    )
+
+    result = await handler(
+        {"bom_text": "Generate a diagram for VCN, subnet, load balancer, and database.", "diagram_name": "app"},
+        memory=None,
+        context={},
+        trace_id="trace-1",
+    )
+
+    persisted = store.get(result.artifact_key).decode("utf-8")
+    assert "<mxfile" in persisted
+    assert "<mxGraphModel" in persisted
     assert result.data["object_key"] == result.artifact_key
 
 

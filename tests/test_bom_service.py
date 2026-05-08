@@ -100,6 +100,19 @@ def test_bom_fast_path_honors_explicit_large_sizing() -> None:
     assert by_sku["B91961"]["quantity"] == 43008.0
 
 
+def test_bom_fast_path_includes_waf_and_database_line_items() -> None:
+    svc = BomService()
+    payload = svc._draft_bom_payload(
+        "Create an OCI XLSX bill of materials for an internet-facing 3-tier web app "
+        "with WAF, public load balancer, private database layer, Object Storage, and Block Volume.",
+        dict(DEFAULT_PRICE_TABLE),
+    )
+
+    skus = {row["sku"] for row in payload["line_items"]}
+    assert "BWAF01" in skus
+    assert "B99060" in skus
+
+
 def test_structured_bom_inputs_drive_explicit_line_item_quantities() -> None:
     svc = _ready_service()
 
