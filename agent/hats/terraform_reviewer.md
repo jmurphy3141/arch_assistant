@@ -11,7 +11,20 @@ hat_rules:
     - "bom_reviewer"
   suggested_next_hat: null
   resume_condition: "Terraform correction or regeneration is requested"
-memory_focus: {}
+memory_focus:
+  priority_fields:
+    - "resources"
+    - "compartments"
+    - "naming_conventions"
+    - "tagging_requirements"
+    - "state_backend"
+    - "security_constraints"
+    - "region"
+  summary_style: "iac_oriented"
+  include_full_memory: false
+  emphasis: >
+    Focus on resource dependencies, compartment structure, naming/tagging rules,
+    state management, and security constraints for generated IaC.
 coordination: {}
 ---
 

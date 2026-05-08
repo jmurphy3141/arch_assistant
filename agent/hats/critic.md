@@ -7,7 +7,11 @@ hat_rules:
   can_hand_off_to: []
   suggested_next_hat: null
   resume_condition: null
-memory_focus: {}
+memory_focus:
+  priority_fields: []
+  summary_style: "full"
+  include_full_memory: true
+  emphasis: "Critic needs full context to evaluate correctness against original request."
 coordination: {}
 ---
 

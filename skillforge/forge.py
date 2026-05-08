@@ -301,7 +301,11 @@ class Forge:
                 if self._prompt_enricher
                 else prompt
             )
-            prompt_for_llm = enriched
+            memory_prefix = self._build_memory_prefix(active_hats, memory_snapshot)
+            # MEMORY VIEW blocks stay in the user prompt; expert blocks stay in system.
+            prompt_for_llm = memory_prefix + self._hat_engine.inject_hats(
+                enriched, active_hats
+            )
             system_msg = self._build_active_system_msg(active_hats)
 
             raw = await self._text_runner(prompt_for_llm, system_msg, "orchestrator")
@@ -438,6 +442,7 @@ class Forge:
                     )
                     for pt in result.parallel_tools
                 ])
+                memory_updated = False
                 for pt, pr in zip(result.parallel_tools, parallel_results):
                     tool_calls.append(
                         ToolCall(tool=pt.tool, args=pt.args, result=pr, iteration=iteration)
@@ -451,6 +456,13 @@ class Forge:
                             result=pr,
                             context=context,
                         )
+                        memory_updated = True
+                if memory_updated:
+                    memory_snapshot = self._memory.assemble(
+                        session_id=session_id,
+                        context=context,
+                        user_message=user_message,
+                    )
                 combined_summary = "; ".join(
                     f"{pt.tool}: {pr.summary}"
                     for pt, pr in zip(result.parallel_tools, parallel_results)
@@ -690,6 +702,25 @@ class Forge:
             return None
         suggested = suggester(name)
         return suggested if isinstance(suggested, str) and suggested else None
+
+    def _build_memory_prefix(
+        self,
+        active_hats: list[str],
+        memory_snapshot: MemorySnapshot | None,
+    ) -> str:
+        if not active_hats or memory_snapshot is None:
+            return ""
+        builder = getattr(self._hat_engine, "build_memory_view_block", None)
+        if not callable(builder):
+            return ""
+        view_blocks = []
+        for hat_name in active_hats:
+            block = builder(hat_name, memory_snapshot)
+            if block:
+                view_blocks.append(block)
+        if not view_blocks:
+            return ""
+        return "\n\n".join(view_blocks) + "\n\n"
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────

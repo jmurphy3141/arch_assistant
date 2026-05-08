@@ -11,7 +11,19 @@ hat_rules:
     - "bom_reviewer"
   suggested_next_hat: "terraform_reviewer"
   resume_condition: "security or compliance questions arise after handoff"
-memory_focus: {}
+memory_focus:
+  priority_fields:
+    - "public_exposure"
+    - "security_controls"
+    - "compliance_requirements"
+    - "topology"
+    - "data_classification"
+    - "dr_posture"
+  summary_style: "security_and_risk_oriented"
+  include_full_memory: false
+  emphasis: >
+    Focus on exposure, security controls, compliance gaps, DR posture, and
+    observability. Highlight risks and unresolved security decisions.
 coordination: {}
 ---
 
