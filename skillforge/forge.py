@@ -266,7 +266,7 @@ class Forge:
         artifacts: dict[str, str] = {}
         reply = ""
 
-        system_msg = self._get_system_msg()
+        system_msg = self._build_active_system_msg(active_hats)
         prompt = self._build_initial_prompt(user_message, history or [])
         memory_snapshot = self._memory.assemble(
             session_id=session_id,
@@ -291,7 +291,8 @@ class Forge:
                 if self._prompt_enricher
                 else prompt
             )
-            prompt_for_llm = self._hat_engine.inject_hats(enriched, active_hats)
+            prompt_for_llm = enriched
+            system_msg = self._build_active_system_msg(active_hats)
 
             raw = await self._text_runner(prompt_for_llm, system_msg, "orchestrator")
             parsed = _parse_tool_call(raw)
@@ -468,7 +469,6 @@ class Forge:
                     tool_name=tool_name,
                     result=result,
                     active_hats=active_hats,
-                    system_msg=system_msg,
                     session_id=session_id,
                 )
 
@@ -559,7 +559,6 @@ class Forge:
         tool_name: str,
         result: ToolResult,
         active_hats: list[str],
-        system_msg: str,
         session_id: str,
     ) -> tuple[str, list[str]]:
         """
@@ -583,6 +582,7 @@ class Forge:
             f"If you have concerns, describe them as plain text."
         )
         enriched = self._hat_engine.inject_hats(critic_prompt, active_hats)
+        system_msg = self._build_active_system_msg(active_hats)
 
         try:
             raw = await self._text_runner(enriched, system_msg, "critic")
@@ -618,6 +618,26 @@ class Forge:
                 global_skills=self._global_skills,
             )
         return self._system_msg
+
+    def _build_active_system_msg(self, active_hats: list[str]) -> str:
+        """
+        Return the system message for one LLM call.
+        If hats are active, prepend their expert blocks before the base system msg.
+        """
+        base = self._get_system_msg()
+        if not active_hats:
+            return base
+        builder = getattr(self._hat_engine, "build_expert_block", None)
+        if not callable(builder):
+            return base
+        blocks = []
+        for name in active_hats:
+            block = builder(name)
+            if block:
+                blocks.append(block)
+        if not blocks:
+            return base
+        return "\n\n".join(blocks) + "\n\n" + base
 
     def _build_initial_prompt(
         self, user_message: str, history: list[dict[str, Any]]

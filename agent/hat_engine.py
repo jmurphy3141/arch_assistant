@@ -2,11 +2,61 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+import yaml as _yaml
 
 
 _HATS_DIR = Path(__file__).parent / "hats"
 MAX_ACTIVE_HATS = 3
+
+
+def _hat_path(name: str) -> Path | None:
+    path = _HATS_DIR / f"{name}.md"
+    if path.is_file():
+        return path
+    return None
+
+
+def _parse_hat_file(path: str | Path) -> tuple[dict, dict[str, str], str]:
+    """
+    Parse a hat markdown file.
+    Returns (metadata_dict, sections_dict, full_body).
+    metadata_dict: parsed YAML frontmatter (empty dict if none).
+    sections_dict: H2 section name -> section body text.
+    full_body: everything after the frontmatter delimiter.
+    """
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+
+    meta: dict = {}
+    body = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            try:
+                meta = _yaml.safe_load(text[3:end]) or {}
+            except Exception:
+                meta = {}
+            body = text[end + 4 :].lstrip("\n")
+
+    sections: dict[str, str] = {}
+    current = None
+    current_lines: list[str] = []
+    for line in body.splitlines():
+        if re.match(r"^##\s+", line):
+            if current is not None:
+                sections[current] = "\n".join(current_lines).strip()
+            current = line[3:].strip()
+            current_lines = []
+        else:
+            if current is not None:
+                current_lines.append(line)
+    if current is not None:
+        sections[current] = "\n".join(current_lines).strip()
+
+    return meta, sections, body
 
 
 def _discover_hats() -> dict[str, str]:
@@ -97,3 +147,67 @@ def inject_hats(prompt: str, active_hats: list[str]) -> str:
     if not sections:
         return prompt
     return "\n\n".join(sections) + "\n\n" + prompt
+
+
+def build_expert_block(name: str) -> str:
+    """
+    Build the [ACTIVE EXPERT: {display_name} v{version}] injection block
+    for the named hat. Returns empty string if hat not found.
+    """
+    path = _hat_path(name)
+    if path is None:
+        return ""
+    meta, sections, _ = _parse_hat_file(path)
+    display = meta.get("display_name", name.replace("_", " ").title())
+    version = meta.get("version", "1.0")
+    lines = [f"[ACTIVE EXPERT: {display} v{version}]", ""]
+    for section in (
+        "Core Principles",
+        "Quality Bar",
+        "Output Contract",
+        "Critic Evaluation Guidance",
+        "Failure Questions",
+    ):
+        if section in sections:
+            lines += [f"## {section}", sections[section], ""]
+    lines.append(f"[End ACTIVE EXPERT: {display}]")
+    return "\n".join(lines)
+
+
+def get_hat_meta(name: str) -> dict:
+    """Return parsed frontmatter metadata for the named hat."""
+    path = _hat_path(name)
+    if path is None:
+        return {}
+    meta, _, _ = _parse_hat_file(path)
+    return dict(meta)
+
+
+class HatEngine:
+    """Object wrapper around the module-level hat engine API."""
+
+    def get_hat_tool_definitions(self) -> list[dict]:
+        return get_hat_tool_definitions()
+
+    def apply_hat(self, active_hats: list[str], hat_name: str) -> list[str]:
+        return apply_hat(active_hats, hat_name)
+
+    def drop_hat(self, active_hats: list[str], hat_name: str) -> list[str]:
+        return drop_hat(active_hats, hat_name)
+
+    def warn_stale_hats(
+        self,
+        active_hats: list[str],
+        rounds_active: dict[str, int],
+        max_rounds: int = 5,
+    ) -> list[str]:
+        return warn_stale_hats(active_hats, rounds_active, max_rounds)
+
+    def inject_hats(self, prompt: str, active_hats: list[str]) -> str:
+        return inject_hats(prompt, active_hats)
+
+    def build_expert_block(self, name: str) -> str:
+        return build_expert_block(name)
+
+    def get_hat_meta(self, name: str) -> dict:
+        return get_hat_meta(name)
