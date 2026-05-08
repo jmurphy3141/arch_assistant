@@ -260,8 +260,16 @@ class Forge:
         history:     prior conversation turns for prompt construction
         """
         trace_id = str(uuid.uuid4())
-        active_hats: list[str] = []
-        hat_rounds: dict[str, int] = {}
+        load_hats = getattr(self._hat_engine, "load_hats", None)
+        known = (
+            set(load_hats().keys())
+            if callable(load_hats)
+            else set(context.get("_active_hats", []))
+        )
+        active_hats: list[str] = [
+            h for h in context.get("_active_hats", []) if h in known
+        ]
+        hat_rounds: dict[str, int] = dict(context.get("_hat_rounds", {}))
         tool_calls: list[ToolCall] = []
         events: list[TurnEvent] = []
         artifacts: dict[str, str] = {}
@@ -569,6 +577,9 @@ class Forge:
                     active_hats=active_hats,
                     session_id=session_id,
                 )
+
+        context["_active_hats"] = active_hats
+        context["_hat_rounds"] = hat_rounds
 
         return TurnResult(
             reply=reply,
