@@ -23,14 +23,18 @@ SkillForge enables teams to create powerful agent systems where:
 
 | Feature | What it does |
 |---------|-------------|
-| **Dynamic Hats** | Orchestrator switches expert roles on demand with proper lifecycle management |
-| **Skill Files** | Domain expertise defined in clean `.md` files, injected into the system prompt |
+| **Dynamic Hats** | Orchestrator switches expert roles on demand; each hat injects a full `[ACTIVE EXPERT]` block at the top of the system prompt |
+| **Structured Hat Files** | Hats are `.md` files with YAML frontmatter (`hat_rules`, `memory_focus`, `coordination`) and structured sections (Core Principles, Quality Bar, Output Contract, Critic Evaluation Guidance) |
+| **Hat-Specific Memory Views** | Each active hat receives a filtered `[MEMORY VIEW]` built from `memory_focus.priority_fields`; orchestrator retains full canonical memory |
+| **Transition Suggestions** | `hat_rules.when_to_activate` triggers are matched against each turn — Forge emits status events suggesting relevant hats before the ReAct loop starts |
+| **Coordination Rules** | `coordination` frontmatter declares `recommended_hats`, `parallel_with`, `handoff_message`, and `synthesis_step` — multi-agent flow lives in skill files, not Python |
+| **Skill Files** | Global routing and domain guidance in `skills/*.md` — injected into the system prompt on every turn |
 | **Forge Orchestrator** | ReAct loop with memory, delegation, parallel execution, and critique |
 | **A2ADelegate** | First-class delegation — wraps any A2A sub-agent endpoint as a callable tool |
 | **Parallel Execution** | Native support for running multiple specialists concurrently |
-| **Critique Pass** | Auto-runs a reviewer hat after any `critique_enabled=True` tool call |
+| **Critique Pass** | Auto-runs the critic hat after any `critique_enabled=True` tool call returns `ok` |
 | **Declarative Registration** | Register tools from a YAML config — no boilerplate |
-| **Prompt-First Design** | Most new features and behavior changes happen in skill files, not code |
+| **Prompt-First Design** | Adding a domain, tuning behavior, or defining coordination patterns requires only editing skill files |
 
 ### Architecture
 
@@ -43,14 +47,17 @@ Forge (skillforge/forge.py)
   │
   ├─ run_turn(session_id, user_message, context)
   │     │
-  │     ├─ Memory.assemble()        build MemorySnapshot for this turn
-  │     ├─ _get_system_msg()        base prompt + global skills + tool guidance
+  │     ├─ Memory.assemble()              build MemorySnapshot for this turn
+  │     ├─ get_transition_suggestions()   emit status events for relevant hats
+  │     ├─ _build_active_system_msg()     base prompt + [ACTIVE EXPERT] blocks
+  │     ├─ build_memory_view_block()      hat-filtered [MEMORY VIEW] → user prompt
   │     ├─ ReAct loop
   │     │     ├─ LLM call (text_runner)
   │     │     ├─ _parse_tool_call()
   │     │     ├─ needs_input / parallel / hat / domain tool dispatch
-  │     │     └─ _run_critique_pass()   if critique_enabled=True
-  │     └─ Memory.update()          persist artifacts and facts
+  │     │     ├─ coordination trigger check → handoff/parallel status events
+  │     │     └─ _run_critique_pass()     if critique_enabled=True
+  │     └─ Memory.update()               persist artifacts and facts
   │
   └─ invoke_tool(tool_name, args, session_id, context)
         Direct tool call bypassing the LLM loop
@@ -320,28 +327,73 @@ sudo systemctl enable --now oci-agent oci-bom oci-diagram oci-pov oci-jep oci-wa
 
 ## Hat System
 
-Expert lenses in `agent/hats/` activate automatically when `critique_enabled=True`
-is set on a tool, or can be invoked manually via `use_hat_*` tools.
+Expert lenses in `agent/hats/` are structured `.md` files with YAML frontmatter
+and named sections. When a hat activates, its full expert context is prepended to
+the system prompt as an `[ACTIVE EXPERT]` block. Each hat also receives a
+filtered `[MEMORY VIEW]` containing only the facts most relevant to its role.
 
-| Hat | Purpose |
-|-----|---------|
-| `critic` | Reviews output and approves or injects critique |
-| `governor` | Guardrail lens for cost/security/quality |
-| `diagram_builder` | Diagram construction guidance |
-| `bom_reviewer` | BOM accuracy and completeness review |
-| `waf_reviewer` | WAF pillar coverage review |
-| `terraform_reviewer` | Terraform structure and security review |
+### Active Hats
+
+| Hat | Role | `critique_enabled` |
+|-----|------|:-----------------:|
+| `critic` | Reviews output, approves or injects revision prompt | auto |
+| `governor` | Deterministic guardrails for cost, security, compliance | — |
+| `bom_reviewer` | BOM accuracy, SKU validation, XLSX delivery | ✅ |
+| `diagram_builder` | OCI topology validation, traffic path review | ✅ |
+| `waf_reviewer` | WAF pillar coverage, OCI-specific recommendations | ✅ |
+| `terraform_reviewer` | HCL validation, provider version, variable hygiene | ✅ |
+
+### Hat File Format
+
+Each hat file uses YAML frontmatter (machine-readable) followed by structured
+markdown sections (injected into the LLM system prompt):
+
+```markdown
+---
+version: "1.0"
+display_name: "BOM Expert"
+hat_rules:
+  when_to_activate: ["user asks about cost, pricing, BOM, or budget"]
+  can_hand_off_to: ["diagram_builder", "terraform_reviewer"]
+  suggested_next_hat: "diagram_builder"
+memory_focus:
+  priority_fields: ["sizing", "cost_assumptions", "budget", "region"]
+  include_full_memory: false
+  emphasis: "Focus on quantities, pricing, and sizing gaps."
+coordination:
+  triggers: ["BOM generation is complete"]
+  recommended_hats: ["diagram_builder"]
+  parallel_with: []
+  handoff_message: "BOM review complete. Suggesting diagram generation next."
+---
+
+# BOM Reviewer Hat
+
+## Core Principles
+## Quality Bar
+## Output Contract
+## Critic Evaluation Guidance
+## Failure Questions
+## Activation & Drop
+```
+
+See `skills/SKILL_TEMPLATE.md` for the full format reference.
+
+### Adding a New Hat
+
+Drop a `.md` file into `agent/hats/` — no Python changes required. SkillForge
+auto-discovers it and exposes `use_hat_{name}` / `drop_hat_{name}` tool calls.
 
 ---
 
 ## Skills
 
-Routing and domain guidance in `skills/`:
+Global skill files in `skills/` are injected into the system prompt on every turn.
 
 | File | Purpose |
 |------|---------|
 | `skills/intent_routing.md` | When to respond conversationally vs call a tool |
-| `skills/README.md` | Skills authoring guide |
+| `skills/SKILL_TEMPLATE.md` | Full format reference for hat and global skill files |
 
 ---
 
