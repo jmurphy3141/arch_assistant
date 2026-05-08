@@ -26,7 +26,16 @@ memory_focus:
   emphasis: >
     Focus heavily on quantities, OCPU/memory sizing, storage volumes, pricing
     assumptions, and budget constraints. Highlight any sizing gaps.
-coordination: {}
+coordination:
+  triggers:
+    - "user mentions cost, budget, pricing, or SKU"
+    - "BOM generation is complete"
+  recommended_hats:
+    - "diagram_builder"
+  parallel_with: []
+  handoff_message: "BOM review complete. Suggesting diagram generation next."
+  synthesis_step: null
+  required_approvals: []
 ---
 
 # BOM Reviewer Hat

@@ -21,7 +21,18 @@ memory_focus:
   emphasis: >
     Focus on cost posture, budget targets, public exposure, GPU usage, and
     compliance requirements. Flag any deterministic blocks immediately.
-coordination: {}
+coordination:
+  triggers:
+    - "BOM finalisation"
+    - "Terraform finalisation"
+    - "WAF output finalisation"
+  recommended_hats: []
+  parallel_with: []
+  handoff_message: "Governor review complete. All deterministic checks passed."
+  synthesis_step: null
+  required_approvals:
+    - "cost_overrun"
+    - "gpu_confirmation"
 ---
 
 # Governor Hat

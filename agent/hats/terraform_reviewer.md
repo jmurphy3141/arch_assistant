@@ -25,7 +25,16 @@ memory_focus:
   emphasis: >
     Focus on resource dependencies, compartment structure, naming/tagging rules,
     state management, and security constraints for generated IaC.
-coordination: {}
+coordination:
+  triggers:
+    - "user requests Terraform or IaC"
+    - "architecture is approved"
+  recommended_hats: []
+  parallel_with:
+    - "waf_reviewer"
+  handoff_message: "Terraform generation complete."
+  synthesis_step: null
+  required_approvals: []
 ---
 
 # Terraform Reviewer Hat

@@ -24,7 +24,17 @@ memory_focus:
   emphasis: >
     Focus on exposure, security controls, compliance gaps, DR posture, and
     observability. Highlight risks and unresolved security decisions.
-coordination: {}
+coordination:
+  triggers:
+    - "user requests WAF review or security assessment"
+    - "diagram is approved"
+  recommended_hats:
+    - "terraform_reviewer"
+  parallel_with:
+    - "terraform_reviewer"
+  handoff_message: "WAF review complete. Terraform generation can proceed."
+  synthesis_step: null
+  required_approvals: []
 ---
 
 # WAF Reviewer Hat

@@ -197,6 +197,26 @@ def get_memory_focus(name: str) -> dict:
     return dict(focus) if isinstance(focus, dict) else {}
 
 
+def get_coordination_rules(name: str) -> dict:
+    """Return the coordination dict from the named hat's frontmatter, or {}."""
+    path = _hat_path(name)
+    if path is None:
+        return {}
+    meta, _, _ = _parse_hat_file(path)
+    return meta.get("coordination", {})
+
+
+def get_parallel_hats(name: str) -> list[str]:
+    """Return hats that can run in parallel with the named hat."""
+    rules = get_coordination_rules(name)
+    return rules.get("parallel_with", [])
+
+
+def get_handoff_message(name: str) -> str | None:
+    rules = get_coordination_rules(name)
+    return rules.get("handoff_message") or None
+
+
 def build_memory_view_block(name: str, memory_snapshot) -> str:
     """
     Build a labelled memory view block for injection into the user prompt.
@@ -347,6 +367,15 @@ class HatEngine:
 
     def get_memory_focus(self, name: str) -> dict:
         return get_memory_focus(name)
+
+    def get_coordination_rules(self, name: str) -> dict:
+        return get_coordination_rules(name)
+
+    def get_parallel_hats(self, name: str) -> list[str]:
+        return get_parallel_hats(name)
+
+    def get_handoff_message(self, name: str) -> str | None:
+        return get_handoff_message(name)
 
     def build_memory_view_block(self, name: str, memory_snapshot) -> str:
         return build_memory_view_block(name, memory_snapshot)
