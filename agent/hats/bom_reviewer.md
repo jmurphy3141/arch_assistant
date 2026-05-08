@@ -1,7 +1,17 @@
 ---
 version: "1.0"
 display_name: "BOM Expert"
-hat_rules: {}
+hat_rules:
+  when_to_activate:
+    - "user asks about cost, pricing, BOM, XLSX, or budget"
+    - "user requests SKU advice or instance sizing"
+    - "BOM generation or repair is requested"
+  can_hand_off_to:
+    - "diagram_builder"
+    - "terraform_reviewer"
+    - "waf_reviewer"
+  suggested_next_hat: "diagram_builder"
+  resume_condition: "cost or sizing questions arise after handoff"
 memory_focus: {}
 coordination: {}
 ---

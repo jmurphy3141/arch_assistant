@@ -1,7 +1,14 @@
 ---
 version: "1.0"
 display_name: "Governor"
-hat_rules: {}
+hat_rules:
+  when_to_activate:
+    - "BOM, Terraform, or WAF output is being finalised"
+    - "estimated cost exceeds or approaches stated budget"
+    - "public internet exposure is present in the architecture"
+  can_hand_off_to: []
+  suggested_next_hat: null
+  resume_condition: "finalisation of any deliverable resumes governor review"
 memory_focus: {}
 coordination: {}
 ---

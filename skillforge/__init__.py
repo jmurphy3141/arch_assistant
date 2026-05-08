@@ -17,7 +17,14 @@ Public API:
     result = await forge.run_turn(session_id=..., user_message=..., context={})
 """
 
-from skillforge.types import MemorySnapshot, ToolCall, ToolResult, ToolStatus, TurnResult
+from skillforge.types import (
+    MemorySnapshot,
+    ToolCall,
+    ToolResult,
+    ToolStatus,
+    TurnEvent,
+    TurnResult,
+)
 from skillforge.forge import Forge
 from skillforge.memory import SimpleMemory
 from skillforge.delegate import A2ADelegate
@@ -30,5 +37,6 @@ __all__ = [
     "ToolCall",
     "ToolResult",
     "ToolStatus",
+    "TurnEvent",
     "TurnResult",
 ]

@@ -73,6 +73,14 @@ class ToolCall:
 
 
 @dataclass
+class TurnEvent:
+    """Event emitted while processing a turn."""
+    type: str
+    message: str
+    data: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class TurnResult:
     """
     Return value of Forge.run_turn().
@@ -82,3 +90,4 @@ class TurnResult:
     tool_calls: list[ToolCall] = field(default_factory=list)
     artifacts: dict[str, str] = field(default_factory=dict)
     history_length: int = 0
+    events: list[TurnEvent] = field(default_factory=list)
