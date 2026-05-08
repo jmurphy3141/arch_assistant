@@ -110,6 +110,7 @@ def build_forge(
             a2a_base_url=a2a_base_url,
         ),
         memory_contract=True,
+        critique_enabled=True,
     )
     forge.register_tool(
         "generate_diagram",
@@ -121,6 +122,7 @@ def build_forge(
             a2a_base_url=a2a_base_url,
         ),
         memory_contract=True,
+        critique_enabled=True,
     )
     forge.register_tool(
         "generate_terraform",
@@ -132,6 +134,7 @@ def build_forge(
             a2a_base_url=a2a_base_url,
         ),
         memory_contract=True,
+        critique_enabled=True,
     )
     forge.register_tool(
         "generate_pov",
@@ -147,6 +150,7 @@ def build_forge(
         "generate_waf",
         WafHandler(store=store, customer_id=customer_id, customer_name=customer_name),
         memory_contract=True,
+        critique_enabled=True,
     )
 
     return forge
