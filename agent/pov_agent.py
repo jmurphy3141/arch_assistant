@@ -147,6 +147,56 @@ A: [Partnership model.]
 A: [Dependencies and risks.]
 """
 
+POV_DISCOVERY_QUESTIONS = """
+To write a high-quality POV I need to understand your customer's situation.
+Please answer the following:
+
+1. **Customer challenge**: What is the primary business problem or opportunity
+   driving this engagement? (e.g. cost reduction, modernisation, compliance)
+
+2. **Current state**: What does their current infrastructure or process look like?
+   (On-premises, another cloud, hybrid?)
+
+3. **Target workloads**: What specific workloads or applications are in scope?
+   (e.g. Oracle DB, Kubernetes, analytics, AI/ML)
+
+4. **Success criteria**: What does "success" look like in 12 months?
+   (measurable outcomes: cost savings %, performance improvement, time to deploy)
+
+5. **Timeline and urgency**: Is there a deadline, fiscal event, or executive
+   milestone driving the timeline?
+
+6. **Decision-makers**: Who are the key stakeholders? (CTO, CFO, Procurement?)
+
+7. **Risks or objections**: What concerns has the customer raised about OCI or
+   this engagement?
+
+Answer as many as you can — I'll generate the POV from your responses.
+""".strip()
+
+
+class _POVResult(dict):
+    def __await__(self):
+        async def _result():
+            return self
+        return _result().__await__()
+
+
+def _context_is_sufficient(context_summary: str, new_notes_text: str) -> bool:
+    """
+    Return True only when there is enough customer context to write a POV.
+    Require at least one of: a non-trivial context summary, or substantive notes.
+    """
+    combined = (context_summary or "") + (new_notes_text or "")
+    # Thin if combined text is under 150 chars or contains only boilerplate
+    if len(combined.strip()) < 150:
+        return False
+    boilerplate_only = all(
+        phrase in combined.lower()
+        for phrase in ("no notes", "no context", "empty")
+    )
+    return not boilerplate_only
+
 
 def generate_pov(
     customer_id: str,
@@ -178,6 +228,16 @@ def generate_pov(
 
     new_note_keys, new_notes_text = get_new_notes(store, context, AGENT_NAME)
     context_summary = build_context_summary(context)
+
+    if not _context_is_sufficient(context_summary, new_notes_text):
+        return _POVResult({
+            "status": "need_clarification",
+            "questions": POV_DISCOVERY_QUESTIONS,
+            "message": (
+                "I need more information about the customer to write a POV. "
+                "Please answer the discovery questions above."
+            ),
+        })
 
     # ── Base document: approved first, then latest LLM-generated ─────────────
     base_doc = get_best_base_doc(store, "pov", customer_id)
@@ -305,4 +365,4 @@ def generate_pov(
 
     notify("pov_generated", customer_id,
            f"POV v{result['version']} generated for {customer_name}")
-    return result
+    return _POVResult(result)
