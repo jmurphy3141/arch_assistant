@@ -59,6 +59,7 @@ _TOOL_CALL_FORMAT_INSTRUCTION = (
 _NO_TOOL = object()   # sentinel: LLM emitted a plain reply, no tool call
 _MAX_ITERATIONS_DEFAULT = 5
 _HISTORY_WINDOW_DEFAULT = 20
+_MANUAL_ONLY_HATS = {"critic", "governor"}
 
 
 class Forge:
@@ -88,6 +89,7 @@ class Forge:
         prompt_enricher: PromptEnricher | None = None,
         max_iterations: int = _MAX_ITERATIONS_DEFAULT,
         history_window: int = _HISTORY_WINDOW_DEFAULT,
+        auto_coordinate: bool = True,
     ) -> None:
         self._base_system_prompt = base_system_prompt
         self._hat_engine = hat_engine
@@ -96,6 +98,7 @@ class Forge:
         self._prompt_enricher = prompt_enricher
         self._max_iterations = max_iterations
         self._history_window = history_window
+        self._auto_coordinate = auto_coordinate
         self._registry = ToolRegistry()
         self._global_skills: list[str] = []
         # System prompt is rebuilt lazily after register_tool() calls.
@@ -283,7 +286,7 @@ class Forge:
             user_message=user_message,
         )
         suggestions = self._get_transition_suggestions(active_hats, user_message)
-        if suggestions:
+        if suggestions and not self._auto_coordinate:
             events.append(
                 TurnEvent(
                     type="status",
@@ -291,18 +294,30 @@ class Forge:
                     data={"suggestions": suggestions},
                 )
             )
-        for hat_name in active_hats:
+        for hat_name in list(active_hats):
             coord = self._get_coordination_rules(hat_name)
             triggers = coord.get("triggers", [])
-            message_lower = user_message.lower()
-            for trigger in triggers:
-                if any(w in message_lower for w in trigger.lower().split(",")):
-                    recommended = coord.get("recommended_hats", [])
-                    inactive = [h for h in recommended if h not in active_hats]
-                    if inactive:
-                        message = (
-                            f"Coordination: '{hat_name}' suggests activating {inactive}"
+            msg_lower = user_message.lower()
+            triggered = any(
+                any(w.strip() in msg_lower for w in t.lower().split(","))
+                for t in triggers
+            )
+            if not triggered:
+                continue
+
+            if self._auto_coordinate:
+                for rec in coord.get("recommended_hats", []):
+                    if rec in _MANUAL_ONLY_HATS or rec in active_hats:
+                        continue
+                    try:
+                        active_hats = self._hat_engine.apply_hat(active_hats, rec)
+                        logger.info(
+                            "Auto-coordinate activated hat '%s' via coordination rule of '%s' session=%s",
+                            rec,
+                            hat_name,
+                            session_id,
                         )
+                        message = f"Auto-activating expert '{rec}' for this request."
                         events.append(
                             TurnEvent(
                                 type="status",
@@ -310,13 +325,21 @@ class Forge:
                                 data={"message": message},
                             )
                         )
-                    parallel = self._get_parallel_hats(hat_name)
-                    inactive_parallel = [h for h in parallel if h not in active_hats]
-                    if inactive_parallel:
-                        message = (
-                            f"Parallel opportunity: {inactive_parallel} can run alongside "
-                            f"'{hat_name}'"
+                    except ValueError:
+                        pass
+
+                for par in coord.get("parallel_with", []):
+                    if par in _MANUAL_ONLY_HATS or par in active_hats:
+                        continue
+                    try:
+                        active_hats = self._hat_engine.apply_hat(active_hats, par)
+                        logger.info(
+                            "Auto-coordinate activated parallel hat '%s' via coordination rule of '%s' session=%s",
+                            par,
+                            hat_name,
+                            session_id,
                         )
+                        message = f"Running '{par}' in parallel with '{hat_name}'."
                         events.append(
                             TurnEvent(
                                 type="status",
@@ -324,7 +347,34 @@ class Forge:
                                 data={"message": message},
                             )
                         )
-                    break
+                    except ValueError:
+                        pass
+            else:
+                recommended = coord.get("recommended_hats", [])
+                inactive = [h for h in recommended if h not in active_hats]
+                if inactive:
+                    message = f"Coordination: '{hat_name}' suggests activating {inactive}"
+                    events.append(
+                        TurnEvent(
+                            type="status",
+                            message=message,
+                            data={"message": message},
+                        )
+                    )
+                parallel = coord.get("parallel_with", [])
+                inactive_parallel = [h for h in parallel if h not in active_hats]
+                if inactive_parallel:
+                    message = (
+                        f"Parallel opportunity: {inactive_parallel} can run alongside "
+                        f"'{hat_name}'"
+                    )
+                    events.append(
+                        TurnEvent(
+                            type="status",
+                            message=message,
+                            data={"message": message},
+                        )
+                    )
 
         for iteration in range(self._max_iterations):
 
