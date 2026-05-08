@@ -64,7 +64,7 @@ Branch: claude/p37a (from main). Push when done.
 
 ---
 
-## Prompt 2a — p37b: BOM SKU Fix (run after p37a merges)
+## Prompt 2a — p37b: BOM SKU Fix + Live Catalog (run after p37a merges)
 
 ```
 Implement tasks/p37b-bom-sku-fix.md exactly as written.
@@ -75,29 +75,44 @@ First sync to latest main:
 Prerequisite check:
   python3.11 -m compileall agent/bom_parser.py agent/bom_service.py
   grep "B94176\|B93113" agent/bom_parser.py
+  grep "cpu_sku" agent/bom_service.py | grep -v DEFAULT_PRICE | grep -v CPU_SKU_TO
 
-Implement:
+Read tasks/p37b-bom-sku-fix.md in full before writing any code.
 
-1. In agent/bom_parser.py SKU_MAP, fix the comment on B94176 (it is X9, not E4)
-   and add entries for E4 (B93113/B93114) and A1 (B88514/B88515).
+Implement (two files only):
 
-2. Verify agent/bom_service.py has B93113 with unit_price=0.025. Add if missing.
+1. agent/bom_parser.py — fix SKU_MAP:
+   - Change B94176 comment from "E3/E4 OCPU" to "X9 (Intel Standard) OCPU"
+   - Add B93113 ("E4 (AMD Standard) OCPU") and B93114 (None, None) entries
 
-3. Find the system prompt or SKU guidance in sub_agents/bom/ (read all files to
-   find where the LLM is instructed on SKU selection). Add the shape→SKU mapping:
-     E4.Flex (AMD)    → OCPU: B93113, Memory: B93114
-     X9 Standard      → OCPU: B94176, Memory: B94177
-     A1.Flex (Ampere) → OCPU: B88514, Memory: B88515
-   If there is no existing guidance block, add it to the system prompt.
+2. agent/bom_service.py — three changes:
+   a. Add _build_shape_catalog(self, price_table) method as specified in the task.
+      It must iterate price_table to find E4/E5/E6/X9/A1 CPU SKUs by matching
+      keywords in the description field, not by hardcoded SKU lists.
+   b. Fix _draft_bom_payload: replace the final else branch from "B94176" to
+      "B93113" and add e4/e5/x9/intel text hints before the else.
+   c. Fix _build_compute_from_structured: replace "B94176" default with "B93113".
+
+Do NOT add new entries to DEFAULT_PRICE_TABLE (E4 is already there).
+Do NOT modify sub_agents/bom/system_prompt.md.
 
 Verify:
   python3.11 -m compileall agent/bom_parser.py agent/bom_service.py
   grep "B93113" agent/bom_parser.py
-  grep "X9" agent/bom_parser.py   # comment on B94176 must say X9
-  grep "B93113" agent/bom_service.py
+  grep "X9" agent/bom_parser.py        # comment on B94176 must say X9
+  grep "cpu_sku.*B94176" agent/bom_service.py | grep -v DEFAULT | grep -v CPU_SKU_TO
+  # above must return zero lines
+  python3.11 -c "
+from agent.bom_service import BomService, DEFAULT_PRICE_TABLE
+s = BomService()
+cat = s._build_shape_catalog(DEFAULT_PRICE_TABLE)
+assert 'E4' in cat, f'Missing E4 in catalog: {cat[:200]}'
+print('p37b catalog OK')
+print(cat)
+"
   pytest tests/ -q --tb=short 2>&1 | tail -5
 
-Commit message: p37b: fix E4.Flex SKU mapping — B93113/B93114 not B94176/B94177
+Commit message: p37b: default to E4.Flex SKU; build shape catalog from live price table
 Branch: claude/p37b. Push when done.
 ```
 
