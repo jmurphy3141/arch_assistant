@@ -979,16 +979,26 @@ def _parse_terraform_sub_agent_result(result: Any) -> dict[str, str]:
                 data = loaded
         except Exception:
             data = {"main_tf": raw}
+    if isinstance(data.get("files"), dict):
+        return {
+            str(filename): str(content or "")
+            for filename, content in data["files"].items()
+            if str(filename or "").strip()
+        }
     mapping = {
         "main_tf": "main.tf",
         "variables_tf": "variables.tf",
         "outputs_tf": "outputs.tf",
         "readme_md": "README.md",
+        "terraform_tfvars_example": "terraform.tfvars.example",
+        "tfvars_example": "terraform.tfvars.example",
     }
     files = {
         filename: str(data.get(source_key) or "")
         for source_key, filename in mapping.items()
     }
+    if "terraform.tfvars.example" in data:
+        files["terraform.tfvars.example"] = str(data.get("terraform.tfvars.example") or "")
     if not any(content.strip() for content in files.values()):
         files["main.tf"] = raw
     return files
