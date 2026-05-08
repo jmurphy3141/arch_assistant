@@ -4095,6 +4095,8 @@ async def pov_generate(req: PovRequest):
                 feedback=req.feedback or "",
             )
         )
+        if result.get("status") == "need_clarification":
+            return {"status": "need_clarification", "questions": result.get("questions", "")}
         return {
             "status":        "ok",
             "agent_version": AGENT_VERSION,
