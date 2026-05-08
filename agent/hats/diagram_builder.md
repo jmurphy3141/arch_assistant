@@ -26,7 +26,17 @@ memory_focus:
   emphasis: >
     Focus on network topology, component placement, traffic paths, security
     boundaries, and HA/DR mode. Highlight connectivity and exposure requirements.
-coordination: {}
+coordination:
+  triggers:
+    - "user requests a diagram or topology"
+    - "BOM is approved and diagram is next step"
+  recommended_hats:
+    - "waf_reviewer"
+  parallel_with:
+    - "terraform_reviewer"
+  handoff_message: "Diagram generation complete. WAF review and Terraform can run next."
+  synthesis_step: "after waf_reviewer and terraform_reviewer complete"
+  required_approvals: []
 ---
 
 # Diagram Builder Hat

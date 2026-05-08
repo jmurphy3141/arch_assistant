@@ -12,7 +12,13 @@ memory_focus:
   summary_style: "full"
   include_full_memory: true
   emphasis: "Critic needs full context to evaluate correctness against original request."
-coordination: {}
+coordination:
+  triggers: []
+  recommended_hats: []
+  parallel_with: []
+  handoff_message: null
+  synthesis_step: null
+  required_approvals: []
 ---
 
 # Critic Hat

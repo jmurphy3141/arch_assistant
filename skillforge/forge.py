@@ -283,6 +283,40 @@ class Forge:
                     data={"suggestions": suggestions},
                 )
             )
+        for hat_name in active_hats:
+            coord = self._get_coordination_rules(hat_name)
+            triggers = coord.get("triggers", [])
+            message_lower = user_message.lower()
+            for trigger in triggers:
+                if any(w in message_lower for w in trigger.lower().split(",")):
+                    recommended = coord.get("recommended_hats", [])
+                    inactive = [h for h in recommended if h not in active_hats]
+                    if inactive:
+                        message = (
+                            f"Coordination: '{hat_name}' suggests activating {inactive}"
+                        )
+                        events.append(
+                            TurnEvent(
+                                type="status",
+                                message=message,
+                                data={"message": message},
+                            )
+                        )
+                    parallel = self._get_parallel_hats(hat_name)
+                    inactive_parallel = [h for h in parallel if h not in active_hats]
+                    if inactive_parallel:
+                        message = (
+                            f"Parallel opportunity: {inactive_parallel} can run alongside "
+                            f"'{hat_name}'"
+                        )
+                        events.append(
+                            TurnEvent(
+                                type="status",
+                                message=message,
+                                data={"message": message},
+                            )
+                        )
+                    break
 
         for iteration in range(self._max_iterations):
 
@@ -324,6 +358,12 @@ class Forge:
                 hat_name = tool_name[len("use_hat_"):]
                 try:
                     active_hats = self._hat_engine.apply_hat(active_hats, hat_name)
+                    logger.info(
+                        "Hat transition: %s → active_hats=%s session=%s",
+                        hat_name,
+                        active_hats,
+                        session_id,
+                    )
                 except ValueError:
                     pass   # unknown hat — ignore silently
                 result = ToolResult(
@@ -339,6 +379,12 @@ class Forge:
             if tool_name.startswith("drop_hat_"):
                 hat_name = tool_name[len("drop_hat_"):]
                 active_hats = self._hat_engine.drop_hat(active_hats, hat_name)
+                logger.info(
+                    "Hat transition: %s → active_hats=%s session=%s",
+                    hat_name,
+                    active_hats,
+                    session_id,
+                )
                 hat_rounds.pop(hat_name, None)
                 suggested_next_hat = self._get_suggested_next_hat(hat_name)
                 if suggested_next_hat:
@@ -351,6 +397,24 @@ class Forge:
                                 "suggested_hat": suggested_next_hat,
                             },
                         )
+                    )
+                handoff_msg = self._get_handoff_message(hat_name)
+                if handoff_msg:
+                    events.append(
+                        TurnEvent(
+                            type="status",
+                            message=handoff_msg,
+                            data={"message": handoff_msg},
+                        )
+                    )
+                coord = self._get_coordination_rules(hat_name)
+                synthesis = coord.get("synthesis_step")
+                if synthesis:
+                    logger.debug(
+                        "Hat '%s' dropped; synthesis step pending: %s session=%s",
+                        hat_name,
+                        synthesis,
+                        session_id,
                     )
                 result = ToolResult(
                     summary=f"Hat '{hat_name}' deactivated.", status="ok"
@@ -702,6 +766,27 @@ class Forge:
             return None
         suggested = suggester(name)
         return suggested if isinstance(suggested, str) and suggested else None
+
+    def _get_coordination_rules(self, name: str) -> dict:
+        getter = getattr(self._hat_engine, "get_coordination_rules", None)
+        if not callable(getter):
+            return {}
+        rules = getter(name)
+        return rules if isinstance(rules, dict) else {}
+
+    def _get_parallel_hats(self, name: str) -> list[str]:
+        getter = getattr(self._hat_engine, "get_parallel_hats", None)
+        if not callable(getter):
+            return []
+        hats = getter(name)
+        return list(hats) if isinstance(hats, list) else []
+
+    def _get_handoff_message(self, name: str) -> str | None:
+        getter = getattr(self._hat_engine, "get_handoff_message", None)
+        if not callable(getter):
+            return None
+        message = getter(name)
+        return message if isinstance(message, str) and message else None
 
     def _build_memory_prefix(
         self,
