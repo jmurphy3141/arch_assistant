@@ -20,8 +20,12 @@ logger = logging.getLogger(__name__)
 # ── SKU → (oci_type, default_layer) ─────────────────────────────────────────
 SKU_MAP: dict[str, tuple] = {
     # Compute — VM shapes (all generations map to "compute")
-    "B94176":  ("compute",           "compute"),   # E3/E4 OCPU
-    "B94177":  (None,                None),        # E3/E4 memory — part of compute
+    "B94176":  ("compute",           "compute"),   # X9 (Intel Standard) OCPU
+    "B94177":  (None,                None),        # X9 (Intel Standard) memory
+    "B93113":  ("compute",           "compute"),   # E4 (AMD Standard) OCPU
+    "B93114":  (None,                None),        # E4 (AMD Standard) memory
+    "B88514":  ("compute",           "compute"),   # A1 (Ampere) OCPU
+    "B88515":  (None,                None),        # A1 (Ampere) memory
     "B97384":  ("compute",           "compute"),   # E5 OCPU
     "B97385":  (None,                None),        # E5 memory — part of compute
     "B111129": ("compute",           "compute"),   # E6 OCPU

@@ -26,6 +26,15 @@ all other valid prior line items unchanged.
 - Include storage, load balancer, object storage, database, WAF, and network
   services only when the request or memory block justifies them.
 
+OCI Compute SKU mapping (use these exact SKU codes):
+  E4.Flex (AMD)    → OCPU: B93113, Memory: B93114  ($0.025/OCPU, $0.0015/GB)
+  E3.Flex (Intel)  → OCPU: B91961, Memory: B91962
+  X9 Standard      → OCPU: B94176, Memory: B94177  ($0.04/OCPU)
+  A1.Flex (Ampere) → OCPU: B88514, Memory: B88515  ($0.01/OCPU)
+  BM.GPU4.8        → GPU SKU per shape — always request explicit confirmation
+
+When a customer requests E4.Flex, use B93113/B93114. Do NOT use B94176 for E4.
+
 ## Validation
 
 - Every line item must have a known SKU, positive quantity, unit price, and
