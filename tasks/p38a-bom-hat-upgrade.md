@@ -49,6 +49,7 @@ hat_rules:
     - "BOM generation, repair, or revision is requested"
     - "user asks which compute shape to use"
     - "user wants to know monthly cost for a workload"
+    - "user asks for suggested service to match"
   can_hand_off_to:
     - "diagram_for_oci"
     - "terraform_for_oci"
@@ -99,7 +100,7 @@ hat for any BOM generation, SKU selection, cost estimate, or XLSX export task.
 
 ## Core Principles
 
-- **Shape selection hierarchy:** Default to E4.Flex (AMD, B93113 OCPU / B93114
+- **Shape selection hierarchy:** Default to E5.Flex (AMD, B97384 OCPU / B97385
   memory) unless the customer specifies otherwise. Use A1.Flex (B93297/B93298)
   for Ampere workloads, E5/E6.Flex for higher-core-density needs, X9 (B94176/
   B94177) only when Intel compatibility is explicitly required, and BM.GPU4.8 or
