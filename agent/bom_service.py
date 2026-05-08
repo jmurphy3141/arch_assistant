@@ -285,6 +285,34 @@ class BomService:
             "allowed_types": ["normal", "question", "final"],
         }
 
+    def _build_shape_catalog(self, price_table: dict[str, dict]) -> str:
+        """
+        Build a compact shape→SKU reference from the live price table.
+        Returns a pipe-delimited string for injection into LLM prompts.
+        """
+        SHAPE_KEYWORDS = [
+            ("e4", "E4.Flex (AMD)", "OCPU"),
+            ("e5", "E5.Flex (AMD)", "OCPU"),
+            ("e6", "E6.Flex (AMD)", "OCPU"),
+            ("x9", "X9 (Intel Standard)", "OCPU"),
+            ("a1", "A1.Flex (Ampere)", "OCPU"),
+            ("gpu", "GPU shapes", "GPU"),
+        ]
+        lines = ["Shape | CPU SKU | CPU $/hr | Mem SKU | Mem $/hr"]
+        for keyword, label, _ in SHAPE_KEYWORDS:
+            for sku, row in price_table.items():
+                desc = row.get("description", "").lower()
+                metric = row.get("metric", "").lower()
+                if keyword in desc and "ocpu" in metric:
+                    mem_sku = CPU_SKU_TO_MEM_SKU.get(sku, "—")
+                    mem_row = price_table.get(mem_sku, {})
+                    lines.append(
+                        f"{label} | {sku} | ${row.get('unit_price', 0):.4f} "
+                        f"| {mem_sku} | ${mem_row.get('unit_price', 0):.4f}"
+                    )
+                    break
+        return "\n".join(lines)
+
     def chat(
         self,
         *,
@@ -314,6 +342,7 @@ class BomService:
             }
 
         intent = self._classify_intent(message)
+        shape_catalog = ""
 
         if intent == "normal":
             reply = (
@@ -331,6 +360,7 @@ class BomService:
             payload = None
         else:
             raw_payload = self._draft_bom_payload(message, snap.pricing_table)
+            shape_catalog = str(raw_payload.pop("_shape_catalog", "") or "")
             repaired_payload, attempts, errors = self._repair_until_valid(raw_payload, snap.pricing_table)
             if errors:
                 result_type = "question"
@@ -353,6 +383,8 @@ class BomService:
             "cache_source": snap.source,
             "latency_ms": elapsed_ms,
         }
+        if intent == "final" and shape_catalog:
+            trace["shape_catalog"] = shape_catalog
         response: dict[str, Any] = {
             "type": result_type,
             "reply": reply,
@@ -576,7 +608,7 @@ class BomService:
         ocpu = float(compute.get("ocpu") or 0.0)
         mem_gb = float(memory.get("gb") or 0.0)
         block_gb = float(storage.get("block_gb") or 0.0)
-        cpu_sku = "B97384" if is_native else "B94176"
+        cpu_sku = "B97384" if is_native else "B93113"   # E4.Flex default
         mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
 
         line_items = []
@@ -839,13 +871,20 @@ class BomService:
             elif "e6" in text:
                 shape_hint = "e6"
 
-        if shape_hint == "a1":
+        # Determine CPU SKU from text hints; default to E4 (AMD general-purpose)
+        if shape_hint == "a1" or "ampere" in text:
             cpu_sku = "B93297"
-        elif shape_hint == "e6":
+        elif "e6" in text or shape_hint == "e6":
             cpu_sku = "B111129"
+        elif "e5" in text or shape_hint == "e5":
+            cpu_sku = "B97384"
+        elif "x9" in text or "intel" in text:
+            x9_sku = "B94176"
+            cpu_sku = x9_sku
         else:
-            cpu_sku = "B94176"
+            cpu_sku = "B93113"   # E4.Flex — OCI default general-purpose VM
         mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
+        shape_catalog = self._build_shape_catalog(price_table)
 
         line_items: list[dict[str, Any]] = []
         line_items.append(self._build_line(cpu_sku, ocpu, price_table, "compute", ocpu_notes))
@@ -900,6 +939,7 @@ class BomService:
             "currency": "USD",
             "line_items": line_items,
             "assumptions": assumptions,
+            "_shape_catalog": shape_catalog,
         }
 
     @staticmethod
