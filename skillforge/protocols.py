@@ -109,6 +109,11 @@ class HatEngine(Protocol):
         turn_message: str,
     ) -> list[dict[str, str]]: ...
     def get_suggested_next_hat(self, name: str) -> str | None: ...
+    def build_memory_view_block(
+        self,
+        name: str,
+        memory_snapshot: MemorySnapshot,
+    ) -> str: ...
 
 
 @runtime_checkable

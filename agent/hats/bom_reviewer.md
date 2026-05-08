@@ -12,7 +12,20 @@ hat_rules:
     - "waf_reviewer"
   suggested_next_hat: "diagram_builder"
   resume_condition: "cost or sizing questions arise after handoff"
-memory_focus: {}
+memory_focus:
+  priority_fields:
+    - "sizing"
+    - "compute_shapes"
+    - "storage_requirements"
+    - "workloads"
+    - "cost_assumptions"
+    - "budget"
+    - "region"
+  summary_style: "cost_and_sizing_oriented"
+  include_full_memory: false
+  emphasis: >
+    Focus heavily on quantities, OCPU/memory sizing, storage volumes, pricing
+    assumptions, and budget constraints. Highlight any sizing gaps.
 coordination: {}
 ---
 

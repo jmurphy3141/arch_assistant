@@ -12,7 +12,20 @@ hat_rules:
     - "bom_reviewer"
   suggested_next_hat: "waf_reviewer"
   resume_condition: "diagram update or correction is requested"
-memory_focus: {}
+memory_focus:
+  priority_fields:
+    - "components"
+    - "topology"
+    - "subnet_tiers"
+    - "gateways"
+    - "connectivity"
+    - "ha_dr_mode"
+    - "data_flows"
+  summary_style: "topology_oriented"
+  include_full_memory: false
+  emphasis: >
+    Focus on network topology, component placement, traffic paths, security
+    boundaries, and HA/DR mode. Highlight connectivity and exposure requirements.
 coordination: {}
 ---
 

@@ -9,7 +9,18 @@ hat_rules:
   can_hand_off_to: []
   suggested_next_hat: null
   resume_condition: "finalisation of any deliverable resumes governor review"
-memory_focus: {}
+memory_focus:
+  priority_fields:
+    - "budget"
+    - "cost_assumptions"
+    - "public_exposure"
+    - "compliance_requirements"
+    - "gpu_shapes"
+  summary_style: "governance_oriented"
+  include_full_memory: false
+  emphasis: >
+    Focus on cost posture, budget targets, public exposure, GPU usage, and
+    compliance requirements. Flag any deterministic blocks immediately.
 coordination: {}
 ---
 

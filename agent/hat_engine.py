@@ -190,6 +190,58 @@ def get_hat_rules(name: str) -> dict:
     return dict(rules) if isinstance(rules, dict) else {}
 
 
+def get_memory_focus(name: str) -> dict:
+    """Return memory_focus metadata for the named hat."""
+    meta = get_hat_meta(name)
+    focus = meta.get("memory_focus", {})
+    return dict(focus) if isinstance(focus, dict) else {}
+
+
+def build_memory_view_block(name: str, memory_snapshot) -> str:
+    """
+    Build a labelled memory view block for injection into the user prompt.
+
+    If memory_snapshot is None or empty, returns an empty string.
+    If include_full_memory is True, returns the full snapshot with label.
+    Otherwise, returns priority_fields only.
+    """
+    if memory_snapshot is None:
+        return ""
+
+    focus = get_memory_focus(name)
+    if not focus:
+        return ""
+
+    display = get_hat_meta(name).get("display_name", name)
+    priority = focus.get("priority_fields", [])
+    include_full = focus.get("include_full_memory", False)
+    emphasis = focus.get("emphasis", "")
+
+    lines = [f"[MEMORY VIEW FOR {display.upper()}]"]
+    if emphasis:
+        lines.append(str(emphasis).strip())
+    lines.append("")
+
+    raw = getattr(memory_snapshot, "raw", {}) or {}
+
+    if include_full or not priority:
+        if raw:
+            for k, v in raw.items():
+                lines.append(f"{k}: {v}")
+    else:
+        found_any = False
+        for field in priority:
+            for k, v in raw.items():
+                if str(field).lower() in str(k).lower() and v:
+                    lines.append(f"{k}: {v}")
+                    found_any = True
+        if not found_any:
+            lines.append("(No relevant facts yet recorded for this focus area.)")
+
+    lines.append(f"[End MEMORY VIEW FOR {display.upper()}]")
+    return "\n".join(lines)
+
+
 def get_transition_suggestions(
     active_hats: list[str],
     turn_message: str,
@@ -292,6 +344,12 @@ class HatEngine:
 
     def get_hat_rules(self, name: str) -> dict:
         return get_hat_rules(name)
+
+    def get_memory_focus(self, name: str) -> dict:
+        return get_memory_focus(name)
+
+    def build_memory_view_block(self, name: str, memory_snapshot) -> str:
+        return build_memory_view_block(name, memory_snapshot)
 
     def get_transition_suggestions(
         self,
