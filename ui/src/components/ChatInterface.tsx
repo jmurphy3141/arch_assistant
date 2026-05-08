@@ -650,6 +650,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
   const [attachLoading, setAttachLoading] = useState(false);
   const [streamingReply, setStreamingReply] = useState('');
   const [archieWorkingMessage, setArchieWorkingMessage] = useState(ARCHIE_WORKING_MESSAGES[0]);
+  const [activeHats, setActiveHats] = useState<string[]>([]);
   const threadRef = useRef<HTMLDivElement>(null);
   const bottomRef   = useRef<HTMLDivElement>(null);
   const inputRef    = useRef<HTMLTextAreaElement>(null);
@@ -746,6 +747,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
     );
     setLoading(true);
     setStreamingReply('');
+    setActiveHats([]);
 
     try {
       let streamed = '';
@@ -757,6 +759,15 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
       };
       try {
         resp = await apiChatStream(customerId, effectiveCustomerName, text, {
+          onEvent: event => {
+            if ((event.event_type as string) === 'hat_activate' && typeof event.hat === 'string' && event.hat.trim()) {
+              const hat = event.hat.trim();
+              setActiveHats(prev => prev.includes(hat) ? prev : [...prev, hat]);
+            } else if ((event.event_type as string) === 'hat_drop' && typeof event.hat === 'string' && event.hat.trim()) {
+              const hat = event.hat.trim();
+              setActiveHats(prev => prev.filter(h => h !== hat));
+            }
+          },
           onToken: delta => {
             streamed += delta;
             setStreamingReply(prev => prev + delta);
@@ -792,6 +803,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
     try {
       await apiClearChatHistory(customerId);
       setMessages([]);
+      setActiveHats([]);
       setAttachedFile(null);
       setError(null);
     } catch (err: unknown) {
@@ -944,6 +956,37 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
             busy={loading}
           />
         ))}
+        {activeHats.length > 0 && (
+          <div
+            data-testid="active-hat-badges"
+            style={{
+              display: 'flex',
+              gap: '0.5rem',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              padding: '0.25rem 0.4rem',
+              fontSize: '0.72rem',
+              color: '#8b93a8',
+              fontFamily: "'JetBrains Mono', monospace",
+            }}
+          >
+            <span>Active:</span>
+            {activeHats.map(hat => (
+              <span
+                key={hat}
+                style={{
+                  background: '#dbeafe',
+                  color: '#1d4ed8',
+                  padding: '0.12rem 0.55rem',
+                  borderRadius: 999,
+                  fontWeight: 700,
+                }}
+              >
+                {hat.replace(/_/g, ' ')}
+              </span>
+            ))}
+          </div>
+        )}
         {streamingReply && (
           <div style={{ display: 'flex', flexDirection: 'column', alignSelf: 'flex-start', maxWidth: '88%' }}>
             <div

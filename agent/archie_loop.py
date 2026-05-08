@@ -248,6 +248,7 @@ async def run_turn(
     ]
     tool_calls: list[dict] = []
     artifacts: dict = {}
+    turn_events: list[dict] = []
     requested_tools = _requested_generation_tools(user_message)
     reply = ""
     forced_reply = ""
@@ -262,6 +263,7 @@ async def run_turn(
             "tool_calls": tool_calls,
             "artifacts": artifacts,
             "history_length": len(history) + len(new_turns),
+            "events": turn_events,
         }
 
     def _save_context_note_only(note_text: str) -> str:
@@ -908,6 +910,14 @@ async def run_turn(
             history=history,
         )
         reply = forge_result.reply
+        turn_events.extend(
+            {
+                "type": event.type,
+                "message": event.message,
+                "data": dict(event.data or {}),
+            }
+            for event in forge_result.events
+        )
         for tc in forge_result.tool_calls:
             tool_calls.append(
                 {

@@ -325,6 +325,7 @@ class Forge:
                                 data={"message": message},
                             )
                         )
+                        events.append(self._hat_activate_event(rec))
                     except ValueError:
                         pass
 
@@ -347,6 +348,7 @@ class Forge:
                                 data={"message": message},
                             )
                         )
+                        events.append(self._hat_activate_event(par))
                     except ValueError:
                         pass
             else:
@@ -422,6 +424,7 @@ class Forge:
                         active_hats,
                         session_id,
                     )
+                    events.append(self._hat_activate_event(hat_name))
                 except ValueError:
                     pass   # unknown hat — ignore silently
                 result = ToolResult(
@@ -442,6 +445,13 @@ class Forge:
                     hat_name,
                     active_hats,
                     session_id,
+                )
+                events.append(
+                    TurnEvent(
+                        type="hat_drop",
+                        message=f"Hat '{hat_name}' deactivated.",
+                        data={"hat": hat_name},
+                    )
                 )
                 hat_rounds.pop(hat_name, None)
                 suggested_next_hat = self._get_suggested_next_hat(hat_name)
@@ -834,6 +844,18 @@ class Forge:
             return {}
         rules = getter(name)
         return rules if isinstance(rules, dict) else {}
+
+    def _hat_activate_event(self, name: str) -> TurnEvent:
+        getter = getattr(self._hat_engine, "get_hat_meta", None)
+        meta = getter(name) if callable(getter) else {}
+        if not isinstance(meta, dict):
+            meta = {}
+        display_name = str(meta.get("display_name") or name)
+        return TurnEvent(
+            type="hat_activate",
+            message=f"Hat '{display_name}' activated.",
+            data={"hat": name, "display_name": display_name},
+        )
 
     def _get_parallel_hats(self, name: str) -> list[str]:
         getter = getattr(self._hat_engine, "get_parallel_hats", None)
