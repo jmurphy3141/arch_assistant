@@ -109,6 +109,14 @@ class IntentCompileError(ValueError):
     """Raised when the LayoutIntent cannot be compiled into a valid spec."""
 
 
+def _service_item_label(item, fallback: str) -> str:
+    if not item:
+        return fallback
+    count = getattr(item, "instance_count", None)
+    count_str = f"{count} × " if count and count > 1 else ""
+    return f"{count_str}{item.label}"
+
+
 def compile_intent_to_flat_spec(
     intent: LayoutIntent,
     items: list,
@@ -153,7 +161,7 @@ def compile_intent_to_flat_spec(
 
     for p in subnet_placements:
         item  = items_by_id.get(p.id)
-        label = item.label if item else p.id
+        label = _service_item_label(item, p.id)
         node  = {"id": p.id, "type": p.oci_type, "label": label}
         gid   = p.group or _default_group(p.layer, group_order)
         if gid in group_nodes:
@@ -185,21 +193,21 @@ def compile_intent_to_flat_spec(
     gateways: list[dict] = []
     for p in gateway_placements:
         item  = items_by_id.get(p.id)
-        label = item.label if item else p.id
+        label = _service_item_label(item, p.id)
         gateways.append({"id": p.id, "type": p.oci_type, "label": label})
 
     # ── External items ─────────────────────────────────────────────────────────
     external: list[dict] = []
     for p in external_placements:
         item  = items_by_id.get(p.id)
-        label = item.label if item else p.id
+        label = _service_item_label(item, p.id)
         external.append({"id": p.id, "type": p.oci_type, "label": label})
 
     # ── OCI platform services (right column inside region) ─────────────────────
     oci_services: list[dict] = []
     for p in service_placements:
         item  = items_by_id.get(p.id)
-        label = item.label if item else p.id
+        label = _service_item_label(item, p.id)
         oci_services.append({"id": p.id, "type": p.oci_type, "label": label})
 
     # ── Deployment type ────────────────────────────────────────────────────────
@@ -385,7 +393,7 @@ def _build_compartment_region(
 
         for p in env_placements:
             item  = items_by_id.get(p.id)
-            label = item.label if item else p.id
+            label = _service_item_label(item, p.id)
             node  = {"id": p.id, "type": p.oci_type, "label": label}
             gid   = p.group or _default_group(p.layer, group_order)
             # Strip env prefix if LLM echoed it back (e.g. "prod_app_sub_box")

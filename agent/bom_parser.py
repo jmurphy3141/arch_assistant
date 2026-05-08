@@ -248,6 +248,7 @@ class ServiceItem:
     label:    str
     layer:    str           # external | ingress | compute | async | data
     quantity: Optional[float] = None
+    instance_count: Optional[int] = None
     notes:    str = ""
 
 
@@ -315,6 +316,26 @@ def _inline_qty(cell: str) -> float:
     return value if value > 0 else 1.0
 
 
+def _extract_instance_count(row_text: str) -> int | None:
+    text = str(row_text or "")
+    patterns = (
+        r"\b(\d+)\s*(?:×|x)(?=\s|$)",
+        r"\b(\d+)\s+instances?\b",
+        r"\bqty\s*[:=]\s*(\d+)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            value = int(match.group(1))
+        except Exception:
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 def _inline_first_non_egress_capacity_gb(text: str) -> float:
     for match in _INLINE_CAPACITY_RE.finditer(text or ""):
         value = float(match.group(1))
@@ -353,6 +374,8 @@ def inline_bom_text_to_llm_input(
         details = row[2] if len(row) > 2 else ""
         qty_cell = row[3] if len(row) > 3 else ""
         qty = _inline_qty(qty_cell)
+        row_text = " ".join(str(part) for part in row if str(part).strip())
+        instance_count = _extract_instance_count(row_text)
         desc = " ".join(part for part in (category, component, details) if part).lower()
         oci_type, layer = _lookup_row("", desc)
         if oci_type is None and layer is None:
@@ -364,13 +387,14 @@ def inline_bom_text_to_llm_input(
                 "oci_type": oci_type,
                 "layer": layer,
                 "qty": qty,
+                "instance_count": instance_count,
                 "desc": desc,
             }
         )
         if oci_type == "compute":
             match = re.search(r"(\d+(?:\.\d+)?)\s*ocpu", desc)
             if match:
-                app_ocpu += float(match.group(1)) * qty
+                app_ocpu += float(match.group(1)) * float(instance_count or qty)
         elif oci_type == "database":
             if any(token in desc for token in ("autonomous", "postgres", "database", "adb", "mysql")):
                 match = re.search(r"(\d+(?:\.\d+)?)\s*ocpu", desc)
@@ -407,7 +431,8 @@ def inline_bom_text_to_llm_input(
                 oci_type=oci_type,
                 label=label,
                 layer=str(row["layer"]),
-                quantity=qty,
+                quantity=label_qty if oci_type == "compute" and app_ocpu > 0 else qty,
+                instance_count=row.get("instance_count") if isinstance(row.get("instance_count"), int) else None,
                 notes="inline_bom",
             )
         )
@@ -847,6 +872,8 @@ def parse_bom(xlsx_path: str | Path, context: str = "",
             desc = str(d.get("description", "") or "").lower().strip()
             qty  = d.get("quantity")
             note = str(d.get(sec_hdrs[-1], "") or "") if sec_hdrs else ""
+            row_text = " ".join(str(v) for v in d.values() if v is not None)
+            instance_count = _extract_instance_count(row_text)
 
             oci_type, layer = _lookup_row(sku, desc)
 
@@ -876,7 +903,8 @@ def parse_bom(xlsx_path: str | Path, context: str = "",
             label = _make_label(oci_type, qty, app_ocpu, db_ocpu, obj_gb, f"{desc} {note}") + lbl_suffix
 
             items.append(ServiceItem(id=nid, oci_type=oci_type, label=label,
-                                     layer=layer, quantity=qty, notes=sec_name))
+                                     layer=layer, quantity=qty,
+                                     instance_count=instance_count, notes=sec_name))
 
     # ── On-Premises (always) ──────────────────────────────────────────────────
     items.insert(0, ServiceItem(id="on_prem", oci_type="on premises",
@@ -920,7 +948,12 @@ def parse_bom(xlsx_path: str | Path, context: str = "",
 def _make_label(oci_type: str, qty, app_ocpu: int, db_ocpu: int, obj_gb: float, note: str) -> str:
     q = int(qty) if qty else "?"
     note_l = str(note or "").lower()
-    compute_label = f"VM.Standard.E5.Flex VMs\n×{q} OCPU" if "vm.standard.e5.flex" in note_l or "oci native" in note_l else f"Compute\n×{q} OCPU"
+    if "e4.flex" in note_l or "standard.e4.flex" in note_l:
+        compute_label = f"E4.Flex\n×{q} OCPU"
+    elif "vm.standard.e5.flex" in note_l or "oci native" in note_l:
+        compute_label = f"VM.Standard.E5.Flex VMs\n×{q} OCPU"
+    else:
+        compute_label = f"Compute\n×{q} OCPU"
     database_label = "Autonomous Database" if any(token in note_l for token in ("autonomous", "adb", "atp", "adw")) else ""
     if database_label and db_ocpu:
         database_label = f"{database_label}\n×{db_ocpu:,} OCPU"
@@ -1319,8 +1352,12 @@ def build_layout_intent_prompt(
         hint = group_map.get(item.oci_type)
         return f'"{hint}"' if hint else "null"
 
+    def _node_label(item: ServiceItem) -> str:
+        count_str = f"{item.instance_count} × " if item.instance_count and item.instance_count > 1 else ""
+        return f"{count_str}{item.label}"
+
     service_rows = "\n".join(
-        f'  {{"id": "{i.id}", "oci_type": "{i.oci_type}", "suggested_layer": "{i.layer}", "group_hint": {_group_hint(i)}}}'
+        f'  {{"id": "{i.id}", "oci_type": "{i.oci_type}", "label": {_json.dumps(_node_label(i), ensure_ascii=False)}, "suggested_layer": "{i.layer}", "group_hint": {_group_hint(i)}}}'
         for i in items
     )
 
