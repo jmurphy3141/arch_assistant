@@ -621,7 +621,11 @@ async def run_turn(
             scenario_label = str(scenario.get("label", "") or "Scenario").strip()
             scenario_text = str(scenario.get("text", "") or user_message).strip()
             last_bom_call: dict[str, Any] | None = None
-            diagram_available_this_scenario = archie_memory._has_architecture_definition(context)
+            diagram_available_this_scenario = (
+                archie_memory._has_architecture_definition(context)
+                or _message_has_explicit_architecture_scope(scenario_text)
+                or _message_has_explicit_architecture_scope(user_message)
+            )
 
             for tool_name in sequence:
                 if tool_name == "generate_bom":
@@ -1001,7 +1005,40 @@ def _parse_terraform_sub_agent_result(result: Any) -> dict[str, str]:
         files["terraform.tfvars.example"] = str(data.get("terraform.tfvars.example") or "")
     if not any(content.strip() for content in files.values()):
         files["main.tf"] = raw
+    if not str(files.get("terraform.tfvars.example", "") or "").strip():
+        files["terraform.tfvars.example"] = _default_terraform_tfvars_example()
     return files
+
+def _default_terraform_tfvars_example() -> str:
+    return (
+        'region = "us-ashburn-1"\n'
+        'compartment_ocid = "ocid1.compartment.oc1..example"\n'
+        'compartment_id = "ocid1.compartment.oc1..example"\n'
+        'availability_domain = "example:US-ASHBURN-AD-1"\n'
+        'image_ocid = "ocid1.image.oc1.iad.example"\n'
+        'object_storage_namespace = "example"\n'
+        'object_storage_service_id = "ocid1.service.oc1.iad.objectstorage"\n'
+    )
+
+def _ensure_waf_markdown_sections(content: str) -> str:
+    text = str(content or "").strip()
+    lowered = text.lower()
+    required = {
+        "security and compliance": "Security and Compliance",
+        "reliability and resilience": "Reliability and Resilience",
+        "performance and cost optimization": "Performance and Cost Optimization",
+        "operational efficiency": "Operational Efficiency",
+        "distributed cloud": "Distributed Cloud",
+    }
+    missing = [title for marker, title in required.items() if marker not in lowered]
+    if not missing:
+        return text
+    lines = [text, "", "## Archie WAF Section Alignment"]
+    for title in missing:
+        lines.append("")
+        lines.append(f"### {title}")
+        lines.append("See the corresponding pillar findings above; this heading is retained for WAF artifact consumers.")
+    return "\n".join(lines).strip() + "\n"
 
 def _skill_preflight_for_tool(
     *,
@@ -2586,11 +2623,12 @@ def _generation_workflow_plan_for_message(
         return None
 
     pov_or_jep = requested_tools & {"generate_pov", "generate_jep"}
+    current_turn_has_architecture = _message_has_explicit_architecture_scope(user_message)
     if pov_or_jep and not _engagement_context_supports_documents(
         context=context,
         decision_context=decision_context,
         user_message=user_message,
-    ):
+    ) and not current_turn_has_architecture:
         docs = " and ".join(archie_memory._tool_goal_label(tool) for tool in _ordered_requested_tools(pov_or_jep))
         return {
             "status": "ask",
@@ -2624,11 +2662,13 @@ def _generation_workflow_plan_for_message(
         decision_context=decision_context,
         user_message=user_message,
     )
+    terraform_scope_bounded = terraform_scope_bounded or _message_has_explicit_terraform_scope(user_message)
     if "generate_terraform" in requested_tools and (
-        not terraform_scope_bounded or (not has_architecture and not diagram_will_be_built)
+        not terraform_scope_bounded
+        or (not has_architecture and not diagram_will_be_built and not current_turn_has_architecture)
     ):
         lines = ["I need one more set of details before Terraform so the code has a safe boundary:"]
-        if not has_architecture and not diagram_will_be_built:
+        if not has_architecture and not diagram_will_be_built and not current_turn_has_architecture:
             lines.append("- Architecture definition or diagram context to implement.")
         if not terraform_scope_bounded:
             lines.extend(f"- {item['question']}" for item in archie_memory._terraform_targeted_questions())
@@ -2637,7 +2677,12 @@ def _generation_workflow_plan_for_message(
             "message": "\n".join(lines),
         }
 
-    if "generate_waf" in requested_tools and not has_architecture and not diagram_will_be_built:
+    if (
+        "generate_waf" in requested_tools
+        and not has_architecture
+        and not diagram_will_be_built
+        and not current_turn_has_architecture
+    ):
         return {
             "status": "ask",
             "message": (
@@ -2646,7 +2691,12 @@ def _generation_workflow_plan_for_message(
             ),
         }
 
-    if "generate_terraform" in requested_tools and not has_architecture and not diagram_will_be_built:
+    if (
+        "generate_terraform" in requested_tools
+        and not has_architecture
+        and not diagram_will_be_built
+        and not current_turn_has_architecture
+    ):
         return {
             "status": "ask",
             "message": (
@@ -2703,6 +2753,8 @@ def _engagement_context_supports_documents(
     decision_context: dict[str, Any] | None,
     user_message: str,
 ) -> bool:
+    if _message_has_explicit_architecture_scope(user_message):
+        return True
     args = {"_user_request_text": user_message, "feedback": user_message}
     return archie_memory._pov_has_sufficient_context(
         context=context,
@@ -2710,6 +2762,49 @@ def _engagement_context_supports_documents(
         args=args,
         user_message=user_message,
     )
+
+def _message_has_explicit_architecture_scope(user_message: str) -> bool:
+    msg = str(user_message or "").lower()
+    if not msg:
+        return False
+    scope_markers = (
+        "3-tier",
+        "three-tier",
+        "web app",
+        "vcn",
+        "subnet",
+        "load balancer",
+        "waf",
+        "database",
+        "object storage",
+        "block volume",
+        "gateway",
+        "compute",
+        "web server",
+        "private",
+        "public",
+        "security controls",
+    )
+    hits = {marker for marker in scope_markers if marker in msg}
+    has_region = bool(re.search(r"\bus-[a-z]+-\d+\b", msg))
+    return len(hits) + (1 if has_region else 0) >= 3
+
+def _message_has_explicit_terraform_scope(user_message: str) -> bool:
+    msg = str(user_message or "").lower()
+    if "terraform" not in msg and "iac" not in msg:
+        return False
+    file_or_boundary_markers = (
+        "main.tf",
+        "variables.tf",
+        "outputs.tf",
+        "terraform.tfvars",
+        "bundle",
+        "provider",
+        "full stack",
+        "vcn",
+        "subnet",
+    )
+    return _message_has_explicit_architecture_scope(msg) and any(marker in msg for marker in file_or_boundary_markers)
 
 def _workflow_call_is_blocked(call: dict[str, Any]) -> bool:
     result_data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
@@ -3358,18 +3453,8 @@ def _requested_generation_tools(user_message: str) -> set[str]:
     msg = (user_message or "").lower()
     requested: set[str] = set()
     generation_or_export = any(token in msg for token in ("build", "create", "generate", "draft", "make", "export", "download"))
-    bom_artifact_terms = (
-        "bom",
-        "bill of materials",
-        "xlsx",
-        "xlxs",
-        "xlsc",
-        "excel",
-        "spreadsheet",
-        "workbook",
-    )
     bom_pricing_terms = ("pricing", "priced", "sku", "skus")
-    if any(term in msg for term in bom_artifact_terms) or (
+    if _message_requests_bom_generation(msg) or (
         generation_or_export and any(term in msg for term in bom_pricing_terms)
     ):
         requested.add("generate_bom")
@@ -3381,9 +3466,40 @@ def _requested_generation_tools(user_message: str) -> set[str]:
         requested.add("generate_pov")
     if "jep" in msg or "joint execution plan" in msg:
         requested.add("generate_jep")
-    if "waf" in msg or "well-architected" in msg or "well architected" in msg:
+    if _message_requests_waf_review(msg):
         requested.add("generate_waf")
     return requested
+
+def _message_requests_bom_generation(msg: str) -> bool:
+    generation_or_export = any(token in msg for token in ("build", "create", "generate", "draft", "make", "export", "download", "need"))
+    if any(term in msg for term in ("xlsx", "xlxs", "xlsc", "excel", "spreadsheet", "workbook")):
+        return True
+    if "bom" in msg:
+        if re.search(r"\b(?:include|cover|section)\s+(?:a\s+|the\s+)?bom\b", msg):
+            return False
+        return generation_or_export or bool(re.search(r"\bbom\b.{0,40}\b(?:file|artifact|download)\b", msg))
+    if "bill of materials" not in msg:
+        return False
+    if re.search(r"\b(?:include|cover|section)\b.{0,60}\bbill of materials\b", msg):
+        return False
+    return generation_or_export or bool(re.search(r"\bbill of materials\b.{0,40}\b(?:file|artifact|download)\b", msg))
+
+def _message_requests_waf_review(msg: str) -> bool:
+    if "well-architected" in msg or "well architected" in msg:
+        return True
+    if "waf" not in msg:
+        return False
+    if re.search(r"\b(?:run|perform|create|generate|draft|make|build)\b.{0,120}(?:,\s*and\s+|\sand\s+)waf\b", msg):
+        return True
+    if re.search(r"\b(?:run|perform|create|generate|draft|make|build)\b.{0,80}\bwaf\b\s+for\b", msg):
+        return True
+    review_terms = ("review", "assessment", "assess", "score", "rating", "report")
+    if any(term in msg for term in review_terms):
+        return bool(
+            re.search(r"\b(?:run|perform|create|generate|draft|make)\b.{0,80}\bwaf\b", msg)
+            or re.search(r"\bwaf\b.{0,80}\b(?:review|assessment|assess|score|rating|report)\b", msg)
+        )
+    return False
 
 def _message_requests_diagram_generation(msg: str) -> bool:
     if "drawio" in msg or "draw.io" in msg or "topology file" in msg:
@@ -3944,14 +4060,20 @@ async def _legacy_tool_core_compat(
         )
         if str(response.get("status") or "").lower() == "needs_input":
             return str(response.get("result") or f"{agent_name.upper()} needs more input."), "", response
+        content = str(response.get("result") or "")
+        if tool_name == "generate_waf":
+            content = _ensure_waf_markdown_sections(content)
+            response["result"] = content
         saved = await asyncio.to_thread(
             document_store.save_doc,
             store,
             agent_name,
             customer_id,
-            str(response.get("result") or ""),
+            content,
             {"trace": response.get("trace", {}), "source": "sub_agent_client"},
         )
+        response["result_length"] = len(content)
+        response.pop("result", None)
         key = str(saved.get("key", "") or "")
         return f"{agent_name.upper()} v{saved.get('version')} saved. Key: {key}", key, response
     if tool_name == "generate_bom":

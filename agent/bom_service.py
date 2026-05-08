@@ -709,7 +709,7 @@ class BomService:
         def _has(*markers: str) -> bool:
             return any(marker in text for marker in markers)
 
-        if _has("autonomous database", "oracle database", "oracle databases", "oracle db", "adb", "atp", "adw"):
+        if _has("autonomous database", "oracle database", "oracle databases", "oracle db", "database", "data tier", "db", "adb", "atp", "adw"):
             rows.append(
                 self._build_line(
                     "B99060",
@@ -912,6 +912,28 @@ class BomService:
                     price_table,
                     "network",
                     "Flexible load balancer",
+                )
+            )
+
+        if "waf" in text or "web application firewall" in text:
+            line_items.append(
+                self._build_line(
+                    "BWAF01",
+                    1.0,
+                    price_table,
+                    "network",
+                    "Web Application Firewall policy",
+                )
+            )
+
+        if "database" in text or "data tier" in text or re.search(r"\bdb\b", text):
+            line_items.append(
+                self._build_line(
+                    "B99060",
+                    max(2.0, ocpu * 0.25),
+                    price_table,
+                    "database",
+                    "Database layer",
                 )
             )
 

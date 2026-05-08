@@ -22,6 +22,25 @@ def _safe_diagram_name(value: Any, fallback: str) -> str:
     return fallback_name or "diagram"
 
 
+def _ensure_drawio_mxfile(drawio_xml: str, *, diagram_name: str = "OCI Architecture") -> str:
+    xml = str(drawio_xml or "").strip()
+    if not xml:
+        return ""
+    lowered = xml.lower()
+    if "<mxfile" in lowered:
+        return xml
+    if "<mxgraphmodel" in lowered:
+        safe_name = (
+            str(diagram_name or "OCI Architecture")
+            .replace("&", "&amp;")
+            .replace('"', "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        return f'<mxfile host="app.diagrams.net"><diagram name="{safe_name}">{xml}</diagram></mxfile>'
+    return xml
+
+
 class DiagramHandler:
     def __init__(
         self,
@@ -111,6 +130,8 @@ class DiagramHandler:
                     result_data.get("diagram_name") or args.get("diagram_name"),
                     trace_id or "diagram",
                 )
+                drawio_xml = _ensure_drawio_mxfile(drawio_xml, diagram_name=diagram_name)
+                result_data["drawio_xml"] = drawio_xml
                 latest = await asyncio.to_thread(
                     persist_artifacts,
                     self._store,

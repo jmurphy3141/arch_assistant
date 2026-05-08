@@ -79,6 +79,39 @@ async def test_bom_ok(monkeypatch):
     assert result.data["bom_payload"]["totals"]["estimated_monthly_cost"] == 500
 
 
+async def test_bom_handler_enriches_prompt_requested_waf_and_database(monkeypatch):
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        return {
+            "status": "ok",
+            "result": (
+                '{"bom_payload": {"line_items": ['
+                '{"sku":"B94176","description":"Compute","category":"compute","metric":"OCPU Per Hour","quantity":2,"unit_price":0.05},'
+                '{"sku":"B94177","description":"Memory","category":"compute","metric":"Gigabytes Per Hour","quantity":32,"unit_price":0.002}'
+                ']}}'
+            ),
+        }
+
+    monkeypatch.setattr(
+        bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+
+    result = await make_handler()(
+        {
+            "prompt": (
+                "Create an OCI XLSX bill of materials for a 3-tier web app with "
+                "WAF, public load balancer, private database layer, Object Storage, and Block Volume."
+            )
+        },
+        memory=make_memory(),
+        context={},
+        trace_id="trace-1",
+    )
+
+    skus = {row["sku"] for row in result.data["bom_payload"]["line_items"]}
+    assert "BWAF01" in skus
+    assert "B99060" in skus
+
+
 async def test_bom_needs_input(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         return {"status": "needs_input", "result": "Please provide OCPU count."}
