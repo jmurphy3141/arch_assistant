@@ -83,6 +83,27 @@ async def _chat_event_dicts(
         async for payload in _drain_status_queue(status_queue, task):
             yield payload
         result, project_membership = await task
+        for event in result.get("events", []):
+            event_type = str(event.get("type") or "")
+            event_data = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
+            if event_type == "hat_activate":
+                hat = str(event_data.get("hat", "") or "")
+                display = str(event_data.get("display_name", hat) or hat)
+                yield {
+                    "trace_id": trace_id,
+                    "customer_id": customer_id,
+                    "event_type": "hat_activate",
+                    "hat": hat,
+                    "display_name": display,
+                }
+            elif event_type == "hat_drop":
+                hat = str(event_data.get("hat", "") or "")
+                yield {
+                    "trace_id": trace_id,
+                    "customer_id": customer_id,
+                    "event_type": "hat_drop",
+                    "hat": hat,
+                }
         for tool_call in result.get("tool_calls", []):
             if (
                 tool_call.get("tool") == "generate_terraform"
@@ -186,6 +207,8 @@ async def stream_chat_turn_sse(
         project_id=project_id,
         project_name=project_name,
     ):
+        if str(event.get("event_type") or "") in {"hat_activate", "hat_drop"}:
+            continue
         event_name = {
             "terraform_stage": "terraform_stage",
             "completion": "completion",
