@@ -1,7 +1,17 @@
 ---
 version: "1.0"
 display_name: "Diagram Architect"
-hat_rules: {}
+hat_rules:
+  when_to_activate:
+    - "user asks for a diagram, architecture drawing, or topology"
+    - "user requests diagram update, refinement, or change"
+    - "BOM is approved and diagram is next"
+  can_hand_off_to:
+    - "waf_reviewer"
+    - "terraform_reviewer"
+    - "bom_reviewer"
+  suggested_next_hat: "waf_reviewer"
+  resume_condition: "diagram update or correction is requested"
 memory_focus: {}
 coordination: {}
 ---

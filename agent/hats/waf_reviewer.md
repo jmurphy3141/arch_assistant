@@ -1,7 +1,16 @@
 ---
 version: "1.0"
 display_name: "WAF Reviewer"
-hat_rules: {}
+hat_rules:
+  when_to_activate:
+    - "user requests a WAF review, Well-Architected review, or security assessment"
+    - "diagram is approved and architecture review is next"
+    - "user asks about security posture, compliance, or risk"
+  can_hand_off_to:
+    - "terraform_reviewer"
+    - "bom_reviewer"
+  suggested_next_hat: "terraform_reviewer"
+  resume_condition: "security or compliance questions arise after handoff"
 memory_focus: {}
 coordination: {}
 ---

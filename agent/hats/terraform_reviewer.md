@@ -1,7 +1,16 @@
 ---
 version: "1.0"
 display_name: "Terraform Expert"
-hat_rules: {}
+hat_rules:
+  when_to_activate:
+    - "user requests Terraform, IaC, or infrastructure-as-code generation"
+    - "architecture is approved and IaC is next"
+    - "user asks about OCI resource deployment or automation"
+  can_hand_off_to:
+    - "waf_reviewer"
+    - "bom_reviewer"
+  suggested_next_hat: null
+  resume_condition: "Terraform correction or regeneration is requested"
 memory_focus: {}
 coordination: {}
 ---

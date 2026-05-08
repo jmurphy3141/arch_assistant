@@ -183,6 +183,84 @@ def get_hat_meta(name: str) -> dict:
     return dict(meta)
 
 
+def get_hat_rules(name: str) -> dict:
+    """Return hat_rules metadata for the named hat."""
+    meta = get_hat_meta(name)
+    rules = meta.get("hat_rules", {})
+    return dict(rules) if isinstance(rules, dict) else {}
+
+
+def get_transition_suggestions(
+    active_hats: list[str],
+    turn_message: str,
+) -> list[dict[str, str]]:
+    """Return matching hat activation suggestions for non-active hats."""
+    active = set(active_hats)
+    suggestions: list[dict[str, str]] = []
+    for name in sorted(_HAT_CACHE):
+        if name in active:
+            continue
+        rules = get_hat_rules(name)
+        triggers = rules.get("when_to_activate", [])
+        if not isinstance(triggers, list):
+            continue
+        for trigger in triggers:
+            if not isinstance(trigger, str):
+                continue
+            if _trigger_matches(trigger, turn_message):
+                suggestions.append({"hat": name, "trigger": trigger})
+                break
+    return suggestions
+
+
+def get_suggested_next_hat(name: str) -> str | None:
+    """Return the configured next hat for the named hat."""
+    suggested = get_hat_rules(name).get("suggested_next_hat")
+    return suggested if isinstance(suggested, str) and suggested else None
+
+
+def _trigger_matches(trigger: str, turn_message: str) -> bool:
+    trigger_norm = trigger.lower()
+    message_norm = turn_message.lower()
+    if trigger_norm in message_norm:
+        return True
+    message_tokens = set(re.findall(r"[a-z0-9]+", message_norm))
+    return any(token in message_tokens for token in _trigger_tokens(trigger_norm))
+
+
+def _trigger_tokens(trigger: str) -> list[str]:
+    stopwords = {
+        "about",
+        "after",
+        "and",
+        "any",
+        "are",
+        "asks",
+        "being",
+        "call",
+        "has",
+        "have",
+        "into",
+        "next",
+        "or",
+        "out",
+        "output",
+        "present",
+        "requested",
+        "requests",
+        "result",
+        "the",
+        "user",
+        "when",
+        "with",
+    }
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", trigger)
+        if len(token) >= 3 and token not in stopwords
+    ]
+
+
 class HatEngine:
     """Object wrapper around the module-level hat engine API."""
 
@@ -211,3 +289,16 @@ class HatEngine:
 
     def get_hat_meta(self, name: str) -> dict:
         return get_hat_meta(name)
+
+    def get_hat_rules(self, name: str) -> dict:
+        return get_hat_rules(name)
+
+    def get_transition_suggestions(
+        self,
+        active_hats: list[str],
+        turn_message: str,
+    ) -> list[dict[str, str]]:
+        return get_transition_suggestions(active_hats, turn_message)
+
+    def get_suggested_next_hat(self, name: str) -> str | None:
+        return get_suggested_next_hat(name)

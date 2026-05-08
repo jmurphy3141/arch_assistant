@@ -47,7 +47,7 @@ from skillforge.protocols import (
     PromptEnricher,
 )
 from skillforge.registry import ToolRegistry, ToolSpec
-from skillforge.types import MemorySnapshot, ToolCall, ToolResult, TurnResult
+from skillforge.types import MemorySnapshot, ToolCall, ToolResult, TurnEvent, TurnResult
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +263,7 @@ class Forge:
         active_hats: list[str] = []
         hat_rounds: dict[str, int] = {}
         tool_calls: list[ToolCall] = []
+        events: list[TurnEvent] = []
         artifacts: dict[str, str] = {}
         reply = ""
 
@@ -273,6 +274,15 @@ class Forge:
             context=context,
             user_message=user_message,
         )
+        suggestions = self._get_transition_suggestions(active_hats, user_message)
+        if suggestions:
+            events.append(
+                TurnEvent(
+                    type="status",
+                    message=_format_suggested_hats(suggestions),
+                    data={"suggestions": suggestions},
+                )
+            )
 
         for iteration in range(self._max_iterations):
 
@@ -326,6 +336,18 @@ class Forge:
                 hat_name = tool_name[len("drop_hat_"):]
                 active_hats = self._hat_engine.drop_hat(active_hats, hat_name)
                 hat_rounds.pop(hat_name, None)
+                suggested_next_hat = self._get_suggested_next_hat(hat_name)
+                if suggested_next_hat:
+                    events.append(
+                        TurnEvent(
+                            type="status",
+                            message=f"Suggested hats: {suggested_next_hat}",
+                            data={
+                                "dropped_hat": hat_name,
+                                "suggested_hat": suggested_next_hat,
+                            },
+                        )
+                    )
                 result = ToolResult(
                     summary=f"Hat '{hat_name}' deactivated.", status="ok"
                 )
@@ -477,6 +499,7 @@ class Forge:
             tool_calls=tool_calls,
             artifacts=artifacts,
             history_length=len(history or []) + 1,
+            events=events,
         )
 
     async def invoke_tool(
@@ -651,6 +674,23 @@ class Forge:
         lines.append(f"USER: {user_message}")
         return "\n".join(lines)
 
+    def _get_transition_suggestions(
+        self,
+        active_hats: list[str],
+        turn_message: str,
+    ) -> list[dict[str, str]]:
+        suggester = getattr(self._hat_engine, "get_transition_suggestions", None)
+        if not callable(suggester):
+            return []
+        return list(suggester(active_hats, turn_message))
+
+    def _get_suggested_next_hat(self, name: str) -> str | None:
+        suggester = getattr(self._hat_engine, "get_suggested_next_hat", None)
+        if not callable(suggester):
+            return None
+        suggested = suggester(name)
+        return suggested if isinstance(suggested, str) and suggested else None
+
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
 
@@ -710,6 +750,15 @@ def _extract_balanced(text: str, start: int) -> str | None:
 
 def _append_result(prompt: str, tool_name: str, summary: str) -> str:
     return prompt + f"\nTOOL_RESULT({tool_name}): {summary}"
+
+
+def _format_suggested_hats(suggestions: list[dict[str, str]]) -> str:
+    hats = ", ".join(
+        suggestion["hat"]
+        for suggestion in suggestions
+        if suggestion.get("hat")
+    )
+    return f"Suggested hats: {hats}" if hats else "Suggested hats"
 
 
 def _assemble_system_prompt(

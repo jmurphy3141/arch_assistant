@@ -1,7 +1,12 @@
 ---
 version: "1.0"
 display_name: "Critic"
-hat_rules: {}
+hat_rules:
+  when_to_activate:
+    - "a critique_enabled tool has returned a result"
+  can_hand_off_to: []
+  suggested_next_hat: null
+  resume_condition: null
 memory_focus: {}
 coordination: {}
 ---
