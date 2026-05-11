@@ -1,64 +1,78 @@
 # Phase 3.9 Plan — Enhanced Manager Reasoning Loop
 
-## Overall Approach
+## Core Principle
 
-The current Forge ReAct loop is reactive: it builds the system prompt with the
-active expert block, then hands off to the LLM in one shot. The manager does not
-explicitly reason through its own situation before acting, and does not
-self-review as the expert after a tool returns — it relies entirely on the
-post-hoc critic hat.
+**Hats belong to the manager (Archie / Forge), not the sub-agents.**
 
-Phase 3.9 adds a **structured 6-step reasoning loop** through three layers:
+When the manager activates an expert hat, it becomes the expert. It reasons,
+plans, and critiques as that expert. Sub-agents are execution engines — they
+receive precise instructions from an expert manager and return raw results.
+The manager then reviews those results *as the expert* before surfacing them.
 
-1. **Skill file** (`skills/manager_reasoning_loop.md`): injected every turn,
-   gives the LLM explicit step-by-step instructions for how to reason.
-2. **Hat file additions** (`## Pre-Action Checklist` + `## Post-Action Review`):
-   domain-specific prerequisites and self-checks injected via the `[ACTIVE EXPERT]`
-   block automatically — no Python required.
-3. **Forge structured turn** (`skillforge/forge.py`): before the main ReAct loop,
-   run a lightweight "planning call" that produces a structured Step 1–3 plan and
-   gates tool execution; after tool execution, run an expert self-review from the
-   hat's `Post-Action Review` section before the critic hat fires.
+The current Forge loop lacks explicit expert thinking. The manager routes to
+tools but does not reason deeply as the expert before or after. This means:
+- Shallow tool calls with missing context
+- Sub-agent output accepted without expert-level review
+- Hat activation is cosmetic — it changes the prompt but not the thinking
+
+Phase 3.9 makes expert thinking explicit through a mandatory 6-step loop.
 
 ---
 
-## The 6-Step Reasoning Loop
+## The 6-Step Manager Reasoning Loop
 
 ```
-Step 1: Understand        — Clarify user's real goal and intent
-Step 2: Assess Memory     — What is known / unknown from context
-Step 3: Plan + Select Hat — Best approach, which hat to wear
-Step 4: Expert Pre-Action — Think deeply as the expert; verify prerequisites
-Step 5: Execute           — Call sub-agent or tool
-Step 6: Expert Review     — Review result while still wearing the hat
-         └─ Critic hat fires only after expert self-review approves
+Step 1: Understand          — Clarify the user's real goal and intent
+Step 2: Assess Memory       — What is known / unknown from context
+Step 3: Plan + Select Hat   — Decide approach; activate the right hat
+Step 4: Expert Pre-Action   — Manager THINKS AS THE EXPERT before calling sub-agent:
+                               known facts, gaps, approach, and precise instructions
+Step 5: Execute             — Call sub-agent or tool with expert-crafted args
+Step 6: Expert Post-Review  — Manager REVIEWS AS THE EXPERT after sub-agent returns:
+                               quality bar check, consistency, gaps, iterate or surface
+                └─ Critic hat fires only after expert post-review approves
 ```
+
+Steps 4 and 6 are the new mandatory expert thinking passes. They both use the
+full `[ACTIVE EXPERT]` system prompt — the manager is genuinely wearing the hat
+during these calls, not delegating the thinking to the sub-agent.
+
+---
+
+## What Changes
+
+| Layer | What changes |
+|-------|-------------|
+| `skills/manager_reasoning_loop.md` | Documents the 6-step loop; injected every turn so the LLM follows it |
+| All 8 hat files | Add `## Pre-Action Checklist` + `## Post-Action Review` so Steps 4/6 have domain-specific checklists |
+| `skillforge/forge.py` | `_run_expert_pre_action()` (Step 4) + `_run_expert_post_review()` (Step 6) wired into the ReAct loop |
 
 ---
 
 ## Task Breakdown
 
-| Task | Files | Description |
-|------|-------|-------------|
-| p39a | `skills/manager_reasoning_loop.md` (new) | 6-step loop skill injected every turn |
-| p39b | all 8 hat files | Add `## Pre-Action Checklist` + `## Post-Action Review` to each hat |
-| p39c | `skillforge/forge.py` | Planning call (Steps 1–3) + expert self-review (Step 6) |
+| Task | Files | Description | Run order |
+|------|-------|-------------|-----------|
+| p39a | `skillforge/forge.py` + `skills/manager_reasoning_loop.md` | Define + implement the full 6-step loop | First |
+| p39b | All 8 hat files | Add `## Pre-Action Checklist` + `## Post-Action Review` sections | After p39a |
+| p39c | `skillforge/forge.py` | Strengthen Step 6: post-review decides iterate vs surface; log expert reasoning | After p39b |
 
-**Run order:** p39a + p39b in parallel → p39c after both complete.
+**Run order: p39a → p39b → p39c** (sequential; each task builds on the previous).
 
 ---
 
 ## Acceptance Criteria (all tasks)
 
-1. `skills/manager_reasoning_loop.md` exists and references all 6 steps.
+1. `skills/manager_reasoning_loop.md` exists and explicitly names all 6 steps.
 2. All 8 hat files have `## Pre-Action Checklist` and `## Post-Action Review`.
 3. `python3.11 -m compileall skillforge/forge.py` exits 0.
-4. Planning call fires before the first ReAct iteration when hats are active:
+4. `_run_expert_pre_action` fires before every critique-enabled tool call when a hat is active:
    ```bash
-   grep "planning_call\|_run_planning\|Step 1\|Step 2\|Step 3" skillforge/forge.py
+   grep "_run_expert_pre_action" skillforge/forge.py
    ```
-5. Expert self-review fires after a tool returns and before the critic pass:
+5. `_run_expert_post_review` fires after every critique-enabled tool call, before the critic:
    ```bash
-   grep "_run_expert_review\|post_action\|Post-Action" skillforge/forge.py
+   grep "_run_expert_post_review\|_run_critique_pass" skillforge/forge.py
    ```
-6. `pytest tests/test_forge.py -q --tb=short` — same pass count.
+6. Expert reasoning is logged at INFO level (search for `logger.info.*expert` or `EXPERT`).
+7. `pytest tests/test_forge.py -q --tb=short` — same pass count as baseline.

@@ -1,158 +1,280 @@
-# Task p39a: Manager Reasoning Loop Skill File
+# Task p39a: Define and Implement the Manager Reasoning Loop
 
-## Goal
+## Objective
 
-Create `skills/manager_reasoning_loop.md` — a global skill file that is
-registered with Forge via `register_skill_file()` and injected into every
-turn's system prompt. The skill gives the LLM explicit, ordered instructions
-for reasoning through all 6 steps before acting.
+Make the manager (Archie / Forge) follow a clear 6-step reasoning loop that
+uses hats for deep expert thinking. The manager wears the hat — it thinks as
+the expert before calling any sub-agent and reviews as the expert afterward.
+
+**Critical distinction:** The hat is worn by the manager LLM, not by the
+sub-agent. Sub-agents are execution engines. The manager is the expert.
 
 ---
 
 ## Scope
 
-**Only touch:** `skills/manager_reasoning_loop.md` (new file).  
-**Do NOT touch:** Python files, tests, hat files, or other skills.
+**Touch:**
+- `skillforge/forge.py` — add `_run_expert_pre_action()` method + wiring
+- `skills/manager_reasoning_loop.md` — new global skill file
+
+**Do NOT touch:** hat files, tests, other Python modules.
 
 ---
 
 ## Prerequisite Check
 
 ```bash
+python3.11 -m compileall skillforge/forge.py
 ls skills/
-cat skills/intent_routing.md | head -5   # confirm existing skill format
+grep "_run_expert_pre_action\|planning_call" skillforge/forge.py  # should be zero
 ```
 
 ---
 
-## What to implement
+## Part 1 — Create `skills/manager_reasoning_loop.md`
 
-Create `skills/manager_reasoning_loop.md` with exactly the content below.
+Create this file with exactly the following content:
 
 ```markdown
 # Manager Reasoning Loop
 
-Every turn, reason through the six steps below **before** calling any tool.
-You do not need to surface all six steps to the user — they are your internal
-reasoning scaffold. Only the final reply or tool call is shown.
+You are the manager (Archie). When a hat is active, YOU wear the hat — you
+think as that expert. Sub-agents execute; you reason. Every turn follows the
+six steps below.
 
 ---
 
 ## Step 1 — Understand the Request
 
-Before anything else, identify:
-- What is the user's real goal? (not just what they typed)
-- Is this a clarification, a revision, or a new request?
-- Is there an implicit deliverable (BOM, diagram, Terraform, POV, JEP, WAF)?
-- If the request is ambiguous, note exactly what is missing.
+Name the user's real goal before doing anything else:
+- What deliverable is actually being requested (BOM, diagram, Terraform, POV,
+  JEP, WAF review — or none)?
+- Is this a new request, a revision, or a clarification?
+- Is the request ambiguous? If so, identify exactly what is missing.
 
-Do NOT proceed to tool dispatch until you have named the goal.
-
----
-
-## Step 2 — Assess Memory & Context
-
-Review available context before deciding anything:
-- What has already been decided (shapes, region, services, budget, HA mode)?
-- What is explicitly unknown or unconfirmed?
-- Is the current memory sufficient to produce a complete deliverable, or are
-  there gaps that require clarification?
-
-If critical gaps exist and the user has not provided the information, use
-Step 3 to plan a clarification response — do not call a generation tool.
+Do not proceed to Step 2 until you have named the goal.
 
 ---
 
-## Step 3 — Plan & Select Hat
+## Step 2 — Memory & Context Assessment
 
-Decide your approach:
-- Which deliverable is needed? Which expert hat (if any) should be worn?
-- Is there enough information to proceed, or should you ask one focused
-  clarifying question?
-- Which tool (or sequence of tools) achieves the goal?
-- If a hat is needed and not yet active, activate it now before proceeding.
+Review what is known before deciding anything:
+- What facts are already confirmed (shapes, region, services, budget, HA mode,
+  customer name, compliance scope)?
+- What is missing or unconfirmed?
+- Is there enough information to produce a complete deliverable?
 
-Hat activation rules:
-- `use_hat_oci_bom_expert` — cost, pricing, BOM, XLSX, SKUs, sizing
-- `use_hat_diagram_for_oci` — architecture diagram, draw.io, topology
-- `use_hat_terraform_for_oci` — HCL generation, Terraform modules, OCI provider
-- `use_hat_oci_waf_reviewer` — WAF review, security assessment, compliance
-- `use_hat_oci_customer_pov_writer` — POV document, competitive narrative
-- `use_hat_jep_writer` — JEP, POC plan, project execution plan
-- Do NOT activate critic or governor manually — they fire automatically.
+If critical information is missing, your Step 3 plan is to ask — not to
+generate. Do not call a sub-agent when prerequisites are unmet.
 
 ---
 
-## Step 4 — Expert Pre-Action (when a hat is active)
+## Step 3 — Planning & Hat Selection
 
-Before calling any sub-agent or generation tool, verify the hat's
-`## Pre-Action Checklist`. The checklist is in the `[ACTIVE EXPERT]` block
-of the current system prompt. Confirm every prerequisite is met:
-- If all prerequisites are satisfied → proceed to Step 5.
-- If any prerequisite is missing → ask the user the specific question from
-  the hat's `## Failure Questions` section.
+Choose your approach:
+- Which hat (if any) should you activate? Activate it now, before Step 4.
+- Is there enough context to proceed to execution, or do you need to clarify?
+- What will you tell the sub-agent? (You decide the instructions as the expert.)
 
-Do NOT call a generation tool if a prerequisite is unmet. Surface the gap
-as a focused question instead.
-
----
-
-## Step 5 — Execute
-
-Call the appropriate tool with complete, accurate arguments:
-- Pass all known context (region, sizing, shapes, budget, HA mode) in the args.
-- Do not omit context that was established in earlier turns.
-- Do not fabricate values — use only what is confirmed in memory.
+Hat selection guide:
+- `use_hat_oci_bom_expert` → cost, pricing, BOM, XLSX, SKU, sizing
+- `use_hat_diagram_for_oci` → architecture diagram, draw.io, OCI topology
+- `use_hat_terraform_for_oci` → Terraform HCL, OCI provider, modules
+- `use_hat_oci_waf_reviewer` → WAF, security, compliance assessment
+- `use_hat_oci_customer_pov_writer` → POV document, competitive narrative
+- `use_hat_jep_writer` → JEP, POC plan, phased execution plan
+- Critic and governor activate automatically — never activate them manually.
 
 ---
 
-## Step 6 — Post-Action Review (when a hat is active)
+## Step 4 — Expert Pre-Action Thinking (mandatory when hat is active)
 
-After the tool returns, review the result **while still wearing the hat**
-before the critic fires. Check against the hat's `## Post-Action Review`
-section in the `[ACTIVE EXPERT]` block:
-- Does the result satisfy all quality bar items?
-- Are there obvious gaps, wrong values, or missing fields?
-- If the result is incomplete or incorrect, note the specific issue.
+Before calling any sub-agent or tool, YOU think as the expert:
 
-The critic hat fires automatically after your expert self-review. Your
-expert review is the first filter; the critic is the second.
+**Known facts:** What has the user confirmed? What have we agreed on in prior
+turns? State the specific values (e.g., "E4.Flex, 8 OCPU, us-chicago-1,
+active-active HA, 500 GB Block Volume, no BYOL").
+
+**Gaps:** What prerequisite from this hat's Pre-Action Checklist is still
+missing? If any gap exists, do not call the sub-agent — ask the user first.
+
+**Approach:** As the expert, what is the right solution? What shape family,
+what topology, what modules, what findings — before the sub-agent runs?
+
+**Instructions:** What precise task will you give the sub-agent? The sub-agent
+should receive expert-level instructions, not a raw user message.
+
+This step produces internal reasoning. Log it. Use it to craft better tool args.
 
 ---
 
-## Loop Contract
+## Step 5 — Execution
 
-- Steps 1–3 happen once per turn, before the first tool call.
-- Steps 4–6 happen once per tool call when a hat is active.
-- A plain conversational reply (no tool) skips Steps 4–6 entirely.
-- Never call more than one generation tool per iteration unless the tool
-  returns `status: parallel` — let the loop handle chaining.
+Call the tool with expert-crafted arguments:
+- Include all confirmed context — do not omit facts established in prior turns.
+- Use the reasoning from Step 4 to fill in the tool's task/prompt argument.
+- Do not fabricate values — only use confirmed or defaulted-with-justification facts.
+
+---
+
+## Step 6 — Post-Action Review (mandatory when hat is active)
+
+After the sub-agent returns, YOU review the result as the expert:
+
+Check the hat's Post-Action Review checklist (in the [ACTIVE EXPERT] block).
+For each item:
+- Pass → continue
+- Fail → note the specific field and expected value
+
+Decision after review:
+- All checks pass → approve for critic
+- Fixable gap → iterate: call the sub-agent again with a correction
+- Unfixable gap → surface the issue to the user with a clear explanation
+
+Only after your expert review passes does the critic hat fire.
 ```
+
+---
+
+## Part 2 — Add `_run_expert_pre_action()` to `skillforge/forge.py`
+
+### 2a. Add the method
+
+Add this private method to the `Forge` class, near `_run_critique_pass()`
+(around line 725 in the current file):
+
+```python
+async def _run_expert_pre_action(
+    self,
+    *,
+    prompt: str,
+    tool_name: str,
+    tool_args: dict,
+    active_hats: list[str],
+    session_id: str,
+) -> str:
+    """
+    Step 4 of the manager reasoning loop: expert pre-action thinking.
+
+    The manager thinks as the active expert before calling a sub-agent.
+    Covers: known facts, gaps, approach, and instructions for the sub-agent.
+    Output is appended to prompt as EXPERT_THINKING and logged at INFO.
+    No-op when no expert hat is active.
+    """
+    expert_hats = [h for h in active_hats if h not in _MANUAL_ONLY_HATS]
+    if not expert_hats:
+        return prompt
+
+    hat_label = ", ".join(expert_hats)
+    pre_action_prompt = (
+        f"{prompt}\n\n[STEP 4 — EXPERT PRE-ACTION THINKING]\n"
+        f"You are wearing the {hat_label} hat. Before calling '{tool_name}', "
+        "think deeply as the expert. Cover:\n"
+        "1. Known facts: what has been confirmed in this session?\n"
+        "2. Gaps: does this hat's Pre-Action Checklist have any unmet items?\n"
+        "3. Approach: as the expert, what is the right solution?\n"
+        "4. Instructions: what precise task will you give the sub-agent?\n"
+        "Output your reasoning as plain text. Do NOT call a tool here."
+    )
+    system_msg = self._build_active_system_msg(active_hats)
+
+    try:
+        raw = await self._text_runner(pre_action_prompt, system_msg, "expert_pre_action")
+    except Exception:
+        logger.exception(
+            "Expert pre-action call failed session=%s tool=%s", session_id, tool_name
+        )
+        return prompt
+
+    reasoning = raw.strip()
+    if reasoning:
+        logger.info(
+            "Expert pre-action [%s] for tool '%s' session=%s:\n%s",
+            hat_label, tool_name, session_id, reasoning,
+        )
+        prompt = f"{prompt}\n\nEXPERT_THINKING:\n{reasoning}"
+    return prompt
+```
+
+### 2b. Wire `_run_expert_pre_action()` into `run_turn()`
+
+In `run_turn()`, locate the domain tool dispatch section. The existing code
+(around the `# ── Domain tool ───` comment) looks like:
+
+```python
+            # ── Domain tool ───────────────────────────────────────────────────
+
+            # Inject skill_guidance into the task/prompt arg before dispatch.
+            if spec.skill_guidance:
+                ...
+
+            mem = memory_snapshot if spec.memory_contract else None
+            try:
+                result = await spec.handler(...)
+```
+
+Insert the pre-action call **after** skill_guidance injection and **before**
+the `spec.handler(...)` call. The pre-action only fires for critique-enabled
+tools (the tools that warrant expert oversight):
+
+```python
+            # Step 4: expert pre-action thinking (fires for critique-enabled tools)
+            if spec.critique_enabled:
+                prompt = await self._run_expert_pre_action(
+                    prompt=prompt,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    active_hats=active_hats,
+                    session_id=session_id,
+                )
+```
+
+Add this block immediately before `mem = memory_snapshot if spec.memory_contract else None`.
 
 ---
 
 ## Acceptance Criteria
 
-1. `skills/manager_reasoning_loop.md` exists.
-2. File contains all 6 step headings:
+1. `skills/manager_reasoning_loop.md` exists and contains all 6 step headings:
    ```bash
    grep "Step 1\|Step 2\|Step 3\|Step 4\|Step 5\|Step 6" skills/manager_reasoning_loop.md | wc -l
+   # must be ≥ 6
    ```
-   Must return ≥ 6.
-3. File references `Pre-Action Checklist` and `Post-Action Review`:
+
+2. File makes the manager/hat ownership explicit:
    ```bash
-   grep "Pre-Action Checklist\|Post-Action Review" skills/manager_reasoning_loop.md
+   grep "YOU wear the hat\|you think as\|Sub-agents execute" skills/manager_reasoning_loop.md
+   # must match
    ```
-4. `python3.11 -m compileall skillforge/forge.py` — exits 0 (no Python changes
-   in this task; verify forge.py is unmodified).
-5. `pytest tests/test_forge.py -q --tb=short` — same pass count as before.
+
+3. `_run_expert_pre_action` is present in forge.py:
+   ```bash
+   grep "_run_expert_pre_action" skillforge/forge.py | wc -l
+   # must be ≥ 2 (definition + call site)
+   ```
+
+4. Expert thinking is logged at INFO level:
+   ```bash
+   grep "logger.info.*expert_pre_action\|logger.info.*EXPERT\|Expert pre-action" skillforge/forge.py
+   # must match
+   ```
+
+5. Compiles cleanly:
+   ```bash
+   python3.11 -m compileall skillforge/forge.py
+   ```
+
+6. No regressions:
+   ```bash
+   pytest tests/test_forge.py -q --tb=short
+   ```
 
 ---
 
 ## Commit Message
 
 ```
-p39a: create skills/manager_reasoning_loop.md — 6-step reasoning scaffold
+p39a: 6-step manager reasoning loop — skill file + expert pre-action thinking (Step 4)
 ```
 
 Branch: `claude/p39a` (from main). Push when done.
