@@ -519,6 +519,21 @@ class Forge:
                     task_key: f"{spec.skill_guidance}\n\n{existing}".strip(),
                 }
 
+            # Step 4: expert pre-action thinking (fires for any domain tool when hat active)
+            expert_hats_active = [h for h in active_hats if h not in _MANUAL_ONLY_HATS]
+            if expert_hats_active:
+                prompt, clarification_needed = await self._run_expert_pre_action(
+                    prompt=prompt,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    active_hats=active_hats,
+                    session_id=session_id,
+                    events=events,
+                )
+                if clarification_needed:
+                    reply = clarification_needed
+                    break
+
             mem = memory_snapshot if spec.memory_contract else None
             try:
                 result = await spec.handler(
@@ -721,6 +736,97 @@ class Forge:
             )
 
         return result
+
+    async def _run_expert_pre_action(
+        self,
+        *,
+        prompt: str,
+        tool_name: str,
+        tool_args: dict,
+        active_hats: list[str],
+        session_id: str,
+        events: list,
+    ) -> tuple[str, str | None]:
+        """
+        Step 4 of the manager reasoning loop: expert pre-action thinking.
+
+        The manager thinks as the active expert before calling a sub-agent.
+        Uses a structured 4-section format to force depth: KNOWN FACTS, GAPS,
+        EXPERT ASSESSMENT, SUB-AGENT INSTRUCTIONS.
+
+        Returns (updated_prompt, clarification_needed).
+        clarification_needed is None when the expert is ready to proceed.
+        clarification_needed is a question string when a starred prerequisite is unmet.
+        No-op (returns (prompt, None)) when no expert hat is active.
+        """
+        expert_hats = [h for h in active_hats if h not in _MANUAL_ONLY_HATS]
+        if not expert_hats:
+            return prompt, None
+
+        hat_label = ", ".join(expert_hats)
+        pre_action_prompt = (
+            f"{prompt}\n\n"
+            "╔══════════════════════════════════╗\n"
+            "║  STEP 4 — EXPERT PRE-ACTION      ║\n"
+            "╚══════════════════════════════════╝\n"
+            f"You are wearing the [{hat_label}] hat. You ARE the expert.\n"
+            f"Before calling '{tool_name}', produce your expert reasoning using "
+            "EXACTLY this structure:\n\n"
+            "KNOWN FACTS:\n"
+            "- [List every confirmed value: shape, region, OCPU, memory, storage, HA mode, "
+            "budget, compliance scope, etc. Be specific — no vague summaries.]\n\n"
+            "GAPS:\n"
+            "- [List every unconfirmed prerequisite from this hat's Pre-Action Checklist. "
+            "If none, write 'None — all prerequisites confirmed.']\n\n"
+            "EXPERT ASSESSMENT:\n"
+            "- [As the expert, what is the right solution? State your recommendation "
+            "with specifics (shape names, SKUs, topology, module names) — not generic advice.]\n\n"
+            "SUB-AGENT INSTRUCTIONS:\n"
+            "- [Exact task description you will pass to the sub-agent. Be precise.]\n\n"
+            "Do NOT call a tool here. If GAPS contains any starred (★) required items, "
+            "output only: NEEDS_CLARIFICATION: <focused question for the user>"
+        )
+        system_msg = self._build_active_system_msg(active_hats)
+
+        try:
+            raw = await self._text_runner(pre_action_prompt, system_msg, "expert_pre_action")
+        except Exception:
+            logger.exception(
+                "[EXPERT_PRE_ACTION] Call failed session=%s tool=%s", session_id, tool_name
+            )
+            return prompt, None
+
+        reasoning = raw.strip()
+
+        if reasoning.startswith("NEEDS_CLARIFICATION:"):
+            clarification = reasoning[len("NEEDS_CLARIFICATION:"):].strip()
+            logger.info(
+                "[EXPERT_PRE_ACTION] [%s] tool='%s' session=%s → NEEDS_CLARIFICATION: %s",
+                hat_label, tool_name, session_id, clarification,
+            )
+            events.append(
+                TurnEvent(
+                    type="expert_pre_action",
+                    message=f"Expert pre-action [{hat_label}]: clarification needed",
+                    data={"hat": hat_label, "tool": tool_name, "clarification": clarification},
+                )
+            )
+            return prompt, clarification
+
+        if reasoning:
+            logger.info(
+                "[EXPERT_PRE_ACTION] [%s] tool='%s' session=%s:\n%s",
+                hat_label, tool_name, session_id, reasoning,
+            )
+            events.append(
+                TurnEvent(
+                    type="expert_pre_action",
+                    message=f"Expert pre-action [{hat_label}] for '{tool_name}'",
+                    data={"hat": hat_label, "tool": tool_name, "reasoning": reasoning},
+                )
+            )
+            prompt = f"{prompt}\n\nEXPERT_THINKING:\n{reasoning}"
+        return prompt, None
 
     async def _run_critique_pass(
         self,
