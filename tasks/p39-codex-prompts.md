@@ -1,6 +1,6 @@
 # Phase 3.9 Codex Prompts — Enhanced Manager Reasoning Loop
 
-Run order: **p39a → p39b → p39c → p39d** (sequential — each builds on the previous).
+Run order: **p39a → p39b → p39c → p39d → p39e** (sequential — each builds on the previous).
 
 The manager (Archie / Forge) wears the hats. Hats are not passed to sub-agents.
 Sub-agents are execution engines. The manager reasons as the expert (Step 4)
@@ -312,4 +312,111 @@ Verify:
 
 Commit message: p39d: harden reasoning loop — structured prompts, consistent firing, TurnEvents, anti-rubber-stamp review
 Branch: claude/p39d. Push when done.
+```
+
+---
+
+## Prompt 5 — p39e: Depth Guard, Quality Bar, Memory Consistency (run after p39d merges)
+
+```
+Implement tasks/p39e-depth-quality-enforcement.md exactly as written.
+
+First sync from p39d:
+  git fetch origin && git checkout -b claude/p39e origin/main
+  (assuming p39a–p39d are merged to main)
+
+Prerequisite check:
+  python3.11 -m compileall skillforge/forge.py
+  grep "_EXPERT_THINKING_MIN_CHARS\|_EXPERT_REVIEW_MIN_CHARS" skillforge/forge.py  # must be zero
+  grep "Quality Bar\|PHASE A\|PHASE B\|PHASE C" skillforge/forge.py               # must be zero
+
+Read tasks/p39e-depth-quality-enforcement.md in full before writing anything.
+The spec has 3 fixes — implement all 3:
+
+Fix 1 — Pre-hat depth guard:
+  Add _EXPERT_THINKING_MIN_CHARS = 300 module constant.
+  After the primary LLM call in _run_expert_pre_action(), check len(reasoning).
+  If < 300 chars and not NEEDS_CLARIFICATION, retry once with a stronger prompt
+  that asks for ≥ 3 specific bullets per section. Log warning on both attempts.
+
+Fix 2 — Post-review Quality Bar + memory consistency:
+  Add memory_snapshot: MemorySnapshot | None = None parameter to _run_expert_post_review().
+  Rebuild the review prompt with three explicit phases:
+    PHASE A — Quality Bar: check hat's ## Quality Bar items (PASS/FAIL per item)
+    PHASE B — Post-Action Review: check hat's ## Post-Action Review items (PASS/FAIL)
+    PHASE C — Memory consistency: compare result against MEMORY SNAPSHOT values
+               (CONSISTENT or CONFLICT: <field> expected=<X> got=<Y>)
+  EXPERT_APPROVED only valid when all Phase A+B items PASS and Phase C CONSISTENT.
+  Parse final decision from LAST non-empty line (after the phase checks).
+  Update call site in run_turn() to pass memory_snapshot=memory_snapshot.
+
+Fix 3 — Post-review shallow-response guard:
+  Add _EXPERT_REVIEW_MIN_CHARS = 500 module constant.
+  Same retry pattern as Fix 1, applied to _run_expert_post_review().
+  Retry prompt reminds LLM to complete all three phases with PASS/FAIL per item.
+
+Verify:
+  python3.11 -m compileall skillforge/forge.py
+
+  grep "_EXPERT_THINKING_MIN_CHARS\|_EXPERT_REVIEW_MIN_CHARS" skillforge/forge.py | wc -l
+  # must be ≥ 2
+
+  grep "Shallow response\|expert_pre_action_retry\|expert_post_review_retry" skillforge/forge.py | wc -l
+  # must be ≥ 4
+
+  grep "Quality Bar\|MEMORY SNAPSHOT\|CONFLICT:" skillforge/forge.py
+  # must match
+
+  grep "PHASE A\|PHASE B\|PHASE C" skillforge/forge.py | wc -l
+  # must be ≥ 3
+
+  grep "memory_snapshot=memory_snapshot" skillforge/forge.py
+
+  python3.11 -c "
+  import asyncio
+  from skillforge.forge import Forge
+  from skillforge.types import MemorySnapshot
+
+  class NullMemory:
+      def assemble(self, *, session_id, context, user_message):
+          return MemorySnapshot(raw={}, formatted='')
+      def update(self, *, session_id, tool_name, result, context):
+          return context
+
+  class NullHatEngine:
+      def load_hats(self): return {}
+      def apply_hat(self, hats, name): return hats
+      def drop_hat(self, hats, name): return hats
+      def warn_stale_hats(self, hats, rounds): return []
+      def inject_hats(self, prompt, hats): return prompt
+      def get_hat_tool_definitions(self): return []
+      def build_expert_block(self, name): return ''
+      def build_memory_view_block(self, name, snap): return ''
+      def get_transition_suggestions(self, hats, msg): return []
+      def get_suggested_next_hat(self, name): return None
+      def get_coordination_rules(self, name): return {}
+      def get_hat_meta(self, name): return {}
+      def get_parallel_hats(self, name): return []
+      def get_handoff_message(self, name): return None
+
+  async def null_runner(prompt, system_msg, role):
+      return 'plain reply'
+
+  forge = Forge(
+      base_system_prompt='You are an assistant.',
+      hat_engine=NullHatEngine(),
+      memory=NullMemory(),
+      text_runner=null_runner,
+  )
+  result = asyncio.run(forge.run_turn(
+      session_id='test', user_message='hello', context={}
+  ))
+  assert result.reply == 'plain reply'
+  print('no-hat path OK')
+  "
+
+  pytest tests/test_forge.py -q --tb=short 2>&1 | tail -5
+
+Commit message: p39e: depth guard + Quality Bar/memory consistency review + shallow-response retry
+Branch: claude/p39e. Push when done.
 ```
