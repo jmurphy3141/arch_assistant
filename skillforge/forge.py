@@ -519,6 +519,16 @@ class Forge:
                     task_key: f"{spec.skill_guidance}\n\n{existing}".strip(),
                 }
 
+            # Step 4: expert pre-action thinking (fires for critique-enabled tools)
+            if spec.critique_enabled:
+                prompt = await self._run_expert_pre_action(
+                    prompt=prompt,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    active_hats=active_hats,
+                    session_id=session_id,
+                )
+
             mem = memory_snapshot if spec.memory_contract else None
             try:
                 result = await spec.handler(
@@ -721,6 +731,59 @@ class Forge:
             )
 
         return result
+
+    async def _run_expert_pre_action(
+        self,
+        *,
+        prompt: str,
+        tool_name: str,
+        tool_args: dict,
+        active_hats: list[str],
+        session_id: str,
+    ) -> str:
+        """
+        Step 4 of the manager reasoning loop: expert pre-action thinking.
+
+        The manager thinks as the active expert before calling a sub-agent.
+        Covers: known facts, gaps, approach, and instructions for the sub-agent.
+        Output is appended to prompt as EXPERT_THINKING and logged at INFO.
+        No-op when no expert hat is active.
+        """
+        expert_hats = [h for h in active_hats if h not in _MANUAL_ONLY_HATS]
+        if not expert_hats:
+            return prompt
+
+        hat_label = ", ".join(expert_hats)
+        pre_action_prompt = (
+            f"{prompt}\n\n[STEP 4 — EXPERT PRE-ACTION THINKING]\n"
+            f"You are wearing the {hat_label} hat. Before calling '{tool_name}', "
+            "think deeply as the expert. Cover:\n"
+            "1. Known facts: what has been confirmed in this session?\n"
+            "2. Gaps: does this hat's Pre-Action Checklist have any unmet items?\n"
+            "3. Approach: as the expert, what is the right solution?\n"
+            "4. Instructions: what precise task will you give the sub-agent?\n"
+            "Output your reasoning as plain text. Do NOT call a tool here."
+        )
+        system_msg = self._build_active_system_msg(active_hats)
+
+        try:
+            raw = await self._text_runner(pre_action_prompt, system_msg, "expert_pre_action")
+        except Exception:
+            logger.exception(
+                "Expert pre-action call failed session=%s tool=%s", session_id, tool_name
+            )
+            return prompt
+
+        reasoning = raw.strip()
+        if reasoning:
+            logger.info("Expert pre-action [%s] for tool '%s' session=%s:\n%s",
+                hat_label,
+                tool_name,
+                session_id,
+                reasoning,
+            )
+            prompt = f"{prompt}\n\nEXPERT_THINKING:\n{reasoning}"
+        return prompt
 
     async def _run_critique_pass(
         self,
