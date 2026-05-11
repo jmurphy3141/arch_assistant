@@ -19,10 +19,12 @@ import agent.archie_memory as archie_memory
 REQUIRED_HATS = (
     "critic.md",
     "governor.md",
-    "diagram_builder.md",
-    "bom_reviewer.md",
-    "terraform_reviewer.md",
-    "waf_reviewer.md",
+    "diagram_for_oci.md",
+    "oci_bom_expert.md",
+    "terraform_for_oci.md",
+    "oci_waf_reviewer.md",
+    "oci_customer_pov_writer.md",
+    "jep_writer.md",
 )
 
 
@@ -1769,14 +1771,14 @@ def test_orchestrator_critic_fail_open_on_error(monkeypatch):
     assert any("critic_error_fail_open" in w for w in data.get("warnings", []))
 
 
-def test_hat_tool_definitions_include_terraform_reviewer():
+def test_hat_tool_definitions_include_terraform_for_oci():
     tools = archie_loop.hat_engine.get_hat_tool_definitions()
     names = {
         str((tool.get("function") or {}).get("name") or "")
         for tool in tools
         if isinstance(tool, dict)
     }
-    assert "use_hat_terraform_reviewer" in names
+    assert "use_hat_terraform_for_oci" in names
 
 
 def test_parse_tool_call_accepts_tool_use_block():
