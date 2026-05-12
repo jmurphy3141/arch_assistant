@@ -60,6 +60,9 @@ _NO_TOOL = object()   # sentinel: LLM emitted a plain reply, no tool call
 _MAX_ITERATIONS_DEFAULT = 5
 _HISTORY_WINDOW_DEFAULT = 20
 _MANUAL_ONLY_HATS = {"critic", "governor"}
+_EXPERT_REVIEW_APPROVED = "EXPERT_APPROVED"
+_EXPERT_REVIEW_ITERATE = "EXPERT_ITERATE:"
+_EXPERT_REVIEW_SURFACE = "EXPERT_SURFACE:"
 
 
 class Forge:
@@ -643,8 +646,25 @@ class Forge:
 
             prompt = _append_result(prompt, tool_name, result.summary)
 
-            # Post-tool critic pass
+            # Step 6: expert post-review, then critic pass
             if spec.critique_enabled and result.status == "ok":
+                prompt, review_decision = await self._run_expert_post_review(
+                    prompt=prompt,
+                    tool_name=tool_name,
+                    result=result,
+                    active_hats=active_hats,
+                    session_id=session_id,
+                )
+                if review_decision == "surface":
+                    # Expert found an unfixable gap — surface to user
+                    surface_msg = prompt.rsplit("EXPERT_REVIEW (surface):", 1)[-1].strip()
+                    reply = surface_msg
+                    break
+                if review_decision == "iterate":
+                    # Expert found a fixable gap — continue loop for another attempt
+                    # (do not fire critic; next iteration will re-plan and re-execute)
+                    continue
+                # "approved" — fire the critic
                 prompt, active_hats = await self._run_critique_pass(
                     prompt=prompt,
                     tool_name=tool_name,
@@ -827,6 +847,77 @@ class Forge:
             )
             prompt = f"{prompt}\n\nEXPERT_THINKING:\n{reasoning}"
         return prompt, None
+
+    async def _run_expert_post_review(
+        self,
+        *,
+        prompt: str,
+        tool_name: str,
+        result: ToolResult,
+        active_hats: list[str],
+        session_id: str,
+    ) -> tuple[str, str]:
+        """
+        Step 6 of the manager reasoning loop: expert post-action review.
+
+        The manager, still wearing the active expert hat, reviews the sub-agent
+        result against the hat's Post-Action Review checklist.
+
+        Returns:
+            (updated_prompt, decision)
+            decision is one of:
+              "approved"  — all checks pass; critic may fire
+              "iterate"   — fixable gap found; caller should retry the tool
+              "surface"   — unfixable gap; caller should return to user
+
+        Logs expert review at INFO level. No-op (returns "approved") when no
+        expert hat is active.
+        """
+        expert_hats = [h for h in active_hats if h not in _MANUAL_ONLY_HATS]
+        if not expert_hats:
+            return prompt, "approved"
+
+        hat_label = ", ".join(expert_hats)
+        review_prompt = (
+            f"{prompt}\n\n[STEP 6 — EXPERT POST-ACTION REVIEW]\n"
+            f"You are wearing the {hat_label} hat. Review the result of '{tool_name}' "
+            "above against your hat's ## Post-Action Review checklist.\n\n"
+            "Respond with EXACTLY ONE of:\n"
+            f"  {_EXPERT_REVIEW_APPROVED}   — all checks pass\n"
+            f"  {_EXPERT_REVIEW_ITERATE} <specific issue>   — fixable; describe what to correct\n"
+            f"  {_EXPERT_REVIEW_SURFACE} <explanation>   — unfixable; explain what to tell the user\n\n"
+            "Do NOT call a tool here. Be specific about any failing check."
+        )
+        system_msg = self._build_active_system_msg(active_hats)
+
+        try:
+            raw = await self._text_runner(review_prompt, system_msg, "expert_post_review")
+        except Exception:
+            logger.exception(
+                "Expert post-review call failed session=%s tool=%s", session_id, tool_name
+            )
+            return prompt, "approved"
+
+        review_text = raw.strip()
+        logger.info("Expert post-review [%s] for tool '%s' session=%s:\n%s",
+            hat_label,
+            tool_name,
+            session_id,
+            review_text,
+        )
+
+        if review_text.startswith(_EXPERT_REVIEW_ITERATE):
+            concern = review_text[len(_EXPERT_REVIEW_ITERATE):].strip()
+            prompt = f"{prompt}\n\nEXPERT_REVIEW (iterate): {concern}"
+            return prompt, "iterate"
+
+        if review_text.startswith(_EXPERT_REVIEW_SURFACE):
+            concern = review_text[len(_EXPERT_REVIEW_SURFACE):].strip()
+            prompt = f"{prompt}\n\nEXPERT_REVIEW (surface): {concern}"
+            return prompt, "surface"
+
+        # EXPERT_APPROVED or anything else → treat as approved
+        return prompt, "approved"
 
     async def _run_critique_pass(
         self,
