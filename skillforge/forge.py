@@ -101,7 +101,7 @@ class Forge:
         max_iterations: int = _MAX_ITERATIONS_DEFAULT,
         history_window: int = _HISTORY_WINDOW_DEFAULT,
         auto_coordinate: bool = True,
-        step3_planning: bool = True,
+        step3_planning: bool = False,
     ) -> None:
         self._base_system_prompt = base_system_prompt
         self._hat_engine = hat_engine
@@ -112,7 +112,6 @@ class Forge:
         self._history_window = history_window
         self._auto_coordinate = auto_coordinate
         self._step3_planning = step3_planning
-        self._step3_planning_replay_raw: str | None = None
         self._registry = ToolRegistry()
         self._global_skills: list[str] = []
         # System prompt is rebuilt lazily after register_tool() calls.
@@ -393,9 +392,7 @@ class Forge:
                     )
 
         # Step 3: hat-selection planning (one LLM call, fires once per turn)
-        step3_replay_raw: str | None = None
         if self._step3_planning:
-            self._step3_planning_replay_raw = None
             prompt = await self._run_step3_planning(
                 prompt=prompt,
                 user_message=user_message,
@@ -404,8 +401,6 @@ class Forge:
                 session_id=session_id,
                 events=events,
             )
-            step3_replay_raw = self._step3_planning_replay_raw
-            self._step3_planning_replay_raw = None
 
         for iteration in range(self._max_iterations):
 
@@ -447,11 +442,7 @@ class Forge:
             )
             system_msg = self._build_active_system_msg(active_hats)
 
-            if step3_replay_raw is not None:
-                raw = step3_replay_raw
-                step3_replay_raw = None
-            else:
-                raw = await self._text_runner(prompt_for_llm, system_msg, "orchestrator")
+            raw = await self._text_runner(prompt_for_llm, system_msg, "orchestrator")
             parsed = _parse_tool_call(raw)
 
             # ── Plain reply — done ────────────────────────────────────────────
@@ -874,8 +865,6 @@ class Forge:
         planning_text = raw.strip()
         if not planning_text:
             return prompt
-        if _parse_tool_call(planning_text) is not _NO_TOOL:
-            self._step3_planning_replay_raw = planning_text
 
         logger.info("[STEP3_PLANNING] session=%s:\n%s", session_id, planning_text)
         events.append(
