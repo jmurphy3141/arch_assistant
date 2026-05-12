@@ -540,6 +540,7 @@ class Forge:
                     active_hats=active_hats,
                     session_id=session_id,
                     events=events,
+                    iteration=iteration,
                 )
                 if clarification_needed:
                     reply = clarification_needed
@@ -776,6 +777,7 @@ class Forge:
         active_hats: list[str],
         session_id: str,
         events: list,
+        iteration: int = 0,
     ) -> tuple[str, str | None]:
         """
         Step 4 of the manager reasoning loop: expert pre-action thinking.
@@ -794,8 +796,23 @@ class Forge:
             return prompt, None
 
         hat_label = ", ".join(expert_hats)
+        retry_context = ""
+        if iteration > 0:
+            # Extract the previous review concern from the prompt if present.
+            concern = ""
+            if "EXPERT_REVIEW (iterate):" in prompt:
+                concern = prompt.rsplit("EXPERT_REVIEW (iterate):", 1)[-1].strip()
+                # Trim to first line (the concern statement, not subsequent content).
+                concern = concern.splitlines()[0].strip() if concern else ""
+            retry_context = (
+                f"\n\n⚠ RETRY CONTEXT — Attempt {iteration + 1}:\n"
+                f"The previous attempt was rejected by the expert reviewer.\n"
+                + (f"Reason: {concern}\n" if concern else "")
+                + "Your pre-action reasoning and sub-agent instructions must directly "
+                "address this failure.\n"
+            )
         pre_action_prompt = (
-            f"{prompt}\n\n"
+            f"{prompt}{retry_context}\n\n"
             "╔══════════════════════════════════╗\n"
             "║  STEP 4 — EXPERT PRE-ACTION      ║\n"
             "╚══════════════════════════════════╝\n"
