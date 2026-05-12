@@ -91,6 +91,7 @@ def build_forge(
         text_runner=text_runner,
         prompt_enricher=enricher,
         max_iterations=5,
+        step3_planning=True,
     )
 
     notes = NotesHandlers(
