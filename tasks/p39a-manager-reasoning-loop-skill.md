@@ -91,18 +91,19 @@ Hat selection guide:
 
 Before calling any sub-agent or tool, YOU think as the expert:
 
-**Known facts:** What has the user confirmed? What have we agreed on in prior
-turns? State the specific values (e.g., "E4.Flex, 8 OCPU, us-chicago-1,
-active-active HA, 500 GB Block Volume, no BYOL").
+**KNOWN FACTS:** What has the user confirmed? What have we agreed on in prior
+turns? State every specific value (e.g., "E4.Flex, 8 OCPU, us-chicago-1,
+active-active HA, 500 GB Block Volume, no BYOL"). Do not use vague summaries.
 
-**Gaps:** What prerequisite from this hat's Pre-Action Checklist is still
-missing? If any gap exists, do not call the sub-agent — ask the user first.
+**GAPS:** What prerequisite from this hat's Pre-Action Checklist is still
+missing? If any starred (★) required item is missing, do not call the
+sub-agent. Ask the user first with `NEEDS_CLARIFICATION: <question>`.
 
-**Approach:** As the expert, what is the right solution? What shape family,
-what topology, what modules, what findings — before the sub-agent runs?
+**EXPERT ASSESSMENT:** As the expert, what is the right solution? What shape
+family, what topology, what modules, what findings — before the sub-agent runs?
 
-**Instructions:** What precise task will you give the sub-agent? The sub-agent
-should receive expert-level instructions, not a raw user message.
+**SUB-AGENT INSTRUCTIONS:** What precise task will you give the sub-agent? The
+sub-agent should receive expert-level instructions, not a raw user message.
 
 This step produces internal reasoning. Log it. Use it to craft better tool args.
 
@@ -152,29 +153,46 @@ async def _run_expert_pre_action(
     tool_args: dict,
     active_hats: list[str],
     session_id: str,
-) -> str:
+    events: list,
+) -> tuple[str, str | None]:
     """
     Step 4 of the manager reasoning loop: expert pre-action thinking.
 
     The manager thinks as the active expert before calling a sub-agent.
-    Covers: known facts, gaps, approach, and instructions for the sub-agent.
-    Output is appended to prompt as EXPERT_THINKING and logged at INFO.
-    No-op when no expert hat is active.
+    Uses a structured 4-section format to force depth: KNOWN FACTS, GAPS,
+    EXPERT ASSESSMENT, SUB-AGENT INSTRUCTIONS.
+
+    Returns (updated_prompt, clarification_needed).
+    clarification_needed is None when the expert is ready to proceed.
+    clarification_needed is a question string when a starred prerequisite is unmet.
+    No-op (returns (prompt, None)) when no expert hat is active.
     """
     expert_hats = [h for h in active_hats if h not in _MANUAL_ONLY_HATS]
     if not expert_hats:
-        return prompt
+        return prompt, None
 
     hat_label = ", ".join(expert_hats)
     pre_action_prompt = (
-        f"{prompt}\n\n[STEP 4 — EXPERT PRE-ACTION THINKING]\n"
-        f"You are wearing the {hat_label} hat. Before calling '{tool_name}', "
-        "think deeply as the expert. Cover:\n"
-        "1. Known facts: what has been confirmed in this session?\n"
-        "2. Gaps: does this hat's Pre-Action Checklist have any unmet items?\n"
-        "3. Approach: as the expert, what is the right solution?\n"
-        "4. Instructions: what precise task will you give the sub-agent?\n"
-        "Output your reasoning as plain text. Do NOT call a tool here."
+        f"{prompt}\n\n"
+        "╔══════════════════════════════════╗\n"
+        "║  STEP 4 — EXPERT PRE-ACTION      ║\n"
+        "╚══════════════════════════════════╝\n"
+        f"You are wearing the [{hat_label}] hat. You ARE the expert.\n"
+        f"Before calling '{tool_name}', produce your expert reasoning using "
+        "EXACTLY this structure:\n\n"
+        "KNOWN FACTS:\n"
+        "- [List every confirmed value: shape, region, OCPU, memory, storage, HA mode, "
+        "budget, compliance scope, etc. Be specific — no vague summaries.]\n\n"
+        "GAPS:\n"
+        "- [List every unconfirmed prerequisite from this hat's Pre-Action Checklist. "
+        "If none, write 'None — all prerequisites confirmed.']\n\n"
+        "EXPERT ASSESSMENT:\n"
+        "- [As the expert, what is the right solution? State your recommendation "
+        "with specifics (shape names, SKUs, topology, module names) — not generic advice.]\n\n"
+        "SUB-AGENT INSTRUCTIONS:\n"
+        "- [Exact task description you will pass to the sub-agent. Be precise.]\n\n"
+        "Do NOT call a tool here. If GAPS contains any starred (★) required items, "
+        "output only: NEEDS_CLARIFICATION: <focused question for the user>"
     )
     system_msg = self._build_active_system_msg(active_hats)
 
@@ -182,18 +200,41 @@ async def _run_expert_pre_action(
         raw = await self._text_runner(pre_action_prompt, system_msg, "expert_pre_action")
     except Exception:
         logger.exception(
-            "Expert pre-action call failed session=%s tool=%s", session_id, tool_name
+            "[EXPERT_PRE_ACTION] Call failed session=%s tool=%s", session_id, tool_name
         )
-        return prompt
+        return prompt, None
 
     reasoning = raw.strip()
+
+    if reasoning.startswith("NEEDS_CLARIFICATION:"):
+        clarification = reasoning[len("NEEDS_CLARIFICATION:"):].strip()
+        logger.info(
+            "[EXPERT_PRE_ACTION] [%s] tool='%s' session=%s → NEEDS_CLARIFICATION: %s",
+            hat_label, tool_name, session_id, clarification,
+        )
+        events.append(
+            TurnEvent(
+                type="expert_pre_action",
+                message=f"Expert pre-action [{hat_label}]: clarification needed",
+                data={"hat": hat_label, "tool": tool_name, "clarification": clarification},
+            )
+        )
+        return prompt, clarification
+
     if reasoning:
         logger.info(
-            "Expert pre-action [%s] for tool '%s' session=%s:\n%s",
+            "[EXPERT_PRE_ACTION] [%s] tool='%s' session=%s:\n%s",
             hat_label, tool_name, session_id, reasoning,
         )
+        events.append(
+            TurnEvent(
+                type="expert_pre_action",
+                message=f"Expert pre-action [{hat_label}] for '{tool_name}'",
+                data={"hat": hat_label, "tool": tool_name, "reasoning": reasoning},
+            )
+        )
         prompt = f"{prompt}\n\nEXPERT_THINKING:\n{reasoning}"
-    return prompt
+    return prompt, None
 ```
 
 ### 2b. Wire `_run_expert_pre_action()` into `run_turn()`
@@ -214,19 +255,24 @@ In `run_turn()`, locate the domain tool dispatch section. The existing code
 ```
 
 Insert the pre-action call **after** skill_guidance injection and **before**
-the `spec.handler(...)` call. The pre-action only fires for critique-enabled
-tools (the tools that warrant expert oversight):
+the `spec.handler(...)` call. The pre-action fires for all domain tools when
+any expert hat is active; `critique_enabled` only gates post-review and critic.
 
 ```python
-            # Step 4: expert pre-action thinking (fires for critique-enabled tools)
-            if spec.critique_enabled:
-                prompt = await self._run_expert_pre_action(
+            # Step 4: expert pre-action thinking (fires for any domain tool when hat active)
+            expert_hats_active = [h for h in active_hats if h not in _MANUAL_ONLY_HATS]
+            if expert_hats_active:
+                prompt, clarification_needed = await self._run_expert_pre_action(
                     prompt=prompt,
                     tool_name=tool_name,
                     tool_args=tool_args,
                     active_hats=active_hats,
                     session_id=session_id,
+                    events=events,
                 )
+                if clarification_needed:
+                    reply = clarification_needed
+                    break
 ```
 
 Add this block immediately before `mem = memory_snapshot if spec.memory_contract else None`.

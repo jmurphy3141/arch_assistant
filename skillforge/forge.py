@@ -654,6 +654,7 @@ class Forge:
                     result=result,
                     active_hats=active_hats,
                     session_id=session_id,
+                    events=events,
                 )
                 if review_decision == "surface":
                     # Expert found an unfixable gap — surface to user
@@ -856,6 +857,7 @@ class Forge:
         result: ToolResult,
         active_hats: list[str],
         session_id: str,
+        events: list,
     ) -> tuple[str, str]:
         """
         Step 6 of the manager reasoning loop: expert post-action review.
@@ -870,8 +872,8 @@ class Forge:
               "iterate"   — fixable gap found; caller should retry the tool
               "surface"   — unfixable gap; caller should return to user
 
-        Logs expert review at INFO level. No-op (returns "approved") when no
-        expert hat is active.
+        Logs expert review at INFO level and appends an expert_post_review
+        event. No-op (returns "approved") when no expert hat is active.
         """
         expert_hats = [h for h in active_hats if h not in _MANUAL_ONLY_HATS]
         if not expert_hats:
@@ -879,14 +881,20 @@ class Forge:
 
         hat_label = ", ".join(expert_hats)
         review_prompt = (
-            f"{prompt}\n\n[STEP 6 — EXPERT POST-ACTION REVIEW]\n"
-            f"You are wearing the {hat_label} hat. Review the result of '{tool_name}' "
-            "above against your hat's ## Post-Action Review checklist.\n\n"
-            "Respond with EXACTLY ONE of:\n"
-            f"  {_EXPERT_REVIEW_APPROVED}   — all checks pass\n"
-            f"  {_EXPERT_REVIEW_ITERATE} <specific issue>   — fixable; describe what to correct\n"
-            f"  {_EXPERT_REVIEW_SURFACE} <explanation>   — unfixable; explain what to tell the user\n\n"
-            "Do NOT call a tool here. Be specific about any failing check."
+            f"{prompt}\n\n"
+            "╔══════════════════════════════════╗\n"
+            "║  STEP 6 — EXPERT POST-REVIEW     ║\n"
+            "╚══════════════════════════════════╝\n"
+            f"You are wearing the [{hat_label}] hat. You just received the result of "
+            f"'{tool_name}'. Review it honestly — you are not rubber-stamping.\n\n"
+            "Work through EACH item in your hat's ## Post-Action Review checklist.\n"
+            "For each item write: PASS or FAIL: <what is wrong and what value was expected>\n\n"
+            "After checking all items, output EXACTLY ONE final line:\n"
+            f"  {_EXPERT_REVIEW_APPROVED}          — only if every item is PASS\n"
+            f"  {_EXPERT_REVIEW_ITERATE} <correction> — if a fixable item failed\n"
+            f"  {_EXPERT_REVIEW_SURFACE} <explanation> — if an unfixable item failed\n\n"
+            "You MUST check every checklist item before writing the final line.\n"
+            "Do NOT call a tool here."
         )
         system_msg = self._build_active_system_msg(active_hats)
 
@@ -894,29 +902,55 @@ class Forge:
             raw = await self._text_runner(review_prompt, system_msg, "expert_post_review")
         except Exception:
             logger.exception(
-                "Expert post-review call failed session=%s tool=%s", session_id, tool_name
+                "[EXPERT_POST_REVIEW] Call failed session=%s tool=%s",
+                session_id,
+                tool_name,
             )
             return prompt, "approved"
 
         review_text = raw.strip()
-        logger.info("Expert post-review [%s] for tool '%s' session=%s:\n%s",
+        # Find the decision on the LAST non-empty line (after per-item checks).
+        lines = [l.strip() for l in review_text.splitlines() if l.strip()]
+        final_line = lines[-1] if lines else ""
+        decision = "approved"
+
+        if final_line.startswith(_EXPERT_REVIEW_ITERATE):
+            decision = "iterate"
+        elif final_line.startswith(_EXPERT_REVIEW_SURFACE):
+            decision = "surface"
+
+        logger.info(
+            "[EXPERT_POST_REVIEW] [%s] tool='%s' session=%s decision=%s:\n%s",
             hat_label,
             tool_name,
             session_id,
+            decision,
             review_text,
         )
+        events.append(
+            TurnEvent(
+                type="expert_post_review",
+                message=f"Expert post-review [{hat_label}] for '{tool_name}': {decision}",
+                data={
+                    "hat": hat_label,
+                    "tool": tool_name,
+                    "decision": decision,
+                    "review": review_text,
+                },
+            )
+        )
 
-        if review_text.startswith(_EXPERT_REVIEW_ITERATE):
-            concern = review_text[len(_EXPERT_REVIEW_ITERATE):].strip()
+        if final_line.startswith(_EXPERT_REVIEW_ITERATE):
+            concern = final_line[len(_EXPERT_REVIEW_ITERATE):].strip()
             prompt = f"{prompt}\n\nEXPERT_REVIEW (iterate): {concern}"
             return prompt, "iterate"
 
-        if review_text.startswith(_EXPERT_REVIEW_SURFACE):
-            concern = review_text[len(_EXPERT_REVIEW_SURFACE):].strip()
+        if final_line.startswith(_EXPERT_REVIEW_SURFACE):
+            concern = final_line[len(_EXPERT_REVIEW_SURFACE):].strip()
             prompt = f"{prompt}\n\nEXPERT_REVIEW (surface): {concern}"
             return prompt, "surface"
 
-        # EXPERT_APPROVED or anything else → treat as approved
+        # EXPERT_APPROVED or unrecognised → approved
         return prompt, "approved"
 
     async def _run_critique_pass(
