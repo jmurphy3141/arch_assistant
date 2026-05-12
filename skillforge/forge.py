@@ -61,6 +61,12 @@ _MAX_ITERATIONS_DEFAULT = 5
 _HISTORY_WINDOW_DEFAULT = 20
 _MANUAL_ONLY_HATS = {"critic", "governor"}
 _EXPERT_THINKING_MIN_CHARS = 300
+_EXPERT_PRE_ACTION_HEADERS = (
+    "KNOWN FACTS:",
+    "GAPS:",
+    "EXPERT ASSESSMENT:",
+    "SUB-AGENT INSTRUCTIONS:",
+)
 _EXPERT_REVIEW_MIN_CHARS = 500
 _EXPERT_REVIEW_APPROVED = "EXPERT_APPROVED"
 _EXPERT_REVIEW_ITERATE = "EXPERT_ITERATE:"
@@ -853,6 +859,39 @@ class Forge:
                     "[EXPERT_PRE_ACTION] Still shallow after retry (%d chars) session=%s tool=%s",
                     len(reasoning), session_id, tool_name,
                 )
+
+        # Section-header guard: all 4 required sections must be present.
+        if not reasoning.startswith("NEEDS_CLARIFICATION:"):
+            missing = [h for h in _EXPERT_PRE_ACTION_HEADERS if h not in reasoning]
+            if missing:
+                logger.warning(
+                    "[EXPERT_PRE_ACTION] Missing sections %s for tool '%s' session=%s — retrying",
+                    missing, tool_name, session_id,
+                )
+                missing_list = ", ".join(missing)
+                header_retry_prompt = (
+                    f"{pre_action_prompt}\n\n"
+                    f"[Your response is missing required sections: {missing_list}. "
+                    "You MUST include all four labeled sections exactly as shown: "
+                    "KNOWN FACTS:, GAPS:, EXPERT ASSESSMENT:, SUB-AGENT INSTRUCTIONS:. "
+                    "Rewrite with all four sections present.]"
+                )
+                try:
+                    raw = await self._text_runner(
+                        header_retry_prompt, system_msg, "expert_pre_action_header_retry"
+                    )
+                    reasoning = raw.strip()
+                except Exception:
+                    logger.exception(
+                        "[EXPERT_PRE_ACTION] Header retry failed session=%s tool=%s",
+                        session_id, tool_name,
+                    )
+                still_missing = [h for h in _EXPERT_PRE_ACTION_HEADERS if h not in reasoning]
+                if still_missing:
+                    logger.warning(
+                        "[EXPERT_PRE_ACTION] Still missing sections %s after retry session=%s tool=%s",
+                        still_missing, session_id, tool_name,
+                    )
 
         if reasoning.startswith("NEEDS_CLARIFICATION:"):
             clarification = reasoning[len("NEEDS_CLARIFICATION:"):].strip()
