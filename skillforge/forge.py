@@ -400,6 +400,22 @@ class Forge:
                     "Stale hats active > 5 rounds: %s session=%s", stale, session_id
                 )
 
+            # loop_iteration visibility event
+            events.append(
+                TurnEvent(
+                    type="loop_iteration",
+                    message=(
+                        f"Iteration {iteration + 1}/{self._max_iterations}"
+                        + (f" — hats: {', '.join(active_hats)}" if active_hats else "")
+                    ),
+                    data={
+                        "iteration": iteration,
+                        "max_iterations": self._max_iterations,
+                        "active_hats": list(active_hats),
+                    },
+                )
+            )
+
             # Per-round prompt enrichment (memory summary, decision context, etc.)
             enriched = (
                 self._prompt_enricher(prompt, memory_snapshot)
