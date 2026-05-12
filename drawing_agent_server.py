@@ -1580,7 +1580,7 @@ async def serve_favicon():
 
 @app.get("/")
 async def serve_ui(request: Request):
-    """Serve the React SPA. Falls back to legacy index.html when dist not built."""
+    """Serve the React SPA. Returns 503 with instructions if dist is not built."""
     if AUTH_ENABLED and not request.session.get("user"):
         return RedirectResponse("/login", status_code=302)
     headers = {
@@ -1591,7 +1591,15 @@ async def serve_ui(request: Request):
     }
     if _UI_INDEX.exists():
         return FileResponse(str(_UI_INDEX), headers=headers)
-    return FileResponse(str(_LEGACY_INDEX), headers=headers)
+    return HTMLResponse(
+        "<html><body style='font-family:monospace;padding:2rem'>"
+        "<h2>UI not built</h2>"
+        "<p>The React UI dist is missing. Run on the server:</p>"
+        "<pre>cd ~/drawing-agent/ui && npm install && npm run build</pre>"
+        "</body></html>",
+        status_code=503,
+        headers=headers,
+    )
 
 
 @app.get("/login")

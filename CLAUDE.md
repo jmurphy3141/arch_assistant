@@ -231,6 +231,7 @@ ssh opc@10.0.3.47 '
   cd ~/drawing-agent &&
   git pull origin main &&
   find . -name "*.pyc" -delete &&
+  cd ui && npm install && npm run build && cd .. &&
   pkill -f uvicorn;
   nohup python3.11 -m uvicorn drawing_agent_server:app --host 0.0.0.0 --port 8080 > agent.log 2>&1 &
   sleep 3 && curl -s http://localhost:8080/health
