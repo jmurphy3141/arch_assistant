@@ -33,13 +33,15 @@ class MemorySnapshot:
     prior_artifacts:  {tool_name: artifact_key} for latest known artifacts
     decision_context: structured decision context dict
     raw:              full context store blob for tools that need direct access
+    formatted:        prompt-ready memory text for expert review, if available
     """
-    session_id: str
+    session_id: str = ""
     facts: dict[str, Any] = field(default_factory=dict)
     constraints: dict[str, Any] = field(default_factory=dict)
     prior_artifacts: dict[str, str] = field(default_factory=dict)
     decision_context: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
+    formatted: str = ""
 
 
 @dataclass

@@ -145,6 +145,8 @@ Add this private method to the `Forge` class, near `_run_critique_pass()`
 (around line 725 in the current file):
 
 ```python
+_EXPERT_THINKING_MIN_CHARS = 300
+
 async def _run_expert_pre_action(
     self,
     *,
@@ -205,6 +207,38 @@ async def _run_expert_pre_action(
         return prompt, None
 
     reasoning = raw.strip()
+
+    # Shallow-response guard: retry once if response is too brief.
+    if (
+        len(reasoning) < _EXPERT_THINKING_MIN_CHARS
+        and not reasoning.startswith("NEEDS_CLARIFICATION:")
+    ):
+        logger.warning(
+            "[EXPERT_PRE_ACTION] Shallow response (%d chars) for tool '%s' session=%s — retrying",
+            len(reasoning), tool_name, session_id,
+        )
+        retry_prompt = (
+            f"{pre_action_prompt}\n\n"
+            "[Your previous response was too brief. A senior expert would write at least "
+            "3 specific bullet points per section. Retry with full depth — be specific "
+            "about values, part numbers, topologies, or module names as appropriate.]"
+        )
+        try:
+            raw = await self._text_runner(
+                retry_prompt, system_msg, "expert_pre_action_retry"
+            )
+            reasoning = raw.strip()
+        except Exception:
+            logger.exception(
+                "[EXPERT_PRE_ACTION] Retry failed session=%s tool=%s",
+                session_id,
+                tool_name,
+            )
+        if len(reasoning) < _EXPERT_THINKING_MIN_CHARS:
+            logger.warning(
+                "[EXPERT_PRE_ACTION] Still shallow after retry (%d chars) session=%s tool=%s",
+                len(reasoning), session_id, tool_name,
+            )
 
     if reasoning.startswith("NEEDS_CLARIFICATION:"):
         clarification = reasoning[len("NEEDS_CLARIFICATION:"):].strip()

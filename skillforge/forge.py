@@ -60,6 +60,8 @@ _NO_TOOL = object()   # sentinel: LLM emitted a plain reply, no tool call
 _MAX_ITERATIONS_DEFAULT = 5
 _HISTORY_WINDOW_DEFAULT = 20
 _MANUAL_ONLY_HATS = {"critic", "governor"}
+_EXPERT_THINKING_MIN_CHARS = 300
+_EXPERT_REVIEW_MIN_CHARS = 500
 _EXPERT_REVIEW_APPROVED = "EXPERT_APPROVED"
 _EXPERT_REVIEW_ITERATE = "EXPERT_ITERATE:"
 _EXPERT_REVIEW_SURFACE = "EXPERT_SURFACE:"
@@ -655,6 +657,7 @@ class Forge:
                     active_hats=active_hats,
                     session_id=session_id,
                     events=events,
+                    memory_snapshot=memory_snapshot,
                 )
                 if review_decision == "surface":
                     # Expert found an unfixable gap — surface to user
@@ -819,6 +822,38 @@ class Forge:
 
         reasoning = raw.strip()
 
+        # Shallow-response guard: retry once if response is too brief.
+        if (
+            len(reasoning) < _EXPERT_THINKING_MIN_CHARS
+            and not reasoning.startswith("NEEDS_CLARIFICATION:")
+        ):
+            logger.warning(
+                "[EXPERT_PRE_ACTION] Shallow response (%d chars) for tool '%s' session=%s — retrying",
+                len(reasoning), tool_name, session_id,
+            )
+            retry_prompt = (
+                f"{pre_action_prompt}\n\n"
+                "[Your previous response was too brief. A senior expert would write at least "
+                "3 specific bullet points per section. Retry with full depth — be specific "
+                "about values, part numbers, topologies, or module names as appropriate.]"
+            )
+            try:
+                raw = await self._text_runner(
+                    retry_prompt, system_msg, "expert_pre_action_retry"
+                )
+                reasoning = raw.strip()
+            except Exception:
+                logger.exception(
+                    "[EXPERT_PRE_ACTION] Retry failed session=%s tool=%s",
+                    session_id,
+                    tool_name,
+                )
+            if len(reasoning) < _EXPERT_THINKING_MIN_CHARS:
+                logger.warning(
+                    "[EXPERT_PRE_ACTION] Still shallow after retry (%d chars) session=%s tool=%s",
+                    len(reasoning), session_id, tool_name,
+                )
+
         if reasoning.startswith("NEEDS_CLARIFICATION:"):
             clarification = reasoning[len("NEEDS_CLARIFICATION:"):].strip()
             logger.info(
@@ -858,12 +893,14 @@ class Forge:
         active_hats: list[str],
         session_id: str,
         events: list,
+        memory_snapshot: MemorySnapshot | None = None,
     ) -> tuple[str, str]:
         """
         Step 6 of the manager reasoning loop: expert post-action review.
 
         The manager, still wearing the active expert hat, reviews the sub-agent
-        result against the hat's Post-Action Review checklist.
+        result against the hat's Quality Bar, Post-Action Review checklist, and
+        in-scope memory snapshot values.
 
         Returns:
             (updated_prompt, decision)
@@ -880,20 +917,38 @@ class Forge:
             return prompt, "approved"
 
         hat_label = ", ".join(expert_hats)
+        memory_context = ""
+        if memory_snapshot is not None:
+            formatted = getattr(memory_snapshot, "formatted", "") or ""
+            if formatted.strip():
+                memory_context = (
+                    "\n\nMEMORY SNAPSHOT (confirmed values from this session):\n"
+                    f"{formatted.strip()}\n"
+                )
+
         review_prompt = (
-            f"{prompt}\n\n"
+            f"{prompt}{memory_context}\n\n"
             "╔══════════════════════════════════╗\n"
             "║  STEP 6 — EXPERT POST-REVIEW     ║\n"
             "╚══════════════════════════════════╝\n"
-            f"You are wearing the [{hat_label}] hat. You just received the result of "
-            f"'{tool_name}'. Review it honestly — you are not rubber-stamping.\n\n"
-            "Work through EACH item in your hat's ## Post-Action Review checklist.\n"
-            "For each item write: PASS or FAIL: <what is wrong and what value was expected>\n\n"
-            "After checking all items, output EXACTLY ONE final line:\n"
-            f"  {_EXPERT_REVIEW_APPROVED}          — only if every item is PASS\n"
-            f"  {_EXPERT_REVIEW_ITERATE} <correction> — if a fixable item failed\n"
-            f"  {_EXPERT_REVIEW_SURFACE} <explanation> — if an unfixable item failed\n\n"
-            "You MUST check every checklist item before writing the final line.\n"
+            f"You are wearing the [{hat_label}] hat. You received the result of "
+            f"'{tool_name}'. You are NOT rubber-stamping — review honestly.\n\n"
+            "PHASE A — Quality Bar check:\n"
+            "Work through each item in your hat's ## Quality Bar section.\n"
+            "For each item write: PASS or FAIL: <specific value that was wrong>\n\n"
+            "PHASE B — Post-Action Review checklist:\n"
+            "Work through each item in your hat's ## Post-Action Review section.\n"
+            "For each item write: PASS or FAIL: <specific field and expected value>\n\n"
+            "PHASE C — Memory consistency check:\n"
+            "Compare the result against the MEMORY SNAPSHOT above.\n"
+            "Flag any value in the result that contradicts confirmed memory "
+            "(e.g. wrong region, wrong shape, wrong HA mode).\n"
+            "Write: CONSISTENT or CONFLICT: <field> expected=<memory value> got=<result value>\n\n"
+            "FINAL DECISION — after completing Phases A, B, and C, output EXACTLY ONE line:\n"
+            f"  {_EXPERT_REVIEW_APPROVED}          — every Phase A + B item is PASS and Phase C is CONSISTENT\n"
+            f"  {_EXPERT_REVIEW_ITERATE} <issue>    — at least one fixable FAIL or CONFLICT\n"
+            f"  {_EXPERT_REVIEW_SURFACE} <issue>    — unfixable gap requiring user clarification\n\n"
+            "You MUST complete all three phases before writing the final decision line.\n"
             "Do NOT call a tool here."
         )
         system_msg = self._build_active_system_msg(active_hats)
@@ -909,12 +964,42 @@ class Forge:
             return prompt, "approved"
 
         review_text = raw.strip()
+        if len(review_text) < _EXPERT_REVIEW_MIN_CHARS:
+            logger.warning(
+                "[EXPERT_POST_REVIEW] Shallow response (%d chars) for tool '%s' session=%s — retrying",
+                len(review_text), tool_name, session_id,
+            )
+            retry_prompt = (
+                f"{review_prompt}\n\n"
+                "[Your response was too brief. You must complete all three phases "
+                "(Quality Bar, Post-Action Review, Memory Consistency) with a PASS/FAIL "
+                "or CONSISTENT/CONFLICT for every item before writing the final decision.]"
+            )
+            try:
+                raw = await self._text_runner(
+                    retry_prompt, system_msg, "expert_post_review_retry"
+                )
+                review_text = raw.strip()
+            except Exception:
+                logger.exception(
+                    "[EXPERT_POST_REVIEW] Retry failed session=%s tool=%s",
+                    session_id,
+                    tool_name,
+                )
+            if len(review_text) < _EXPERT_REVIEW_MIN_CHARS:
+                logger.warning(
+                    "[EXPERT_POST_REVIEW] Still shallow after retry (%d chars) session=%s",
+                    len(review_text), session_id,
+                )
+
         # Find the decision on the LAST non-empty line (after per-item checks).
         lines = [l.strip() for l in review_text.splitlines() if l.strip()]
         final_line = lines[-1] if lines else ""
-        decision = "approved"
+        decision = "iterate"
 
-        if final_line.startswith(_EXPERT_REVIEW_ITERATE):
+        if final_line.startswith(_EXPERT_REVIEW_APPROVED):
+            decision = "approved"
+        elif final_line.startswith(_EXPERT_REVIEW_ITERATE):
             decision = "iterate"
         elif final_line.startswith(_EXPERT_REVIEW_SURFACE):
             decision = "surface"
@@ -950,8 +1035,14 @@ class Forge:
             prompt = f"{prompt}\n\nEXPERT_REVIEW (surface): {concern}"
             return prompt, "surface"
 
-        # EXPERT_APPROVED or unrecognised → approved
-        return prompt, "approved"
+        if final_line.startswith(_EXPERT_REVIEW_APPROVED):
+            return prompt, "approved"
+
+        prompt = (
+            f"{prompt}\n\nEXPERT_REVIEW (iterate): "
+            "Expert review did not provide a valid final decision."
+        )
+        return prompt, "iterate"
 
     async def _run_critique_pass(
         self,
