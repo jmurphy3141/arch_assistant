@@ -701,8 +701,24 @@ class Forge:
                     reply = surface_msg
                     break
                 if review_decision == "iterate":
-                    # Expert found a fixable gap — continue loop for another attempt
-                    # (do not fire critic; next iteration will re-plan and re-execute)
+                    # Extract the concern from the prompt (appended by post-review).
+                    _iterate_concern = ""
+                    if "EXPERT_REVIEW (iterate):" in prompt:
+                        _iterate_concern = (
+                            prompt.rsplit("EXPERT_REVIEW (iterate):", 1)[-1]
+                            .splitlines()[0]
+                            .strip()
+                        )
+                    _concern_clause = (
+                        f" Specifically: {_iterate_concern}" if _iterate_concern else ""
+                    )
+                    prompt = (
+                        f"{prompt}\n\n"
+                        f"CORRECTION REQUIRED: The expert review found a fixable problem "
+                        f"with the last '{tool_name}' call.{_concern_clause}\n"
+                        f"Re-call '{tool_name}' now with corrected arguments that directly "
+                        f"address this concern. Output ONLY the corrected tool call JSON."
+                    )
                     continue
                 # "approved" — fire the critic
                 prompt, active_hats = await self._run_critique_pass(
