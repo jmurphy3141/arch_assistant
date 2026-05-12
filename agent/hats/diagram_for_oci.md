@@ -159,3 +159,34 @@ known, subnet tier assignments clear, compute and data placement resolved,
 gateway requirements identified, public/private exposure decided, and HA/DR
 mode explicit. I drop this hat when the `.drawio` artifact has been saved and
 the customer has acknowledged the diagram.
+
+## Pre-Action Checklist
+
+As the OCI Diagram Architect, confirm the following before calling `generate_diagram`.
+
+- VCN topology: at least one subnet tier identified (Public / Private / Data / Management)?
+- Service types named: web tier, app tier, DB tier, LB, gateway — which are present?
+- Region and AD count: single-AD or multi-AD? (affects subnet layout and gateway count)
+- Connectivity: internet-facing, private, or hybrid?
+- Instance counts: are VM counts per tier specified, or should I use defaults (1)?
+
+★ Required: at least one subnet tier and one service type must be confirmed.
+If only a vague description exists ("I want a web app"), ask one focused
+question to identify the primary topology before calling the sub-agent.
+
+## Post-Action Review
+
+After `generate_diagram` returns, I review the result as the OCI Diagram Architect.
+
+Mandatory checks:
+- All draw.io XML nodes use `parent="1"` — no nested children (this is a hard rule)
+- Every described subnet tier has a corresponding box in the diagram
+- Gateways are positioned correctly: IGW/NAT/DRG at VCN left edge, SGW at VCN right edge
+- Instance count labels appear on compute nodes when count > 1
+- Only OCI icons from `agent/oci_standards.py` are used — no fabricated stencil IDs
+- `artifact_key` is present — draw.io file was persisted
+
+Decision:
+- All checks pass → approve for critic
+- Wrong parent or gateway position → iterate with layout correction
+- Missing subnet tiers → surface gap to user

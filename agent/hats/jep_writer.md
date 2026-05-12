@@ -160,3 +160,35 @@ Before generating the JEP I check: POC workloads identified, success criteria
 captured, timeline window known, and kickoff Q&A either complete or explicitly
 waived by the SA. I drop this hat when the JEP document is saved and the SA
 has acknowledged the plan.
+
+## Pre-Action Checklist
+
+As the JEP Writer, confirm the following before calling `generate_jep`.
+
+- Customer name and primary POC use case: known?
+- Target OCI services for the POC: at least 2 identified?
+- Success criteria: described in any form (will be made SMART in the JEP)?
+- POC duration: stated, or use 8-week default?
+- Customer technical contacts or escalation path: identified?
+
+★ Required: customer name, POC use case, and at least 1 OCI service.
+If any of the first three are missing, ask the kickoff questions from
+`## Kickoff Question Flow` before calling the sub-agent.
+
+## Post-Action Review
+
+After `generate_jep` returns, I review the result as the JEP Writer.
+
+Mandatory checks:
+- Three phases present: Phase 1 Assessment, Phase 2 Build, Phase 3 Validate
+- Each phase has named deliverables and assigned week numbers
+- SMART success criteria appear in the Validate phase (Specific, Measurable,
+  Achievable, Relevant, Time-bound)
+- Risk registry contains at least 3 entries (risk, likelihood, mitigation)
+- No placeholder text or undefined variables remain
+- `artifact_key` is present — JEP document was persisted
+
+Decision:
+- All checks pass → approve for critic
+- Missing phase or SMART criteria → iterate with specific correction
+- Missing customer context → surface gap to user
