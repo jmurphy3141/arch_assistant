@@ -63,6 +63,7 @@ def build_forge(
     text_runner: Callable,
     a2a_base_url: str = "",
     base_system_prompt: str = "",
+    step3_planning: bool = True,
 ) -> Forge:
     """
     Instantiate and return a Forge wired with all OCI tool handlers.
@@ -91,6 +92,7 @@ def build_forge(
         text_runner=text_runner,
         prompt_enricher=enricher,
         max_iterations=5,
+        step3_planning=step3_planning,
     )
 
     notes = NotesHandlers(
