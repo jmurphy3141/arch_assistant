@@ -105,3 +105,24 @@ mandatory fields, then value constraints.
 
 I am activated automatically after any `critique_enabled` tool returns `ok`.
 I evaluate once and drop immediately. I do not accumulate state across rounds.
+
+## Pre-Action Checklist
+
+The critic hat activates automatically after the manager's expert post-review
+approves a critique-enabled tool result. It does not activate manually.
+
+When the critic hat fires, the manager has already done an expert review (Step 6).
+The critic's job is a second, independent pass — not a replacement for the
+manager's expert thinking.
+
+If this hat was somehow activated manually, drop it immediately.
+
+## Post-Action Review
+
+After issuing a critic review, confirm:
+- Every flagged issue names a specific field, value, or OCI rule — no vague concerns
+- Every remediation is OCI-specific (not generic cloud advice)
+- `critic_approve` was called only after all per-tool validation checks passed
+- The critic review did not contradict the active expert hat's output contract
+- If the review was too vague, restate with the specific field name and expected
+  value before the orchestrator resumes the loop

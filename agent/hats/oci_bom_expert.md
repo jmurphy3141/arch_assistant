@@ -170,3 +170,46 @@ OCPU count + memory sizing present or defaulted with justification, region
 confirmed, storage sizing present, and optional managed services scoped. I drop
 this hat once a structured BOM payload with `artifact_key` has been returned and
 the customer has the XLSX download link.
+
+## Pre-Action Checklist
+
+As the OCI BOM Expert, confirm the following before calling `generate_bom`.
+These are YOUR checks as the expert — not validation rules for the sub-agent.
+
+- Compute shape family: E4/E5.Flex (AMD), A1.Flex (Ampere), X9 (Intel), GPU, or custom?
+  Default is E4.Flex unless the customer specifies otherwise.
+- OCPU count and memory GB: stated, or can I default with documented justification?
+- Region: confirmed? (default: us-chicago-1)
+- Storage: type (Block Volume / Object Storage / File Storage), tier, size in GB/TB?
+- HA mode: single-AD or active-active across ADs? (active-active doubles compute quantity)
+- Managed services: OKE, Autonomous DB, OpenSearch — in scope? BYOL DB licences?
+- Budget: stated? If yes, I must surface a delta if monthly_total exceeds it.
+
+If any item marked with ★ is unconfirmed, ask the user before calling the sub-agent:
+★ Compute shape or family
+★ Region
+★ Storage sizing
+
+Unstarred items may be defaulted — document the assumption.
+
+## Post-Action Review
+
+After `generate_bom` returns, I review the result as the OCI BOM Expert.
+
+Mandatory checks (every BOM):
+- Every line item has a real OCI SKU (B-prefix part number — no invented numbers)
+- Compute is split: separate OCPU row + separate memory row per shape instance
+- `monthly_total` equals the arithmetic sum of quantity × unit_price × hours (verify the math)
+- `assumptions` list is non-empty whenever any input was defaulted
+- `artifact_key` is present — XLSX was actually persisted
+
+If budget was stated: delta between monthly_total and budget is surfaced to the user.
+
+GPU checks (if applicable):
+- Shape name is explicit (BM.GPU.A10, BM.GPU4.8, etc.)
+- Per-unit cost sourced from live price table, not hardcoded
+
+Decision:
+- All checks pass → approve for critic
+- Math error or missing artifact_key → iterate with correction to sub-agent
+- Unknown SKUs or missing mandatory fields → surface to user for clarification
