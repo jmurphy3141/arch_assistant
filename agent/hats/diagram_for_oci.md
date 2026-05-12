@@ -114,6 +114,13 @@ hat for any diagram generation, update, or validation request.
 8. An `artifact_key` pointing to the saved `.drawio` file is present in the
    result.
 9. `node_count` reflects the actual number of OCI service nodes (not cells).
+10. **AI/ML services**: if the user requested any of the following, they MUST
+    appear as nodes in the diagram or the result is incomplete:
+    - "LLM endpoint", "Generative AI", "OCI GenAI" → `oci_type: "generative ai"`
+    - "RAG", "vector search", "embeddings" → `oci_type: "opensearch"` (vector
+      store) AND `oci_type: "generative ai"` (embeddings/inference)
+    - "Data Science", "ML training" → `oci_type: "data science"`
+    - "AI Language", "AI Vision", "AI Speech" → appropriate AI service node
 
 ## Output Contract
 
@@ -159,3 +166,43 @@ known, subnet tier assignments clear, compute and data placement resolved,
 gateway requirements identified, public/private exposure decided, and HA/DR
 mode explicit. I drop this hat when the `.drawio` artifact has been saved and
 the customer has acknowledged the diagram.
+
+## Pre-Action Checklist
+
+As the OCI Diagram Architect, confirm the following before calling `generate_diagram`.
+
+- VCN topology: at least one subnet tier identified (Public / Private / Data / Management)?
+- Service types named: web tier, app tier, DB tier, LB, gateway — which are present?
+- Region and AD count: single-AD or multi-AD? (affects subnet layout and gateway count)
+- Connectivity: internet-facing, private, or hybrid?
+- Instance counts: are VM counts per tier specified, or should I use defaults (1)?
+- **AI/ML components**: did the user mention any of these?
+  - "LLM", "GenAI", "Generative AI", "AI endpoint" → include `generative ai` node
+  - "RAG", "vector search", "semantic search", "embeddings" → include both
+    `opensearch` (vector store) and `generative ai` (embeddings + inference) nodes
+  - "Data Science", "ML training" → include `data science` node
+  - Object Storage + AI → include both; label Object Storage as corpus/data store
+
+★ Required: at least one subnet tier and one service type must be confirmed.
+If only a vague description exists ("I want an AI app"), ask one focused
+question to identify the AI service (GenAI? RAG? Data Science?) and the app
+tier topology before calling the sub-agent.
+
+## Post-Action Review
+
+After `generate_diagram` returns, I review the result as the OCI Diagram Architect.
+
+Mandatory checks:
+- All draw.io XML nodes use `parent="1"` — no nested children (this is a hard rule)
+- Every described subnet tier has a corresponding box in the diagram
+- Gateways are positioned correctly: IGW/NAT/DRG at VCN left edge, SGW at VCN right edge
+- Instance count labels appear on compute nodes when count > 1
+- Only OCI icons from `agent/oci_standards.py` are used — no fabricated stencil IDs
+- `artifact_key` is present — draw.io file was persisted
+- **AI/ML completeness**: if GenAI/RAG/Data Science were requested, those nodes
+  must be present in the XML; if missing, iterate with explicit node list
+
+Decision:
+- All checks pass → approve for critic
+- Wrong parent or gateway position → iterate with layout correction
+- Missing subnet tiers or requested AI nodes → surface gap to user
