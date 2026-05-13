@@ -119,3 +119,92 @@ p43c: update hat Quality Bar items — checkable against p43a enriched summaries
 
 Branch: claude/p43c (from main, after p43a and p43b merged). Push when done.
 ```
+
+---
+
+## p43d — Correction Propagation to Sub-Agents
+
+```
+Read tasks/p43d-correction-propagation.md carefully end to end before
+touching any code.
+
+IMPORTANT: Branch from origin/main after p43a–p43c are merged.
+
+  git fetch origin
+  git checkout -b claude/p43d origin/main
+
+Run the prerequisite check first:
+  python3.11 -m compileall skillforge/forge.py agent/tools/diagram.py \
+    agent/tools/bom.py agent/tools/specialists.py
+  grep "_pending_correction\|_forge_correction" skillforge/forge.py \
+    agent/tools/diagram.py agent/tools/bom.py agent/tools/specialists.py
+  # must be zero matches
+
+Read the iterate path in forge.py (search for "review_decision == \"iterate\"")
+before implementing to understand exactly where _pending_correction must be set
+and where the injection block must go.
+
+Implement in this order:
+1. skillforge/forge.py — add _pending_correction local var at top of run_turn();
+   set it in the iterate path before continue; add injection block in domain
+   tool dispatch after requires_hat block and before _run_expert_pre_action
+2. agent/tools/diagram.py — extract _forge_correction from args and prepend
+   to prompt before _call_generate_diagram
+3. agent/tools/bom.py — same pattern before sub-agent call
+4. agent/tools/specialists.py — extract and prepend to raw_request
+
+Run ALL acceptance criteria checks before committing.
+
+Commit message:
+p43d: correction propagation — inject expert review concern into sub-agent prompt on iterate
+
+Branch: claude/p43d (from main, after p43a–p43c merged). Push when done.
+```
+
+---
+
+## p43e — Real-Time Thinking Stream
+
+```
+Read tasks/p43e-realtime-thinking-stream.md carefully end to end before
+touching any code.
+
+IMPORTANT: Branch from origin/main after p43a–p43d are merged.
+
+  git fetch origin
+  git checkout -b claude/p43e origin/main
+
+Run the prerequisite check first:
+  python3.11 -m compileall skillforge/forge.py agent/archie_loop.py \
+    agent/chat_stream.py
+  grep "reasoning_sink\|_thinking_sink" skillforge/forge.py \
+    agent/archie_loop.py agent/chat_stream.py drawing_agent_server.py
+  # must be zero matches
+
+Read these four files carefully before implementing:
+  skillforge/forge.py — find _run_step3_planning, _run_expert_pre_action,
+    _run_expert_post_review signatures and run_turn() call sites for each
+  agent/archie_loop.py line ~198 — read run_turn() signature; line ~910 —
+    read forge.run_turn() call to understand kwargs pattern
+  drawing_agent_server.py — search for _run_orchestrator_turn to find its
+    signature and where it calls archie_loop
+  agent/chat_stream.py lines 38-60 — read the existing _sink pattern to
+    model _thinking_sink after it
+
+Implement in this order:
+1. skillforge/forge.py — add reasoning_sink=None to run_turn() and the three
+   reasoning methods; call sink before each _text_runner call; pass it through
+   at each internal call site
+2. agent/archie_loop.py — add reasoning_sink param and pass to forge.run_turn()
+3. drawing_agent_server.py — add reasoning_sink param to _run_orchestrator_turn()
+   and pass it through
+4. agent/chat_stream.py — add _thinking_sink function and pass to
+   _run_orchestrator_turn()
+
+Run ALL five acceptance criteria checks before committing.
+
+Commit message:
+p43e: real-time thinking stream — reasoning_sink pushes live Thinking... events to UI
+
+Branch: claude/p43e (from main, after p43a–p43d merged). Push when done.
+```
