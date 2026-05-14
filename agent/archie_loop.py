@@ -206,6 +206,7 @@ async def run_turn(
     max_tool_iterations: int = 5,
     specialist_mode: str = "legacy",
     max_refinements: int = 3,
+    reasoning_sink=None,
 ) -> dict:
     """
     Process one SA message and return the orchestrator response.
@@ -912,6 +913,7 @@ async def run_turn(
             user_message=user_message,
             context=context,
             history=history,
+            reasoning_sink=reasoning_sink,
         )
         reply = forge_result.reply
         turn_events.extend(

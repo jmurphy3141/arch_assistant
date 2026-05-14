@@ -3062,6 +3062,7 @@ async def _run_orchestrator_turn(
     store,
     text_runner,
     orch_cfg: dict,
+    reasoning_sink=None,
 ) -> dict:
     """
     Run one orchestrator turn via legacy or LangGraph-compatible adapter.
@@ -3085,6 +3086,7 @@ async def _run_orchestrator_turn(
         max_tool_iterations=max_tool_iterations,
         specialist_mode=specialist_mode,
         max_refinements=max_refinements,
+        reasoning_sink=reasoning_sink,
     )
 
 
