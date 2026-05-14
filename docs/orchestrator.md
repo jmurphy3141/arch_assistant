@@ -1,5 +1,11 @@
 # Agent 0 — OCI SA Orchestrator: Design & Implementation Spec
 
+> **HISTORICAL — Pre-Forge era (p1–p3).** This document describes the original
+> `archie_loop.py` direct-dispatch architecture. As of p44, all orchestration
+> runs through `skillforge/forge.py`. See `CLAUDE.md` for the current
+> architecture and `docs/skillforge-archie-migration-requirements.md` for the
+> migration rationale.
+
 ## Purpose
 
 Agent 0 is a conversational orchestrator that accepts natural-language messages from
