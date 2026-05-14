@@ -41,6 +41,19 @@ def _ensure_drawio_mxfile(drawio_xml: str, *, diagram_name: str = "OCI Architect
     return xml
 
 
+def _summarise_drawio(xml: str) -> str:
+    """Return a brief service-inventory string parsed from drawio XML."""
+    categories: dict[str, int] = {}
+    for m in re.finditer(r'shape=mxgraph\.oci2\.(\w+)', xml):
+        cat = m.group(1).lower()
+        categories[cat] = categories.get(cat, 0) + 1
+    if not categories:
+        return ""
+    total = sum(categories.values())
+    parts = [f"{cat}×{n}" for cat, n in sorted(categories.items())]
+    return f"{total} nodes: {', '.join(parts)}"
+
+
 class DiagramHandler:
     def __init__(
         self,
@@ -149,8 +162,11 @@ class DiagramHandler:
                     result_data["drawio_key"] = artifact_key
                     result_data["object_key"] = artifact_key
                     summary = f"Diagram generated. Key: {artifact_key}"
+        xml = result_data.get("drawio_xml") or ""
+        inventory = _summarise_drawio(xml) if xml else ""
+        full_summary = f"{summary} ({inventory})" if inventory else summary
         return ToolResult(
-            summary=summary,
+            summary=full_summary,
             status="ok",
             artifact_key=artifact_key,
             data=result_data,
