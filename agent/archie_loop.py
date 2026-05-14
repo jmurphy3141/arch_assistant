@@ -25,7 +25,7 @@ import json
 import logging
 import re
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -252,9 +252,6 @@ async def run_turn(
     turn_events: list[dict] = []
     requested_tools = _requested_generation_tools(user_message)
     reply = ""
-    forced_reply = ""
-    forced_followup: dict[str, str] | None = None
-    parallel_executed = False
 
     def _finalize_turn(reply_text: str) -> dict:
         new_turns.append({"role": "assistant", "content": reply_text, "timestamp": _now()})
@@ -510,6 +507,7 @@ async def run_turn(
                 user_message=change_request or user_message,
                 context=context,
             )
+            forced_reply = ""
             for tool_name in planned_tools:
                 tool_args = _update_tool_args(tool_name, change_request)
                 tool_result = await _invoke_prerouted_tool(
@@ -604,147 +602,57 @@ async def run_turn(
             "Reply `confirm update all` to execute, or `cancel update`."
         )
 
-    # Safe parallel fast-path:
-    # When the SA explicitly asks for both POV and JEP in one request, these
-    # document generations are independent and can run concurrently.
-    parallel_tools = _parallel_plan_for_message(user_message)
-    if parallel_tools:
-        logger.info(
-            "Orchestrator parallel tool plan: tools=%s customer=%s",
-            [t["tool"] for t in parallel_tools],
-            customer_id,
-        )
-
-        for tool in parallel_tools:
-            context_summary = await asyncio.to_thread(
-                archie_memory._build_context_summary_for_skills, store, customer_id, customer_name
-            )
-            decision = _skill_preflight_for_tool(
-                tool_name=tool["tool"],
-                args=tool.get("args", {}),
-                user_message=user_message,
-                context_summary=context_summary,
-            )
-            if decision and decision.status == "block":
-                forced_reply = _decision_pushback_text(decision)
-                tool_calls.append(
-                    {
-                        "tool": tool["tool"],
-                        "args": tool.get("args", {}),
-                        "result_summary": forced_reply,
-                        "result_data": {"skill_decision": asdict(decision)},
-                    }
-                )
-                break
-
-        if not forced_reply:
-            parallel_results = await asyncio.gather(
-                *[
-                _invoke_prerouted_tool(
-                    tool["tool"],
-                    tool.get("args", {}),
-                    tool_decision_context=decision_context,
-                )
-                for tool in parallel_tools
-            ]
-            )
-            parallel_executed = True
-            pending_followup: dict[str, str] | None = None
-            for tool, tool_result in zip(parallel_tools, parallel_results):
-                result_summary = tool_result.summary
-                artifact_key = tool_result.artifact_key or ""
-                result_data = dict(tool_result.data or {})
-                tool_name = tool["tool"]
-                tool_args = tool.get("args", {})
-                notify(f"tool:{tool_name}", customer_id, result_summary)
-                tool_calls.append(
-                    {
-                        "tool": tool_name,
-                        "args": tool_args,
-                        "result_summary": result_summary,
-                        "result_data": result_data,
-                    }
-                )
-                if artifact_key:
-                    artifacts[tool_name] = artifact_key
-                new_turns.append(
-                    {
-                        "role": "tool",
-                        "tool": tool_name,
-                        "result_summary": result_summary,
-                        "timestamp": _now(),
-                    }
-                )
-                prompt = _append_tool_result(prompt, tool_name, result_summary)
-
-                decision = _extract_blocking_skill_decision(result_data)
-                if decision:
-                    artifacts.pop(tool_name, None)
-                    pending_followup = _prefer_followup(
-                        pending_followup,
-                        {"kind": "blocked", "message": _decision_pushback_text(decision)},
-                    )
-                    continue
-
-                followup = _extract_governor_followup(result_data)
-                if followup:
-                    if followup["kind"] == "blocked":
-                        artifacts.pop(tool_name, None)
-                    pending_followup = _prefer_followup(pending_followup, followup)
-
-            if pending_followup:
-                forced_followup = pending_followup
-                forced_reply = pending_followup["message"]
-
-        if parallel_executed and not forced_reply:
-            reply = _build_parallel_reply(tool_calls, decision_context=decision_context)
-            return _finalize_turn(reply)
-
-    if not forced_reply:
-        forge_result = await forge.run_turn(
-            session_id=customer_id,
-            user_message=user_message,
-            context=context,
-            history=history,
-            reasoning_sink=reasoning_sink,
-        )
-        reply = forge_result.reply
-        turn_events.extend(
+    forge_result = await forge.run_turn(
+        session_id=customer_id,
+        user_message=user_message,
+        context=context,
+        history=history,
+        reasoning_sink=reasoning_sink,
+    )
+    reply = forge_result.reply
+    forge_events = forge_result.events if isinstance(forge_result.events, list) else []
+    turn_events.extend(
+        {
+            "type": event.type,
+            "message": event.message,
+            "data": dict(event.data or {}),
+        }
+        for event in forge_events
+    )
+    forge_tool_calls = forge_result.tool_calls if isinstance(forge_result.tool_calls, list) else []
+    for tc in forge_tool_calls:
+        tool_calls.append(
             {
-                "type": event.type,
-                "message": event.message,
-                "data": dict(event.data or {}),
+                "tool": tc.tool,
+                "args": tc.args,
+                "result_summary": tc.result.summary,
+                "result_data": dict(tc.result.data or {}),
+                "artifact_key": tc.result.artifact_key or "",
             }
-            for event in forge_result.events
         )
-        for tc in forge_result.tool_calls:
-            tool_calls.append(
-                {
-                    "tool": tc.tool,
-                    "args": tc.args,
-                    "result_summary": tc.result.summary,
-                    "result_data": dict(tc.result.data or {}),
-                    "artifact_key": tc.result.artifact_key or "",
-                }
-            )
+    if isinstance(forge_result.artifacts, dict):
         artifacts.update(forge_result.artifacts)
-        forced_tool = _single_requested_tool_to_force(requested_tools, tool_calls)
-        if forced_tool:
-            await _run_generation_step(
-                forced_tool,
-                _default_generation_tool_args(forced_tool, user_message),
-            )
-            reply = _build_parallel_reply(tool_calls, decision_context=decision_context)
-
-    if forced_reply:
-        if forced_followup and tool_calls:
-            reply = _build_parallel_reply(
-                tool_calls,
-                decision_context=decision_context,
-                followup=forced_followup,
-            )
-        else:
-            reply = forced_reply
+    forced_tool = _single_requested_tool_to_force(requested_tools, tool_calls)
+    if forced_tool:
+        call = await _run_generation_step(
+            forced_tool,
+            _default_generation_tool_args(forced_tool, user_message),
+        )
+        reply_text = str(call.get("result_summary", "") or "").strip()
+        if forced_tool == "generate_diagram":
+            reply_text = _build_single_diagram_reply(call, decision_context=decision_context)
+        elif forced_tool == "generate_bom":
+            data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+            if archie_memory._bom_call_was_memory_revision(data) and "BOM revision was performed" not in reply_text:
+                reply_text = f"BOM revision was performed from updated memory.\n\n{reply_text}".strip()
+            section = _bom_resolved_inputs_reply_section(data)
+            if section:
+                reply_text = "\n".join([reply_text or "Final BOM prepared.", *section]).strip()
+        reply = _append_management_summary(
+            reply_text or f"Completed `{forced_tool}`.",
+            tool_calls,
+            decision_context=decision_context,
+        )
 
     return _finalize_turn(reply)
 
@@ -841,33 +749,6 @@ def _ensure_waf_markdown_sections(content: str) -> str:
         lines.append(f"### {title}")
         lines.append("See the corresponding pillar findings above; this heading is retained for WAF artifact consumers.")
     return "\n".join(lines).strip() + "\n"
-
-def _skill_preflight_for_tool(
-    *,
-    tool_name: str,
-    args: dict,
-    user_message: str,
-    context_summary: str,
-) -> _SkillDecision | None:
-    _ = (args, user_message, context_summary)
-    path_id = _tool_to_path_id(tool_name)
-    if not path_id:
-        return None
-    return _SkillDecision(path_id=path_id, phase="preflight", status="allow")
-
-def _decision_pushback_text(decision: _SkillDecision) -> str:
-    lines = [decision.pushback_message.strip() or "This request is blocked by expert skill validation."]
-    if decision.reasons:
-        lines.append("")
-        lines.append("Reasons:")
-        for reason in decision.reasons:
-            lines.append(f"- {reason}")
-    if decision.retry_instructions:
-        lines.append("")
-        lines.append("Next steps:")
-        for step in decision.retry_instructions:
-            lines.append(f"- {step}")
-    return "\n".join(lines).strip()
 
 def _extract_blocking_skill_decision(result_data: dict | None) -> _SkillDecision | None:
     if not isinstance(result_data, dict):
@@ -2102,104 +1983,6 @@ def _relevant_waf_pillars(
             pillars.append(pillar)
     return pillars or ["Security", "Reliability", "Cost Optimization"]
 
-def _append_tool_result(prompt: str, tool_name: str, result_summary: str) -> str:
-    base = prompt.rstrip()
-    if base.endswith("ASSISTANT:"):
-        base = base[: -len("ASSISTANT:")].rstrip()
-    return base + (
-        f"\n\n[Tool result: {tool_name}] {result_summary}\n\nASSISTANT:"
-    )
-
-def _build_parallel_reply(
-    tool_calls: list[dict[str, Any]],
-    *,
-    decision_context: dict[str, Any] | None = None,
-    followup: dict[str, str] | None = None,
-) -> str:
-    if not tool_calls:
-        return "Requested tool execution completed."
-    if len(tool_calls) == 1 and followup is None:
-        call = tool_calls[0]
-        if str(call.get("tool", "") or "") == "generate_diagram":
-            return _append_management_summary(
-                _build_single_diagram_reply(call, decision_context=decision_context),
-                tool_calls,
-                decision_context=decision_context,
-            )
-        summary = str(call.get("result_summary", "") or "").strip()
-        if str(call.get("tool", "") or "") == "generate_bom":
-            data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
-            if archie_memory._bom_call_was_memory_revision(data) and "BOM revision was performed" not in summary:
-                summary = f"BOM revision was performed from updated memory.\n\n{summary}".strip()
-            section = _bom_resolved_inputs_reply_section(data)
-            if section:
-                summary = "\n".join([summary or "Final BOM prepared.", *section]).strip()
-        return _append_management_summary(
-            summary or f"Completed `{call.get('tool', 'requested_tool')}`.",
-            tool_calls,
-            decision_context=decision_context,
-        )
-
-    lines = ["Completed the requested outputs:"]
-    for call in tool_calls:
-        tool_name = str(call.get("tool", "") or "requested_tool")
-        label = archie_memory._tool_goal_label(tool_name)
-        summary = str(call.get("result_summary", "") or "").strip()
-        if summary:
-            lines.append(f"- {label}: {summary}")
-        else:
-            lines.append(f"- {label} completed.")
-        if tool_name == "generate_bom":
-            data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
-            if archie_memory._bom_call_was_memory_revision(data) and "BOM revision was performed" not in lines[-1]:
-                lines.append("  BOM revision was performed from updated memory.")
-            lines.extend(_bom_resolved_inputs_reply_section(data))
-    merged_assumptions = archie_memory._merge_assumption_lists(
-        list((decision_context or {}).get("assumptions", []) or []),
-        [],
-    )
-    for call in tool_calls:
-        data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
-        merged_assumptions = archie_memory._merge_assumption_lists(
-            merged_assumptions,
-            list((data.get("decision_context", {}) or {}).get("assumptions", []) or []),
-        )
-        merged_assumptions = archie_memory._merge_assumption_lists(
-            merged_assumptions,
-            list(data.get("assumptions_used", []) or []),
-        )
-    assumptions = [
-        f"{str(item.get('statement', '') or '').strip()} (risk: {str(item.get('risk', '') or 'low').strip().lower() or 'low'})"
-        for item in merged_assumptions
-        if str(item.get("statement", "") or "").strip()
-    ]
-    missing_inputs = list(dict.fromkeys([
-        *[str(item).strip() for item in (decision_context or {}).get("missing_inputs", []) or [] if str(item).strip()],
-        *[
-            str(item).strip()
-            for call in tool_calls
-            for item in ((call.get("result_data", {}) or {}).get("decision_context", {}) or {}).get("missing_inputs", []) or []
-            if str(item).strip()
-        ],
-    ]))
-    if assumptions and (len(tool_calls) > 1 or followup is not None):
-        lines.append("")
-        lines.append("Assumptions applied:")
-        lines.extend(f"- {assumption}" for assumption in assumptions)
-    if missing_inputs and followup is None:
-        lines.append("")
-        lines.append("Missing inputs to tighten the next pass:")
-        lines.extend(f"- {item}" for item in missing_inputs)
-    if followup:
-        lines.append("")
-        lines.append(str(followup.get("message", "")).strip())
-        return "\n".join(lines)
-    return _append_management_summary(
-        "\n".join(lines),
-        tool_calls,
-        decision_context=decision_context,
-    )
-
 def _ordered_requested_tools(tools: set[str]) -> list[str]:
     order = ["generate_bom", "generate_diagram", "generate_waf", "generate_terraform", "generate_pov", "generate_jep"]
     return [tool for tool in order if tool in tools]
@@ -2735,45 +2518,6 @@ def _build_artifact_verification_reply(
     if missing:
         lines.append("I did not infer missing files from chat history; the status above comes from persisted keys only.")
     return "\n".join(lines)
-
-def _parallel_plan_for_message(user_message: str) -> list[dict]:
-    """
-    Plan safe concurrent tool calls from explicit SA intent.
-    """
-    msg = user_message.lower()
-    wants_bom = "bom" in msg or "bill of materials" in msg
-    wants_explicit_diagram = any(
-        term in msg for term in (
-            "generate diagram",
-            "build diagram",
-            "create diagram",
-            " bom and diagram",
-            " diagram and bom",
-            "architecture diagram",
-            "drawio",
-            "draw.io",
-        )
-    ) or (wants_bom and "diagram" in msg)
-    if wants_bom and wants_explicit_diagram:
-        if _request_references_existing_bom(user_message):
-            return [{"tool": "generate_diagram", "args": {"bom_text": user_message.strip()}}]
-        return [
-            {"tool": "generate_bom", "args": {"prompt": user_message.strip()}},
-            {"tool": "generate_diagram", "args": {"bom_text": user_message.strip()}},
-        ]
-    if wants_bom and not any(term in msg for term in ("pov", "jep", "waf", "terraform", "diagram")):
-        return [{"tool": "generate_bom", "args": {"prompt": user_message.strip()}}]
-
-    wants_pov = "pov" in msg or "point of view" in msg
-    wants_jep = "jep" in msg or "joint execution plan" in msg
-    if not (wants_pov and wants_jep):
-        return []
-    if any(term in msg for term in ("terraform", "diagram", "waf", "bom")):
-        return []
-    return [
-        {"tool": "generate_pov", "args": {}},
-        {"tool": "generate_jep", "args": {}},
-    ]
 
 def _requested_generation_tools(user_message: str) -> set[str]:
     """
