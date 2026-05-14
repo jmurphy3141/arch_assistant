@@ -17,6 +17,12 @@ loudly if the `archie_loop.py` bypass pattern is ever re-introduced.
 - `agent/archie_loop.py` — rename to `agent/archie_session.py` (signals role)
 - `agent/orchestrator_agent.py` and any import sites — update import
 
+**Also touch:**
+- `tests/test_archie_loop_invoke_tool.py` — delete the test case
+  `test_prerouting_bom_uses_invoke_tool` which asserts the old bypass behaviour
+  (forge.run_turn NOT called for BOM). This test now conflicts with p44c and
+  must be removed before the new wiring test will pass.
+
 **Do NOT touch:** `skillforge/`, hat files, other test files.
 
 ---
