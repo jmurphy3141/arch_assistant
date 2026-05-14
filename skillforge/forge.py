@@ -276,6 +276,7 @@ class Forge:
         user_message: str,
         context: dict[str, Any],
         history: list[dict[str, Any]] | None = None,
+        reasoning_sink: "Callable[[str, str], None] | None" = None,
     ) -> TurnResult:
         """
         Process one user message and return a TurnResult.
@@ -411,6 +412,7 @@ class Forge:
                 memory_snapshot=memory_snapshot,
                 session_id=session_id,
                 events=events,
+                reasoning_sink=reasoning_sink,
             )
 
         for iteration in range(self._max_iterations):
@@ -630,6 +632,7 @@ class Forge:
                     session_id=session_id,
                     events=events,
                     iteration=iteration,
+                    reasoning_sink=reasoning_sink,
                 )
                 if clarification_needed:
                     reply = clarification_needed
@@ -754,6 +757,7 @@ class Forge:
                     session_id=session_id,
                     events=events,
                     memory_snapshot=memory_snapshot,
+                    reasoning_sink=reasoning_sink,
                 )
                 if review_decision == "surface":
                     # Expert found an unfixable gap — surface to user
@@ -886,6 +890,7 @@ class Forge:
         memory_snapshot: "MemorySnapshot | None",
         session_id: str,
         events: list,
+        reasoning_sink=None,
     ) -> str:
         """
         Step 3 of the manager reasoning loop: hat-selection planning.
@@ -937,6 +942,8 @@ class Forge:
         system_msg = self._build_active_system_msg(active_hats)
 
         try:
+            if reasoning_sink:
+                reasoning_sink("Planning approach...", "step3_planning")
             raw = await self._text_runner(planning_prompt, system_msg, "step3_planning")
         except Exception:
             logger.exception("[STEP3_PLANNING] Call failed session=%s", session_id)
@@ -1056,6 +1063,7 @@ class Forge:
         session_id: str,
         events: list,
         iteration: int = 0,
+        reasoning_sink=None,
     ) -> tuple[str, str | None]:
         """
         Step 4 of the manager reasoning loop: expert pre-action thinking.
@@ -1114,6 +1122,8 @@ class Forge:
         system_msg = self._build_active_system_msg(active_hats)
 
         try:
+            if reasoning_sink:
+                reasoning_sink("Expert pre-action analysis...", "expert_pre_action")
             raw = await self._text_runner(pre_action_prompt, system_msg, "expert_pre_action")
         except Exception:
             logger.exception(
@@ -1228,6 +1238,7 @@ class Forge:
         session_id: str,
         events: list,
         memory_snapshot: MemorySnapshot | None = None,
+        reasoning_sink=None,
     ) -> tuple[str, str]:
         """
         Step 6 of the manager reasoning loop: expert post-action review.
@@ -1288,6 +1299,8 @@ class Forge:
         system_msg = self._build_active_system_msg(active_hats)
 
         try:
+            if reasoning_sink:
+                reasoning_sink("Expert review...", "expert_post_review")
             raw = await self._text_runner(review_prompt, system_msg, "expert_post_review")
         except Exception:
             logger.exception(

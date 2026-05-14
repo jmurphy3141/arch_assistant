@@ -51,12 +51,23 @@ async def _chat_event_dicts(
             if payload is not None:
                 loop.call_soon_threadsafe(queue.put_nowait, payload)
 
+        def _thinking_sink(label: str, phase: str) -> None:
+            payload = {
+                "trace_id": trace_id,
+                "customer_id": customer_id,
+                "event_type": "thinking",
+                "label": label,
+                "reasoning_type": phase,
+            }
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
+
         with notification_sink(_sink):
             result = await server._run_orchestrator_turn(
                 req=req,
                 store=store,
                 text_runner=text_runner,
                 orch_cfg=server._cfg.get("orchestrator", {}),
+                reasoning_sink=_thinking_sink,
             )
         result = await server._persist_bom_xlsx_downloads(customer_id, store, result)
         project_membership = server._persist_chat_project_membership(store, req)
