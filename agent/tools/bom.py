@@ -71,6 +71,17 @@ class BomHandler:
                 clarification=message,
             )
 
+        correction = str(args.pop("_forge_correction", "") or "").strip()
+        if correction:
+            existing = str(args.get("prompt") or "")
+            args = {
+                **args,
+                "prompt": (
+                    f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
+                    f"{existing}"
+                ).strip(),
+            }
+
         try:
             body = await sub_agent_client.call_sub_agent(
                 "bom",

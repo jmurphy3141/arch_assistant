@@ -117,6 +117,17 @@ class DiagramHandler:
                 clarification=message,
             )
 
+        correction = str(args.pop("_forge_correction", "") or "").strip()
+        if correction:
+            existing_prompt = str(args.get("prompt") or "")
+            args = {
+                **args,
+                "prompt": (
+                    f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
+                    f"{existing_prompt}"
+                ).strip(),
+            }
+
         try:
             summary, artifact_key, result_data = await _call_generate_diagram(
                 args=args,

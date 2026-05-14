@@ -300,6 +300,7 @@ class Forge:
         events: list[TurnEvent] = []
         artifacts: dict[str, str] = {}
         reply = ""
+        _pending_correction: dict | None = None   # tool name + concern for next re-call
 
         system_msg = self._build_active_system_msg(active_hats)
         prompt = self._build_initial_prompt(user_message, history or [])
@@ -583,6 +584,24 @@ class Forge:
                         tool_name, spec.requires_hat,
                     )
 
+            # ── Correction injection ──────────────────────────────────────────
+            if (
+                _pending_correction is not None
+                and _pending_correction.get("tool") == tool_name
+            ):
+                concern = _pending_correction["concern"]
+                if concern:
+                    task_key = "prompt" if "prompt" in tool_args else "task"
+                    tool_args = {
+                        **tool_args,
+                        "_forge_correction": concern,
+                    }
+                    logger.info(
+                        "[FORGE] Injecting correction into '%s' args session=%s: %s",
+                        tool_name, session_id, concern,
+                    )
+                _pending_correction = None
+
             # Inject skill_guidance into the task/prompt arg before dispatch.
             if spec.skill_guidance:
                 task_key = "prompt" if "prompt" in tool_args else "task"
@@ -760,6 +779,10 @@ class Forge:
                         f"Re-call '{tool_name}' now with corrected arguments that directly "
                         f"address this concern. Output ONLY the corrected tool call JSON."
                     )
+                    _pending_correction = {
+                        "tool": tool_name,
+                        "concern": _iterate_concern,
+                    }
                     continue
                 # "approved" — fire the critic
                 prompt, active_hats = await self._run_critique_pass(
