@@ -27,6 +27,7 @@ class ToolSpec:
     parallel_safe: bool = False
     retry_on_needs_input: bool = False
     critique_enabled: bool = False
+    requires_hat: str | None = None
 
 
 class ToolRegistry:
@@ -61,6 +62,7 @@ class ToolRegistry:
         parallel_safe: bool = False,
         retry_on_needs_input: bool = False,
         critique_enabled: bool = False,
+        requires_hat: str | None = None,
     ) -> None:
         """
         Register a domain tool.
@@ -75,6 +77,7 @@ class ToolRegistry:
         retry_on_needs_input: if True, append clarification to prompt and retry once
                               instead of immediately surfacing to user
         critique_enabled:     reserve tool for post-tool critic review
+        requires_hat:         hat name Forge must activate before dispatch
         """
         if name in self._tools:
             raise ValueError(f"Tool {name!r} is already registered")
@@ -89,6 +92,7 @@ class ToolRegistry:
             parallel_safe=parallel_safe,
             retry_on_needs_input=retry_on_needs_input,
             critique_enabled=critique_enabled,
+            requires_hat=requires_hat,
         )
 
     def get(self, name: str) -> ToolSpec | None:

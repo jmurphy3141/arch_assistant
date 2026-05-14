@@ -113,6 +113,7 @@ def build_forge(
         ),
         memory_contract=True,
         critique_enabled=True,
+        requires_hat="oci_bom_expert",
     )
     forge.register_tool(
         "generate_diagram",
@@ -125,6 +126,7 @@ def build_forge(
         ),
         memory_contract=True,
         critique_enabled=True,
+        requires_hat="diagram_for_oci",
     )
     forge.register_tool(
         "generate_terraform",
@@ -137,22 +139,26 @@ def build_forge(
         ),
         memory_contract=True,
         critique_enabled=True,
+        requires_hat="terraform_for_oci",
     )
     forge.register_tool(
         "generate_pov",
         PovHandler(store=store, customer_id=customer_id, customer_name=customer_name),
         memory_contract=True,
+        requires_hat="oci_customer_pov_writer",
     )
     forge.register_tool(
         "generate_jep",
         JepHandler(store=store, customer_id=customer_id, customer_name=customer_name),
         memory_contract=True,
+        requires_hat="jep_writer",
     )
     forge.register_tool(
         "generate_waf",
         WafHandler(store=store, customer_id=customer_id, customer_name=customer_name),
         memory_contract=True,
         critique_enabled=True,
+        requires_hat="oci_waf_reviewer",
     )
 
     return forge
