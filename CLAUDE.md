@@ -15,14 +15,14 @@ User (browser UI or API)
   │
   ▼
 drawing_agent_server.py  ← FastAPI, port 8080, v1.9.1
-  │   /api/chat           → archie_loop.py via orchestrator_agent.py shim
+  │   /api/chat           → archie_session.py via orchestrator_agent.py shim
   │   /upload-bom         → direct diagram pipeline
   │   /api/bom/*          → bom_service.py
   │   /api/terraform/*    → jep/pov/waf/terraform agents
   │   /health, /download
   │
   ├─ orchestrator_agent.py   26-line compatibility shim for existing imports
-  ├─ archie_loop.py          ReAct loop; dispatches internal tools:
+  ├─ archie_session.py       Thin session wrapper around Forge:
   │    generate_diagram       → diagram pipeline (A2A self-call)
   │    generate_bom           → bom_service.py
   │    generate_pov           → pov_agent.py
@@ -80,7 +80,7 @@ arch_assistant/
 │
 ├── agent/
 │   ├── orchestrator_agent.py   # Thin compatibility shim for Agent 0 imports
-│   ├── archie_loop.py          # Agent 0 ReAct loop, routing, and tool dispatch
+│   ├── archie_session.py       # Thin session wrapper around Forge
 │   ├── archie_memory.py        # Memory/context assembly and enforcement helpers
 │   ├── hat_engine.py           # Loads hats and exposes hat activation tools
 │   ├── safety_rules.py         # Thin deterministic safety checks
@@ -174,7 +174,7 @@ Layout engine overrides gateway X after computing subnet bounding boxes:
 
 ### Archie loop and hats
 `agent/orchestrator_agent.py` is only a compatibility shim. The real Agent 0
-implementation is `agent/archie_loop.py`; memory/context helpers live in
+implementation is `agent/archie_session.py`; memory/context helpers live in
 `agent/archie_memory.py`. Expert lenses are markdown hats in `agent/hats/`,
 loaded by `agent/hat_engine.py` and selected by Archie via `use_hat_*` tools.
 
@@ -260,11 +260,18 @@ curl -X POST http://10.0.3.47:8080/upload-bom \
 ## Known Debt — Do Not Make Worse
 
 1. **Keep `orchestrator_agent.py` thin.** New Agent 0 work belongs in
-   `archie_loop.py` or a focused helper module, not in the compatibility shim.
+   `archie_session.py` or a focused helper module, not in the compatibility shim.
 
 2. **`server/` directory** is a secondary FastAPI app for OCI Object Storage
    proxying. It is a separate process, not part of the main server startup. Do
    not merge its routes into `drawing_agent_server.py`.
+
+3. **`archie_session.py` is a thin session wrapper.** It must not contain
+   routing logic, LLM calls outside `forge.run_turn()`, or tool dispatch.
+   All orchestration belongs in `Forge`. All sequencing rules belong in the
+   Archie system prompt. Any PR that adds routing logic to `archie_session.py`
+   breaks the Forge reasoning loop silently — the p39–p43 expert reasoning
+   will never fire for that request type.
 
 ---
 

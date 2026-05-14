@@ -1,5 +1,5 @@
 """
-agent/archie_loop.py
+agent/archie_session.py
 --------------------
 Conversational orchestrator (Agent 0).
 

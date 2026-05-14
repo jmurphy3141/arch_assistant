@@ -4,8 +4,8 @@ archie_memory.py
 Context assembly, memory enforcement, BOM intent detection,
 infrastructure profiling, and specialist-question management for Archie.
 
-Called by agent.archie_loop. Specialist-question retries dispatch back
-through archie_loop._execute_tool via a late import to avoid circular
+Called by agent.archie_session. Specialist-question retries dispatch back
+through archie_session._execute_tool via a late import to avoid circular
 module initialization.
 """
 from __future__ import annotations
@@ -44,9 +44,9 @@ _DIAGRAM_COMPONENT_MARKERS = (
 
 
 async def _execute_tool(*args: Any, **kwargs: Any) -> tuple[str, str, dict[str, Any]]:
-    import agent.archie_loop as archie_loop
+    import agent.archie_session as archie_session
 
-    return await archie_loop._execute_tool(*args, **kwargs)
+    return await archie_session._execute_tool(*args, **kwargs)
 
 
 def _now() -> str:

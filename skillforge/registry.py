@@ -3,7 +3,7 @@ skillforge/registry.py
 -----------------------
 ToolRegistry: maps tool names to handlers and their configuration.
 
-Replaces the hardcoded dicts in archie_loop.py:
+Replaces the hardcoded dicts in archie_session.py:
   _ARCHITECTURE_TOOLS, _MANDATORY_SKILL_FALLBACKS, _MEMORY_CONTRACT_TOOLS
 """
 from __future__ import annotations

@@ -5,7 +5,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from agent import archie_loop, archie_memory, context_store, document_store
+from agent import archie_session, archie_memory, context_store, document_store
 from agent.bom_service import BomService
 from agent.persistence_objectstore import InMemoryObjectStore
 from drawing_agent_server import app
@@ -120,7 +120,7 @@ def deterministic_client(monkeypatch):
         raise AssertionError(f"unexpected tool {tool_name!r}")
 
     monkeypatch.setattr("drawing_agent_server._make_orchestrator_text_runner", _make_text_runner)
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_tool_core)
     monkeypatch.setattr(archie_memory, "_terraform_scope_details_are_bounded", lambda **_kwargs: True)
 
     with TestClient(app, raise_server_exceptions=True) as test_client:

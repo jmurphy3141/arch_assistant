@@ -2,7 +2,7 @@
 safety_rules.py
 ---------------
 Deterministic safety checks for Archie. No LLM calls. Max 150 lines.
-Called by archie_loop.py before finalising any BOM, Terraform, or WAF output.
+Called by archie_session.py before finalising any BOM, Terraform, or WAF output.
 
 Rules implemented here must be expressible as regex/threshold checks on
 result_data alone. Rules that require LLM interpretation live in the governor

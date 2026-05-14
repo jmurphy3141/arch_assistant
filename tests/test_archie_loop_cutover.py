@@ -5,7 +5,7 @@ from skillforge.types import TurnResult, ToolCall, ToolResult
 
 @pytest.mark.asyncio
 async def test_run_turn_delegates_to_forge(monkeypatch):
-    import agent.archie_loop as archie_loop
+    import agent.archie_session as archie_session
 
     fake_result = TurnResult(
         reply="Here is the architecture.",
@@ -16,20 +16,20 @@ async def test_run_turn_delegates_to_forge(monkeypatch):
     mock_forge = MagicMock()
     mock_forge.run_turn = AsyncMock(return_value=fake_result)
 
-    monkeypatch.setattr(archie_loop, "_get_forge", lambda *_a, **_kw: mock_forge)
+    monkeypatch.setattr(archie_session, "_get_forge", lambda *_a, **_kw: mock_forge)
     monkeypatch.setattr(
-        archie_loop.document_store, "load_conversation_history", lambda *a: []
+        archie_session.document_store, "load_conversation_history", lambda *a: []
     )
     monkeypatch.setattr(
-        archie_loop.document_store, "load_conversation_summary", lambda *a: ""
+        archie_session.document_store, "load_conversation_summary", lambda *a: ""
     )
     monkeypatch.setattr(
-        archie_loop.document_store, "save_conversation_turns", lambda *a, **kw: None
+        archie_session.document_store, "save_conversation_turns", lambda *a, **kw: None
     )
-    monkeypatch.setattr(archie_loop.context_store, "read_context", lambda *a: {})
+    monkeypatch.setattr(archie_session.context_store, "read_context", lambda *a: {})
 
     with patch("agent.notifications.notify"):
-        result = await archie_loop.run_turn(
+        result = await archie_session.run_turn(
             customer_id="c1",
             customer_name="Acme",
             user_message="What can you help me with?",
@@ -44,7 +44,7 @@ async def test_run_turn_delegates_to_forge(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_turn_includes_artifacts(monkeypatch):
-    import agent.archie_loop as archie_loop
+    import agent.archie_session as archie_session
 
     tc = ToolCall(
         tool="generate_bom",
@@ -65,20 +65,20 @@ async def test_run_turn_includes_artifacts(monkeypatch):
     mock_forge = MagicMock()
     mock_forge.run_turn = AsyncMock(return_value=fake_result)
 
-    monkeypatch.setattr(archie_loop, "_get_forge", lambda *_a, **_kw: mock_forge)
+    monkeypatch.setattr(archie_session, "_get_forge", lambda *_a, **_kw: mock_forge)
     monkeypatch.setattr(
-        archie_loop.document_store, "load_conversation_history", lambda *a: []
+        archie_session.document_store, "load_conversation_history", lambda *a: []
     )
     monkeypatch.setattr(
-        archie_loop.document_store, "load_conversation_summary", lambda *a: ""
+        archie_session.document_store, "load_conversation_summary", lambda *a: ""
     )
     monkeypatch.setattr(
-        archie_loop.document_store, "save_conversation_turns", lambda *a, **kw: None
+        archie_session.document_store, "save_conversation_turns", lambda *a, **kw: None
     )
-    monkeypatch.setattr(archie_loop.context_store, "read_context", lambda *a: {})
+    monkeypatch.setattr(archie_session.context_store, "read_context", lambda *a: {})
 
     with patch("agent.notifications.notify"):
-        result = await archie_loop.run_turn(
+        result = await archie_session.run_turn(
             customer_id="c1",
             customer_name="Acme",
             user_message="What can you help me with?",

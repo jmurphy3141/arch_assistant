@@ -2,7 +2,7 @@
 archie_wiring.py - wire every OCI tool handler into a Forge instance.
 
 Call build_forge() once per customer session to get a fully configured Forge.
-archie_loop.py imports build_forge() for the p2i cutover task.
+archie_session.py imports build_forge() for the p2i cutover task.
 """
 from __future__ import annotations
 

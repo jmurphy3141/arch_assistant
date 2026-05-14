@@ -362,7 +362,7 @@ class TerraformHandler:
                 clarification=clarification,
             )
 
-        from agent.archie_loop import _parse_terraform_sub_agent_result
+        from agent.archie_session import _parse_terraform_sub_agent_result
 
         files = _parse_terraform_sub_agent_result(response.get("result"))
         saved = await asyncio.to_thread(
