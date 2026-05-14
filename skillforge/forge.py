@@ -67,6 +67,11 @@ _EXPERT_PRE_ACTION_HEADERS = (
     "EXPERT ASSESSMENT:",
     "SUB-AGENT INSTRUCTIONS:",
 )
+_STEP3_PLANNING_HEADERS = (
+    "STEP 1 — UNDERSTAND:",
+    "STEP 2 — MEMORY ASSESSMENT:",
+    "STEP 3 — PLAN + HAT SELECTION:",
+)
 _EXPERT_REVIEW_MIN_CHARS = 500
 _EXPERT_REVIEW_APPROVED = "EXPERT_APPROVED"
 _EXPERT_REVIEW_ITERATE = "EXPERT_ITERATE:"
@@ -163,6 +168,7 @@ class Forge:
         parallel_safe: bool = False,
         retry_on_needs_input: bool = False,
         critique_enabled: bool = False,
+        requires_hat: str | None = None,
     ) -> None:
         """
         Register a domain tool.
@@ -177,6 +183,7 @@ class Forge:
         retry_on_needs_input: append clarification to prompt and retry once instead
                               of immediately surfacing to user
         critique_enabled:     reserve tool for post-tool critic review
+        requires_hat:         hat name Forge must activate before dispatch
         """
         # Resolve skill_guidance from file if it looks like a path
         if skill_guidance and not skill_guidance.strip().startswith(("#", "\n", " ")):
@@ -196,6 +203,7 @@ class Forge:
             parallel_safe=parallel_safe,
             retry_on_needs_input=retry_on_needs_input,
             critique_enabled=critique_enabled,
+            requires_hat=requires_hat,
         )
         self._system_msg = None   # invalidate cached system prompt
 
@@ -549,6 +557,29 @@ class Forge:
                 continue
 
             # ── Domain tool ───────────────────────────────────────────────────
+            # ── Hat auto-activation (requires_hat gate) ───────────────────────
+            if spec.requires_hat and spec.requires_hat not in active_hats:
+                try:
+                    active_hats = self._hat_engine.apply_hat(active_hats, spec.requires_hat)
+                    logger.info(
+                        "[FORGE] Auto-activated required hat '%s' for tool '%s' session=%s",
+                        spec.requires_hat, tool_name, session_id,
+                    )
+                    events.append(
+                        TurnEvent(
+                            type="hat_auto_activated",
+                            message=(
+                                f"Hat '{spec.requires_hat}' auto-activated "
+                                f"(required by tool '{tool_name}')"
+                            ),
+                            data={"hat": spec.requires_hat, "tool": tool_name},
+                        )
+                    )
+                except ValueError:
+                    logger.warning(
+                        "[FORGE] Tool '%s' requires unknown hat '%s' — proceeding without",
+                        tool_name, spec.requires_hat,
+                    )
 
             # Inject skill_guidance into the task/prompt arg before dispatch.
             if spec.skill_guidance:
@@ -881,6 +912,33 @@ class Forge:
         planning_text = raw.strip()
         if not planning_text:
             return prompt
+        # Section-header guard: all 3 planning sections must be present.
+        missing_planning = [h for h in _STEP3_PLANNING_HEADERS if h not in planning_text]
+        if missing_planning:
+            logger.warning(
+                "[STEP3_PLANNING] Missing sections %s session=%s — retrying",
+                missing_planning, session_id,
+            )
+            planning_retry_prompt = (
+                f"{planning_prompt}\n\n"
+                f"[Your response is missing required sections: {', '.join(missing_planning)}. "
+                "You MUST include all three labeled sections exactly as shown: "
+                "STEP 1 — UNDERSTAND:, STEP 2 — MEMORY ASSESSMENT:, "
+                "STEP 3 — PLAN + HAT SELECTION:. Rewrite with all three sections present.]"
+            )
+            try:
+                raw = await self._text_runner(
+                    planning_retry_prompt, system_msg, "step3_planning_header_retry"
+                )
+                planning_text = raw.strip()
+            except Exception:
+                logger.exception("[STEP3_PLANNING] Header retry failed session=%s", session_id)
+            still_missing = [h for h in _STEP3_PLANNING_HEADERS if h not in planning_text]
+            if still_missing:
+                logger.warning(
+                    "[STEP3_PLANNING] Still missing sections %s after retry session=%s",
+                    still_missing, session_id,
+                )
 
         logger.info("[STEP3_PLANNING] session=%s:\n%s", session_id, planning_text)
         events.append(
