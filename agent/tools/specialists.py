@@ -156,6 +156,7 @@ class _SpecialistHandler:
             )
 
         content = str(response.get("result") or "")
+        summary_content = content
         if self._agent_name == "waf":
             content = _ensure_waf_markdown_sections(content)
             response["result"] = content
@@ -182,8 +183,41 @@ class _SpecialistHandler:
             )
             response.update({"jep_state": jep_state, "lock_outcome": "allowed"})
 
+        findings_summary = ""
+        if self._agent_name == "waf":
+            try:
+                import json as _json
+
+                waf_data = (
+                    _json.loads(summary_content)
+                    if summary_content.strip().startswith("{")
+                    else {}
+                )
+                pillars = waf_data.get("pillars") or {}
+                total_findings = sum(
+                    len(v.get("findings", []))
+                    for v in pillars.values()
+                    if isinstance(v, dict)
+                )
+                p1_count = sum(
+                    1
+                    for v in pillars.values()
+                    if isinstance(v, dict)
+                    for f in v.get("findings", [])
+                    if f.get("severity") == "P1"
+                )
+                if total_findings:
+                    findings_summary = (
+                        f" {total_findings} findings ({p1_count} P1)."
+                    )
+            except Exception:
+                pass
+
         return ToolResult(
-            summary=f"{self._agent_name.upper()} v{saved.get('version')} saved.",
+            summary=(
+                f"{self._agent_name.upper()} v{saved.get('version')} saved."
+                f"{findings_summary}"
+            ),
             status="ok",
             artifact_key=key,
             data=response,

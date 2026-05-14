@@ -111,8 +111,23 @@ class BomHandler:
                 if part
             ),
         )
+        line_items = bom_payload.get("line_items") or []
+        service_count = len(line_items)
+        service_names = ", ".join(
+            str(item.get("description") or item.get("sku") or "")[:30]
+            for item in line_items[:6]
+        )
+        if len(line_items) > 6:
+            service_names += f", +{len(line_items) - 6} more"
+        monthly = bom_payload.get("monthly_total") or 0
+        bom_summary = (
+            f"BOM generated ({service_count} services, ${monthly:,.2f}/mo): "
+            f"{service_names}."
+            if service_names else
+            f"BOM generated ({service_count} services, ${monthly:,.2f}/mo)."
+        )
         return ToolResult(
-            summary="BOM generated with structured payload.",
+            summary=bom_summary,
             status="ok",
             data={
                 "bom_payload": bom_payload,
