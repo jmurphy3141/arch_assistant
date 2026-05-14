@@ -106,7 +106,12 @@ evidence-based review.
    changes).
 8. Each finding has: pillar, severity (P1/P2/P3), title, evidence, OCI-specific
    recommendation, maturity impact.
-9. `artifact_key` or `doc_key` is present (review was saved).
+9. The result summary is in the enriched format:
+   "WAF vN saved. M findings (K P1)."
+   Verify total findings count is non-zero (a review with 0 findings is a
+   red flag — confirm the review covered all 6 pillars).
+   Verify P1 findings are present if the architecture has public-facing
+   services (LB, WAF, API Gateway) or unencrypted storage.
 
 ## Output Contract
 

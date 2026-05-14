@@ -113,7 +113,16 @@ hat for any diagram generation, update, or validation request.
 7. Instance count labels are applied for any node with count > 1.
 8. An `artifact_key` pointing to the saved `.drawio` file is present in the
    result.
-9. `node_count` reflects the actual number of OCI service nodes (not cells).
+9. The result summary contains a node inventory in the format
+   "N nodes: category×count, ..." — verify N is plausible for the requested
+   architecture (a 3-tier HA web app should have ≥ 8 nodes).
+10. AI/ML services are present in the node inventory whenever the user
+    requested an AI diagram, LLM endpoint, RAG pipeline, or GenAI feature
+    (look for `generativeai`, `aiservice`, `datasciencenotebook`, or similar
+    categories in the inventory string).
+11. No obviously required service category is missing given the request
+    (e.g. a "secure web app" must have a load balancer and WAF node; a
+    "database tier" must have a database node).
 
 ## Output Contract
 

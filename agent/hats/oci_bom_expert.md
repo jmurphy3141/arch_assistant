@@ -103,8 +103,12 @@ hat for any BOM generation, SKU selection, cost estimate, or XLSX export task.
 5. `monthly_total` is the arithmetic sum of all `quantity × unit_price × 730`
    line items — not an estimate.
 6. An XLSX artifact has been persisted: `artifact_key` is present in the result.
-7. GPU requests include explicit shape name (A10, H100, V100) and per-unit cost.
-8. `assumptions` list is non-empty whenever any input was defaulted.
+7. The result summary is in the enriched format:
+   "BOM generated (N services, $X/mo): service1, service2, ..."
+   Verify N matches the number of line_items in the BOM payload and that
+   the named services correspond to what the user requested.
+8. GPU requests include explicit shape name (A10, H100, V100) and per-unit cost.
+9. `assumptions` list is non-empty whenever any input was defaulted.
 
 ## Output Contract
 
