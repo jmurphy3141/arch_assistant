@@ -64,10 +64,10 @@ def make_memory():
     )
 
 
-def install_archie_loop_stub(monkeypatch, call_generate_diagram):
-    module = types.ModuleType("agent.archie_loop")
+def install_archie_session_stub(monkeypatch, call_generate_diagram):
+    module = types.ModuleType("agent.archie_session")
     module._call_generate_diagram = call_generate_diagram
-    monkeypatch.setitem(sys.modules, "agent.archie_loop", module)
+    monkeypatch.setitem(sys.modules, "agent.archie_session", module)
 
 
 async def test_diagram_ok(monkeypatch):
@@ -80,7 +80,7 @@ async def test_diagram_ok(monkeypatch):
             {},
         )
 
-    install_archie_loop_stub(monkeypatch, fake_call_generate_diagram)
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
 
     result = await make_handler()(
         {"prompt": "draw it"}, memory=make_memory(), context={}, trace_id="trace-1"
@@ -100,7 +100,7 @@ async def test_diagram_persists_drawio_xml_when_sub_agent_returns_no_key(monkeyp
             {"drawio_xml": "<mxfile />", "diagram_name": "orch-1"},
         )
 
-    install_archie_loop_stub(monkeypatch, fake_call_generate_diagram)
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
     store = InMemoryObjectStore()
 
     result = await make_handler_with_store(store)(
@@ -123,7 +123,7 @@ async def test_diagram_wraps_raw_mxgraphmodel_before_persisting(monkeypatch):
             {"drawio_xml": '<mxGraphModel><root><mxCell id="0" /></root></mxGraphModel>'},
         )
 
-    monkeypatch.setattr("agent.archie_loop._call_generate_diagram", _fake_call_generate_diagram)
+    monkeypatch.setattr("agent.archie_session._call_generate_diagram", _fake_call_generate_diagram)
 
     handler = DiagramHandler(
         store=store,
@@ -154,7 +154,7 @@ async def test_diagram_insufficient_context(monkeypatch):
         called = True
         return ("Diagram generated.", "diagrams/foo.drawio", {})
 
-    install_archie_loop_stub(monkeypatch, fake_call_generate_diagram)
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
     monkeypatch.setattr(
         diagram_module.archie_memory,
         "_diagram_has_sufficient_context",
@@ -180,7 +180,7 @@ async def test_diagram_needs_clarification(monkeypatch):
             {"diagram_recovery_status": "needs_clarification"},
         )
 
-    install_archie_loop_stub(monkeypatch, fake_call_generate_diagram)
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
 
     result = await make_handler()(
         {"prompt": "draw it"}, memory=make_memory(), context={}, trace_id="trace-1"
@@ -194,7 +194,7 @@ async def test_diagram_sub_agent_error(monkeypatch):
     async def fake_call_generate_diagram(args, customer_id, a2a_base_url):
         raise Exception("connection refused")
 
-    install_archie_loop_stub(monkeypatch, fake_call_generate_diagram)
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
 
     result = await make_handler()(
         {"prompt": "draw it"}, memory=make_memory(), context={}, trace_id="trace-1"

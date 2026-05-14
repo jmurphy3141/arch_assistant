@@ -6,7 +6,7 @@ import json
 import pytest
 
 import agent.orchestrator_agent as orchestrator_agent
-import agent.archie_loop as archie_loop
+import agent.archie_session as archie_session
 import agent.archie_memory as archie_memory
 from agent import sub_agent_client
 from agent import context_store
@@ -66,7 +66,7 @@ def test_run_turn_persists_pending_cost_checkpoint(monkeypatch) -> None:
             {"bom_payload": {"totals": {"estimated_monthly_cost": 7200}}},
         )
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
         "evaluate_tool_result",
@@ -494,7 +494,7 @@ def test_generate_pov_from_sparse_notes_with_context_produces_draft(monkeypatch)
         assert args["_architect_brief"]["user_notes"] == "Draft a POV from these rough notes."
         return ("POV v1 saved. Key: pov/pov-sparse/v1.md", "pov/pov-sparse/v1.md", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
@@ -673,7 +673,7 @@ def test_run_turn_architecture_chat_only_does_not_force_artifact_generation(monk
     def _text_runner(_prompt: str, _system_message: str) -> str:
         return '{"tool":"generate_diagram","args":{"bom_text":"Create a diagram"}}'
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -868,7 +868,7 @@ def test_save_notes_then_diagram_request_hydrates_archie_context(monkeypatch) ->
             "outputs": {"object_key": "diagrams/notes-diagram/v1/diagram.drawio"},
         }
 
-    monkeypatch.setattr(archie_loop, "_post_diagram_a2a_task", _fake_post)
+    monkeypatch.setattr(archie_session, "_post_diagram_a2a_task", _fake_post)
 
     summary, key, _data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -931,7 +931,7 @@ def test_archie_auto_fills_specialist_question_from_stored_context(monkeypatch) 
             "outputs": {"object_key": "diagrams/archie-auto/v1/diagram.drawio"},
         }
 
-    monkeypatch.setattr(archie_loop, "_post_diagram_a2a_task", _fake_post)
+    monkeypatch.setattr(archie_session, "_post_diagram_a2a_task", _fake_post)
 
     summary, key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -993,7 +993,7 @@ def test_archie_returns_single_question_batch_with_suggestions(monkeypatch) -> N
             },
         }
 
-    monkeypatch.setattr(archie_loop, "_post_diagram_a2a_task", _fake_post)
+    monkeypatch.setattr(archie_session, "_post_diagram_a2a_task", _fake_post)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -1070,7 +1070,7 @@ def test_pending_specialist_answers_are_recorded_before_rerun(monkeypatch) -> No
             {},
         )
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1132,7 +1132,7 @@ def test_pending_specialist_answers_accept_loose_id_separators(monkeypatch) -> N
             {},
         )
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1211,7 +1211,7 @@ def test_pending_specialist_retry_recovers_prior_loose_answers(monkeypatch) -> N
             },
         )
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1268,7 +1268,7 @@ def test_pending_specialist_loose_answer_ids_do_not_supersede_checkpoint(monkeyp
     def _text_runner(_prompt: str, _system_message: str) -> str:
         raise AssertionError("Loose specialist answers should handle the pending checkpoint directly")
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1374,11 +1374,11 @@ def test_missing_bom_sizing_leaves_one_targeted_question(monkeypatch) -> None:
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_session, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(archie_session, "_skill_preflight_for_tool", lambda **_kwargs: None)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -1453,11 +1453,11 @@ def test_bom_clarification_auto_answers_retry_and_exposes_resolved_inputs(monkey
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
-    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_session, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(archie_session, "_skill_preflight_for_tool", lambda **_kwargs: None)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1552,9 +1552,9 @@ def test_chat_discovery_profile_hydrates_followup_bom(monkeypatch) -> None:
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_session, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_archie_expert_review_if_needed", _no_critic)
 
     first = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1649,9 +1649,9 @@ def test_discovery_facts_allow_later_xlsx_request_to_generate_bom(monkeypatch) -
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_session, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_archie_expert_review_if_needed", _no_critic)
 
     first = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1725,10 +1725,10 @@ def test_kr1_bom_request_injects_canonical_memory_without_sizing_clarification(m
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_session, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_skill_preflight_for_tool", lambda **_kwargs: None)
 
     first = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1814,10 +1814,10 @@ def test_specialist_memory_contract_applies_to_all_generation_tools(monkeypatch)
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_skill_preflight_for_tool", lambda **_kwargs: None)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_session, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_skill_preflight_for_tool", lambda **_kwargs: None)
 
     requests = {
         "generate_bom": {"prompt": "Generate BOM"},
@@ -1992,9 +1992,9 @@ def test_new_xlsx_with_incorrect_prior_bom_builds_revision_brief(monkeypatch) ->
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_session, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_archie_expert_review_if_needed", _no_critic)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2091,9 +2091,9 @@ def test_bom_feedback_with_object_storage_mentions_regenerates_instead_of_verify
     async def _no_critic(**kwargs):
         return kwargs["result_summary"], kwargs["artifact_key"], kwargs["result_data"]
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
-    monkeypatch.setattr(archie_loop, "_critic_refine_if_needed", _no_critic)
-    monkeypatch.setattr(archie_loop, "_archie_expert_review_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_session, "_critic_refine_if_needed", _no_critic)
+    monkeypatch.setattr(archie_session, "_archie_expert_review_if_needed", _no_critic)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2143,7 +2143,7 @@ def test_bom_mixed_confidence_keeps_unresolved_checkpoint(monkeypatch) -> None:
             },
         )
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_core)
 
     summary, _key, data = asyncio.run(
         orchestrator_agent._execute_tool(
@@ -2248,7 +2248,7 @@ def test_approved_checkpoint_inputs_are_reused_for_followup_bom(monkeypatch) -> 
             "trace": {},
         }
 
-    monkeypatch.setattr(archie_loop, "_execute_bom_tool_request", _fake_bom_request)
+    monkeypatch.setattr(archie_session, "_execute_bom_tool_request", _fake_bom_request)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2341,7 +2341,7 @@ def test_workbook_only_followup_does_not_generate_default_bom(monkeypatch) -> No
         calls.append(tool_name)
         return ("default BOM should not run", "", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2447,7 +2447,7 @@ def test_download_latest_bom_xlsx_returns_link_without_regeneration(monkeypatch)
     async def _should_not_execute(*_args, **_kwargs):
         raise AssertionError("download request should not regenerate the BOM")
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _should_not_execute)
+    monkeypatch.setattr(archie_session, "_execute_tool", _should_not_execute)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2674,7 +2674,7 @@ def test_key_specs_diagram_request_after_reset_routes_to_diagram(monkeypatch) ->
         calls.append(tool_name)
         return (f"{tool_name} completed", "diagrams/rga/v1/diagram.drawio", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -2732,7 +2732,7 @@ def test_deliverable_requests_invoke_only_matching_specialist(monkeypatch, messa
         calls.append(tool_name)
         return (f"{tool_name} completed", f"{tool_name}/artifact" if tool_name != "generate_bom" else "", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(archie_memory, "_terraform_scope_details_are_bounded", lambda **_kwargs: True)
 
     result = asyncio.run(
@@ -2822,7 +2822,7 @@ def test_update_plan_and_confirmation_track_superseded_decisions(monkeypatch) ->
         calls.append(tool_name)
         return (f"{tool_name} updated", f"{tool_name}/key", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     confirm_result = asyncio.run(
         orchestrator_agent.run_turn(

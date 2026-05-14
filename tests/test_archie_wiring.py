@@ -79,15 +79,15 @@ def test_prompt_enricher_empty_memory():
     assert result == "USER: hello"
 
 
-def test_no_archie_loop_import():
+def test_no_archie_session_import():
     for mod in list(sys.modules):
-        if "archie_loop" in mod:
+        if "archie_session" in mod:
             del sys.modules[mod]
 
     import agent.archie_wiring
 
     importlib.reload(agent.archie_wiring)
-    assert "agent.archie_loop" not in sys.modules, (
-        "archie_wiring imported archie_loop at module level - move to lazy "
+    assert "agent.archie_session" not in sys.modules, (
+        "archie_wiring imported archie_session at module level - move to lazy "
         "import inside __call__"
     )

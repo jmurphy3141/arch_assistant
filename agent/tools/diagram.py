@@ -77,7 +77,7 @@ class DiagramHandler:
         context: dict[str, Any],
         trace_id: str,
     ) -> ToolResult:
-        from agent.archie_loop import _call_generate_diagram
+        from agent.archie_session import _call_generate_diagram
 
         ctx = context
         decision_context = memory.decision_context if memory else {}

@@ -38,10 +38,10 @@ def memory_arg_stubs(monkeypatch):
     )
 
 
-def _install_archie_loop_stub(monkeypatch, call_generate_diagram):
-    module = types.ModuleType("agent.archie_loop")
+def _install_archie_session_stub(monkeypatch, call_generate_diagram):
+    module = types.ModuleType("agent.archie_session")
     module._call_generate_diagram = call_generate_diagram
-    monkeypatch.setitem(sys.modules, "agent.archie_loop", module)
+    monkeypatch.setitem(sys.modules, "agent.archie_session", module)
 
 
 async def test_diagram_artifact_key_persists_and_flows_to_next_diagram_call(
@@ -73,7 +73,7 @@ async def test_diagram_artifact_key_persists_and_flows_to_next_diagram_call(
         captured["payload"] = args
         return ("Diagram generated. Key: test/v2.drawio", "test/v2.drawio", {})
 
-    _install_archie_loop_stub(monkeypatch, fake_call_generate_diagram)
+    _install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
     memory = MemorySnapshot(
         session_id="s1",
         prior_artifacts={"generate_diagram": "test/v1.drawio"},

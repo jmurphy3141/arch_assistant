@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import drawing_agent_server as srv
-import agent.archie_loop as archie_loop
+import agent.archie_session as archie_session
 from agent.persistence_objectstore import InMemoryObjectStore
 
 pytestmark = pytest.mark.system
@@ -40,12 +40,12 @@ def client(monkeypatch):
     monkeypatch.setattr(srv, "_make_orchestrator_text_runner", lambda: fake_text_runner)
 
     monkeypatch.setattr(
-        archie_loop,
+        archie_session,
         "_parse_tool_call",
         lambda raw: json.loads(raw) if raw.strip().startswith("{") else None,
     )
-    monkeypatch.setattr(archie_loop, "_execute_tool", fake_execute_tool)
-    monkeypatch.setattr(archie_loop, "_engagement_context_supports_documents", lambda **_kwargs: True)
+    monkeypatch.setattr(archie_session, "_execute_tool", fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_engagement_context_supports_documents", lambda **_kwargs: True)
 
     with TestClient(srv.app, raise_server_exceptions=True) as tc:
         yield tc, store
