@@ -23,6 +23,33 @@ from skillforge.types import MemorySnapshot
 
 _INTENT_ROUTING_SKILL = Path(__file__).parent.parent / "skills" / "intent_routing.md"
 
+_TOOL_SEQUENCING_RULES = """
+## Tool Sequencing Rules
+
+These rules are mandatory. Follow them on every generation request.
+
+### Ordering
+1. When the user requests both a BOM and a diagram in the same turn, always call generate_bom FIRST. Pass the BOM result payload to generate_diagram.
+2. generate_waf and generate_terraform both require an existing diagram.
+   If no diagram exists for the customer, generate one first.
+3. generate_pov and generate_jep can be requested in the same turn and may
+   be called sequentially in one turn.
+
+### Single-tool requests
+4. If the user asks only for a BOM, call generate_bom once and return.
+5. If the user asks only for a diagram, call generate_diagram once and return.
+6. Do not generate unrequested deliverables.
+
+### Artifact re-use
+7. If the user asks for a download link or asks to view an existing artifact,
+   return the artifact key from context -- do not re-generate.
+
+### Update requests
+8. If the user says "update everything" or "regenerate all", identify which tools have existing artifacts in context and re-run them in this order:
+   generate_bom -> generate_diagram -> generate_waf -> generate_terraform ->
+   generate_pov -> generate_jep (skip any that were not previously generated).
+"""
+
 
 class ArchiePromptEnricher:
     """
@@ -83,7 +110,9 @@ def build_forge(
     if _INTENT_ROUTING_SKILL.exists():
         routing_guidance = _INTENT_ROUTING_SKILL.read_text()
 
-    full_prompt = (routing_guidance + "\n\n" + base_system_prompt).strip()
+    full_prompt = (
+        routing_guidance + "\n\n" + base_system_prompt + "\n\n" + _TOOL_SEQUENCING_RULES
+    ).strip()
 
     forge = Forge(
         base_system_prompt=full_prompt,
