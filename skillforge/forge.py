@@ -107,6 +107,7 @@ class Forge:
         history_window: int = _HISTORY_WINDOW_DEFAULT,
         auto_coordinate: bool = True,
         step3_planning: bool = False,
+        pre_action_always: bool = False,
     ) -> None:
         self._base_system_prompt = base_system_prompt
         self._hat_engine = hat_engine
@@ -117,6 +118,7 @@ class Forge:
         self._history_window = history_window
         self._auto_coordinate = auto_coordinate
         self._step3_planning = step3_planning
+        self._pre_action_always = pre_action_always
         self._registry = ToolRegistry()
         self._global_skills: list[str] = []
         # System prompt is rebuilt lazily after register_tool() calls.
@@ -592,6 +594,14 @@ class Forge:
 
             # Step 4: expert pre-action thinking (fires for any domain tool when hat active)
             expert_hats_active = [h for h in active_hats if h not in _MANUAL_ONLY_HATS]
+            if self._pre_action_always and not expert_hats_active:
+                prompt = await self._run_pre_action_light(
+                    prompt=prompt,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    session_id=session_id,
+                    events=events,
+                )
             if expert_hats_active:
                 prompt, clarification_needed = await self._run_expert_pre_action(
                     prompt=prompt,
@@ -949,6 +959,69 @@ class Forge:
             )
         )
         return f"{prompt}\n\nSTEP3_PLANNING:\n{planning_text}"
+
+    async def _run_pre_action_light(
+        self,
+        *,
+        prompt: str,
+        tool_name: str,
+        tool_args: dict,
+        session_id: str,
+        events: list,
+    ) -> str:
+        """
+        Lightweight fallback pre-action reasoning for domain tools with no active
+        expert hat. Asks the manager to briefly confirm the tool choice and args
+        are correct before dispatch.
+
+        Returns the updated prompt. No-op on exception (returns prompt unchanged).
+        """
+        light_prompt = (
+            f"{prompt}\n\n"
+            "╔══════════════════════════════════╗\n"
+            "║  PRE-ACTION CHECK                ║\n"
+            "╚══════════════════════════════════╝\n"
+            f"You are about to call '{tool_name}' with args: {tool_args}\n\n"
+            "Before dispatching, briefly confirm:\n"
+            "GOAL CHECK: Does this tool directly address the user's current goal?\n"
+            "ARGS CHECK: Are the arguments complete and correct?\n"
+            "RISK CHECK: Is there any obvious risk or missing information?\n\n"
+            "Write 1-2 sentences per check. Output plain text — do NOT call a tool here."
+        )
+        system_msg = self._get_system_msg()
+
+        try:
+            raw = await self._text_runner(light_prompt, system_msg, "pre_action_light")
+        except Exception:
+            logger.exception(
+                "[PRE_ACTION_LIGHT] Call failed session=%s tool=%s", session_id, tool_name
+            )
+            return prompt
+
+        reasoning = raw.strip()
+        if not reasoning:
+            return prompt
+
+        if len(reasoning) < 50:
+            logger.warning(
+                "[PRE_ACTION_LIGHT] Shallow response (%d chars) session=%s tool=%s",
+                len(reasoning), session_id, tool_name,
+            )
+
+        logger.info(
+            "[PRE_ACTION_LIGHT] session=%s tool=%s:\n%s",
+            session_id,
+            tool_name,
+            reasoning,
+        )
+        events.append(
+            TurnEvent(
+                type="pre_action_light",
+                message=f"Pre-action check for '{tool_name}'",
+                data={"tool": tool_name, "reasoning": reasoning},
+            )
+        )
+        return f"{prompt}\n\nPRE_ACTION_CHECK ({tool_name}):\n{reasoning}"
 
     async def _run_expert_pre_action(
         self,
