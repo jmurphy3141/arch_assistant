@@ -142,10 +142,14 @@ Run the prerequisite check first:
   # must be MISSING
 
 Implement in this order:
-1. git mv agent/archie_loop.py agent/archie_session.py
-2. grep -rn "archie_loop" --include="*.py" . to find all import sites; update each
-3. Add the rule to CLAUDE.md under "Known Debt — Do Not Make Worse"
-4. Create tests/test_archie_forge_wiring.py with the parametrized test from
+1. Delete the test case test_prerouting_bom_uses_invoke_tool from
+   tests/test_archie_loop_invoke_tool.py — it asserts forge.run_turn is NOT
+   called for BOM requests (the old bypass behaviour). p44c made this obsolete
+   and it will conflict with the new wiring test.
+2. git mv agent/archie_loop.py agent/archie_session.py
+3. grep -rn "archie_loop" --include="*.py" . to find all import sites; update each
+4. Add the rule to CLAUDE.md under "Known Debt — Do Not Make Worse"
+5. Create tests/test_archie_forge_wiring.py with the parametrized test from
    the task spec
 
 Run ALL acceptance criteria checks before committing.
