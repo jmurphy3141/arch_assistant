@@ -104,6 +104,32 @@ async def _chat_event_dicts(
                     "event_type": "hat_drop",
                     "hat": hat,
                 }
+            elif event_type in (
+                "step3_planning",
+                "expert_pre_action",
+                "expert_post_review",
+                "hat_auto_activated",
+                "pre_action_light",
+            ):
+                # Surface reasoning steps as a "thinking" event for UI visibility.
+                label_map = {
+                    "step3_planning": "Planning approach...",
+                    "expert_pre_action": "Expert pre-action analysis...",
+                    "expert_post_review": "Expert review...",
+                    "hat_auto_activated": (
+                        f"Activating {event_data.get('hat', 'expert')} lens..."
+                    ),
+                    "pre_action_light": (
+                        f"Pre-action check for {event_data.get('tool', 'tool')}..."
+                    ),
+                }
+                yield {
+                    "trace_id": trace_id,
+                    "customer_id": customer_id,
+                    "event_type": "thinking",
+                    "label": label_map.get(event_type, "Thinking..."),
+                    "reasoning_type": event_type,
+                }
         for tool_call in result.get("tool_calls", []):
             if (
                 tool_call.get("tool") == "generate_terraform"

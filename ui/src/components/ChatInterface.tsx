@@ -649,6 +649,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
   const [attachedFile,  setAttachedFile]  = useState<string | null>(null);
   const [attachLoading, setAttachLoading] = useState(false);
   const [streamingReply, setStreamingReply] = useState('');
+  const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
   const [archieWorkingMessage, setArchieWorkingMessage] = useState(ARCHIE_WORKING_MESSAGES[0]);
   const [activeHats, setActiveHats] = useState<string[]>([]);
   const threadRef = useRef<HTMLDivElement>(null);
@@ -689,7 +690,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
       }
     });
     return () => window.cancelAnimationFrame(rafId);
-  }, [messages, loading, streamingReply, historyLoaded]);
+  }, [messages, loading, streamingReply, thinkingStatus, historyLoaded]);
 
   useEffect(() => {
     onArtifactsChange?.(latestManifestDownloads(messages));
@@ -747,6 +748,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
     );
     setLoading(true);
     setStreamingReply('');
+    setThinkingStatus(null);
     setActiveHats([]);
 
     try {
@@ -760,12 +762,18 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
       try {
         resp = await apiChatStream(customerId, effectiveCustomerName, text, {
           onEvent: event => {
-            if ((event.event_type as string) === 'hat_activate' && typeof event.hat === 'string' && event.hat.trim()) {
-              const hat = event.hat.trim();
+            const eventHat = (event as { hat?: unknown }).hat;
+            if ((event.event_type as string) === 'hat_activate' && typeof eventHat === 'string' && eventHat.trim()) {
+              const hat = eventHat.trim();
               setActiveHats(prev => prev.includes(hat) ? prev : [...prev, hat]);
-            } else if ((event.event_type as string) === 'hat_drop' && typeof event.hat === 'string' && event.hat.trim()) {
-              const hat = event.hat.trim();
+            } else if ((event.event_type as string) === 'hat_drop' && typeof eventHat === 'string' && eventHat.trim()) {
+              const hat = eventHat.trim();
               setActiveHats(prev => prev.filter(h => h !== hat));
+            } else if ((event.event_type as string) === 'thinking') {
+              const label = (event as { label?: unknown }).label;
+              setThinkingStatus(typeof label === 'string' && label.trim() ? label : 'Thinking...');
+            } else if ((event.event_type as string) === 'completion') {
+              setThinkingStatus(null);
             }
           },
           onToken: delta => {
@@ -787,10 +795,12 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
       };
       setMessages(prev => [...prev, assistantMsg]);
       setStreamingReply('');
+      setThinkingStatus(null);
     } catch (err: unknown) {
       const e = err as { status: number; detail: string };
       setError(`Error ${e.status}: ${e.detail}`);
       setStreamingReply('');
+      setThinkingStatus(null);
     } finally {
       setLoading(false);
       inputRef.current?.focus();
@@ -985,6 +995,19 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
                 {hat.replace(/_/g, ' ')}
               </span>
             ))}
+          </div>
+        )}
+        {thinkingStatus && (
+          <div
+            data-testid="chat-thinking-status"
+            style={{
+              color: '#8b93a8',
+              fontSize: '0.74rem',
+              alignSelf: 'flex-start',
+              fontFamily: "'JetBrains Mono', monospace",
+            }}
+          >
+            {thinkingStatus}
           </div>
         )}
         {streamingReply && (
