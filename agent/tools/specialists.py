@@ -128,6 +128,12 @@ class _SpecialistHandler:
 
         feedback = str(args.get("feedback", "") or "")
         raw_request = feedback or _default_request(self._agent_name)
+        correction = str(args.pop("_forge_correction", "") or "").strip()
+        if correction:
+            raw_request = (
+                f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
+                f"{raw_request}"
+            ).strip()
 
         try:
             response = await sub_agent_client.call_sub_agent(
