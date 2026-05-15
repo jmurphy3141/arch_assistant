@@ -919,3 +919,68 @@ p48: prevent re-calling approved tools in same turn — stops generate_bom from 
 
 Branch: claude/p48 (from main). Push when done.
 ```
+
+---
+
+## p49 — FastConnect SKU in _draft_bom_payload
+
+```
+Context: _draft_bom_payload() in agent/bom_service.py detects WAF, LB, DB,
+and object storage by keyword, but has no FastConnect detection. Requesting
+"add FastConnect" produces no FastConnect line item in the BOM.
+
+The structured-input path (_draft_bom_payload_from_inputs) already uses
+SKU B88325 for FastConnect/DRG/private connectivity. Add the same detection
+to _draft_bom_payload.
+
+IMPORTANT: Branch from origin/main AFTER p48 is merged.
+
+  git fetch origin
+  git checkout -b claude/p49 origin/main
+
+Read agent/bom_service.py _draft_bom_payload() (around line 850). Find the
+object storage block near the end of line_items construction:
+
+  if object_storage_gb > 0 or "object storage" in text:
+      line_items.append(...)
+
+Add immediately AFTER that block (before the assumptions section):
+
+  if any(kw in text for kw in (
+      "fast connect", "fastconnect", "fast-connect",
+      "private connect", "mpls", "dedicated circuit",
+  )):
+      line_items.append(
+          self._build_line(
+              "B88325",
+              1.0,
+              price_table,
+              "network",
+              "FastConnect / private connectivity port (circuit cost billed separately by provider)",
+          )
+      )
+
+Do NOT change any other logic. Do NOT change _draft_bom_payload_from_inputs,
+the price table, or any other file.
+
+Verify:
+
+  python3.11 -m compileall agent/bom_service.py -q
+  # must be clean
+
+  python3.11 -c "
+  import re
+  text = 'i need a standard bom with fast connect and waf'
+  keywords = ('fast connect', 'fastconnect', 'fast-connect', 'private connect', 'mpls', 'dedicated circuit')
+  print('FastConnect detected:', any(kw in text for kw in keywords))
+  "
+  # must print: FastConnect detected: True
+
+  pytest tests/ -q --tb=short -m "not live" -x 2>&1 | tail -5
+  # no new failures
+
+Commit message:
+p49: add FastConnect SKU B88325 to _draft_bom_payload keyword detection
+
+Branch: claude/p49 (from main after p48 merges). Push when done.
+```
