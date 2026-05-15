@@ -28,14 +28,18 @@ from skillforge.types import (
 from skillforge.forge import Forge
 from skillforge.memory import SimpleMemory
 from skillforge.delegate import A2ADelegate
+from skillforge.protocols import ArgSchema, AsyncToolRunner, ToolSchema
 
 __all__ = [
     "A2ADelegate",
+    "ArgSchema",
+    "AsyncToolRunner",
     "Forge",
     "MemorySnapshot",
     "SimpleMemory",
     "ToolCall",
     "ToolResult",
+    "ToolSchema",
     "ToolStatus",
     "TurnEvent",
     "TurnResult",

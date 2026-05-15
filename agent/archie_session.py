@@ -180,6 +180,7 @@ def _get_forge(
     customer_name: str,
     store: ObjectStoreBase,
     text_runner: Callable,
+    tool_runner: Callable | None,
     a2a_base_url: str,
 ) -> _Forge:
     if customer_id not in _forge_cache:
@@ -188,6 +189,7 @@ def _get_forge(
             customer_id=customer_id,
             customer_name=customer_name,
             text_runner=text_runner,
+            tool_runner=tool_runner,
             a2a_base_url=a2a_base_url,
             base_system_prompt=ORCHESTRATOR_SYSTEM_MSG,
         )
@@ -202,6 +204,7 @@ async def run_turn(
     user_message: str,
     store: ObjectStoreBase,
     text_runner: Callable[[str, str], str],
+    tool_runner: Callable | None = None,
     a2a_base_url: str = "http://localhost:8080",
     max_tool_iterations: int = 5,
     specialist_mode: str = "legacy",
@@ -236,6 +239,7 @@ async def run_turn(
         customer_name=customer_name,
         store=store,
         text_runner=text_runner,
+        tool_runner=tool_runner,
         a2a_base_url=a2a_base_url,
     )
 

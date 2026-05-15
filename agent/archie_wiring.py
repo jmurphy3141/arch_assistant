@@ -17,33 +17,11 @@ from agent.tools.diagram import DiagramHandler
 from agent.tools.notes import NotesHandlers
 from agent.tools.specialists import JepHandler, PovHandler, WafHandler
 from agent.tools.terraform import TerraformHandler
-from skillforge import Forge
+from skillforge import ArgSchema, Forge
 from skillforge.types import MemorySnapshot
 
 
 _INTENT_ROUTING_SKILL = Path(__file__).parent.parent / "skills" / "intent_routing.md"
-
-# Ordered by specificity — first match wins
-_PROSE_GUARD_RULES: list[tuple[list[str], str]] = [
-    (["diagram", "draw.io", "drawio", "architecture diagram"], "generate_diagram"),
-    (["terraform", "tf file", ".tf"], "generate_terraform"),
-    (["waf review", "waf assessment", "waf analysis"], "generate_waf"),
-    (["point of view", "pov document", "generate pov"], "generate_pov"),
-    (["jep document", "generate jep", "joint execution"], "generate_jep"),
-    (["bom", "bill of materials", "bill-of-materials", "pricing", "costed"], "generate_bom"),
-]
-
-
-def _archie_prose_guard(user_message: str, prose_reply: str) -> str | None:
-    """
-    Return the tool name that should have been called when the LLM wrote prose
-    instead. Returns None for genuinely conversational messages.
-    """
-    text = user_message.lower()
-    for keywords, tool in _PROSE_GUARD_RULES:
-        if any(kw in text for kw in keywords):
-            return tool
-    return None
 
 _TOOL_SEQUENCING_RULES = """
 ## Tool Sequencing Rules
@@ -127,6 +105,7 @@ def build_forge(
     a2a_base_url: str = "",
     base_system_prompt: str = "",
     step3_planning: bool = True,
+    tool_runner: Callable | None = None,
 ) -> Forge:
     """
     Instantiate and return a Forge wired with all OCI tool handlers.
@@ -158,7 +137,7 @@ def build_forge(
         prompt_enricher=enricher,
         max_iterations=5,
         step3_planning=step3_planning,
-        prose_guard=_archie_prose_guard,
+        tool_runner=tool_runner,
     )
 
     notes = NotesHandlers(
@@ -177,6 +156,16 @@ def build_forge(
             text_runner=text_runner,
             a2a_base_url=a2a_base_url,
         ),
+        description=(
+            "Generate a priced OCI Bill of Materials with SKU-backed line items "
+            "and monthly cost totals. Call when the user asks for a BOM, pricing, "
+            "cost estimate, or bill of materials."
+        ),
+        args={"prompt": ArgSchema(
+            description="Full BOM request including workload sizing (OCPU, memory, storage, services).",
+            type="string",
+            required=True,
+        )},
         memory_contract=True,
         critique_enabled=True,
         requires_hat="oci_bom_expert",
@@ -190,6 +179,15 @@ def build_forge(
             text_runner=text_runner,
             a2a_base_url=a2a_base_url,
         ),
+        description=(
+            "Generate an OCI architecture diagram as a draw.io file. Call when the "
+            "user asks for a diagram, architecture drawing, or visual of the design."
+        ),
+        args={"prompt": ArgSchema(
+            description="Architecture description or BOM payload to diagram.",
+            type="string",
+            required=True,
+        )},
         memory_contract=True,
         critique_enabled=True,
         requires_hat="diagram_for_oci",
@@ -203,6 +201,15 @@ def build_forge(
             text_runner=text_runner,
             a2a_base_url=a2a_base_url,
         ),
+        description=(
+            "Generate OCI Terraform files (main.tf, variables.tf, outputs.tf). "
+            "Call when the user asks for Terraform, IaC, or infrastructure code."
+        ),
+        args={"prompt": ArgSchema(
+            description="Terraform generation request describing the OCI resources needed.",
+            type="string",
+            required=False,
+        )},
         memory_contract=True,
         critique_enabled=True,
         requires_hat="terraform_for_oci",
@@ -210,18 +217,47 @@ def build_forge(
     forge.register_tool(
         "generate_pov",
         PovHandler(store=store, customer_id=customer_id, customer_name=customer_name),
+        description=(
+            "Generate a Point of View document for the customer engagement. "
+            "Call when the user asks for a POV, executive summary, or customer brief."
+        ),
+        args={"feedback": ArgSchema(
+            description="Optional focus areas or additional context for the POV document.",
+            type="string",
+            required=False,
+        )},
         memory_contract=True,
+        critique_enabled=True,
         requires_hat="oci_customer_pov_writer",
     )
     forge.register_tool(
         "generate_jep",
         JepHandler(store=store, customer_id=customer_id, customer_name=customer_name),
+        description=(
+            "Generate a Joint Execution Plan document for the customer engagement. "
+            "Call when the user asks for a JEP, joint plan, or execution roadmap."
+        ),
+        args={"feedback": ArgSchema(
+            description="Optional milestones, scope, or context for the JEP document.",
+            type="string",
+            required=False,
+        )},
         memory_contract=True,
+        critique_enabled=True,
         requires_hat="jep_writer",
     )
     forge.register_tool(
         "generate_waf",
         WafHandler(store=store, customer_id=customer_id, customer_name=customer_name),
+        description=(
+            "Generate a Well-Architected Framework review document for the customer's "
+            "OCI architecture. Call when the user asks for a WAF review or assessment."
+        ),
+        args={"feedback": ArgSchema(
+            description="Optional additional context or focus areas for the WAF review.",
+            type="string",
+            required=False,
+        )},
         memory_contract=True,
         critique_enabled=True,
         requires_hat="oci_waf_reviewer",
