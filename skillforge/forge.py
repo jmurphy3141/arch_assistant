@@ -108,6 +108,7 @@ class Forge:
         auto_coordinate: bool = True,
         step3_planning: bool = False,
         pre_action_always: bool = False,
+        prose_guard: "Callable[[str, str], str | None] | None" = None,
     ) -> None:
         self._base_system_prompt = base_system_prompt
         self._hat_engine = hat_engine
@@ -119,6 +120,7 @@ class Forge:
         self._auto_coordinate = auto_coordinate
         self._step3_planning = step3_planning
         self._pre_action_always = pre_action_always
+        self._prose_guard = prose_guard
         self._registry = ToolRegistry()
         self._global_skills: list[str] = []
         # System prompt is rebuilt lazily after register_tool() calls.
@@ -460,6 +462,31 @@ class Forge:
 
             # ── Plain reply — done ────────────────────────────────────────────
             if parsed is _NO_TOOL:
+                # prose_guard: on the first iteration, detect when the LLM answered
+                # a generation request with prose instead of calling a tool, and
+                # inject a single correction so it retries with the tool call.
+                if iteration == 0 and self._prose_guard is not None:
+                    detected = self._prose_guard(user_message, raw)
+                    if detected:
+                        logger.warning(
+                            "prose_guard: prose response detected for tool=%s — injecting correction session=%s",
+                            detected,
+                            session_id,
+                        )
+                        events.append(
+                            TurnEvent(
+                                type="status",
+                                message=f"Tool call required — retrying as {detected}",
+                                data={"prose_guard_tool": detected},
+                            )
+                        )
+                        prompt = (
+                            prompt
+                            + f"\n[CORRECTION]: You MUST call the '{detected}' tool. "
+                            f"Do NOT write prose answers. Output only the tool-call JSON:\n"
+                            f'{{"tool": "{detected}", "args": {{"prompt": "..."}}}}'
+                        )
+                        continue
                 reply = raw.strip()
                 break
 

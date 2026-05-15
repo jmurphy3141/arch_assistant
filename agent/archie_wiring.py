@@ -23,6 +23,28 @@ from skillforge.types import MemorySnapshot
 
 _INTENT_ROUTING_SKILL = Path(__file__).parent.parent / "skills" / "intent_routing.md"
 
+# Ordered by specificity — first match wins
+_PROSE_GUARD_RULES: list[tuple[list[str], str]] = [
+    (["diagram", "draw.io", "drawio", "architecture diagram"], "generate_diagram"),
+    (["terraform", "tf file", ".tf"], "generate_terraform"),
+    (["waf review", "waf assessment", "waf analysis"], "generate_waf"),
+    (["point of view", "pov document", "generate pov"], "generate_pov"),
+    (["jep document", "generate jep", "joint execution"], "generate_jep"),
+    (["bom", "bill of materials", "bill-of-materials", "pricing", "costed"], "generate_bom"),
+]
+
+
+def _archie_prose_guard(user_message: str, prose_reply: str) -> str | None:
+    """
+    Return the tool name that should have been called when the LLM wrote prose
+    instead. Returns None for genuinely conversational messages.
+    """
+    text = user_message.lower()
+    for keywords, tool in _PROSE_GUARD_RULES:
+        if any(kw in text for kw in keywords):
+            return tool
+    return None
+
 _TOOL_SEQUENCING_RULES = """
 ## Tool Sequencing Rules
 
@@ -136,6 +158,7 @@ def build_forge(
         prompt_enricher=enricher,
         max_iterations=5,
         step3_planning=step3_planning,
+        prose_guard=_archie_prose_guard,
     )
 
     notes = NotesHandlers(
