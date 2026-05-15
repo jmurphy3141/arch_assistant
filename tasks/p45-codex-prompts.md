@@ -401,3 +401,58 @@ p45e: remove requires_hat gate from _build_tool_schemas — Forge auto-activates
 
 Branch: claude/p45e (from main after p45d merges). Push when done.
 ```
+
+---
+
+## p45f — Fix ToolDefinition type Case
+
+```
+Context: p45e made generation tools visible to the model. The OCI API now
+receives tool schemas but rejects every request with:
+
+  Invalid value for `type`, must be None or one of ['FUNCTION']
+
+Root cause: in agent/llm_inference_client.py run_inference_with_tools(),
+the ToolDefinition type field is set to lowercase "function":
+
+  td.type = "function"   ← wrong case
+
+The OCI SDK enum accepts only "FUNCTION" (uppercase) or None. The SDK
+validates on assignment.
+
+IMPORTANT: Branch from origin/main AFTER p45e is merged.
+
+  git fetch origin
+  git checkout -b claude/p45f origin/main
+
+Read agent/llm_inference_client.py lines 155–175 fully before editing.
+Find the loop that builds oci_tools — it contains:
+
+  td = oci.generative_ai_inference.models.ToolDefinition()
+  td.type = "function"
+  td.function = fn
+  oci_tools.append(td)
+
+Make exactly ONE change — change the type assignment to uppercase:
+
+  td.type = "FUNCTION"
+
+Do NOT change any other line. Do NOT change run_inference(), _extract_text(),
+forge.py, archie_wiring.py, drawing_agent_server.py, or any test files.
+
+Verify:
+
+  python3.11 -m compileall agent/llm_inference_client.py -q
+  # must be clean
+
+  grep -n 'td\.type' agent/llm_inference_client.py
+  # must show "FUNCTION" (uppercase)
+
+  pytest tests/ -q --tb=short -m "not live" -x 2>&1 | tail -5
+  # no new failures
+
+Commit message:
+p45f: fix ToolDefinition type case — OCI SDK requires "FUNCTION" not "function"
+
+Branch: claude/p45f (from main after p45e merges). Push when done.
+```
