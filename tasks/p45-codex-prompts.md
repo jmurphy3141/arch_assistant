@@ -177,3 +177,85 @@ p45b: forge wiring tests — assert tool descriptions and schema exclusion rules
 
 Branch: claude/p45b (from main after p45a merges). Push when done.
 ```
+
+---
+
+## p45c — Wire tool_runner into Streaming Path
+
+```
+Context: p45a wired the native OCI GenAI tool runner into /api/chat but missed
+the streaming endpoint /api/chat/stream. The UI always uses the streaming path,
+so native tool use never fires in production.
+
+Root cause (confirmed by code inspection):
+- drawing_agent_server.py /api/chat/stream handler (line ~3579) calls
+  stream_chat_turn() with text_runner but no tool_runner.
+- agent/chat_stream.py _chat_event_dicts() calls _run_orchestrator_turn()
+  with text_runner but no tool_runner.
+- _run_orchestrator_turn() accepts tool_runner but receives None, so Forge
+  falls back to text-based ReAct.
+
+IMPORTANT: Branch from origin/main AFTER p45b is merged.
+
+  git fetch origin
+  git checkout -b claude/p45c origin/main
+
+Read agent/chat_stream.py lines 18–75 fully before editing.
+Read drawing_agent_server.py lines 3579–3594 fully before editing.
+
+Implement the following — three small changes only:
+
+Change 1 — agent/chat_stream.py: _chat_event_dicts()
+Add tool_runner=None as a keyword-only parameter after text_runner.
+Pass it through to _run_orchestrator_turn():
+  result = await server._run_orchestrator_turn(
+      req=req,
+      store=store,
+      text_runner=text_runner,
+      tool_runner=tool_runner,          ← add this line
+      orch_cfg=server._cfg.get("orchestrator", {}),
+      reasoning_sink=_thinking_sink,
+  )
+
+Change 2 — agent/chat_stream.py: stream_chat_turn() and stream_chat_turn_sse()
+Add tool_runner=None as a keyword-only parameter to both functions.
+Forward it to _chat_event_dicts() in each.
+
+Change 3 — drawing_agent_server.py: /api/chat/stream handler (line ~3579)
+Build the tool_runner (same pattern as /api/chat):
+  tool_runner = (
+      None
+      if isinstance(store, InMemoryObjectStore)
+      else _make_orchestrator_tool_runner()
+  )
+Pass it to stream() calls:
+  stream(
+      ...,
+      text_runner=_make_orchestrator_text_runner(),
+      tool_runner=tool_runner,          ← add this
+      ...
+  )
+
+Do NOT change _run_orchestrator_turn(), build_forge(), Forge, or any test files.
+
+Run ALL acceptance criteria:
+
+  python3.11 -m compileall agent/chat_stream.py drawing_agent_server.py -q
+  # must be clean
+
+  grep -n "tool_runner" agent/chat_stream.py
+  # must show tool_runner in _chat_event_dicts, stream_chat_turn,
+  # and stream_chat_turn_sse
+
+  pytest tests/test_archie_forge_wiring.py tests/test_archie_prompt_to_file_e2e.py \
+    -v --tb=short
+  # all 11 must pass
+
+  pytest tests/ -q --tb=short -m "not live" -x 2>&1 | tail -5
+  # no new failures vs baseline (pre-existing JEP lifecycle failure is ok)
+
+Commit message:
+p45c: wire tool_runner into streaming path — /api/chat/stream was missing it
+
+Branch: claude/p45c (from main after p45b merges). Push when done.
+```
