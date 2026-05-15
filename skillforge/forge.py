@@ -444,6 +444,7 @@ class Forge:
             )
 
         _tool_retry_counts: dict[str, int] = {}
+        _approved_tools: set[str] = set()
 
         for iteration in range(self._max_iterations):
 
@@ -511,6 +512,10 @@ class Forge:
             tool_name: str = parsed.get("tool", "")
             if reasoning_sink and tool_name:
                 reasoning_sink(f"→ {tool_name.replace('_', ' ')}", "tool_selected")
+            if tool_name in _approved_tools:
+                # This tool was already called and approved this turn.
+                # The orchestrator has no more actions to take — return the result.
+                break
             tool_args: dict[str, Any] = dict(parsed.get("args") or {})
 
             # ── Hat activation ────────────────────────────────────────────────
@@ -851,6 +856,7 @@ class Forge:
                     active_hats=active_hats,
                     session_id=session_id,
                 )
+                _approved_tools.add(tool_name)
 
         context["_active_hats"] = active_hats
         context["_hat_rounds"] = hat_rounds
