@@ -485,6 +485,8 @@ class Forge:
             )
             system_msg = self._build_active_system_msg(active_hats)
 
+            if reasoning_sink:
+                reasoning_sink("Thinking...", "orchestrator")
             if self._tool_runner is not None:
                 schemas = self._build_tool_schemas(active_hats)
                 result = await self._tool_runner(
@@ -507,6 +509,8 @@ class Forge:
                 break
 
             tool_name: str = parsed.get("tool", "")
+            if reasoning_sink and tool_name:
+                reasoning_sink(f"→ {tool_name.replace('_', ' ')}", "tool_selected")
             tool_args: dict[str, Any] = dict(parsed.get("args") or {})
 
             # ── Hat activation ────────────────────────────────────────────────
@@ -683,6 +687,8 @@ class Forge:
 
             mem = memory_snapshot if spec.memory_contract else None
             try:
+                if reasoning_sink:
+                    reasoning_sink(f"Running {tool_name.replace('_', ' ')}...", "tool_running")
                 result = await spec.handler(
                     tool_args, memory=mem, context=context, trace_id=trace_id
                 )
@@ -791,6 +797,8 @@ class Forge:
             prompt = _append_result(prompt, tool_name, result.summary)
 
             # Step 6: expert post-review, then critic pass
+            if reasoning_sink and spec.critique_enabled and result.status == "ok":
+                reasoning_sink("Reviewing result...", "tool_review")
             if spec.critique_enabled and result.status == "ok":
                 prompt, review_decision = await self._run_expert_post_review(
                     prompt=prompt,
