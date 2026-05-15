@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agent import archie_session, archie_memory, context_store, document_store
+from agent import sub_agent_client
 from agent.bom_service import BomService
 from agent.persistence_objectstore import InMemoryObjectStore
 from drawing_agent_server import app
@@ -35,92 +36,80 @@ def deterministic_client(monkeypatch):
     app.state.object_store = store
     app.state.bom_service = BomService()
 
-    async def _dummy_text_runner(*_args, **_kwargs) -> str:
-        return "No free-form LLM response should be needed for these deterministic file prompts."
+    # More-specific tool matches must come before general ones (e.g. JEP before BOM
+    # because the JEP prompt mentions "bill of materials" as a deliverable section).
+    _TOOL_FOR_KEYWORDS = [
+        ("generate_jep",       ["jep/poc", "jep plan", "14-day jep"]),
+        ("generate_terraform", ["terraform bundle", "terraform"]),
+        ("generate_waf",       ["well-architected", "waf review"]),
+        ("generate_pov",       ["customer pov", "draft a customer pov"]),
+        ("generate_diagram",   ["draw.io", "architecture diagram"]),
+        ("generate_bom",       ["bill of materials", "xlsx", "bom"]),
+    ]
+
+    _orchestrator_calls: list[int] = [0]
+
+    async def _dummy_text_runner(prompt: str = "", *_args, **_kwargs) -> str:
+        label = _args[1] if len(_args) > 1 else (_kwargs.get("label") or "")
+        if "step3_planning" in str(label):
+            return (
+                "STEP 1 — UNDERSTAND:\nDeterministic test — user wants a generation deliverable.\n"
+                "STEP 2 — MEMORY ASSESSMENT:\nContext seeded. No gaps.\n"
+                "STEP 3 — PLAN + HAT SELECTION:\nCall the appropriate generation tool."
+            )
+        if str(label) in ("expert_pre_action", "pre_action_light"):
+            return "KNOWN FACTS: test\nGAPS: none\nEXPERT ASSESSMENT: proceed\nSUB-AGENT INSTRUCTIONS: use defaults"
+        if str(label) in ("expert_post_review",):
+            return "EXPERT_APPROVED"
+        # orchestrator / react loop — return tool-call JSON on first call, prose on subsequent
+        _orchestrator_calls[0] += 1
+        if _orchestrator_calls[0] == 1:
+            p = str(prompt).lower()
+            for tool, keywords in _TOOL_FOR_KEYWORDS:
+                if any(kw in p for kw in keywords):
+                    args = (
+                        {"prompt": prompt[:120]}
+                        if tool in ("generate_bom", "generate_terraform")
+                        else {"bom_text": ""} if tool == "generate_diagram"
+                        else {"feedback": ""}
+                    )
+                    import json as _json
+                    return _json.dumps({"tool": tool, "args": args})
+        return "Your deliverable has been generated successfully."
 
     def _make_text_runner():
+        _orchestrator_calls[0] = 0
         return _dummy_text_runner
 
-    async def _fake_tool_core(
-        tool_name,
-        args,
-        *,
-        customer_id,
-        customer_name,
-        store,
-        text_runner,
-        a2a_base_url,
-        specialist_mode="legacy",
-    ):
-        _ = (args, customer_name, text_runner, a2a_base_url, specialist_mode)
-        if tool_name == "generate_bom":
-            return (
-                "Final BOM prepared.",
-                "",
-                {
-                    "status": "ok",
-                    "type": "final",
-                    "result": json.dumps({"bom_payload": DETERMINISTIC_BOM_PAYLOAD}),
-                    "bom_payload": DETERMINISTIC_BOM_PAYLOAD,
-                    "archie_expert_review": {"verdict": "pass", "findings": []},
-                    "trace": {"source": "deterministic_e2e"},
-                },
-            )
-        if tool_name == "generate_diagram":
-            key = f"agent3/{customer_id}/prompt-file/v1/diagram.drawio"
-            store.put(key, DETERMINISTIC_DRAWIO.encode("utf-8"), "application/xml")
-            return (
-                f"Diagram generated. Key: {key}",
-                key,
-                {
-                    "drawio_xml": DETERMINISTIC_DRAWIO,
-                    "node_count": 7,
-                    "trace": {"source": "deterministic_e2e"},
-                },
-            )
-        if tool_name in {"generate_pov", "generate_jep", "generate_waf"}:
-            agent_name = tool_name.replace("generate_", "")
-            content = {
-                "pov": DETERMINISTIC_POV,
-                "jep": DETERMINISTIC_JEP,
-                "waf": DETERMINISTIC_WAF,
-            }[agent_name]
-            saved = document_store.save_doc(
-                store,
-                agent_name,
-                customer_id,
-                content,
-                {"source": "deterministic_e2e"},
-            )
-            return (
-                f"{agent_name.upper()} v{saved['version']} saved. Key: {saved['key']}",
-                saved["key"],
-                {"status": "ok", "result": content, "trace": {"source": "deterministic_e2e"}},
-            )
-        if tool_name == "generate_terraform":
-            saved = document_store.save_terraform_bundle(
-                store,
-                customer_id,
-                DETERMINISTIC_TERRAFORM_FILES,
-                {"source": "deterministic_e2e"},
-            )
-            key = saved["files"]["main.tf"]
-            return (
-                f"Terraform bundle v{saved['version']} saved. Key: {key}",
-                key,
-                {
-                    "status": "ok",
-                    "result": json.dumps({"files": DETERMINISTIC_TERRAFORM_FILES}),
-                    "terraform_files": DETERMINISTIC_TERRAFORM_FILES,
-                    "terraform_bundle": saved,
-                    "bundle": saved,
-                    "trace": {"source": "deterministic_e2e"},
-                },
-            )
-        raise AssertionError(f"unexpected tool {tool_name!r}")
+    async def _fake_call_sub_agent(agent_name, task="", engagement_context=None, trace_id=None, **_kwargs):
+        if agent_name == "bom":
+            return {
+                "status": "ok",
+                "result": json.dumps({"bom_payload": DETERMINISTIC_BOM_PAYLOAD}),
+            }
+        if agent_name in {"pov", "jep", "waf"}:
+            content = {"pov": DETERMINISTIC_POV, "jep": DETERMINISTIC_JEP, "waf": DETERMINISTIC_WAF}[agent_name]
+            return {"status": "ok", "result": content}
+        if agent_name == "terraform":
+            return {
+                "status": "ok",
+                "result": json.dumps({"files": DETERMINISTIC_TERRAFORM_FILES}),
+                "terraform_files": DETERMINISTIC_TERRAFORM_FILES,
+            }
+        raise AssertionError(f"unexpected sub-agent {agent_name!r}")
+
+    async def _fake_call_generate_diagram(args, *, customer_id, a2a_base_url="", **_kwargs):
+        key = f"agent3/{customer_id}/prompt-file/v1/diagram.drawio"
+        store.put(key, DETERMINISTIC_DRAWIO.encode("utf-8"), "application/xml")
+        return (
+            f"Diagram generated. Key: {key}",
+            key,
+            {"drawio_xml": DETERMINISTIC_DRAWIO, "node_count": 7, "trace": {"source": "deterministic_e2e"}},
+        )
 
     monkeypatch.setattr("drawing_agent_server._make_orchestrator_text_runner", _make_text_runner)
-    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_tool_core)
+    monkeypatch.setattr(sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
+    monkeypatch.setattr(archie_session, "_call_generate_diagram", _fake_call_generate_diagram)
     monkeypatch.setattr(archie_memory, "_terraform_scope_details_are_bounded", lambda **_kwargs: True)
 
     with TestClient(app, raise_server_exceptions=True) as test_client:

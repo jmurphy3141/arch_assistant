@@ -632,28 +632,6 @@ async def run_turn(
         )
     if isinstance(forge_result.artifacts, dict):
         artifacts.update(forge_result.artifacts)
-    forced_tool = _single_requested_tool_to_force(requested_tools, tool_calls)
-    if forced_tool:
-        call = await _run_generation_step(
-            forced_tool,
-            _default_generation_tool_args(forced_tool, user_message),
-        )
-        reply_text = str(call.get("result_summary", "") or "").strip()
-        if forced_tool == "generate_diagram":
-            reply_text = _build_single_diagram_reply(call, decision_context=decision_context)
-        elif forced_tool == "generate_bom":
-            data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
-            if archie_memory._bom_call_was_memory_revision(data) and "BOM revision was performed" not in reply_text:
-                reply_text = f"BOM revision was performed from updated memory.\n\n{reply_text}".strip()
-            section = _bom_resolved_inputs_reply_section(data)
-            if section:
-                reply_text = "\n".join([reply_text or "Final BOM prepared.", *section]).strip()
-        reply = _append_management_summary(
-            reply_text or f"Completed `{forced_tool}`.",
-            tool_calls,
-            decision_context=decision_context,
-        )
-
     return _finalize_turn(reply)
 
 # ── Tool dispatch ─────────────────────────────────────────────────────────────
@@ -2617,26 +2595,6 @@ def _message_requests_diagram_revision(msg: str) -> bool:
         )
     )
     return revision_marker and visual_target
-
-def _single_requested_tool_to_force(requested_tools: set[str], tool_calls: list[dict[str, Any]]) -> str:
-    if len(requested_tools) != 1:
-        return ""
-    tool_name = next(iter(requested_tools))
-    if any(call.get("tool") == tool_name for call in tool_calls):
-        return ""
-    return tool_name
-
-def _default_generation_tool_args(tool_name: str, user_message: str) -> dict[str, Any]:
-    text = str(user_message or "").strip()
-    if tool_name == "generate_diagram":
-        return {"bom_text": text}
-    if tool_name == "generate_bom":
-        return {"prompt": text}
-    if tool_name == "generate_terraform":
-        return {"prompt": text}
-    if tool_name in {"generate_pov", "generate_jep", "generate_waf"}:
-        return {"feedback": text}
-    return {}
 
 def _deliverable_requires_specialist_reply(requested_tools: set[str]) -> str:
     label = ", ".join(_ordered_requested_tools(requested_tools)) or "requested deliverable"

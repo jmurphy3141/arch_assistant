@@ -380,5 +380,6 @@ class TerraformHandler:
             data={
                 "terraform_files": files,
                 "terraform_bundle": saved,
+                "bundle": saved,
             },
         )
