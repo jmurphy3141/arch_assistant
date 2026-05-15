@@ -839,7 +839,18 @@ class BomService:
             return "question"
         return "normal"
 
+    @staticmethod
+    def _user_request_text(message: str) -> str:
+        """Return only the user-supplied portion of message, stripping any Archie Canonical Memory block."""
+        if "[End Archie Canonical Memory]" in message:
+            parts = message.split("[End Archie Canonical Memory]", 1)
+            return parts[1].strip()
+        return message
+
     def _draft_bom_payload(self, message: str, price_table: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        # Use only the user-supplied portion for shape/SKU hints so that old
+        # E4 descriptions in the canonical memory block don't force E4 selection.
+        user_text = self._user_request_text(message).lower()
         text = message.lower()
         is_gpu = "gpu" in text
         mentions_non_oci = self._mentions_non_oci_provider(text)
@@ -866,19 +877,19 @@ class BomService:
 
         shape_hint = str(table_signals.get("cpu_family") or "").lower()
         if not shape_hint:
-            if "ampere" in text or "a1" in text:
+            if "ampere" in user_text or "a1" in user_text:
                 shape_hint = "a1"
-            elif "e6" in text:
+            elif "e6" in user_text:
                 shape_hint = "e6"
 
-        # Determine CPU SKU from text hints; default to E5 (AMD general-purpose)
-        if shape_hint == "a1" or "ampere" in text:
+        # Determine CPU SKU from user request only; default to E5 (AMD general-purpose)
+        if shape_hint == "a1" or "ampere" in user_text:
             cpu_sku = "B93297"
-        elif "e6" in text or shape_hint == "e6":
+        elif "e6" in user_text or shape_hint == "e6":
             cpu_sku = "B111129"
-        elif "e4" in text or shape_hint == "e4":
+        elif "e4" in user_text or shape_hint == "e4":
             cpu_sku = "B93113"
-        elif "x9" in text or "intel" in text:
+        elif "x9" in user_text or "intel" in user_text:
             x9_sku = "B94176"
             cpu_sku = x9_sku
         else:
@@ -1407,6 +1418,7 @@ class BomService:
             row["extended_price"] = round(qty * price * multiplier, 4)
             total += float(row["extended_price"])
         norm["currency"] = str(norm.get("currency") or "USD")
+        norm["monthly_total"] = round(total, 4)
         norm["totals"] = {"estimated_monthly_cost": round(total, 4)}
         assumptions = norm.get("assumptions")
         if not isinstance(assumptions, list):
