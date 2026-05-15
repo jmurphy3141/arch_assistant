@@ -3582,11 +3582,17 @@ async def api_chat_stream(
     mode: str = Query(default="sse", pattern="^(sse|chunked)$"),
 ):
     store = _require_object_store()
+    tool_runner = (
+        None
+        if isinstance(store, InMemoryObjectStore)
+        else _make_orchestrator_tool_runner()
+    )
     stream = stream_chat_turn if mode == "chunked" else stream_chat_turn_sse
     return StreamingResponse(
         stream(
             customer_id=req.customer_id, customer_name=req.customer_name, message=req.message,
             store=store, text_runner=_make_orchestrator_text_runner(),
+            tool_runner=tool_runner,
             a2a_base_url=getattr(app.state, "a2a_base_url", ""),
             project_id=req.project_id, project_name=req.project_name,
         ),
