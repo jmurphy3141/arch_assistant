@@ -118,17 +118,17 @@ hat for any BOM generation, SKU selection, cost estimate, or XLSX export task.
   "bom_payload": {
     "line_items": [
       {
-        "sku": "B93113",
-        "description": "Compute - E4.Flex OCPU",
+        "sku": "B97384",
+        "description": "Compute - E5.Flex OCPU",
         "quantity": 16,
         "unit": "OCPU Per Hour",
-        "unit_price": 0.025,
-        "monthly_cost": 292.0,
-        "notes": "4 × E4.Flex VMs, 4 OCPU each, active-active HA (×2 ADs)"
+        "unit_price": 0.03,
+        "monthly_cost": 350.4,
+        "notes": "4 × E5.Flex VMs, 4 OCPU each, active-active HA (×2 ADs)"
       }
     ],
     "assumptions": [
-      "E4.Flex selected as default general-purpose shape",
+      "E5.Flex selected as default general-purpose shape",
       "730 hours/month standard billing period",
       "Block Volume: Balanced tier (10 VPU/GB)"
     ],
@@ -154,7 +154,7 @@ hat for any BOM generation, SKU selection, cost estimate, or XLSX export task.
 
 ## Failure Questions
 
-- "What compute shape did you intend — E4.Flex (AMD general-purpose),
+- "What compute shape did you intend — E5.Flex (AMD general-purpose, default),
    A1.Flex (Ampere/Graviton-equivalent), X9 (Intel-compatible), BM.GPU.A10,
    or another?"
 - "Is the storage Block Volume (boot + data disks), Object Storage (unstructured
@@ -180,8 +180,8 @@ the customer has the XLSX download link.
 As the OCI BOM Expert, confirm the following before calling `generate_bom`.
 These are YOUR checks as the expert — not validation rules for the sub-agent.
 
-- Compute shape family: E4/E5.Flex (AMD), A1.Flex (Ampere), X9 (Intel), GPU, or custom?
-  Default is E4.Flex unless the customer specifies otherwise.
+- Compute shape family: E5.Flex (AMD, default), A1.Flex (Ampere), X9 (Intel), GPU, or custom?
+  Default is E5.Flex unless the customer specifies otherwise.
 - OCPU count and memory GB: stated, or can I default with documented justification?
 - Region: confirmed? (default: us-chicago-1)
 - Storage: type (Block Volume / Object Storage / File Storage), tier, size in GB/TB?

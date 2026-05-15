@@ -608,7 +608,7 @@ class BomService:
         ocpu = float(compute.get("ocpu") or 0.0)
         mem_gb = float(memory.get("gb") or 0.0)
         block_gb = float(storage.get("block_gb") or 0.0)
-        cpu_sku = "B97384" if is_native else "B93113"   # E4.Flex default
+        cpu_sku = "B97384"   # E5.Flex default for all paths
         mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
 
         line_items = []
@@ -871,18 +871,18 @@ class BomService:
             elif "e6" in text:
                 shape_hint = "e6"
 
-        # Determine CPU SKU from text hints; default to E4 (AMD general-purpose)
+        # Determine CPU SKU from text hints; default to E5 (AMD general-purpose)
         if shape_hint == "a1" or "ampere" in text:
             cpu_sku = "B93297"
         elif "e6" in text or shape_hint == "e6":
             cpu_sku = "B111129"
-        elif "e5" in text or shape_hint == "e5":
-            cpu_sku = "B97384"
+        elif "e4" in text or shape_hint == "e4":
+            cpu_sku = "B93113"
         elif "x9" in text or "intel" in text:
             x9_sku = "B94176"
             cpu_sku = x9_sku
         else:
-            cpu_sku = "B93113"   # E4.Flex — OCI default general-purpose VM
+            cpu_sku = "B97384"   # E5.Flex — OCI default general-purpose VM
         mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
         shape_catalog = self._build_shape_catalog(price_table)
 

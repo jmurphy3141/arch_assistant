@@ -95,8 +95,8 @@ def test_bom_fast_path_honors_explicit_large_sizing() -> None:
     )
 
     by_sku = {row["sku"]: row for row in payload["line_items"]}
-    assert by_sku["B93113"]["quantity"] == 48.0
-    assert by_sku["B93114"]["quantity"] == 768.0
+    assert by_sku["B97384"]["quantity"] == 48.0
+    assert by_sku["B97385"]["quantity"] == 768.0
     assert by_sku["B91961"]["quantity"] == 43008.0
 
 
@@ -136,11 +136,11 @@ def test_structured_bom_inputs_drive_explicit_line_item_quantities() -> None:
     assert result["type"] == "final"
     payload = result["bom_payload"]
     by_sku = {row["sku"]: row for row in payload["line_items"]}
-    assert by_sku["B93113"]["quantity"] == 64.0
-    assert by_sku["B93114"]["quantity"] == 1146.88
+    assert by_sku["B97384"]["quantity"] == 64.0
+    assert by_sku["B97385"]["quantity"] == 1146.88
     assert by_sku["B91961"]["quantity"] == 45056.0
-    assert by_sku["B93113"]["quantity"] != 4.0
-    assert by_sku["B93114"]["quantity"] != 64.0
+    assert by_sku["B97384"]["quantity"] != 4.0
+    assert by_sku["B97385"]["quantity"] != 64.0
     assert by_sku["B91961"]["quantity"] != 1024.0
     assert payload["region"] == "af-johannesburg-1"
     assert payload["architecture_option"] == "OCI Dedicated VMware Solution"
@@ -229,11 +229,11 @@ migration-equivalent sizing values, not the raw on-prem inventory values.
     )
 
     by_sku = {row["sku"]: row for row in payload["line_items"]}
-    assert by_sku["B93113"]["quantity"] == 48.0
-    assert by_sku["B93114"]["quantity"] == 768.0
+    assert by_sku["B97384"]["quantity"] == 48.0
+    assert by_sku["B97385"]["quantity"] == 768.0
     assert by_sku["B91961"]["quantity"] == 43520.0
-    assert "source VxRail RAM 655 GB" in by_sku["B93114"]["notes"]
-    assert "target OCI-equivalent RAM 768 GB" in by_sku["B93114"]["notes"]
+    assert "source VxRail RAM 655 GB" in by_sku["B97385"]["notes"]
+    assert "target OCI-equivalent RAM 768 GB" in by_sku["B97385"]["notes"]
 
 
 def test_bom_validation_rejects_non_oci_provider_references_in_line_items() -> None:
