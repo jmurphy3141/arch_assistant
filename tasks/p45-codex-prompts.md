@@ -700,3 +700,78 @@ p46b: generate_bom prompt arg — pass user request verbatim, do not pre-interpr
 
 Branch: claude/p46b (from main after p46a merges). Push when done.
 ```
+
+---
+
+## p46c — BOM Server Count Multiplier
+
+```
+Context: _draft_bom_payload() in agent/bom_service.py extracts the per-server
+OCPU and memory from the request but never multiplies by the number of servers.
+"2 servers, 6 OCPU each" produces a BOM with 6 OCPU total instead of 12.
+
+IMPORTANT: Branch from origin/main AFTER p46b is merged.
+
+  git fetch origin
+  git checkout -b claude/p46c origin/main
+
+Read agent/bom_service.py _draft_bom_payload() fully before editing (around
+line 850). The function extracts ocpu, mem_gb, and then builds line items.
+
+Find this block (after ocpu and mem_gb are resolved, before shape detection):
+
+  block_gb = float(table_signals.get("block_gb") or 0.0)
+  ...
+  shape_hint = str(table_signals.get("cpu_family") or "").lower()
+
+Insert immediately after the mem_gb block and before shape_hint:
+
+  # Detect "N servers/instances/nodes" and multiply per-server sizing
+  _server_count = max(1, int(
+      self._extract_number(
+          r"(\d+)\s*(?:server|instance|vm|node)s?\b",
+          user_text,
+          default=1.0,
+      )
+  ))
+  if _server_count > 1:
+      _per_ocpu = ocpu
+      _per_mem  = mem_gb
+      ocpu   = _per_ocpu * _server_count
+      mem_gb = _per_mem  * _server_count
+      ocpu_notes = (
+          f"Compute OCPU — {_server_count} servers × {int(_per_ocpu)} OCPU"
+      )
+      mem_notes  = (
+          f"Compute memory — {_server_count} servers × {int(_per_mem)} GB"
+      )
+
+Do NOT change any other logic. Do not change shape detection, block storage,
+load balancer, database, or WAF sections. Do not touch any other file.
+
+Verify:
+
+  python3.11 -m compileall agent/bom_service.py -q
+  # must be clean
+
+  python3.11 -c "
+  from agent.bom_service import BomService
+  svc = BomService.__new__(BomService)
+  # _extract_number is a static/instance helper — test the regex directly
+  import re
+  text = '2 servers 6 ocpu each 24gb ram'
+  m = re.search(r'(\d+)\s*(?:server|instance|vm|node)s?\b', text)
+  print('server count:', m.group(1) if m else 'not found')
+  m2 = re.search(r'(\d+(?:\.\d+)?)\s*ocpu', text)
+  print('ocpu per server:', m2.group(1) if m2 else 'not found')
+  "
+  # must print: server count: 2 and ocpu per server: 6
+
+  pytest tests/ -q --tb=short -m "not live" -x 2>&1 | tail -5
+  # no new failures
+
+Commit message:
+p46c: BOM server count multiplier — "2 servers 6 OCPU each" now yields 12 OCPU total
+
+Branch: claude/p46c (from main after p46b merges). Push when done.
+```
