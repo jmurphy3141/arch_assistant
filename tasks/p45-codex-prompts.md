@@ -325,3 +325,79 @@ p45d: fix run_inference_with_tools() response path — Generic format uses choic
 
 Branch: claude/p45d (from main after p45c merges). Push when done.
 ```
+
+---
+
+## p45e — Fix _build_tool_schemas() requires_hat Gate
+
+```
+Context: p45d fixed the response parsing crash. However native tool use still
+does not fire — the model returns prose on every request. Root cause confirmed
+by code inspection of skillforge/forge.py.
+
+In _build_tool_schemas(active_hats), this gate exists (around line 285):
+
+  if spec.requires_hat and spec.requires_hat not in active_hats:
+      continue
+
+All six generation tools (generate_bom, generate_diagram, generate_terraform,
+generate_waf, generate_pov, generate_jep) have requires_hat set. At the start
+of every turn active_hats=[] because no hats are pre-activated. Therefore
+_build_tool_schemas([]) returns an empty list on every first call. The tool
+runner is called with zero schemas, the OCI model sees no available tools and
+returns prose, the isinstance(result, str) branch fires, and no tool is ever
+called.
+
+Forge already has hat auto-activation at tool dispatch time (around line 608):
+
+  if spec.requires_hat and spec.requires_hat not in active_hats:
+      active_hats = self._hat_engine.apply_hat(active_hats, spec.requires_hat)
+
+This means the requires_hat gate in _build_tool_schemas() is redundant for
+native tool use: the hat is activated automatically when the tool fires. The
+gate only makes sense in text-based ReAct where the orchestrator must
+explicitly call use_hat_* before a tool is available. In native tool use,
+Forge handles it transparently.
+
+IMPORTANT: Branch from origin/main AFTER p45d is merged.
+
+  git fetch origin
+  git checkout -b claude/p45e origin/main
+
+Read skillforge/forge.py _build_tool_schemas() fully before editing. Confirm:
+- It excludes use_hat_*, drop_hat_*, save_notes, get_summary, get_document
+- It has the requires_hat gate (the bug to remove)
+- Forge's domain tool dispatch block has hat auto-activation already
+
+Make exactly ONE change — nothing else:
+
+In _build_tool_schemas(), remove these two lines:
+
+  if spec.requires_hat and spec.requires_hat not in active_hats:
+      continue
+
+Do NOT add any replacement logic. Do NOT change the exclusion of use_hat_*,
+drop_hat_*, or the internal tools set. Do NOT change the tool dispatch block.
+Do NOT change any other file.
+
+Verify:
+
+  python3.11 -m compileall skillforge/forge.py -q
+  # must be clean
+
+  grep -n "requires_hat" skillforge/forge.py
+  # must NOT show the gate inside _build_tool_schemas()
+  # MUST still show the auto-activation block in the tool dispatch section
+
+  pytest tests/test_archie_forge_wiring.py -v --tb=short
+  # test_build_tool_schemas_excludes_internal_tools must pass
+  # generation tools must appear in schemas even with active_hats=[]
+
+  pytest tests/ -q --tb=short -m "not live" -x 2>&1 | tail -5
+  # no new failures (pre-existing JEP lifecycle failure is ok)
+
+Commit message:
+p45e: remove requires_hat gate from _build_tool_schemas — Forge auto-activates hats at dispatch
+
+Branch: claude/p45e (from main after p45d merges). Push when done.
+```
