@@ -8,7 +8,31 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.archie_wiring import build_forge
+from agent.persistence_objectstore import InMemoryObjectStore
+from skillforge.protocols import ArgSchema
 from skillforge.types import ToolResult, TurnResult
+
+
+GENERATION_TOOLS = {
+    "generate_bom",
+    "generate_diagram",
+    "generate_terraform",
+    "generate_waf",
+    "generate_pov",
+    "generate_jep",
+}
+
+GENERATION_HATS = [
+    "oci_bom_expert",
+    "diagram_for_oci",
+    "terraform_for_oci",
+    "oci_waf_reviewer",
+    "oci_customer_pov_writer",
+    "jep_writer",
+]
+
+INTERNAL_TOOLS = {"save_notes", "get_summary", "get_document"}
 
 
 def _mock_turn_result(reply: str = "done") -> TurnResult:
@@ -17,6 +41,20 @@ def _mock_turn_result(reply: str = "done") -> TurnResult:
         tool_calls=[],
         events=[],
         artifacts={},
+    )
+
+
+async def _dummy_text_runner(*_args, **_kwargs) -> str:
+    return "done"
+
+
+def _build_test_forge():
+    return build_forge(
+        store=InMemoryObjectStore(),
+        customer_id="test",
+        customer_name="Test User",
+        text_runner=_dummy_text_runner,
+        step3_planning=False,
     )
 
 
@@ -68,3 +106,40 @@ def test_forge_run_turn_called_for_generation_requests(message):
         "This means a bypass block in archie_session.py is routing "
         "this request directly to a tool, skipping Forge's reasoning loop."
     )
+
+
+def test_generation_tools_have_descriptions():
+    forge = _build_test_forge()
+
+    for tool_name in GENERATION_TOOLS:
+        spec = forge._registry.get(tool_name)
+        assert spec is not None
+        assert spec.description
+
+
+def test_generation_tools_have_arg_schemas():
+    forge = _build_test_forge()
+
+    for tool_name in GENERATION_TOOLS:
+        spec = forge._registry.get(tool_name)
+        assert spec is not None
+        assert isinstance(spec.args, dict)
+        assert spec.args
+        assert all(isinstance(arg, ArgSchema) for arg in spec.args.values())
+
+
+def test_build_tool_schemas_excludes_internal_tools():
+    forge = _build_test_forge()
+
+    schemas_without_hats = forge._build_tool_schemas(active_hats=[])
+    names_without_hats = {schema.name for schema in schemas_without_hats}
+    assert not (names_without_hats & INTERNAL_TOOLS)
+    assert not any(
+        name.startswith("use_hat_") or name.startswith("drop_hat_")
+        for name in names_without_hats
+    )
+
+    schemas_with_hats = forge._build_tool_schemas(active_hats=GENERATION_HATS)
+    names_with_hats = {schema.name for schema in schemas_with_hats}
+    assert not (names_with_hats & INTERNAL_TOOLS)
+    assert GENERATION_TOOLS <= names_with_hats
