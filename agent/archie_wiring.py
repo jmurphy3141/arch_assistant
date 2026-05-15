@@ -48,6 +48,20 @@ These rules are mandatory. Follow them on every generation request.
 8. If the user says "update everything" or "regenerate all", identify which tools have existing artifacts in context and re-run them in this order:
    generate_bom -> generate_diagram -> generate_waf -> generate_terraform ->
    generate_pov -> generate_jep (skip any that were not previously generated).
+
+### Tool-call discipline (mandatory)
+9. You MUST output a tool-call JSON line for every generation request. Never
+   respond with prose describing what you are about to do. Prose responses are
+   ONLY for conversational turns where no tool is needed.
+   Correct: {"tool": "generate_bom", "args": {"prompt": "..."}}
+   Wrong: "I'll generate a BOM for your web service architecture now."
+
+10. After step3_planning, if the plan identifies a generation action, immediately
+    output the tool-call JSON. Do not narrate the plan -- execute it.
+
+11. The tool-call JSON must appear alone on a single line with no surrounding text.
+    If you need to say something to the user as well, wait until after the tool
+    result is returned -- Forge will give you another turn.
 """
 
 
