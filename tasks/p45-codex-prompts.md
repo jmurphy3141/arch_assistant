@@ -456,3 +456,93 @@ p45f: fix ToolDefinition type case — OCI SDK requires "FUNCTION" not "function
 
 Branch: claude/p45f (from main after p45e merges). Push when done.
 ```
+
+---
+
+## p45g — Fix ToolDefinition / FunctionDefinition Serialization
+
+```
+Context: p45f fixed td.type to "FUNCTION". The OCI API now accepts the
+type field but rejects the request with:
+
+  Failed to deserialize the JSON body into the target type:
+  tools[0]: missing field `name` at line 1 column 2478
+
+The `name` field IS set in Python (fn.name = t["name"]) but is missing from
+the serialized JSON. This means `name` is not in FunctionDefinition.swagger_types
+so the OCI SDK silently drops it when building the HTTP body.
+
+IMPORTANT: Branch from origin/main AFTER p45f is merged.
+
+  git fetch origin
+  git checkout -b claude/p45g origin/main
+
+Run this introspection command on the server (or locally if oci SDK is installed)
+BEFORE touching any code. The output tells you the exact field names:
+
+  python3.11 -c "
+  from oci.generative_ai_inference.models import FunctionDefinition, ToolDefinition
+  print('FD swagger_types:', FunctionDefinition.swagger_types)
+  print('FD attribute_map:', FunctionDefinition.attribute_map)
+  print('TD swagger_types:', ToolDefinition.swagger_types)
+  print('TD attribute_map:', ToolDefinition.attribute_map)
+  "
+
+Use that output to determine the correct field names, then fix
+agent/llm_inference_client.py run_inference_with_tools() accordingly.
+
+Common findings and their fixes:
+
+  CASE A — name IS in FunctionDefinition.swagger_types:
+  The problem is elsewhere. Check if fn.parameters expects a specific type
+  (e.g., a JsonSchemaObject) rather than a plain dict. Try passing
+  parameters as a JSON string: fn.parameters = json.dumps(t["parameters"])
+
+  CASE B — name is NOT in FunctionDefinition.swagger_types but IS in
+  ToolDefinition.swagger_types:
+  Set the name directly on the ToolDefinition object instead:
+    td.name = t["name"]   ← add this
+    td.description = t["description"]   ← add this if also in TD
+  Remove the fn.name and fn.description assignments from FunctionDefinition.
+
+  CASE C — ToolDefinition has name, description, parameters directly
+  (no FunctionDefinition nesting needed):
+  Build without FunctionDefinition entirely:
+    td = oci.generative_ai_inference.models.ToolDefinition()
+    td.type = "FUNCTION"
+    td.name = t["name"]
+    td.description = t["description"]
+    td.parameters = t["parameters"]
+  Drop the fn/FunctionDefinition lines entirely.
+
+After determining which case applies and making the fix, verify locally:
+
+  python3.11 -c "
+  import json, oci
+  from oci.generative_ai_inference.models import FunctionDefinition, ToolDefinition
+  from oci.base_client import BaseClient
+  fn = FunctionDefinition()
+  fn.name = 'test'
+  fn.description = 'A test tool'
+  fn.parameters = {'type': 'object', 'properties': {}, 'required': []}
+  td = ToolDefinition()
+  td.type = 'FUNCTION'
+  td.function = fn
+  # Serialize to see what the SDK actually sends
+  client = BaseClient.__new__(BaseClient)
+  out = client.sanitize_for_serialization(td)
+  print(json.dumps(out, indent=2))
+  "
+  # The output must include 'name' and 'description' inside function or at top level
+
+  python3.11 -m compileall agent/llm_inference_client.py -q
+  # must be clean
+
+  pytest tests/ -q --tb=short -m "not live" -x 2>&1 | tail -5
+  # no new failures
+
+Commit message:
+p45g: fix ToolDefinition serialization — use SDK-correct field placement for name/description/parameters
+
+Branch: claude/p45g (from main after p45f merges). Push when done.
+```
