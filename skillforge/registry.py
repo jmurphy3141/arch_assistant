@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from skillforge.protocols import SafetyChecker, ToolHandler
+from skillforge.protocols import ArgSchema, SafetyChecker, ToolHandler
 
 
 @dataclass
@@ -20,6 +20,7 @@ class ToolSpec:
     name: str
     handler: ToolHandler
     description: str = ""
+    args: dict[str, ArgSchema] = field(default_factory=dict)
     args_schema: dict = field(default_factory=dict)
     memory_contract: bool = False
     safety_checker: SafetyChecker | None = None
@@ -55,6 +56,7 @@ class ToolRegistry:
         handler: ToolHandler,
         *,
         description: str = "",
+        args: dict[str, ArgSchema] | None = None,
         args_schema: dict[str, str] | None = None,
         memory_contract: bool = False,
         safety_checker: SafetyChecker | None = None,
@@ -85,6 +87,7 @@ class ToolRegistry:
             name=name,
             handler=handler,
             description=description,
+            args=args or {},
             args_schema=args_schema or {},
             memory_contract=memory_contract,
             safety_checker=safety_checker,

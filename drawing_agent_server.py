@@ -3032,6 +3032,46 @@ def _make_orchestrator_text_runner():
     return _async_runner
 
 
+def _make_orchestrator_tool_runner():
+    """
+    Return an async callable (prompt, system_msg, tools, label) -> dict | str
+    for native tool use in the orchestrator loop.
+    """
+    def _sync_runner(
+        prompt: str,
+        system_msg: str,
+        schemas: list,
+        model_profile: str = "orchestrator",
+    ) -> dict | str:
+        if not (_INFERENCE_AVAILABLE and INFERENCE_ENABLED):
+            raise RuntimeError("Inference not enabled.")
+        from agent.llm_inference_client import run_inference_with_tools
+        llm_cfg = resolve_agent_llm_config(_cfg, model_profile)
+        return run_inference_with_tools(
+            prompt=prompt,
+            system_message=system_msg,
+            tools=[s.to_api_dict() for s in schemas],
+            tool_choice="auto",
+            model_id=llm_cfg.get("model_id", INFERENCE_MODEL_ID),
+            endpoint=llm_cfg.get("service_endpoint", INFERENCE_ENDPOINT),
+            compartment_id=COMPARTMENT_ID,
+            max_tokens=int(llm_cfg.get("max_tokens", 4000)),
+            temperature=float(llm_cfg.get("temperature", 0.0)),
+            top_p=float(llm_cfg.get("top_p", 0.9)),
+        )
+
+    async def _async_runner(
+        prompt: str,
+        system_msg: str,
+        schemas: list,
+        model_profile: str = "orchestrator",
+    ) -> dict | str:
+        import asyncio
+        return await asyncio.to_thread(_sync_runner, prompt, system_msg, schemas, model_profile)
+
+    return _async_runner
+
+
 def _make_terraform_text_runner():
     """
     Return a sync callable (prompt, system_msg) -> str for Terraform stages.
@@ -3061,6 +3101,7 @@ async def _run_orchestrator_turn(
     req: OrchestratorChatRequest,
     store,
     text_runner,
+    tool_runner=None,
     orch_cfg: dict,
     reasoning_sink=None,
 ) -> dict:
@@ -3082,6 +3123,7 @@ async def _run_orchestrator_turn(
         user_message=req.message,
         store=store,
         text_runner=text_runner,
+        tool_runner=tool_runner,
         a2a_base_url=a2a_base_url,
         max_tool_iterations=max_tool_iterations,
         specialist_mode=specialist_mode,
@@ -3494,6 +3536,11 @@ async def api_chat(req: OrchestratorChatRequest):
     """
     store = _require_object_store()
     text_runner = _make_orchestrator_text_runner()
+    tool_runner = (
+        None
+        if isinstance(store, InMemoryObjectStore)
+        else _make_orchestrator_tool_runner()
+    )
     orch_cfg = _cfg.get("orchestrator", {})
 
     try:
@@ -3501,6 +3548,7 @@ async def api_chat(req: OrchestratorChatRequest):
             req=req,
             store=store,
             text_runner=text_runner,
+            tool_runner=tool_runner,
             orch_cfg=orch_cfg,
         )
         result = await _persist_bom_xlsx_downloads(req.customer_id, store, result)

@@ -41,10 +41,13 @@ import uuid
 from typing import Any
 
 from skillforge.protocols import (
+    ArgSchema,
     AsyncTextRunner,
+    AsyncToolRunner,
     HatEngine,
     Memory,
     PromptEnricher,
+    ToolSchema,
 )
 from skillforge.registry import ToolRegistry, ToolSpec
 from skillforge.types import MemorySnapshot, ToolCall, ToolResult, TurnEvent, TurnResult
@@ -108,7 +111,7 @@ class Forge:
         auto_coordinate: bool = True,
         step3_planning: bool = False,
         pre_action_always: bool = False,
-        prose_guard: "Callable[[str, str], str | None] | None" = None,
+        tool_runner: AsyncToolRunner | None = None,
     ) -> None:
         self._base_system_prompt = base_system_prompt
         self._hat_engine = hat_engine
@@ -120,7 +123,7 @@ class Forge:
         self._auto_coordinate = auto_coordinate
         self._step3_planning = step3_planning
         self._pre_action_always = pre_action_always
-        self._prose_guard = prose_guard
+        self._tool_runner = tool_runner
         self._registry = ToolRegistry()
         self._global_skills: list[str] = []
         # System prompt is rebuilt lazily after register_tool() calls.
@@ -165,6 +168,7 @@ class Forge:
         handler: Any,   # ToolHandler — Any to avoid Protocol runtime overhead
         *,
         description: str = "",
+        args: dict[str, ArgSchema] | None = None,
         args_schema: dict[str, str] | None = None,
         memory_contract: bool = False,
         safety_checker: Any | None = None,   # SafetyChecker
@@ -200,6 +204,7 @@ class Forge:
             name,
             handler,
             description=description,
+            args=args,
             args_schema=args_schema,
             memory_contract=memory_contract,
             safety_checker=safety_checker,
@@ -268,6 +273,27 @@ class Forge:
                 skill_guidance=skill_guidance or "",
                 safety_checker=safety_checker,
             )
+
+    def _build_tool_schemas(self, active_hats: list[str]) -> list[ToolSchema]:
+        excluded = {"save_notes", "get_summary", "get_document"}
+        schemas: list[ToolSchema] = []
+        for spec in self._registry._tools.values():
+            if (
+                spec.name.startswith("use_hat_")
+                or spec.name.startswith("drop_hat_")
+                or spec.name in excluded
+            ):
+                continue
+            if spec.requires_hat and spec.requires_hat not in active_hats:
+                continue
+            schemas.append(
+                ToolSchema(
+                    name=spec.name,
+                    description=spec.description,
+                    args=spec.args,
+                )
+            )
+        return schemas
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
@@ -457,37 +483,25 @@ class Forge:
             )
             system_msg = self._build_active_system_msg(active_hats)
 
-            raw = await self._text_runner(prompt_for_llm, system_msg, "orchestrator")
-            parsed = _parse_tool_call(raw)
+            if self._tool_runner is not None:
+                schemas = self._build_tool_schemas(active_hats)
+                result = await self._tool_runner(
+                    prompt_for_llm, system_msg, schemas, "orchestrator"
+                )
+                if isinstance(result, str):
+                    reply = result.strip()
+                    break
+                parsed = result
+            else:
+                # Text-based fallback — used in tests and when tool_runner is not configured
+                raw = await self._text_runner(prompt_for_llm, system_msg, "orchestrator")
+                parsed = _parse_tool_call(raw)
+                if parsed is _NO_TOOL:
+                    reply = raw.strip()
+                    break
 
             # ── Plain reply — done ────────────────────────────────────────────
             if parsed is _NO_TOOL:
-                # prose_guard: on the first iteration, detect when the LLM answered
-                # a generation request with prose instead of calling a tool, and
-                # inject a single correction so it retries with the tool call.
-                if iteration == 0 and self._prose_guard is not None:
-                    detected = self._prose_guard(user_message, raw)
-                    if detected:
-                        logger.warning(
-                            "prose_guard: prose response detected for tool=%s — injecting correction session=%s",
-                            detected,
-                            session_id,
-                        )
-                        events.append(
-                            TurnEvent(
-                                type="status",
-                                message=f"Tool call required — retrying as {detected}",
-                                data={"prose_guard_tool": detected},
-                            )
-                        )
-                        prompt = (
-                            prompt
-                            + f"\n[CORRECTION]: You MUST call the '{detected}' tool. "
-                            f"Do NOT write prose answers. Output only the tool-call JSON:\n"
-                            f'{{"tool": "{detected}", "args": {{"prompt": "..."}}}}'
-                        )
-                        continue
-                reply = raw.strip()
                 break
 
             tool_name: str = parsed.get("tool", "")
