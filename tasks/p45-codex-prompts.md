@@ -775,3 +775,76 @@ p46c: BOM server count multiplier — "2 servers 6 OCPU each" now yields 12 OCPU
 
 Branch: claude/p46c (from main after p46b merges). Push when done.
 ```
+
+---
+
+## p47 — Live Forge Status Events
+
+```
+Context: The UI shows no activity while Forge is processing — the user sees a
+blank spinner until the full response arrives. reasoning_sink already exists
+and pushes thinking events to the SSE stream in real time. It is only called
+during extended thinking blocks (step3_planning, expert_pre_action,
+expert_post_review). The main processing steps emit nothing.
+
+Fix: add reasoning_sink calls at the four key moments in run_turn() so the
+UI shows live status as Forge works.
+
+IMPORTANT: Branch from origin/main.
+
+  git fetch origin
+  git checkout -b claude/p47 origin/main
+
+Read skillforge/forge.py run_turn() fully before editing. The reasoning_sink
+signature is: reasoning_sink(label: str, phase: str) -> None
+Always guard with: if reasoning_sink:
+
+The four insertion points — add exactly these lines, nothing else:
+
+1. BEFORE the orchestrator LLM call (line ~488, before the
+   `if self._tool_runner is not None:` block):
+
+  if reasoning_sink:
+      reasoning_sink("Thinking...", "orchestrator")
+
+2. IMMEDIATELY AFTER tool_name is extracted from parsed (around line 508,
+   after `tool_name: str = parsed.get("tool", "")`):
+
+  if reasoning_sink and tool_name:
+      reasoning_sink(f"→ {tool_name.replace('_', ' ')}", "tool_selected")
+
+3. IMMEDIATELY BEFORE the tool handler dispatch (line ~683,
+   just before `result = await spec.handler(...)`):
+
+  if reasoning_sink:
+      reasoning_sink(f"Running {tool_name.replace('_', ' ')}...", "tool_running")
+
+4. IMMEDIATELY BEFORE expert post-review (line ~792,
+   just before `if spec.critique_enabled and result.status == "ok":`):
+
+  if reasoning_sink and spec.critique_enabled and result.status == "ok":
+      reasoning_sink("Reviewing result...", "tool_review")
+
+Do NOT change any logic. Do NOT move existing reasoning_sink calls.
+Do NOT touch any other file.
+
+Verify:
+
+  python3.11 -m compileall skillforge/forge.py -q
+  # must be clean
+
+  grep -n "Thinking\.\.\.\|tool_selected\|tool_running\|tool_review" skillforge/forge.py
+  # must show all four new calls
+
+  pytest tests/test_archie_forge_wiring.py tests/test_archie_prompt_to_file_e2e.py \
+    -v --tb=short
+  # all must pass
+
+  pytest tests/ -q --tb=short -m "not live" -x 2>&1 | tail -5
+  # no new failures
+
+Commit message:
+p47: live Forge status events — Thinking/tool_selected/tool_running/tool_review via reasoning_sink
+
+Branch: claude/p47 (from main). Push when done.
+```
