@@ -163,7 +163,7 @@ def run_inference_with_tools(
         fn.parameters = t["parameters"]
 
         td = oci.generative_ai_inference.models.ToolDefinition()
-        td.type = "function"
+        td.type = "FUNCTION"
         td.function = fn
         oci_tools.append(td)
 
