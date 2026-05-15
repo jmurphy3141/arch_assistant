@@ -87,7 +87,7 @@ hat for any diagram generation, update, or validation request.
   Any deviation must be an explicit architectural decision, not an error.
 
 - **Instance count labels:** When a service has `instance_count > 1`, label it
-  `"{N} × {ShapeName}"` (e.g., `"3 × E4.Flex"`). Single instances use plain
+  `"{N} × {ShapeName}"` (e.g., `"3 × E5.Flex"`). Single instances use plain
   service name.
 
 - **HA/DR topology:**
@@ -131,7 +131,7 @@ hat for any diagram generation, update, or validation request.
   "artifact_key": "diagrams/customer-123/v2.drawio",
   "drawio_xml": "<mxGraphModel>...</mxGraphModel>",
   "node_count": 14,
-  "summary": "3-tier OCI architecture: Public LB + WAF, 3×E4.Flex app nodes in
+  "summary": "3-tier OCI architecture: Public LB + WAF, 3×E5.Flex app nodes in
               Private subnet across 2 ADs, Autonomous DB in Data tier, OCI Vault
               in Management subnet. FastConnect DRG for on-premises link."
 }
@@ -159,7 +159,7 @@ hat for any diagram generation, update, or validation request.
   compute instances?"
 - "Is there a DRG or FastConnect requirement for on-premises connectivity?"
 - "Should the Bastion Service be shown for SSH/RDP management access?"
-- "How many compute instances per tier — e.g., '3 × E4.Flex' in the app tier?"
+- "How many compute instances per tier — e.g., '3 × E5.Flex' in the app tier?"
 
 ## Activation & Drop
 

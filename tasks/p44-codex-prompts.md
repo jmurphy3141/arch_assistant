@@ -159,3 +159,43 @@ p44d: architecture guard — CLAUDE.md rule, forge-wiring test, rename to archie
 
 Branch: claude/p44d (from main, after p44a–p44c merged). Push when done.
 ```
+
+---
+
+## p44e — Remove Forced-Tool Fallback
+
+```
+Read tasks/p44e-remove-forced-tool-fallback.md carefully end to end before
+touching any code.
+
+IMPORTANT: Branch from origin/main AFTER p44d is merged.
+
+  git fetch origin
+  git checkout -b claude/p44e origin/main
+
+Run the prerequisite check first:
+  python3.11 -m compileall agent/archie_session.py agent/archie_wiring.py
+  grep -n "_single_requested_tool_to_force\|forced_tool\|_default_generation_tool_args" \
+    agent/archie_session.py | wc -l
+  # note the count — must drop to 0 after changes
+
+Read agent/archie_session.py lines 630–660 carefully before editing to understand
+the full scope of the forced_tool block. Also read lines 2621–2640 to see
+both helper functions that must be removed.
+
+Read agent/archie_wiring.py _TOOL_SEQUENCING_RULES string fully before editing.
+
+Implement:
+1. Delete lines 635–656 (the forced_tool block) from archie_session.py
+2. Delete _single_requested_tool_to_force() and _default_generation_tool_args()
+   helper functions — verify each has no other callers before deleting
+3. Append the tool-call discipline rules (items 9–11) to _TOOL_SEQUENCING_RULES
+   in archie_wiring.py
+
+Run ALL acceptance criteria checks before committing.
+
+Commit message:
+p44e: remove forced-tool fallback — Forge expert reasoning now fires on all generation requests
+
+Branch: claude/p44e (from main, after p44d merged). Push when done.
+```
