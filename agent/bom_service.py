@@ -875,6 +875,26 @@ class BomService:
         mem_notes = str(table_signals.get("mem_notes") or "Primary compute memory")
         block_notes = str(table_signals.get("block_notes") or "Block storage capacity")
 
+        # Detect "N servers/instances/nodes" and multiply per-server sizing
+        _server_count = max(1, int(
+            self._extract_number(
+                r"(\d+)\s*(?:server|instance|vm|node)s?\b",
+                user_text,
+                default=1.0,
+            )
+        ))
+        if _server_count > 1:
+            _per_ocpu = ocpu
+            _per_mem  = mem_gb
+            ocpu   = _per_ocpu * _server_count
+            mem_gb = _per_mem  * _server_count
+            ocpu_notes = (
+                f"Compute OCPU — {_server_count} servers × {int(_per_ocpu)} OCPU"
+            )
+            mem_notes  = (
+                f"Compute memory — {_server_count} servers × {int(_per_mem)} GB"
+            )
+
         shape_hint = str(table_signals.get("cpu_family") or "").lower()
         if not shape_hint:
             if "ampere" in user_text or "a1" in user_text:
