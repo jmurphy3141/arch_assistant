@@ -162,7 +162,11 @@ def build_forge(
             "cost estimate, or bill of materials."
         ),
         args={"prompt": ArgSchema(
-            description="Full BOM request including workload sizing (OCPU, memory, storage, services).",
+            description=(
+                "The user's BOM request, copied verbatim. Do not interpret, pre-size, "
+                "or substitute shape names. If the user said '2 E5 servers 6 OCPU', "
+                "pass exactly that. The BOM service extracts sizing from the raw text."
+            ),
             type="string",
             required=True,
         )},
