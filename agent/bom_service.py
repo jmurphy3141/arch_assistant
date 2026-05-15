@@ -856,6 +856,11 @@ class BomService:
         mentions_non_oci = self._mentions_non_oci_provider(text)
         table_signals = self._extract_table_signals(message)
 
+        # Detect instance count ("2 servers", "3 nodes", etc.) from user text only.
+        _server_count = max(1, int(self._extract_number(
+            r"(\d+)\s*(?:server|instance|vm|node|host)s?\b", user_text, default=1.0
+        )))
+
         ocpu = float(table_signals.get("ocpu") or 0.0)
         if ocpu <= 0:
             ocpu = self._extract_number(r"(\d+(?:\.\d+)?)\s*ocpu", text, default=4.0)
@@ -898,11 +903,15 @@ class BomService:
         shape_catalog = self._build_shape_catalog(price_table)
 
         line_items: list[dict[str, Any]] = []
-        line_items.append(self._build_line(cpu_sku, ocpu, price_table, "compute", ocpu_notes))
+        cpu_line = self._build_line(cpu_sku, ocpu, price_table, "compute", ocpu_notes)
+        cpu_line["instance_count"] = _server_count
+        line_items.append(cpu_line)
 
         # non-GPU compute must be split into OCPU + memory rows
         if not is_gpu:
-            line_items.append(self._build_line(mem_sku, mem_gb, price_table, "compute", mem_notes))
+            mem_line = self._build_line(mem_sku, mem_gb, price_table, "compute", mem_notes)
+            mem_line["instance_count"] = _server_count
+            line_items.append(mem_line)
 
         line_items.append(self._build_line("B91961", block_gb, price_table, "storage", block_notes))
         line_items.append(
@@ -1430,9 +1439,13 @@ class BomService:
         ws = wb.active
         ws.title = "BOM"
 
+        # Columns: A=SKU, B=Description, C=Instance Count, D=Category,
+        #          E=Metric, F=Quantity, G=Monthly Multiplier,
+        #          H=Unit Price (USD), I=Monthly Cost (USD), J=Notes
         headers = [
             "SKU",
             "Description",
+            "Instance Count",
             "Category",
             "Metric",
             "Quantity",
@@ -1447,10 +1460,13 @@ class BomService:
 
         line_items = payload.get("line_items") or []
         for item in line_items:
+            raw_count = item.get("instance_count")
+            count_val = int(raw_count) if raw_count not in (None, "", 0) else ""
             ws.append(
                 [
                     item.get("sku", ""),
                     item.get("description", ""),
+                    count_val,
                     item.get("category", ""),
                     item.get("metric", ""),
                     float(item.get("quantity") or 0),
@@ -1464,23 +1480,24 @@ class BomService:
         start_row = 2
         end_row = max(1, len(line_items) + 1)
         for row_idx in range(start_row, end_row + 1):
-            ws.cell(row=row_idx, column=8, value=f"=E{row_idx}*F{row_idx}*G{row_idx}")
+            ws.cell(row=row_idx, column=9, value=f"=F{row_idx}*G{row_idx}*H{row_idx}")
 
         total_row = end_row + 2
-        ws.cell(row=total_row, column=7, value="TOTAL")
-        ws.cell(row=total_row, column=8, value=f"=SUM(H{start_row}:H{end_row})")
-        ws.cell(row=total_row, column=7).font = Font(bold=True)
+        ws.cell(row=total_row, column=8, value="TOTAL")
+        ws.cell(row=total_row, column=9, value=f"=SUM(I{start_row}:I{end_row})")
         ws.cell(row=total_row, column=8).font = Font(bold=True)
+        ws.cell(row=total_row, column=9).font = Font(bold=True)
 
         ws.column_dimensions["A"].width = 14
         ws.column_dimensions["B"].width = 38
-        ws.column_dimensions["C"].width = 14
-        ws.column_dimensions["D"].width = 32
-        ws.column_dimensions["E"].width = 12
-        ws.column_dimensions["F"].width = 18
+        ws.column_dimensions["C"].width = 16
+        ws.column_dimensions["D"].width = 14
+        ws.column_dimensions["E"].width = 32
+        ws.column_dimensions["F"].width = 12
         ws.column_dimensions["G"].width = 18
-        ws.column_dimensions["H"].width = 20
-        ws.column_dimensions["I"].width = 42
+        ws.column_dimensions["H"].width = 18
+        ws.column_dimensions["I"].width = 20
+        ws.column_dimensions["J"].width = 42
 
         output = io.BytesIO()
         wb.save(output)
