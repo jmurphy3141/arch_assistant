@@ -107,6 +107,7 @@ class Forge:
         text_runner: AsyncTextRunner,
         prompt_enricher: PromptEnricher | None = None,
         max_iterations: int = _MAX_ITERATIONS_DEFAULT,
+        max_critique_retries: int = 1,
         history_window: int = _HISTORY_WINDOW_DEFAULT,
         auto_coordinate: bool = True,
         step3_planning: bool = False,
@@ -119,6 +120,7 @@ class Forge:
         self._text_runner = text_runner
         self._prompt_enricher = prompt_enricher
         self._max_iterations = max_iterations
+        self._max_critique_retries = max_critique_retries
         self._history_window = history_window
         self._auto_coordinate = auto_coordinate
         self._step3_planning = step3_planning
@@ -440,6 +442,8 @@ class Forge:
                 events=events,
                 reasoning_sink=reasoning_sink,
             )
+
+        _tool_retry_counts: dict[str, int] = {}
 
         for iteration in range(self._max_iterations):
 
@@ -804,29 +808,33 @@ class Forge:
                     reply = surface_msg
                     break
                 if review_decision == "iterate":
-                    # Extract the concern from the prompt (appended by post-review).
-                    _iterate_concern = ""
-                    if "EXPERT_REVIEW (iterate):" in prompt:
-                        _iterate_concern = (
-                            prompt.rsplit("EXPERT_REVIEW (iterate):", 1)[-1]
-                            .splitlines()[0]
-                            .strip()
+                    _tool_retry_counts[tool_name] = _tool_retry_counts.get(tool_name, 0) + 1
+                    if _tool_retry_counts[tool_name] <= self._max_critique_retries:
+                        # Extract the concern from the prompt (appended by post-review).
+                        _iterate_concern = ""
+                        if "EXPERT_REVIEW (iterate):" in prompt:
+                            _iterate_concern = (
+                                prompt.rsplit("EXPERT_REVIEW (iterate):", 1)[-1]
+                                .splitlines()[0]
+                                .strip()
+                            )
+                        _concern_clause = (
+                            f" Specifically: {_iterate_concern}" if _iterate_concern else ""
                         )
-                    _concern_clause = (
-                        f" Specifically: {_iterate_concern}" if _iterate_concern else ""
-                    )
-                    prompt = (
-                        f"{prompt}\n\n"
-                        f"CORRECTION REQUIRED: The expert review found a fixable problem "
-                        f"with the last '{tool_name}' call.{_concern_clause}\n"
-                        f"Re-call '{tool_name}' now with corrected arguments that directly "
-                        f"address this concern. Output ONLY the corrected tool call JSON."
-                    )
-                    _pending_correction = {
-                        "tool": tool_name,
-                        "concern": _iterate_concern,
-                    }
-                    continue
+                        prompt = (
+                            f"{prompt}\n\n"
+                            f"CORRECTION REQUIRED: The expert review found a fixable problem "
+                            f"with the last '{tool_name}' call.{_concern_clause}\n"
+                            f"Re-call '{tool_name}' now with corrected arguments that directly "
+                            f"address this concern. Output ONLY the corrected tool call JSON."
+                        )
+                        _pending_correction = {
+                            "tool": tool_name,
+                            "concern": _iterate_concern,
+                        }
+                        continue
+                    # Retry cap reached — accept result and proceed to critique pass
+                    review_decision = "approved"
                 # "approved" — fire the critic
                 prompt, active_hats = await self._run_critique_pass(
                     prompt=prompt,
