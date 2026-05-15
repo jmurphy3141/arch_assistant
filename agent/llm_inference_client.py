@@ -210,7 +210,7 @@ def run_inference_with_tools(
     )
     result = client.chat(chat_detail)
 
-    response_msg = result.data.chat_response.chat_request.messages[-1]
+    response_msg = result.data.chat_response.choices[0].message
     tool_calls = getattr(response_msg, "tool_calls", None) or []
     if tool_calls:
         tc = tool_calls[0]
