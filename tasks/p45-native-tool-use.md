@@ -1,122 +1,254 @@
 # p45: Native Tool Use via OCI GenAI Function Calling
 
+## Verified Environment
+
+- **OCI SDK version**: 2.165.1
+- **API format in use**: `API_FORMAT_GENERIC` (already correct — no change needed)
+- **GenericChatRequest.tools**: confirmed present
+- **GenericChatRequest.tool_choice**: confirmed present
+- **GenericChatRequest.reasoning_effort**: present (NONE/MINIMAL/LOW/MEDIUM/HIGH)
+- **Model OCID**: `ocid1.generativeaimodel.oc1.us-chicago-1.amaaaaaask7dceyadd6ow2hxfppx7dmwmok4pon2jtsw2m2wiwoplexjrqaq`
+
+Confirmed SDK classes (all under `oci.generative_ai_inference.models`):
+
+| Class | Purpose |
+|-------|---------|
+| `ToolDefinition` | Declare a tool in the API request |
+| `FunctionDefinition` | The function inside a `ToolDefinition` |
+| `ToolChoiceAuto` | Model decides whether to call a tool |
+| `ToolChoiceRequired` | Model must call a tool |
+| `ToolChoiceNone` | Model must not call tools |
+| `ToolCall` | A tool call in the model response |
+| `FunctionCall` | The function invocation inside a `ToolCall` |
+| `ToolMessage` | Inject a tool result back into conversation history |
+
+No Cohere classes. No format switch. All implementation below uses these exact names.
+
+---
+
 ## Problem Statement
 
 Forge uses a text-based ReAct pattern. The orchestrator LLM must emit a specific
 JSON string — `{"tool": "generate_bom", "args": {...}}` — to indicate a tool
 call. When the LLM writes a prose answer instead, Forge accepts it and returns
-it as the final reply. None of the p39–p44 expert reasoning (pre-action thinking,
-post-review, correction loops) ever fires because those all depend on the tool
-being called first.
+it as the final reply. None of the p39–p43 expert reasoning (pre-action thinking,
+post-review, correction loops) ever fires because those depend on the tool being
+called first.
 
-This has produced three rounds of band-aid fixes:
-- Forced-tool fallback in `archie_session.py` (removed by p44e)
-- Keyword-matching tool forcing (added and removed)
-- `prose_guard` in Forge (added during p45 session — still present, still fragile)
+**Root cause**: chat-tuned language models are trained to write helpful prose.
+That training consistently beats JSON-format instructions. No amount of prompt
+wording is a reliable fix.
 
-The root cause is architectural: text-based ReAct is fundamentally unreliable
-with chat-tuned language models that are trained to write helpful prose.
+**Correct fix**: declare tools in the API request. When tools are declared,
+the model returns `ToolCall` objects — not text. The model is trained to use
+this path for actions and prose for conversation. Reliability goes from ~50%
+to ~99%.
 
-## Root Cause
+---
 
-OCI GenAI hosts Cohere Command R+ accessed via `GenericChatRequest` with
-`api_format = "COHERE"`. Cohere Command R+ natively supports tool/function
-calling. When tools are declared in the API request, the model returns structured
-`tool_call` objects rather than free text. The model is explicitly trained to
-use this path for actions and prose for conversation — the same distinction
-Forge is trying to achieve via prompt instructions alone.
+## What the Flows Look Like
 
-Current flow (broken):
+**Current (broken)**
 ```
 User: "give me a BOM"
-  → text_runner(prompt, system, "orchestrator")
-  → OCI GenAI (text mode, no tools declared)
-  → Model writes helpful markdown BOM table
-  → _parse_tool_call(raw) returns _NO_TOOL
-  → Forge returns prose as final reply
-  → Expert reasoning: never runs
+  → text_runner(prompt, system_msg, "orchestrator")
+  → OCI GenAI — no tools declared, model writes markdown BOM table
+  → _parse_tool_call(raw) → _NO_TOOL
+  → Forge returns prose
+  → Expert reasoning: never fires
 ```
 
-Correct flow:
+**After p45 (correct)**
 ```
 User: "give me a BOM"
-  → text_runner(prompt, system, tools=[...], "orchestrator")
-  → OCI GenAI (tool mode, tools declared)
-  → Model returns tool_call { name: "generate_bom", parameters: {...} }
-  → Forge dispatches tool handler
-  → Expert pre-action + post-review run
-  → Forge returns real BOM
+  → tool_runner(prompt, system_msg, [generate_bom, generate_diagram, ...], "orchestrator")
+  → OCI GenAI — tools declared, model returns ToolCall{generate_bom, {prompt: "..."}}
+  → Forge dispatches BomHandler
+  → Expert pre-action + post-review fire
+  → Forge returns real priced BOM
 ```
 
-## What Must Change
+---
 
-### 1. `agent/llm_inference_client.py` — add tool-aware inference call
+## Changes Required
 
-Add a new function `run_inference_with_tools(prompt, system_message, tools, ...)`.
+### 1. `agent/llm_inference_client.py` — new function `run_inference_with_tools`
 
-The Cohere API in OCI GenAI accepts a `tools` list on `GenericChatRequest`.
-Each tool is a `CohereToolDefinitionDetails` with:
-- `name`: string matching the Forge tool name (e.g. `"generate_bom"`)
-- `description`: one-sentence description of when to call it
-- `parameter_definitions`: dict of parameter name → `{description, type, is_required}`
+Add alongside the existing `run_inference`. Do not modify `run_inference`.
 
-The response will contain `chat_response.chat_request.tool_calls` (a list of
-`CohereToolCall` objects) when the model decides to use a tool.
-
-Return type from the new function: `{"tool": str, "args": dict} | None`.
-Return `None` if the model chose to reply conversationally.
-
-### 2. `skillforge/protocols.py` and `skillforge/forge.py` — dual-mode text runner
-
-The `AsyncTextRunner` type is currently `Callable[[str, str, str], Awaitable[str]]`
-(prompt, system_msg, label) → raw string.
-
-Forge needs a second callable type for the orchestrator loop only:
-
+**Signature**:
 ```python
-# New type for tool-aware orchestrator calls
-AsyncToolRunner = Callable[
-    [str, str, list[ToolSchema], str],  # prompt, system, tools, label
-    Awaitable[ToolCallResult | str]      # tool call dict OR prose string
-]
+def run_inference_with_tools(
+    prompt: str,
+    *,
+    endpoint: str,
+    model_id: str,
+    compartment_id: str,
+    tools: list[dict],          # list of ToolDefinition dicts — see format below
+    tool_choice: str = "auto",  # "auto" | "required" | "none"
+    system_message: str = "",
+    max_tokens: int = 4000,
+    temperature: float = 0.0,
+    top_p: float = 0.9,
+) -> dict | str:
+    """
+    Call OCI GenAI with tool declarations.
+    Returns {"tool": str, "args": dict} if the model called a tool.
+    Returns str (the prose response) if the model replied conversationally.
+    Raises RuntimeError or oci.exceptions.ServiceError on failure.
+    """
 ```
 
-`ToolSchema` is a lightweight dataclass:
+**Building the request** — exact SDK classes:
 ```python
-@dataclass
-class ToolSchema:
-    name: str
-    description: str
-    args: dict[str, ArgSchema]  # name → {description, type, required}
+import oci, json
+
+signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
+client = oci.generative_ai_inference.GenerativeAiInferenceClient(
+    config={}, signer=signer, service_endpoint=endpoint, timeout=(10, 180)
+)
+
+# Build tool definitions
+oci_tools = []
+for t in tools:
+    fn = oci.generative_ai_inference.models.FunctionDefinition()
+    fn.name = t["name"]
+    fn.description = t["description"]
+    fn.parameters = t["parameters"]   # JSON Schema dict
+
+    td = oci.generative_ai_inference.models.ToolDefinition()
+    td.type = "function"
+    td.function = fn
+    oci_tools.append(td)
+
+# Build tool_choice object
+if tool_choice == "required":
+    tc = oci.generative_ai_inference.models.ToolChoiceRequired()
+elif tool_choice == "none":
+    tc = oci.generative_ai_inference.models.ToolChoiceNone()
+else:
+    tc = oci.generative_ai_inference.models.ToolChoiceAuto()
+
+# Build the request (same pattern as run_inference)
+content = oci.generative_ai_inference.models.TextContent()
+content.text = prompt
+message = oci.generative_ai_inference.models.Message()
+message.role = "USER"
+message.content = [content]
+
+chat_request = oci.generative_ai_inference.models.GenericChatRequest()
+chat_request.api_format = oci.generative_ai_inference.models.BaseChatRequest.API_FORMAT_GENERIC
+chat_request.messages = [message]
+chat_request.tools = oci_tools
+chat_request.tool_choice = tc
+chat_request.max_tokens = max_tokens
+chat_request.temperature = temperature
+chat_request.top_p = top_p
+if system_message:
+    chat_request.system = system_message
+
+chat_detail = oci.generative_ai_inference.models.ChatDetails()
+chat_detail.serving_mode = oci.generative_ai_inference.models.OnDemandServingMode(model_id=model_id)
+chat_detail.chat_request = chat_request
+chat_detail.compartment_id = compartment_id
+
+result = client.chat(chat_detail)
+```
+
+**Parsing the response**:
+```python
+# The response message is in result.data.chat_response.chat_request.messages[-1]
+# (same path as existing _extract_text helper — extend rather than duplicate)
+response_msg = result.data.chat_response.chat_request.messages[-1]
+
+tool_calls = getattr(response_msg, "tool_calls", None) or []
+if tool_calls:
+    tc = tool_calls[0]                         # ToolCall object
+    fn_call = tc.function                      # FunctionCall object
+    raw_args = fn_call.arguments or "{}"
+    args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+    return {"tool": fn_call.name, "args": args}
+
+# No tool call — extract prose text the same way _extract_text does today
+return _extract_text(result)   # reuse existing helper
+```
+
+---
+
+### 2. `skillforge/protocols.py` — add three new types
+
+```python
+from dataclasses import dataclass, field
 
 @dataclass
 class ArgSchema:
     description: str
-    type: str          # "string", "integer", "boolean"
+    type: str           # "string" | "integer" | "number" | "boolean"
     required: bool = False
+
+@dataclass
+class ToolSchema:
+    name: str
+    description: str
+    args: dict[str, ArgSchema] = field(default_factory=dict)
+
+    def to_api_dict(self) -> dict:
+        """Convert to the dict format expected by run_inference_with_tools."""
+        properties = {
+            k: {"type": v.type, "description": v.description}
+            for k, v in self.args.items()
+        }
+        required = [k for k, v in self.args.items() if v.required]
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        }
+
+# New callable type: orchestrator tool-aware runner
+# Returns {"tool": str, "args": dict} | str
+AsyncToolRunner = Callable[
+    [str, str, list[ToolSchema], str],
+    Awaitable[dict | str],
+]
 ```
 
-Forge stores a `_tool_runner: AsyncToolRunner | None`. If set, the orchestrator
-loop uses it instead of `_text_runner`. All other calls (step3_planning,
-expert_pre_action, expert_post_review, critic) continue using `_text_runner`
-unchanged — those are reasoning calls, not action-dispatch calls.
+Export `ArgSchema`, `ToolSchema`, `AsyncToolRunner` from `skillforge/__init__.py`.
 
-### 3. `skillforge/registry.py` — add description and arg schema to ToolSpec
+---
 
-`ToolSpec` needs two new optional fields:
+### 3. `skillforge/registry.py` — add `description` and `args` to ToolSpec
+
+Add two optional fields to the `ToolSpec` dataclass:
 ```python
-description: str = ""          # used to build ToolSchema for native tool use
-args: dict[str, ArgSchema] = field(default_factory=dict)
+description: str = ""
+args: dict[str, "ArgSchema"] = field(default_factory=dict)
 ```
 
-`register_tool()` gains optional `description` and `args` parameters.
+Add optional `description` and `args` parameters to `register_tool()`. Forward
+them into the `ToolSpec`.
 
-### 4. `skillforge/forge.py` — orchestrator loop change
+---
 
-In `run_turn()`, replace the orchestrator block:
+### 4. `skillforge/forge.py` — dual-mode orchestrator loop
 
+**Constructor**: add `tool_runner: AsyncToolRunner | None = None` parameter.
+Store as `self._tool_runner`.
+
+**New private method** `_build_tool_schemas(active_hats: list[str]) -> list[ToolSchema]`:
+- Iterate all registered tools in `self._registry`
+- Skip internal tools: any whose name starts with `use_hat_`, `drop_hat_`, or
+  whose name is in `{"save_notes", "get_summary", "get_document"}`
+- For tools with `requires_hat`: only include if that hat is in `active_hats`
+- For tools with no `requires_hat`: always include
+- Build and return a list of `ToolSchema` from each spec's `description` and `args`
+
+**Orchestrator loop change** — replace lines 458–464 (the current block):
 ```python
-# BEFORE
 raw = await self._text_runner(prompt_for_llm, system_msg, "orchestrator")
 parsed = _parse_tool_call(raw)
 if parsed is _NO_TOOL:
@@ -124,18 +256,19 @@ if parsed is _NO_TOOL:
     break
 ```
 
+With:
 ```python
-# AFTER
 if self._tool_runner is not None:
     schemas = self._build_tool_schemas(active_hats)
-    result = await self._tool_runner(prompt_for_llm, system_msg, schemas, "orchestrator")
+    result = await self._tool_runner(
+        prompt_for_llm, system_msg, schemas, "orchestrator"
+    )
     if isinstance(result, str):
-        # Model chose prose — genuinely conversational
         reply = result.strip()
         break
-    parsed = result  # already a dict with "tool" and "args"
+    parsed = result   # {"tool": ..., "args": ...}
 else:
-    # Fallback: text-based ReAct (kept for test environments)
+    # Text-based fallback — used in tests and when tool_runner is not configured
     raw = await self._text_runner(prompt_for_llm, system_msg, "orchestrator")
     parsed = _parse_tool_call(raw)
     if parsed is _NO_TOOL:
@@ -143,48 +276,110 @@ else:
         break
 ```
 
-`_build_tool_schemas()` returns a list of `ToolSchema` for all registered tools
-that are either always-active or whose `requires_hat` hat is currently active.
-It excludes internal tools (`use_hat_*`, `drop_hat_*`, `save_notes`,
-`get_summary`, `get_document`).
+**Remove `prose_guard`**: delete the `prose_guard` constructor parameter and the
+prose-guard block that was added to the `_NO_TOOL` branch. It is replaced by
+this change entirely.
 
-### 5. `drawing_agent_server.py` — wire the tool runner
+---
 
-`_make_orchestrator_text_runner()` already returns an async callable. Add a
-companion `_make_orchestrator_tool_runner()` that returns `AsyncToolRunner`.
+### 5. `drawing_agent_server.py` — add `_make_orchestrator_tool_runner`
 
-Pass it to `build_forge()`:
+Add alongside `_make_orchestrator_text_runner`. Returns `AsyncToolRunner`.
 
 ```python
+def _make_orchestrator_tool_runner():
+    """
+    Return an async callable (prompt, system_msg, tools, label) -> dict | str
+    for native tool use in the orchestrator loop.
+    """
+    def _sync_runner(
+        prompt: str,
+        system_msg: str,
+        schemas: list,          # list[ToolSchema]
+        model_profile: str = "orchestrator",
+    ) -> dict | str:
+        if not (_INFERENCE_AVAILABLE and INFERENCE_ENABLED):
+            raise RuntimeError("Inference not enabled.")
+        from agent.llm_inference_client import run_inference_with_tools
+        llm_cfg = resolve_agent_llm_config(_cfg, model_profile)
+        return run_inference_with_tools(
+            prompt=prompt,
+            system_message=system_msg,
+            tools=[s.to_api_dict() for s in schemas],
+            tool_choice="auto",
+            model_id=llm_cfg.get("model_id", INFERENCE_MODEL_ID),
+            endpoint=llm_cfg.get("service_endpoint", INFERENCE_ENDPOINT),
+            compartment_id=COMPARTMENT_ID,
+            max_tokens=int(llm_cfg.get("max_tokens", 4000)),
+            temperature=float(llm_cfg.get("temperature", 0.0)),
+            top_p=float(llm_cfg.get("top_p", 0.9)),
+        )
+
+    async def _async_runner(
+        prompt: str,
+        system_msg: str,
+        schemas: list,
+        model_profile: str = "orchestrator",
+    ) -> dict | str:
+        import asyncio
+        return await asyncio.to_thread(_sync_runner, prompt, system_msg, schemas, model_profile)
+
+    return _async_runner
+```
+
+In the `/api/chat` handler, add the tool runner to `build_forge()`:
+```python
 forge = build_forge(
-    ...
-    tool_runner=_make_orchestrator_tool_runner(),
+    store=store,
+    customer_id=customer_id,
+    customer_name=customer_name,
+    text_runner=_make_orchestrator_text_runner(),
+    tool_runner=_make_orchestrator_tool_runner(),   # ← add this
+    a2a_base_url=A2A_BASE_URL,
+    base_system_prompt=ARCHIE_SYSTEM_PROMPT,
+    step3_planning=True,
 )
 ```
 
-### 6. `agent/archie_wiring.py` — pass tool_runner to Forge, register descriptions
+---
+
+### 6. `agent/archie_wiring.py` — wire tool_runner and add tool descriptions
 
 Update `build_forge()` signature:
 ```python
 def build_forge(
-    ...,
-    tool_runner: Callable | None = None,
+    store: ObjectStoreBase,
+    customer_id: str,
+    customer_name: str,
+    text_runner: Callable,
+    a2a_base_url: str = "",
+    base_system_prompt: str = "",
+    step3_planning: bool = True,
+    tool_runner: Callable | None = None,    # ← add
 ) -> Forge:
 ```
 
-Update `register_tool` calls to include `description` and `args`:
+Pass `tool_runner` to `Forge(...)`.
+
+**Remove `_archie_prose_guard` and `_PROSE_GUARD_RULES`** — these are dead code
+once native tool use is wired.
+
+Add `description` and `args` to every generation tool registration.
+Import `ArgSchema` from `skillforge`.
 
 ```python
+from skillforge import ArgSchema
+
 forge.register_tool(
     "generate_bom",
     BomHandler(...),
     description=(
-        "Generate a priced OCI Bill of Materials. "
-        "Call when the user asks for a BOM, pricing, cost estimate, "
-        "or bill of materials."
+        "Generate a priced OCI Bill of Materials with SKU-backed line items "
+        "and monthly cost totals. Call when the user asks for a BOM, pricing, "
+        "cost estimate, or bill of materials."
     ),
     args={"prompt": ArgSchema(
-        description="The user's BOM request, including workload sizing details.",
+        description="Full BOM request including workload sizing (OCPU, memory, storage, services).",
         type="string",
         required=True,
     )},
@@ -192,92 +387,95 @@ forge.register_tool(
     critique_enabled=True,
     requires_hat="oci_bom_expert",
 )
+
+forge.register_tool(
+    "generate_diagram",
+    DiagramHandler(...),
+    description=(
+        "Generate an OCI architecture diagram as a draw.io file. Call when the "
+        "user asks for a diagram, architecture drawing, or visual of the design."
+    ),
+    args={"prompt": ArgSchema(
+        description="Architecture description or BOM payload to diagram.",
+        type="string",
+        required=True,
+    )},
+    memory_contract=True,
+    critique_enabled=True,
+    requires_hat="diagram_for_oci",
+)
+
+forge.register_tool(
+    "generate_terraform",
+    TerraformHandler(...),
+    description=(
+        "Generate OCI Terraform files (main.tf, variables.tf, outputs.tf). "
+        "Call when the user asks for Terraform, IaC, or infrastructure code."
+    ),
+    args={"prompt": ArgSchema(
+        description="Terraform generation request describing the OCI resources needed.",
+        type="string",
+        required=False,
+    )},
+    memory_contract=True,
+    requires_hat="terraform_for_oci",
+)
+
+forge.register_tool(
+    "generate_waf",
+    WafHandler(...),
+    description=(
+        "Generate a Well-Architected Framework review document for the customer's "
+        "OCI architecture. Call when the user asks for a WAF review or assessment."
+    ),
+    args={"feedback": ArgSchema(
+        description="Optional additional context or focus areas for the WAF review.",
+        type="string",
+        required=False,
+    )},
+    memory_contract=True,
+    critique_enabled=True,
+    requires_hat="oci_waf_reviewer",
+)
+
+forge.register_tool(
+    "generate_pov",
+    PovHandler(...),
+    description=(
+        "Generate a Point of View document for the customer engagement. "
+        "Call when the user asks for a POV, executive summary, or customer brief."
+    ),
+    args={"feedback": ArgSchema(
+        description="Optional focus areas or additional context for the POV document.",
+        type="string",
+        required=False,
+    )},
+    memory_contract=True,
+    critique_enabled=True,
+    requires_hat="oci_customer_pov_writer",
+)
+
+forge.register_tool(
+    "generate_jep",
+    JepHandler(...),
+    description=(
+        "Generate a Joint Execution Plan document for the customer engagement. "
+        "Call when the user asks for a JEP, joint plan, or execution roadmap."
+    ),
+    args={"feedback": ArgSchema(
+        description="Optional milestones, scope, or context for the JEP document.",
+        type="string",
+        required=False,
+    )},
+    memory_contract=True,
+    critique_enabled=True,
+    requires_hat="jep_writer",
+)
 ```
 
-Similar descriptions for `generate_diagram`, `generate_terraform`, `generate_waf`,
-`generate_pov`, `generate_jep`.
-
-### 7. Remove `prose_guard`
-
-Once native tool use is wired, the `prose_guard` parameter added in the current
-session is dead weight. Remove it from Forge constructor and `archie_wiring.py`.
-
----
-
-## OCI GenAI Generic Format Tool Use Reference
-
-The inference client uses `API_FORMAT_GENERIC` (not Cohere format). This is
-the standard format for Llama-family models on OCI GenAI. Tool support in
-this format follows an OpenAI-compatible JSON Schema convention for parameter
-definitions.
-
-**Before implementing**, Codex must verify two things against the live OCI SDK:
-
-1. Confirm the exact class names for `Tool` and `FunctionDefinition` under
-   `oci.generative_ai_inference.models` — these differ by SDK version.
-   Run on the server: `python3.11 -c "import oci; help(oci.generative_ai_inference.models.Tool)"`
-
-2. Confirm the model supports tool calling. Run on the server:
-   ```bash
-   python3.11 -c "
-   import oci, yaml
-   cfg = yaml.safe_load(open('config.yaml'))
-   model_id = cfg['inference']['model_id']
-   print(model_id)
-   # Check OCI GenAI model capabilities for this OCID
-   "
-   ```
-
-**Expected API shape for Generic format** (verify against SDK before coding):
-
-```python
-# Declaring a tool — Generic format (OpenAI-compatible JSON Schema)
-tool = oci.generative_ai_inference.models.Tool()
-tool.type = "function"
-
-fn = oci.generative_ai_inference.models.FunctionDefinition()
-fn.name = "generate_bom"
-fn.description = "Generate a priced OCI Bill of Materials."
-fn.parameters = {
-    "type": "object",
-    "properties": {
-        "prompt": {
-            "type": "string",
-            "description": "The user's BOM request including workload sizing details."
-        }
-    },
-    "required": ["prompt"]
-}
-tool.function = fn
-
-# On GenericChatRequest
-chat_request.tools = [tool]
-# tool_choice can be "auto" (model decides) or "required" (must call a tool)
-chat_request.tool_choice = "auto"
-
-# Parsing the response
-response_msg = result.data.chat_response.chat_request.messages[-1]
-tool_calls = getattr(response_msg, 'tool_calls', None) or []
-if tool_calls:
-    tc = tool_calls[0]
-    fn_call = tc.function
-    import json
-    args = json.loads(fn_call.arguments) if isinstance(fn_call.arguments, str) else (fn_call.arguments or {})
-    return {"tool": fn_call.name, "args": args}
-return response_msg.content[0].text  # prose response
-```
-
-**After a tool call**, the conversation history must include the tool result
-as a proper `ToolMessage` (or equivalent) before the next inference call.
-Forge's `_append_result()` currently appends `TOOL_RESULT(name): summary` as
-plain text. With native tool use this must become a structured assistant +
-tool result message pair in the messages list. **This is the most complex part
-of the implementation.**
-
-If the OCI SDK's Generic format does not yet support tool use for the deployed
-model, there is a fallback path: switch the model to Cohere Command R+ with
-`API_FORMAT_COHERE`. That format has well-documented tool support. The decision
-on which path to take should be made after the verification step above.
+Notes and other internal tools (`save_notes`, `get_summary`, `get_document`) do
+not get descriptions or args — they are excluded from tool schemas passed to the
+API (see `_build_tool_schemas` rule above).
 
 ---
 
@@ -286,14 +484,15 @@ on which path to take should be made after the verification step above.
 | File | Change |
 |------|--------|
 | `agent/llm_inference_client.py` | Add `run_inference_with_tools()` |
-| `skillforge/protocols.py` | Add `AsyncToolRunner`, `ToolSchema`, `ArgSchema` |
+| `skillforge/protocols.py` | Add `ArgSchema`, `ToolSchema`, `AsyncToolRunner` |
+| `skillforge/__init__.py` | Export `ArgSchema`, `ToolSchema` |
 | `skillforge/registry.py` | Add `description`, `args` to `ToolSpec` and `register_tool()` |
-| `skillforge/forge.py` | Dual-mode orchestrator loop; `_build_tool_schemas()`; remove `prose_guard` |
-| `agent/archie_wiring.py` | Pass `tool_runner`; add descriptions and arg schemas; remove `_archie_prose_guard` |
+| `skillforge/forge.py` | Add `tool_runner` param; add `_build_tool_schemas()`; dual-mode orchestrator loop; remove `prose_guard` |
+| `agent/archie_wiring.py` | Add `tool_runner` param to `build_forge()`; add descriptions/args to all tool registrations; remove `_archie_prose_guard` and `_PROSE_GUARD_RULES` |
 | `drawing_agent_server.py` | Add `_make_orchestrator_tool_runner()`; pass to `build_forge()` |
 
-**Do NOT touch:** `agent/tools/`, hat files, `agent/bom_service.py`, sub-agents,
-`tests/` (update test stubs separately after wiring is confirmed working).
+**Do NOT touch**: `agent/tools/`, hat files, `agent/bom_service.py`, sub-agents,
+`tests/` (update E2E test stubs separately in p45b once wiring is confirmed live).
 
 ---
 
@@ -301,45 +500,55 @@ on which path to take should be made after the verification step above.
 
 ```bash
 # Compile all changed files
-python3.11 -m compileall skillforge/forge.py skillforge/protocols.py \
+python3.11 -m compileall \
+  skillforge/forge.py skillforge/protocols.py skillforge/__init__.py \
   skillforge/registry.py agent/llm_inference_client.py \
   agent/archie_wiring.py drawing_agent_server.py
 
-# Forge wiring test (must all pass — confirms tool schema registration)
+# Forge wiring tests
 pytest tests/test_archie_forge_wiring.py -v --tb=short
+# All 5 must pass
 
-# E2E test (uses mock tool_runner stub — confirms dispatch path)
+# E2E tests — still use text-based fallback path in test environment
+# (tool_runner is None in tests; _parse_tool_call fallback stays active)
 pytest tests/test_archie_prompt_to_file_e2e.py -v --tb=short
+# All 6 must pass
 
-# Prose guard removed
-grep -r "prose_guard\|_archie_prose_guard" agent/ skillforge/ | wc -l
-# must be 0
+# prose_guard is gone
+grep -r "prose_guard\|_archie_prose_guard\|_PROSE_GUARD_RULES" agent/ skillforge/
+# must return nothing
+
+# Tool descriptions registered
+grep -c "description=" agent/archie_wiring.py
+# must be >= 6 (one per generation tool)
 ```
 
 ---
 
 ## What This Is NOT
 
-This is not a change to:
-- The expert reasoning (pre-action, post-review, hat activation) — that all stays
-- The tool handlers (`agent/tools/`) — BomHandler, DiagramHandler etc. are unchanged
-- The BOM sub-agent or any other sub-agent
-- The UI
+- Not a change to expert reasoning (pre-action, post-review, correction loops)
+- Not a change to tool handlers (`agent/tools/`)
+- Not a change to sub-agents, BOM service, or UI
+- Not a change to the system prompt content — tool selection is now structural,
+  not prompt-based
 
-The only thing changing is the mechanism by which the orchestrator selects and
-dispatches a tool. Everything downstream of tool selection stays exactly as built
-in p39–p43.
+The only thing changing is the mechanism by which the orchestrator decides which
+tool to call. Everything built in p39–p43 fires as designed once tool selection
+is reliable.
 
 ---
 
 ## Commit Message
 
 ```
-p45: native tool use — replace text-based ReAct with OCI GenAI function calling
+p45: replace text-based ReAct with OCI GenAI native function calling
 
-The text-based ReAct pattern (LLM emits JSON on a line) is unreliable
-with chat-tuned models. Replace with native Cohere function calling so
-the model returns structured tool_call objects instead of prose.
-Expert reasoning (p39-p43) is unchanged and fires as designed once the
-tool is reliably selected.
+Declare all generation tools as ToolDefinition objects on GenericChatRequest.
+Model returns structured ToolCall objects instead of text containing JSON.
+Removes prose_guard and all keyword-based tool forcing hacks. Expert
+reasoning (p39-p43) is unchanged and now fires reliably on every request.
+
+SDK verified: OCI SDK 2.165.1, GenericChatRequest.tools confirmed present,
+ToolDefinition/FunctionDefinition/ToolCall/ToolMessage all available.
 ```
