@@ -158,14 +158,11 @@ def run_inference_with_tools(
     oci_tools = []
     for t in tools:
         fn = oci.generative_ai_inference.models.FunctionDefinition()
+        fn.type = "FUNCTION"
         fn.name = t["name"]
         fn.description = t["description"]
         fn.parameters = t["parameters"]
-
-        td = oci.generative_ai_inference.models.ToolDefinition()
-        td.type = "FUNCTION"
-        td.function = fn
-        oci_tools.append(td)
+        oci_tools.append(fn)
 
     if tool_choice == "required":
         tc = oci.generative_ai_inference.models.ToolChoiceRequired()
@@ -213,8 +210,7 @@ def run_inference_with_tools(
     response_msg = result.data.chat_response.choices[0].message
     tool_calls = getattr(response_msg, "tool_calls", None) or []
     if tool_calls:
-        tc = tool_calls[0]
-        fn_call = tc.function
+        fn_call = tool_calls[0]
         raw_args = fn_call.arguments or "{}"
         args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
         return {"tool": fn_call.name, "args": args}
