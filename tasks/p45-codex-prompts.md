@@ -557,3 +557,146 @@ p45g: fix FunctionDefinition structure — pass directly in tools list, Function
 
 Branch: claude/p45g (from main after p45f merges). Push when done.
 ```
+
+---
+
+## p46a — Cap Critique Retries Per Tool
+
+```
+Context: Forge's critique loop has no per-tool retry limit. When the expert
+post-review returns "iterate", Forge calls the tool again and again until
+max_iterations (default 5) is exhausted. A single generate_bom call becomes
+5 generate_bom calls — all returning identical results.
+
+Root cause: In skillforge/forge.py run_turn(), the loop is:
+
+  for iteration in range(self._max_iterations):
+      ...
+      if review_decision == "iterate":
+          _pending_correction = {...}
+          continue    ← loops back, burning another iteration slot
+
+There is no counter tracking how many times a specific tool has been retried.
+
+Fix: add a per-tool retry counter inside run_turn(). When a tool has been
+retried max_critique_retries times, force-treat the next iterate verdict as
+"approved" and proceed instead of looping again.
+
+IMPORTANT: Branch from origin/main.
+
+  git fetch origin
+  git checkout -b claude/p46a origin/main
+
+Read skillforge/forge.py lines 330–850 fully before editing. Understand:
+- _pending_correction (dict | None) tracks the current correction
+- for iteration in range(self._max_iterations) is the main ReAct loop
+- review_decision == "iterate" → continue (the bug)
+- review_decision == "approved" → proceeds to critique pass
+
+Make exactly these changes to skillforge/forge.py — nothing else:
+
+1. Before the main loop (near line 446), add:
+
+  _tool_retry_counts: dict[str, int] = {}
+
+2. Inside the critique block where review_decision == "iterate"
+   (around line 814), wrap the continue with a retry cap check:
+
+  if review_decision == "iterate":
+      _tool_retry_counts[tool_name] = _tool_retry_counts.get(tool_name, 0) + 1
+      if _tool_retry_counts[tool_name] <= self._max_critique_retries:
+          # ... existing correction prompt assembly and _pending_correction ...
+          continue
+      # Retry cap reached — accept result and proceed to critique pass
+      review_decision = "approved"
+
+3. Add max_critique_retries: int = 1 as a constructor parameter (after
+   max_iterations). Store as self._max_critique_retries.
+
+Do NOT change any other logic. Do not change the "surface" branch,
+the "approved" branch, or the critique pass that follows.
+
+Verify:
+
+  python3.11 -m compileall skillforge/forge.py -q
+  # must be clean
+
+  grep -n "_max_critique_retries\|_tool_retry_counts" skillforge/forge.py
+  # must show: constructor param, storage, and the cap check
+
+  pytest tests/test_archie_forge_wiring.py tests/test_archie_prompt_to_file_e2e.py \
+    -v --tb=short
+  # all must pass
+
+  pytest tests/ -q --tb=short -m "not live" -x 2>&1 | tail -5
+  # no new failures
+
+Commit message:
+p46a: cap critique retries per tool — max_critique_retries=1 prevents generate_bom from looping 5x
+
+Branch: claude/p46a (from main). Push when done.
+```
+
+---
+
+## p46b — Fix generate_bom Prompt Arg to Pass User Request Verbatim
+
+```
+Context: When the orchestrator LLM calls generate_bom via native tool use,
+it crafts the "prompt" argument. Because the ArgSchema description says
+"Full BOM request including workload sizing", the LLM interprets this as
+"I should summarize and pre-size the request." It writes things like
+"1 OCPU E4.Flex server" even when the user said "2 E5 servers, 6 OCPU each."
+
+Fix the ArgSchema description for generate_bom in agent/archie_wiring.py
+to tell the model to pass the user's words verbatim.
+
+IMPORTANT: Branch from origin/main AFTER p46a is merged.
+
+  git fetch origin
+  git checkout -b claude/p46b origin/main
+
+Read agent/archie_wiring.py lines 150–175. Find the generate_bom registration:
+
+  forge.register_tool(
+      "generate_bom",
+      BomHandler(...),
+      description=(...),
+      args={"prompt": ArgSchema(
+          description="Full BOM request including workload sizing (OCPU, memory, storage, services).",
+          ...
+      )},
+      ...
+  )
+
+Make exactly ONE change — replace the prompt ArgSchema description:
+
+  OLD:
+    description="Full BOM request including workload sizing (OCPU, memory, storage, services).",
+
+  NEW:
+    description=(
+        "The user's BOM request, copied verbatim. Do not interpret, pre-size, "
+        "or substitute shape names. If the user said '2 E5 servers 6 OCPU', "
+        "pass exactly that. The BOM service extracts sizing from the raw text."
+    ),
+
+Do NOT change the description of the generate_bom tool itself, the other
+tool registrations, or any other file.
+
+Verify:
+
+  python3.11 -m compileall agent/archie_wiring.py -q
+  # must be clean
+
+  grep -A4 '"prompt": ArgSchema' agent/archie_wiring.py | head -8
+  # must show the new verbatim description
+
+  pytest tests/ -q --tb=short -m "not live" -x 2>&1 | tail -5
+  # no new failures
+
+Commit message:
+p46b: generate_bom prompt arg — pass user request verbatim, do not pre-interpret sizing
+
+Branch: claude/p46b (from main after p46a merges). Push when done.
+```
