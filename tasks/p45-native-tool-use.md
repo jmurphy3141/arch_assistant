@@ -204,39 +204,80 @@ session is dead weight. Remove it from Forge constructor and `archie_wiring.py`.
 
 ---
 
-## Cohere Tool Use API Reference
+## OCI GenAI Generic Format Tool Use Reference
 
-OCI GenAI with `COHERE` format supports tool use. Key objects:
+The inference client uses `API_FORMAT_GENERIC` (not Cohere format). This is
+the standard format for Llama-family models on OCI GenAI. Tool support in
+this format follows an OpenAI-compatible JSON Schema convention for parameter
+definitions.
+
+**Before implementing**, Codex must verify two things against the live OCI SDK:
+
+1. Confirm the exact class names for `Tool` and `FunctionDefinition` under
+   `oci.generative_ai_inference.models` — these differ by SDK version.
+   Run on the server: `python3.11 -c "import oci; help(oci.generative_ai_inference.models.Tool)"`
+
+2. Confirm the model supports tool calling. Run on the server:
+   ```bash
+   python3.11 -c "
+   import oci, yaml
+   cfg = yaml.safe_load(open('config.yaml'))
+   model_id = cfg['inference']['model_id']
+   print(model_id)
+   # Check OCI GenAI model capabilities for this OCID
+   "
+   ```
+
+**Expected API shape for Generic format** (verify against SDK before coding):
 
 ```python
-# Declaring a tool
-tool = oci.generative_ai_inference.models.CohereTool()
-tool.name = "generate_bom"
-tool.description = "Generate a priced OCI BOM..."
-param = oci.generative_ai_inference.models.CohereParameterDefinition()
-param.description = "The user's BOM request"
-param.type = "str"
-param.is_required = True
-tool.parameter_definitions = {"prompt": param}
+# Declaring a tool — Generic format (OpenAI-compatible JSON Schema)
+tool = oci.generative_ai_inference.models.Tool()
+tool.type = "function"
+
+fn = oci.generative_ai_inference.models.FunctionDefinition()
+fn.name = "generate_bom"
+fn.description = "Generate a priced OCI Bill of Materials."
+fn.parameters = {
+    "type": "object",
+    "properties": {
+        "prompt": {
+            "type": "string",
+            "description": "The user's BOM request including workload sizing details."
+        }
+    },
+    "required": ["prompt"]
+}
+tool.function = fn
 
 # On GenericChatRequest
 chat_request.tools = [tool]
-chat_request.tool_results = None   # first turn; no prior results
+# tool_choice can be "auto" (model decides) or "required" (must call a tool)
+chat_request.tool_choice = "auto"
 
 # Parsing the response
-response_message = result.data.chat_response.chat_request
-tool_calls = getattr(response_message, 'tool_calls', None) or []
+response_msg = result.data.chat_response.chat_request.messages[-1]
+tool_calls = getattr(response_msg, 'tool_calls', None) or []
 if tool_calls:
     tc = tool_calls[0]
-    return {"tool": tc.name, "args": dict(tc.parameters or {})}
-return response_message.text   # prose response
+    fn_call = tc.function
+    import json
+    args = json.loads(fn_call.arguments) if isinstance(fn_call.arguments, str) else (fn_call.arguments or {})
+    return {"tool": fn_call.name, "args": args}
+return response_msg.content[0].text  # prose response
 ```
 
-Note: after a tool call, the conversation must include the tool result as a
-`CohereToolResult` message before the next inference call. Forge's
-`_append_result()` currently does this as text. With native tool use, this
-must become a proper `CohereToolResult` object in the messages list. This is
-the most complex part of the implementation.
+**After a tool call**, the conversation history must include the tool result
+as a proper `ToolMessage` (or equivalent) before the next inference call.
+Forge's `_append_result()` currently appends `TOOL_RESULT(name): summary` as
+plain text. With native tool use this must become a structured assistant +
+tool result message pair in the messages list. **This is the most complex part
+of the implementation.**
+
+If the OCI SDK's Generic format does not yet support tool use for the deployed
+model, there is a fallback path: switch the model to Cohere Command R+ with
+`API_FORMAT_COHERE`. That format has well-documented tool support. The decision
+on which path to take should be made after the verification step above.
 
 ---
 
