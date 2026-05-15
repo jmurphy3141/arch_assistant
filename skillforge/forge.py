@@ -284,8 +284,6 @@ class Forge:
                 or spec.name in excluded
             ):
                 continue
-            if spec.requires_hat and spec.requires_hat not in active_hats:
-                continue
             schemas.append(
                 ToolSchema(
                     name=spec.name,
