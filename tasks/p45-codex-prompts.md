@@ -848,3 +848,74 @@ p47: live Forge status events — Thinking/tool_selected/tool_running/tool_revie
 
 Branch: claude/p47 (from main). Push when done.
 ```
+
+---
+
+## p48 — Prevent Re-calling Approved Tools in Same Turn
+
+```
+Context: p46a capped critique retries to 1. But after the critique pass
+completes (review_decision == "approved"), the main ReAct loop continues.
+The orchestrator LLM then calls generate_bom again in the next iteration.
+This repeats until max_iterations=5 is exhausted — five generate_bom calls.
+
+Root cause: There is no mechanism preventing the orchestrator from re-calling
+a tool that has already been called and approved in the same turn.
+
+Fix: track approved tools in a per-turn set. When the orchestrator selects
+a tool that is already in the approved set, break the loop with the current
+result instead of re-dispatching.
+
+IMPORTANT: Branch from origin/main.
+
+  git fetch origin
+  git checkout -b claude/p48 origin/main
+
+Read skillforge/forge.py run_turn() fully before editing. Understand:
+- "approved" verdict → _run_critique_pass() → loop continues
+- After critique, iteration N+1: orchestrator called again, picks same tool
+- No check exists to prevent re-calling an approved tool
+
+Make exactly these changes to skillforge/forge.py — nothing else:
+
+1. Before the main loop (near where _tool_retry_counts is declared), add:
+
+  _approved_tools: set[str] = set()
+
+2. After the orchestrator returns and tool_name is extracted (around where
+   tool_name and tool_args are set from parsed), add this guard immediately
+   after the tool_name extraction block:
+
+  if tool_name in _approved_tools:
+      # This tool was already called and approved this turn.
+      # The orchestrator has no more actions to take — return the result.
+      break
+
+3. In the critique block where review_decision == "approved" (the line that
+   calls _run_critique_pass), add AFTER the critique pass call:
+
+  _approved_tools.add(tool_name)
+
+Do NOT change any other logic. Do NOT touch hat dispatch, correction
+injection, needs_input, safety checks, or any other file.
+
+Verify:
+
+  python3.11 -m compileall skillforge/forge.py -q
+  # must be clean
+
+  grep -n "_approved_tools" skillforge/forge.py
+  # must show: declaration, the guard break, and the add after critique pass
+
+  pytest tests/test_archie_forge_wiring.py tests/test_archie_prompt_to_file_e2e.py \
+    -v --tb=short
+  # all must pass
+
+  pytest tests/ -q --tb=short -m "not live" -x 2>&1 | tail -5
+  # no new failures
+
+Commit message:
+p48: prevent re-calling approved tools in same turn — stops generate_bom from looping 5x
+
+Branch: claude/p48 (from main). Push when done.
+```
