@@ -488,6 +488,7 @@ class Forge:
 
             if reasoning_sink:
                 reasoning_sink("Thinking...", "orchestrator")
+
             if self._tool_runner is not None:
                 schemas = self._build_tool_schemas(active_hats)
                 result = await self._tool_runner(
@@ -517,6 +518,9 @@ class Forge:
                 # The orchestrator has no more actions to take — return the result.
                 break
             tool_args: dict[str, Any] = dict(parsed.get("args") or {})
+
+            if reasoning_sink and tool_name:
+                reasoning_sink(f"→ {tool_name.replace('_', ' ')}", "tool_selected")
 
             # ── Hat activation ────────────────────────────────────────────────
             if tool_name.startswith("use_hat_"):
@@ -690,6 +694,9 @@ class Forge:
                     reply = clarification_needed
                     break
 
+            if reasoning_sink:
+                reasoning_sink(f"Running {tool_name.replace('_', ' ')}...", "tool_running")
+
             mem = memory_snapshot if spec.memory_contract else None
             try:
                 if reasoning_sink:
@@ -805,6 +812,8 @@ class Forge:
             if reasoning_sink and spec.critique_enabled and result.status == "ok":
                 reasoning_sink("Reviewing result...", "tool_review")
             if spec.critique_enabled and result.status == "ok":
+                if reasoning_sink:
+                    reasoning_sink("Reviewing result...", "tool_review")
                 prompt, review_decision = await self._run_expert_post_review(
                     prompt=prompt,
                     tool_name=tool_name,
