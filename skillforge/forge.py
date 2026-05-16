@@ -444,6 +444,7 @@ class Forge:
             )
 
         _tool_retry_counts: dict[str, int] = {}
+        _approved_tools: set[str] = set()
 
         for iteration in range(self._max_iterations):
 
@@ -510,6 +511,12 @@ class Forge:
                 break
 
             tool_name: str = parsed.get("tool", "")
+            if reasoning_sink and tool_name:
+                reasoning_sink(f"→ {tool_name.replace('_', ' ')}", "tool_selected")
+            if tool_name in _approved_tools:
+                # This tool was already called and approved this turn.
+                # The orchestrator has no more actions to take — return the result.
+                break
             tool_args: dict[str, Any] = dict(parsed.get("args") or {})
 
             if reasoning_sink and tool_name:
@@ -692,6 +699,8 @@ class Forge:
 
             mem = memory_snapshot if spec.memory_contract else None
             try:
+                if reasoning_sink:
+                    reasoning_sink(f"Running {tool_name.replace('_', ' ')}...", "tool_running")
                 result = await spec.handler(
                     tool_args, memory=mem, context=context, trace_id=trace_id
                 )
@@ -800,6 +809,8 @@ class Forge:
             prompt = _append_result(prompt, tool_name, result.summary)
 
             # Step 6: expert post-review, then critic pass
+            if reasoning_sink and spec.critique_enabled and result.status == "ok":
+                reasoning_sink("Reviewing result...", "tool_review")
             if spec.critique_enabled and result.status == "ok":
                 if reasoning_sink:
                     reasoning_sink("Reviewing result...", "tool_review")
@@ -854,6 +865,7 @@ class Forge:
                     active_hats=active_hats,
                     session_id=session_id,
                 )
+                _approved_tools.add(tool_name)
 
         context["_active_hats"] = active_hats
         context["_hat_rounds"] = hat_rounds

@@ -38,6 +38,13 @@ Use E5.Flex (B97384/B97385) as the default compute shape unless the customer
 explicitly requests a different shape. E4.Flex is legacy — only use it when
 the customer or memory block explicitly requests E4.
 
+## Line Item Fields
+
+- `instance_count` (optional integer): number of instances/servers this line item applies to.
+  Set for compute (OCPU, memory) line items when the user specifies multiple servers.
+  Example: "2 servers, 6 OCPU each" → instance_count=2, quantity=12 (total OCPUs).
+  Leave absent or omit for shared services (WAF, bastion, DB, storage).
+
 ## Validation
 
 - Every line item must have a known SKU, positive quantity, unit price, and
@@ -58,6 +65,7 @@ On success, return exactly this JSON shape (no prose, no markdown wrapper):
       {
         "sku": "B88317",
         "description": "Oracle Cloud Infrastructure - OCPU Per Hour",
+        "instance_count": 2,
         "quantity": 4,
         "unit": "OCPU",
         "unit_price": 0.0480,
