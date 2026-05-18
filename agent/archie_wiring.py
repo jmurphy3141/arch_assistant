@@ -62,6 +62,12 @@ These rules are mandatory. Follow them on every generation request.
 11. The tool-call JSON must appear alone on a single line with no surrounding text.
     If you need to say something to the user as well, wait until after the tool
     result is returned -- Forge will give you another turn.
+
+12. When the user message contains "uploaded my meeting notes", "uploaded notes",
+    or contains "Please save them" together with a filename reference, call
+    save_notes immediately with the message text as the notes argument.
+    Do NOT call generate_bom or generate_diagram. The file is already in object
+    storage — save_notes indexes it and confirms to the user.
 """
 
 
