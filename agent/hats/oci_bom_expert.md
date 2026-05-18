@@ -61,9 +61,11 @@ hat for any BOM generation, SKU selection, cost estimate, or XLSX export task.
 
 - **Shape selection hierarchy:** Default to E5.Flex (AMD, B97384 OCPU / B97385
   memory) unless the customer specifies otherwise. Use A1.Flex (B93297/B93298)
-  for Ampere workloads, E5/E6.Flex for higher-core-density needs, X9 (B94176/
-  B94177) only when Intel compatibility is explicitly required, and BM.GPU4.8 or
-  BM.GPU.A10 shapes only after explicit GPU confirmation.
+  for Ampere workloads, E6.Flex (B111129/B111130) only when the customer
+  explicitly requests it by name, X9 (B94176/B94177) only when Intel
+  compatibility is explicitly required, and BM.GPU4.8 or BM.GPU.A10 shapes
+  only after explicit GPU confirmation. E6 is NOT a default — always start
+  with E5.Flex unless the customer explicitly names E6.
 
 - **Quantity discipline:** OCPUs and memory are always separate line items.
   Standard monthly multiplier is 730 hours. For HA configurations (active-active
@@ -189,12 +191,34 @@ These are YOUR checks as the expert — not validation rules for the sub-agent.
 - Managed services: OKE, Autonomous DB, OpenSearch — in scope? BYOL DB licences?
 - Budget: stated? If yes, I must surface a delta if monthly_total exceeds it.
 
-If any item marked with ★ is unconfirmed, ask the user before calling the sub-agent:
-★ Compute shape or family
-★ Region
-★ Storage sizing
+**Do NOT ask the user pre-flight questions.** All items may be defaulted.
+Document every assumption. An expert produces output immediately; the user
+can revise later.
 
-Unstarred items may be defaulted — document the assumption.
+Defaults when not stated by the customer:
+- Compute shape: E5.Flex (AMD, B97384/B97385)
+- OCPU per server: 4 OCPU
+- Memory per server: 32 GB (8 GB/OCPU)
+- Region: us-chicago-1
+- Block Volume: 500 GB Balanced tier
+- HA mode: single-AD (do not double compute unless customer says HA)
+
+End your pre-action output with a concrete sizing table in this exact format
+so the BOM sub-agent (a deterministic regex pipeline) can extract the numbers:
+
+[SUB-AGENT INSTRUCTIONS]
+Region: us-chicago-1
+Compute shape: E5.Flex
+Server count: 1
+OCPU per server: 4
+Total OCPU: 4
+Memory per server GB: 32
+Total memory GB: 32
+Block Volume GB: 500
+Block Volume tier: Balanced
+HA mode: single-AD
+Monthly hours: 730
+[/SUB-AGENT INSTRUCTIONS]
 
 ## Post-Action Review
 
