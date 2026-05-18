@@ -3,7 +3,7 @@ skillforge/registry.py
 -----------------------
 ToolRegistry: maps tool names to handlers and their configuration.
 
-Replaces the hardcoded dicts in archie_loop.py:
+Replaces the hardcoded dicts in archie_session.py:
   _ARCHITECTURE_TOOLS, _MANDATORY_SKILL_FALLBACKS, _MEMORY_CONTRACT_TOOLS
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from skillforge.protocols import SafetyChecker, ToolHandler
+from skillforge.protocols import ArgSchema, SafetyChecker, ToolHandler
 
 
 @dataclass
@@ -20,6 +20,7 @@ class ToolSpec:
     name: str
     handler: ToolHandler
     description: str = ""
+    args: dict[str, ArgSchema] = field(default_factory=dict)
     args_schema: dict = field(default_factory=dict)
     memory_contract: bool = False
     safety_checker: SafetyChecker | None = None
@@ -27,6 +28,7 @@ class ToolSpec:
     parallel_safe: bool = False
     retry_on_needs_input: bool = False
     critique_enabled: bool = False
+    requires_hat: str | None = None
 
 
 class ToolRegistry:
@@ -54,6 +56,7 @@ class ToolRegistry:
         handler: ToolHandler,
         *,
         description: str = "",
+        args: dict[str, ArgSchema] | None = None,
         args_schema: dict[str, str] | None = None,
         memory_contract: bool = False,
         safety_checker: SafetyChecker | None = None,
@@ -61,6 +64,7 @@ class ToolRegistry:
         parallel_safe: bool = False,
         retry_on_needs_input: bool = False,
         critique_enabled: bool = False,
+        requires_hat: str | None = None,
     ) -> None:
         """
         Register a domain tool.
@@ -75,6 +79,7 @@ class ToolRegistry:
         retry_on_needs_input: if True, append clarification to prompt and retry once
                               instead of immediately surfacing to user
         critique_enabled:     reserve tool for post-tool critic review
+        requires_hat:         hat name Forge must activate before dispatch
         """
         if name in self._tools:
             raise ValueError(f"Tool {name!r} is already registered")
@@ -82,6 +87,7 @@ class ToolRegistry:
             name=name,
             handler=handler,
             description=description,
+            args=args or {},
             args_schema=args_schema or {},
             memory_contract=memory_contract,
             safety_checker=safety_checker,
@@ -89,6 +95,7 @@ class ToolRegistry:
             parallel_safe=parallel_safe,
             retry_on_needs_input=retry_on_needs_input,
             critique_enabled=critique_enabled,
+            requires_hat=requires_hat,
         )
 
     def get(self, name: str) -> ToolSpec | None:

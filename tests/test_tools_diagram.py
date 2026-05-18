@@ -64,10 +64,10 @@ def make_memory():
     )
 
 
-def install_archie_loop_stub(monkeypatch, call_generate_diagram):
-    module = types.ModuleType("agent.archie_loop")
+def install_archie_session_stub(monkeypatch, call_generate_diagram):
+    module = types.ModuleType("agent.archie_session")
     module._call_generate_diagram = call_generate_diagram
-    monkeypatch.setitem(sys.modules, "agent.archie_loop", module)
+    monkeypatch.setitem(sys.modules, "agent.archie_session", module)
 
 
 async def test_diagram_ok(monkeypatch):
@@ -80,7 +80,7 @@ async def test_diagram_ok(monkeypatch):
             {},
         )
 
-    install_archie_loop_stub(monkeypatch, fake_call_generate_diagram)
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
 
     result = await make_handler()(
         {"prompt": "draw it"}, memory=make_memory(), context={}, trace_id="trace-1"
@@ -100,7 +100,7 @@ async def test_diagram_persists_drawio_xml_when_sub_agent_returns_no_key(monkeyp
             {"drawio_xml": "<mxfile />", "diagram_name": "orch-1"},
         )
 
-    install_archie_loop_stub(monkeypatch, fake_call_generate_diagram)
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
     store = InMemoryObjectStore()
 
     result = await make_handler_with_store(store)(
@@ -110,6 +110,39 @@ async def test_diagram_persists_drawio_xml_when_sub_agent_returns_no_key(monkeyp
     assert result.status == "ok"
     assert result.artifact_key == "agent3/cust-1/orch-1/v1/diagram.drawio"
     assert store.get(result.artifact_key) == b"<mxfile />"
+
+
+@pytest.mark.asyncio
+async def test_diagram_wraps_raw_mxgraphmodel_before_persisting(monkeypatch):
+    store = InMemoryObjectStore()
+
+    async def _fake_call_generate_diagram(*_args, **_kwargs):
+        return (
+            "Diagram generated.",
+            "",
+            {"drawio_xml": '<mxGraphModel><root><mxCell id="0" /></root></mxGraphModel>'},
+        )
+
+    monkeypatch.setattr("agent.archie_session._call_generate_diagram", _fake_call_generate_diagram)
+
+    handler = DiagramHandler(
+        store=store,
+        customer_id="acme",
+        customer_name="ACME",
+        text_runner=lambda *_args: "",
+        a2a_base_url="http://localhost:8080",
+    )
+
+    result = await handler(
+        {"bom_text": "Generate a diagram for VCN, subnet, load balancer, and database.", "diagram_name": "app"},
+        memory=None,
+        context={},
+        trace_id="trace-1",
+    )
+
+    persisted = store.get(result.artifact_key).decode("utf-8")
+    assert "<mxfile" in persisted
+    assert "<mxGraphModel" in persisted
     assert result.data["object_key"] == result.artifact_key
 
 
@@ -121,7 +154,7 @@ async def test_diagram_insufficient_context(monkeypatch):
         called = True
         return ("Diagram generated.", "diagrams/foo.drawio", {})
 
-    install_archie_loop_stub(monkeypatch, fake_call_generate_diagram)
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
     monkeypatch.setattr(
         diagram_module.archie_memory,
         "_diagram_has_sufficient_context",
@@ -147,7 +180,7 @@ async def test_diagram_needs_clarification(monkeypatch):
             {"diagram_recovery_status": "needs_clarification"},
         )
 
-    install_archie_loop_stub(monkeypatch, fake_call_generate_diagram)
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
 
     result = await make_handler()(
         {"prompt": "draw it"}, memory=make_memory(), context={}, trace_id="trace-1"
@@ -161,7 +194,7 @@ async def test_diagram_sub_agent_error(monkeypatch):
     async def fake_call_generate_diagram(args, customer_id, a2a_base_url):
         raise Exception("connection refused")
 
-    install_archie_loop_stub(monkeypatch, fake_call_generate_diagram)
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
 
     result = await make_handler()(
         {"prompt": "draw it"}, memory=make_memory(), context={}, trace_id="trace-1"

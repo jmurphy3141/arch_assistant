@@ -58,10 +58,10 @@ def make_memory():
     )
 
 
-def install_archie_loop_stub(monkeypatch, parse_result):
-    module = types.ModuleType("agent.archie_loop")
+def install_archie_session_stub(monkeypatch, parse_result):
+    module = types.ModuleType("agent.archie_session")
     module._parse_terraform_sub_agent_result = parse_result
-    monkeypatch.setitem(sys.modules, "agent.archie_loop", module)
+    monkeypatch.setitem(sys.modules, "agent.archie_session", module)
 
 
 async def test_terraform_ok(monkeypatch):
@@ -79,7 +79,7 @@ async def test_terraform_ok(monkeypatch):
         assert metadata["source"] == "sub_agent_client"
         return {"version": 1, "latest_key": "tf/main.tf"}
 
-    install_archie_loop_stub(monkeypatch, lambda result: {"main.tf": "..."})
+    install_archie_session_stub(monkeypatch, lambda result: {"main.tf": "..."})
     monkeypatch.setattr(
         terraform_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
     )

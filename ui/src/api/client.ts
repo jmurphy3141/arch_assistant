@@ -829,9 +829,11 @@ export interface ChatStreamEvent {
   project_id?: string;
   project_name?: string;
   engagement_id?: string;
-  event_type: 'status' | 'tool' | 'token' | 'terraform_stage' | 'completion' | 'error';
+  event_type: 'status' | 'tool' | 'token' | 'terraform_stage' | 'completion' | 'error' | 'thinking';
   status?: string;
   delta?: string;
+  label?: string;
+  reasoning_type?: string;
   tool_call?: ChatToolCall;
   stage?: Record<string, unknown>;
   error?: string;

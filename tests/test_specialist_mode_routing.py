@@ -12,17 +12,19 @@ from agent import sub_agent_client
 from agent.drawio_inspector import inspect_drawio_xml
 from agent.persistence_objectstore import InMemoryObjectStore
 import agent.orchestrator_agent as orchestrator_agent
-import agent.archie_loop as archie_loop
+import agent.archie_session as archie_session
 import agent.archie_memory as archie_memory
 
 
 REQUIRED_HATS = (
     "critic.md",
     "governor.md",
-    "diagram_builder.md",
-    "bom_reviewer.md",
-    "terraform_reviewer.md",
-    "waf_reviewer.md",
+    "diagram_for_oci.md",
+    "oci_bom_expert.md",
+    "terraform_for_oci.md",
+    "oci_waf_reviewer.md",
+    "oci_customer_pov_writer.md",
+    "jep_writer.md",
 )
 
 
@@ -324,6 +326,57 @@ def test_orchestrator_parallel_plan_detects_bom_intent():
     assert plan[0]["tool"] == "generate_bom"
 
 
+def test_prompt_file_intent_ignores_component_mentions():
+    cases = [
+        (
+            "Create an OCI XLSX bill of materials with WAF, load balancer, Object Storage, and Block Volume.",
+            {"generate_bom"},
+        ),
+        (
+            "Create a 14-day JEP for the OCI migration. Include overview, success criteria, bill of materials, and timeline.",
+            {"generate_jep"},
+        ),
+        (
+            "Draft a customer POV covering WAF, load balancer, database modernization, Object Storage, and business value.",
+            {"generate_pov"},
+        ),
+        (
+            "Generate an OCI Terraform bundle with main.tf, VCN, public/private subnets, load balancer/WAF evidence, and Object Storage.",
+            {"generate_terraform"},
+        ),
+        (
+            "Run an OCI Well-Architected review for the 3-tier architecture with WAF, load balancer, database, and Object Storage.",
+            {"generate_waf"},
+        ),
+    ]
+
+    for message, expected in cases:
+        assert archie_session._requested_generation_tools(message) == expected
+
+
+def test_terraform_parser_fills_empty_tfvars_example():
+    files = archie_session._parse_terraform_sub_agent_result(
+        '{"main_tf":"provider \\"oci\\" {}","variables_tf":"variable \\"region\\" {}","outputs_tf":"output \\"x\\" { value = 1 }","terraform_tfvars_example":""}'
+    )
+
+    assert files["terraform.tfvars.example"].strip()
+
+
+def test_waf_markdown_section_alignment_adds_expected_headings():
+    content = archie_session._ensure_waf_markdown_sections(
+        "# Review\n\n## Security\nFindings.\n\n## Reliability\nFindings."
+    )
+    lowered = content.lower()
+    for marker in (
+        "security and compliance",
+        "reliability and resilience",
+        "performance and cost optimization",
+        "operational efficiency",
+        "distributed cloud",
+    ):
+        assert marker in lowered
+
+
 def test_orchestrator_gates_unrequested_generation_tools(monkeypatch):
     calls: list[str] = []
     llm_calls = {"count": 0}
@@ -337,7 +390,7 @@ def test_orchestrator_gates_unrequested_generation_tools(monkeypatch):
         llm_calls["count"] += 1
         return '{"tool": "generate_terraform", "args": {"prompt":"now create terraform"}}'
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
         archie_memory,
         "_build_context_summary_for_skills",
@@ -420,7 +473,7 @@ def test_orchestrator_change_request_confirmation_executes_in_order(monkeypatch)
         calls.append(tool_name)
         return (f"{tool_name}-ok", "", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -462,7 +515,7 @@ def test_orchestrator_runs_pov_jep_in_parallel(monkeypatch):
         _ = (prompt, system_message)
         return "Done."
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
     monkeypatch.setattr(
         archie_memory,
         "_build_context_summary_for_skills",
@@ -523,7 +576,7 @@ def test_orchestrator_runs_bom_diagram_pairs_per_scenario(monkeypatch):
     def _text_runner(_prompt: str, _system_message: str) -> str:
         raise AssertionError("Paired BOM/diagram workflow should not call the planner LLM")
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -592,7 +645,7 @@ def test_bom_diagram_pair_does_not_treat_scenario_prompt_as_ungrounded_followup(
     def _text_runner(_prompt: str, _system_message: str) -> str:
         raise AssertionError("Scenario workflow should not call the planner LLM")
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
@@ -689,7 +742,7 @@ def test_fresh_generation_request_supersedes_stale_specialist_checkpoint(monkeyp
     def _text_runner(_prompt: str, _system_message: str) -> str:
         raise AssertionError("Fresh workflow should not answer the stale checkpoint or call the planner LLM")
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "scenario request")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
@@ -739,7 +792,7 @@ def test_orchestrator_allows_completion_without_skill_postflight(monkeypatch):
         return '{"tool": "generate_pov", "args": {}}'
 
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -769,7 +822,7 @@ def test_orchestrator_blocks_preflight_and_skips_tool_execution(monkeypatch):
     def _text_runner(_prompt: str, _system_message: str) -> str:
         return '{"tool": "generate_diagram", "args": {}}'
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "")
 
     result = asyncio.run(
@@ -815,7 +868,7 @@ def test_orchestrator_runs_bom_diagram_waf_in_prerequisite_order(monkeypatch):
     def _text_runner(_prompt: str, _system_message: str) -> str:
         raise AssertionError("Prerequisite workflow should not call the planner LLM")
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -845,7 +898,7 @@ def test_orchestrator_runs_diagram_before_waf_without_existing_diagram(monkeypat
             return ("Diagram generated. Key: diagram.drawio", "diagram.drawio", {"render_manifest": {"node_count": 4}})
         return ("WAF review saved. Key: waf.md", "waf.md", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -872,7 +925,7 @@ def test_orchestrator_terraform_without_bounded_scope_asks_before_running(monkey
         calls.append(tool_name)
         return ("unexpected", "", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -900,7 +953,7 @@ def test_orchestrator_pov_jep_without_context_asks_before_running(monkeypatch):
         calls.append(tool_name)
         return ("unexpected", "", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1066,7 +1119,7 @@ def test_orchestrator_critic_refines_once(monkeypatch):
         ]
     )
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
@@ -1112,7 +1165,7 @@ def test_tool_arg_enrichment_applies_expert_mode_for_diagram():
 
 def test_execute_tool_blocks_diagram_without_selected_standards_bundle(monkeypatch):
     monkeypatch.setattr(
-        archie_loop,
+        archie_session,
         "_build_expert_mode_metadata",
         lambda **_kwargs: {"enabled": True, "reference_mode": "reference-backed"},
     )
@@ -1141,10 +1194,10 @@ def test_execute_tool_diagram_trace_includes_reference_metadata(monkeypatch):
         _ = (tool_name, args)
         return ("Diagram generated. Key: diagrams/acme/v1/diagram.drawio", "diagrams/acme/v1/diagram.drawio", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
     monkeypatch.setattr(
-        archie_loop,
+        archie_session,
         "_build_expert_mode_metadata",
         lambda **_kwargs: {
             "enabled": True,
@@ -1205,7 +1258,7 @@ def test_execute_tool_diagram_trace_preserves_backend_error_metadata(monkeypatch
             },
         )
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
 
     summary, key, data = asyncio.run(
@@ -1274,7 +1327,7 @@ def test_execute_tool_diagram_artifact_review_retries_missing_bm_split_fd(monkey
             {"render_manifest": {"node_count": 4}},
         )
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
@@ -1339,7 +1392,7 @@ def test_execute_tool_diagram_retry_promotes_ocvs_review_feedback_to_user_notes(
         target_store.put(good_key, good_xml.encode("utf-8"), "text/xml")
         return (f"Diagram generated. Key: {good_key}", good_key, {"render_manifest": {"node_count": 5}})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(
         archie_memory,
         "_build_context_summary_for_skills",
@@ -1410,7 +1463,7 @@ def test_execute_tool_diagram_auto_answers_ha_ads_for_explicit_bm_fd_request(mon
         kwargs["store"].put(good_key, good_xml.encode("utf-8"), "text/xml")
         return (f"Diagram generated. Key: {good_key}", good_key, {"drawio_xml": good_xml})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(
         archie_memory,
         "_build_context_summary_for_skills",
@@ -1468,7 +1521,7 @@ def test_execute_tool_diagram_artifact_review_blocks_after_failed_retry(monkeypa
         kwargs["store"].put(key, bad_xml.encode("utf-8"), "text/xml")
         return (f"Diagram generated. Key: {key}", key, {"render_manifest": {"node_count": 3}})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "diagram notes exist")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
@@ -1513,7 +1566,7 @@ def test_diagram_revision_complaint_routes_to_diagram_without_diagram_word(monke
         calls.append((tool_name, dict(args)))
         return ("Diagram generated. Key: diagrams/acme/v2/diagram.drawio", "diagrams/acme/v2/diagram.drawio", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -1553,7 +1606,7 @@ def test_execute_tool_bom_expert_review_blocks_undersized_retry(monkeypatch):
             },
         )
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
@@ -1600,7 +1653,7 @@ def test_execute_tool_bom_expert_review_passes_matching_sizing(monkeypatch):
             },
         )
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "")
     monkeypatch.setattr(orchestrator_agent.critic_agent, "evaluate_tool_result", lambda **_kwargs: {"overall_pass": True})
 
@@ -1656,7 +1709,7 @@ def test_orchestrator_critic_respects_max_refinements(monkeypatch):
         ]
     )
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
@@ -1692,7 +1745,7 @@ def test_orchestrator_critic_fail_open_on_error(monkeypatch):
         _ = (tool_name, args)
         return ("POV v1 saved. Key: pov/acme/v1.md", "pov/acme/v1.md", {})
 
-    monkeypatch.setattr(archie_loop, "_execute_tool_core", _fake_execute_tool_core)
+    monkeypatch.setattr(archie_session, "_execute_tool_core", _fake_execute_tool_core)
     monkeypatch.setattr(archie_memory, "_build_context_summary_for_skills", lambda *_a, **_k: "notes exist")
     monkeypatch.setattr(
         orchestrator_agent.critic_agent,
@@ -1718,14 +1771,14 @@ def test_orchestrator_critic_fail_open_on_error(monkeypatch):
     assert any("critic_error_fail_open" in w for w in data.get("warnings", []))
 
 
-def test_hat_tool_definitions_include_terraform_reviewer():
-    tools = archie_loop.hat_engine.get_hat_tool_definitions()
+def test_hat_tool_definitions_include_terraform_for_oci():
+    tools = archie_session.hat_engine.get_hat_tool_definitions()
     names = {
         str((tool.get("function") or {}).get("name") or "")
         for tool in tools
         if isinstance(tool, dict)
     }
-    assert "use_hat_terraform_reviewer" in names
+    assert "use_hat_terraform_for_oci" in names
 
 
 def test_parse_tool_call_accepts_tool_use_block():

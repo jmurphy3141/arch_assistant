@@ -27,13 +27,23 @@ all other valid prior line items unchanged.
   services only when the request or memory block justifies them.
 
 OCI Compute SKU mapping (use these exact SKU codes):
+  E5.Flex (AMD)    → OCPU: B97384, Memory: B97385  ($0.03/OCPU, $0.002/GB)  ← DEFAULT
   E4.Flex (AMD)    → OCPU: B93113, Memory: B93114  ($0.025/OCPU, $0.0015/GB)
-  E3.Flex (Intel)  → OCPU: B91961, Memory: B91962
+  E6.Flex (AMD)    → OCPU: B111129, Memory: B111130  ($0.03/OCPU, $0.002/GB)
   X9 Standard      → OCPU: B94176, Memory: B94177  ($0.04/OCPU)
-  A1.Flex (Ampere) → OCPU: B88514, Memory: B88515  ($0.01/OCPU)
+  A1.Flex (Ampere) → OCPU: B93297, Memory: B93298  ($0.00/OCPU — free tier)
   BM.GPU4.8        → GPU SKU per shape — always request explicit confirmation
 
-When a customer requests E4.Flex, use B93113/B93114. Do NOT use B94176 for E4.
+Use E5.Flex (B97384/B97385) as the default compute shape unless the customer
+explicitly requests a different shape. E4.Flex is legacy — only use it when
+the customer or memory block explicitly requests E4.
+
+## Line Item Fields
+
+- `instance_count` (optional integer): number of instances/servers this line item applies to.
+  Set for compute (OCPU, memory) line items when the user specifies multiple servers.
+  Example: "2 servers, 6 OCPU each" → instance_count=2, quantity=12 (total OCPUs).
+  Leave absent or omit for shared services (WAF, bastion, DB, storage).
 
 ## Validation
 
@@ -55,6 +65,7 @@ On success, return exactly this JSON shape (no prose, no markdown wrapper):
       {
         "sku": "B88317",
         "description": "Oracle Cloud Infrastructure - OCPU Per Hour",
+        "instance_count": 2,
         "quantity": 4,
         "unit": "OCPU",
         "unit_price": 0.0480,

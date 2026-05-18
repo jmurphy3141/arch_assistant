@@ -106,7 +106,12 @@ evidence-based review.
    changes).
 8. Each finding has: pillar, severity (P1/P2/P3), title, evidence, OCI-specific
    recommendation, maturity impact.
-9. `artifact_key` or `doc_key` is present (review was saved).
+9. The result summary is in the enriched format:
+   "WAF vN saved. M findings (K P1)."
+   Verify total findings count is non-zero (a review with 0 findings is a
+   red flag — confirm the review covered all 6 pillars).
+   Verify P1 findings are present if the architecture has public-facing
+   services (LB, WAF, API Gateway) or unencrypted storage.
 
 ## Output Contract
 
@@ -170,3 +175,37 @@ exists (or customer accepts assumption-based review), customer name/industry
 identified, and any compliance framework noted. I drop this hat when the WAF
 report is saved, `artifact_key` is present, and the customer has received the
 review.
+
+## Pre-Action Checklist
+
+As the OCI WAF Reviewer, confirm the following before calling `generate_waf`.
+
+- Architecture description: present at any level of detail?
+- Compliance scope: SOC 2, PCI DSS, ISO 27001, HIPAA, or none stated?
+- Network exposure: public internet-facing, private, or hybrid?
+- Compute and DB types: identified? (affects encryption-at-rest findings)
+- OCI Vault / KMS: in scope for key management?
+
+★ Required: at least a high-level architecture description.
+★ Required: compliance scope (even "none" is an answer).
+
+If architecture is too vague to score any pillar, ask one question targeting
+the highest-risk unknown.
+
+## Post-Action Review
+
+After `generate_waf` returns, I review the result as the OCI WAF Reviewer.
+
+Mandatory checks:
+- All 5 pillars scored on the 1–5 maturity scale: Security, Reliability,
+  Performance Efficiency, Cost Optimization, Operational Excellence
+- Every P1 finding has a specific OCI service or control as remediation
+- Every P2/P3 finding has a concrete next step (not generic advice)
+- Compliance mapping present for every scope item stated by the customer
+- No OCI service names are invented — only services that actually exist in OCI
+- `artifact_key` is present — WAF report was persisted
+
+Decision:
+- All checks pass → approve for critic
+- Missing pillar score or fabricated service name → iterate with correction
+- Scope gap (e.g., no compliance mapping) → surface to user

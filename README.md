@@ -196,6 +196,33 @@ nohup python3.11 -m uvicorn drawing_agent_server:app \
 sleep 3 && curl -s http://localhost:8080/health
 ```
 
+### Live prompt-to-file validation
+
+Run live prompt-to-file tests against a known local branch server, not an
+unknown long-running service. Leave OIDC variables unset so local downloads do
+not require a browser session:
+
+```bash
+env -u OIDC_CLIENT_ID -u OIDC_CLIENT_SECRET -u OIDC_REDIRECT_URI \
+  -u OIDC_ISSUER -u OCI_IDENTITY_DOMAIN_URL \
+  python3.11 -m uvicorn drawing_agent_server:app \
+    --host 127.0.0.1 --port 18080
+
+RUN_ARCHIE_PROMPT_FILE_LIVE=1 \
+AGENT_BASE_URL=http://127.0.0.1:18080 \
+pytest tests/test_archie_prompt_to_file_live.py -v -s
+```
+
+When validating against an auth-enabled deployed server, provide the browser
+session cookie so authenticated artifact download URLs can be fetched:
+
+```bash
+RUN_ARCHIE_PROMPT_FILE_LIVE=1 \
+AGENT_BASE_URL=https://archie.example.com \
+AGENT_SESSION_COOKIE='session=<cookie-value>' \
+pytest tests/test_archie_prompt_to_file_live.py -v -s
+```
+
 ### Start sub-agents
 
 ```bash

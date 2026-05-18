@@ -22,6 +22,7 @@ async def _chat_event_dicts(
     message: str,
     store,
     text_runner,
+    tool_runner=None,
     a2a_base_url: str = "",
     project_id: str | None = None,
     project_name: str | None = None,
@@ -51,12 +52,24 @@ async def _chat_event_dicts(
             if payload is not None:
                 loop.call_soon_threadsafe(queue.put_nowait, payload)
 
+        def _thinking_sink(label: str, phase: str) -> None:
+            payload = {
+                "trace_id": trace_id,
+                "customer_id": customer_id,
+                "event_type": "thinking",
+                "label": label,
+                "reasoning_type": phase,
+            }
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
+
         with notification_sink(_sink):
             result = await server._run_orchestrator_turn(
                 req=req,
                 store=store,
                 text_runner=text_runner,
+                tool_runner=tool_runner,
                 orch_cfg=server._cfg.get("orchestrator", {}),
+                reasoning_sink=_thinking_sink,
             )
         result = await server._persist_bom_xlsx_downloads(customer_id, store, result)
         project_membership = server._persist_chat_project_membership(store, req)
@@ -83,6 +96,53 @@ async def _chat_event_dicts(
         async for payload in _drain_status_queue(status_queue, task):
             yield payload
         result, project_membership = await task
+        for event in result.get("events", []):
+            event_type = str(event.get("type") or "")
+            event_data = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
+            if event_type == "hat_activate":
+                hat = str(event_data.get("hat", "") or "")
+                display = str(event_data.get("display_name", hat) or hat)
+                yield {
+                    "trace_id": trace_id,
+                    "customer_id": customer_id,
+                    "event_type": "hat_activate",
+                    "hat": hat,
+                    "display_name": display,
+                }
+            elif event_type == "hat_drop":
+                hat = str(event_data.get("hat", "") or "")
+                yield {
+                    "trace_id": trace_id,
+                    "customer_id": customer_id,
+                    "event_type": "hat_drop",
+                    "hat": hat,
+                }
+            elif event_type in (
+                "step3_planning",
+                "expert_pre_action",
+                "expert_post_review",
+                "hat_auto_activated",
+                "pre_action_light",
+            ):
+                # Surface reasoning steps as a "thinking" event for UI visibility.
+                label_map = {
+                    "step3_planning": "Planning approach...",
+                    "expert_pre_action": "Expert pre-action analysis...",
+                    "expert_post_review": "Expert review...",
+                    "hat_auto_activated": (
+                        f"Activating {event_data.get('hat', 'expert')} lens..."
+                    ),
+                    "pre_action_light": (
+                        f"Pre-action check for {event_data.get('tool', 'tool')}..."
+                    ),
+                }
+                yield {
+                    "trace_id": trace_id,
+                    "customer_id": customer_id,
+                    "event_type": "thinking",
+                    "label": label_map.get(event_type, "Thinking..."),
+                    "reasoning_type": event_type,
+                }
         for tool_call in result.get("tool_calls", []):
             if (
                 tool_call.get("tool") == "generate_terraform"
@@ -143,6 +203,7 @@ async def stream_chat_turn(
     message: str,
     store,
     text_runner,
+    tool_runner=None,
     a2a_base_url: str = "",
     project_id: str | None = None,
     project_name: str | None = None,
@@ -158,6 +219,7 @@ async def stream_chat_turn(
         message=message,
         store=store,
         text_runner=text_runner,
+        tool_runner=tool_runner,
         a2a_base_url=a2a_base_url,
         project_id=project_id,
         project_name=project_name,
@@ -172,6 +234,7 @@ async def stream_chat_turn_sse(
     message: str,
     store,
     text_runner,
+    tool_runner=None,
     a2a_base_url: str = "",
     project_id: str | None = None,
     project_name: str | None = None,
@@ -182,10 +245,13 @@ async def stream_chat_turn_sse(
         message=message,
         store=store,
         text_runner=text_runner,
+        tool_runner=tool_runner,
         a2a_base_url=a2a_base_url,
         project_id=project_id,
         project_name=project_name,
     ):
+        if str(event.get("event_type") or "") in {"hat_activate", "hat_drop"}:
+            continue
         event_name = {
             "terraform_stage": "terraform_stage",
             "completion": "completion",

@@ -1,5 +1,5 @@
 """
-agent/archie_loop.py
+agent/archie_session.py
 --------------------
 Conversational orchestrator (Agent 0).
 
@@ -25,7 +25,7 @@ import json
 import logging
 import re
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -180,6 +180,7 @@ def _get_forge(
     customer_name: str,
     store: ObjectStoreBase,
     text_runner: Callable,
+    tool_runner: Callable | None,
     a2a_base_url: str,
 ) -> _Forge:
     if customer_id not in _forge_cache:
@@ -188,6 +189,7 @@ def _get_forge(
             customer_id=customer_id,
             customer_name=customer_name,
             text_runner=text_runner,
+            tool_runner=tool_runner,
             a2a_base_url=a2a_base_url,
             base_system_prompt=ORCHESTRATOR_SYSTEM_MSG,
         )
@@ -202,10 +204,12 @@ async def run_turn(
     user_message: str,
     store: ObjectStoreBase,
     text_runner: Callable[[str, str], str],
+    tool_runner: Callable | None = None,
     a2a_base_url: str = "http://localhost:8080",
     max_tool_iterations: int = 5,
     specialist_mode: str = "legacy",
     max_refinements: int = 3,
+    reasoning_sink=None,
 ) -> dict:
     """
     Process one SA message and return the orchestrator response.
@@ -235,6 +239,7 @@ async def run_turn(
         customer_name=customer_name,
         store=store,
         text_runner=text_runner,
+        tool_runner=tool_runner,
         a2a_base_url=a2a_base_url,
     )
 
@@ -248,11 +253,9 @@ async def run_turn(
     ]
     tool_calls: list[dict] = []
     artifacts: dict = {}
+    turn_events: list[dict] = []
     requested_tools = _requested_generation_tools(user_message)
     reply = ""
-    forced_reply = ""
-    forced_followup: dict[str, str] | None = None
-    parallel_executed = False
 
     def _finalize_turn(reply_text: str) -> dict:
         new_turns.append({"role": "assistant", "content": reply_text, "timestamp": _now()})
@@ -262,6 +265,7 @@ async def run_turn(
             "tool_calls": tool_calls,
             "artifacts": artifacts,
             "history_length": len(history) + len(new_turns),
+            "events": turn_events,
         }
 
     def _save_context_note_only(note_text: str) -> str:
@@ -507,6 +511,7 @@ async def run_turn(
                 user_message=change_request or user_message,
                 context=context,
             )
+            forced_reply = ""
             for tool_name in planned_tools:
                 tool_args = _update_tool_args(tool_name, change_request)
                 tool_result = await _invoke_prerouted_tool(
@@ -601,335 +606,36 @@ async def run_turn(
             "Reply `confirm update all` to execute, or `cancel update`."
         )
 
-    workflow_plan = _generation_workflow_plan_for_message(
+    forge_result = await forge.run_turn(
+        session_id=customer_id,
         user_message=user_message,
-        requested_tools=requested_tools,
         context=context,
-        decision_context=decision_context,
+        history=history,
+        reasoning_sink=reasoning_sink,
     )
-    if workflow_plan:
-        if workflow_plan.get("status") == "ask":
-            return _finalize_turn(str(workflow_plan.get("message", "") or "").strip())
-
-        scenarios = list(workflow_plan.get("scenarios", []) or [])
-        sequence = list(workflow_plan.get("sequence", []) or [])
-        bom_feeds_diagram = bool(workflow_plan.get("bom_feeds_diagram", False))
-
-        for scenario in scenarios:
-            scenario_label = str(scenario.get("label", "") or "Scenario").strip()
-            scenario_text = str(scenario.get("text", "") or user_message).strip()
-            last_bom_call: dict[str, Any] | None = None
-            diagram_available_this_scenario = archie_memory._has_architecture_definition(context)
-
-            for tool_name in sequence:
-                if tool_name == "generate_bom":
-                    if archie_memory._is_bom_revision_request(scenario_text, user_message, context) or (
-                        archie_memory._mentions_bom_work_product(user_message) and archie_memory._latest_bom_fact_mismatches(context)
-                    ):
-                        tool_args = {"prompt": user_message}
-                    elif archie_memory._bom_followup_should_hydrate_from_context(
-                        prompt=scenario_text,
-                        user_message=user_message,
-                        context=context,
-                        decision_context=decision_context,
-                    ):
-                        tool_args = {"prompt": user_message}
-                    else:
-                        tool_args = {
-                            "prompt": _build_scenario_bom_prompt(
-                                scenario_label=scenario_label,
-                                scenario_text=scenario_text,
-                                user_message=user_message,
-                            ),
-                            "_bom_context_source": "scenario_request",
-                            "_bom_grounded_from_context": True,
-                        }
-                    call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
-                    last_bom_call = call
-                    if (
-                        "generate_diagram" in sequence
-                        and bom_feeds_diagram
-                        and not _bom_result_can_feed_diagram(
-                            str(call.get("result_summary", "") or ""),
-                            call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {},
-                        )
-                    ):
-                        break
-                    continue
-
-                if tool_name == "generate_diagram":
-                    if bom_feeds_diagram and last_bom_call is not None:
-                        tool_args = {
-                            "bom_text": _build_diagram_bom_text_from_bom_result(
-                                scenario_label=scenario_label,
-                                scenario_text=scenario_text,
-                                user_message=user_message,
-                                bom_summary=str(last_bom_call.get("result_summary", "") or ""),
-                                bom_result_data=last_bom_call.get("result_data", {})
-                                if isinstance(last_bom_call.get("result_data"), dict)
-                                else {},
-                            )
-                        }
-                    else:
-                        tool_args = {"bom_text": scenario_text or user_message.strip()}
-                    call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
-                    diagram_available_this_scenario = bool(call.get("artifact_key")) or not _workflow_call_is_blocked(call)
-                    if not diagram_available_this_scenario:
-                        break
-                    continue
-
-                if tool_name == "generate_waf":
-                    if not diagram_available_this_scenario:
-                        break
-                    tool_args = {"feedback": _build_downstream_workflow_prompt(tool_name, scenario_text, user_message)}
-                    call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
-                    if _workflow_call_is_blocked(call):
-                        break
-                    continue
-
-                if tool_name == "generate_terraform":
-                    if not diagram_available_this_scenario:
-                        break
-                    tool_args = {"prompt": _build_downstream_workflow_prompt(tool_name, scenario_text, user_message)}
-                    call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
-                    if _workflow_call_is_blocked(call):
-                        break
-                    continue
-
-                if tool_name in {"generate_pov", "generate_jep"}:
-                    tool_args = {"feedback": _build_downstream_workflow_prompt(tool_name, scenario_text, user_message)}
-                    call = await _run_generation_step(tool_name, tool_args, scenario_label=scenario_label)
-                    if _workflow_call_is_blocked(call):
-                        break
-
-        return _finalize_turn(
-            _build_generation_workflow_reply(
-                workflow_plan,
-                tool_calls,
-                decision_context=decision_context,
-            )
-        )
-
-    paired_bom_diagram_plan = _bom_diagram_pair_plan_for_message(user_message)
-    if paired_bom_diagram_plan:
-        for scenario in paired_bom_diagram_plan:
-            scenario_label = str(scenario.get("label", "") or "Scenario").strip()
-            scenario_text = str(scenario.get("text", "") or user_message).strip()
-            bom_args = {
-                "prompt": _build_scenario_bom_prompt(
-                    scenario_label=scenario_label,
-                    scenario_text=scenario_text,
-                    user_message=user_message,
-                ),
-                "_bom_context_source": "scenario_request",
-                "_bom_grounded_from_context": True,
+    reply = forge_result.reply
+    forge_events = forge_result.events if isinstance(forge_result.events, list) else []
+    turn_events.extend(
+        {
+            "type": event.type,
+            "message": event.message,
+            "data": dict(event.data or {}),
+        }
+        for event in forge_events
+    )
+    forge_tool_calls = forge_result.tool_calls if isinstance(forge_result.tool_calls, list) else []
+    for tc in forge_tool_calls:
+        tool_calls.append(
+            {
+                "tool": tc.tool,
+                "args": tc.args,
+                "result_summary": tc.result.summary,
+                "result_data": dict(tc.result.data or {}),
+                "artifact_key": tc.result.artifact_key or "",
             }
-            bom_tool_result = await _invoke_prerouted_tool(
-                "generate_bom",
-                bom_args,
-                tool_decision_context=decision_context,
-            )
-            bom_summary = bom_tool_result.summary
-            bom_artifact_key = bom_tool_result.artifact_key or ""
-            bom_result_data = dict(bom_tool_result.data or {})
-            notify("tool:generate_bom", customer_id, bom_summary)
-            bom_call = {
-                "tool": "generate_bom",
-                "args": bom_args,
-                "result_summary": bom_summary,
-                "result_data": bom_result_data,
-                "scenario_label": scenario_label,
-                "artifact_key": bom_artifact_key,
-            }
-            tool_calls.append(bom_call)
-            new_turns.append(
-                {
-                    "role": "tool",
-                    "tool": "generate_bom",
-                    "result_summary": bom_summary,
-                    "timestamp": _now(),
-                    "scenario_label": scenario_label,
-                }
-            )
-            if bom_artifact_key:
-                artifacts["generate_bom"] = bom_artifact_key
-
-            if not _bom_result_can_feed_diagram(bom_summary, bom_result_data):
-                continue
-
-            diagram_args = {
-                "bom_text": _build_diagram_bom_text_from_bom_result(
-                    scenario_label=scenario_label,
-                    scenario_text=scenario_text,
-                    user_message=user_message,
-                    bom_summary=bom_summary,
-                    bom_result_data=bom_result_data,
-                )
-            }
-            diagram_tool_result = await _invoke_prerouted_tool(
-                "generate_diagram",
-                diagram_args,
-                tool_decision_context=decision_context,
-            )
-            diagram_summary = diagram_tool_result.summary
-            diagram_artifact_key = diagram_tool_result.artifact_key or ""
-            diagram_result_data = dict(diagram_tool_result.data or {})
-            notify("tool:generate_diagram", customer_id, diagram_summary)
-            diagram_call = {
-                "tool": "generate_diagram",
-                "args": diagram_args,
-                "result_summary": diagram_summary,
-                "result_data": diagram_result_data,
-                "scenario_label": scenario_label,
-                "artifact_key": diagram_artifact_key,
-            }
-            tool_calls.append(diagram_call)
-            new_turns.append(
-                {
-                    "role": "tool",
-                    "tool": "generate_diagram",
-                    "result_summary": diagram_summary,
-                    "timestamp": _now(),
-                    "scenario_label": scenario_label,
-                }
-            )
-            if diagram_artifact_key:
-                artifacts["generate_diagram"] = diagram_artifact_key
-
-        return _finalize_turn(
-            _build_paired_bom_diagram_reply(
-                paired_bom_diagram_plan,
-                tool_calls,
-                decision_context=decision_context,
-            )
         )
-
-    # Safe parallel fast-path:
-    # When the SA explicitly asks for both POV and JEP in one request, these
-    # document generations are independent and can run concurrently.
-    parallel_tools = _parallel_plan_for_message(user_message)
-    if parallel_tools:
-        logger.info(
-            "Orchestrator parallel tool plan: tools=%s customer=%s",
-            [t["tool"] for t in parallel_tools],
-            customer_id,
-        )
-
-        for tool in parallel_tools:
-            context_summary = await asyncio.to_thread(
-                archie_memory._build_context_summary_for_skills, store, customer_id, customer_name
-            )
-            decision = _skill_preflight_for_tool(
-                tool_name=tool["tool"],
-                args=tool.get("args", {}),
-                user_message=user_message,
-                context_summary=context_summary,
-            )
-            if decision and decision.status == "block":
-                forced_reply = _decision_pushback_text(decision)
-                tool_calls.append(
-                    {
-                        "tool": tool["tool"],
-                        "args": tool.get("args", {}),
-                        "result_summary": forced_reply,
-                        "result_data": {"skill_decision": asdict(decision)},
-                    }
-                )
-                break
-
-        if not forced_reply:
-            parallel_results = await asyncio.gather(
-                *[
-                _invoke_prerouted_tool(
-                    tool["tool"],
-                    tool.get("args", {}),
-                    tool_decision_context=decision_context,
-                )
-                for tool in parallel_tools
-            ]
-            )
-            parallel_executed = True
-            pending_followup: dict[str, str] | None = None
-            for tool, tool_result in zip(parallel_tools, parallel_results):
-                result_summary = tool_result.summary
-                artifact_key = tool_result.artifact_key or ""
-                result_data = dict(tool_result.data or {})
-                tool_name = tool["tool"]
-                tool_args = tool.get("args", {})
-                notify(f"tool:{tool_name}", customer_id, result_summary)
-                tool_calls.append(
-                    {
-                        "tool": tool_name,
-                        "args": tool_args,
-                        "result_summary": result_summary,
-                        "result_data": result_data,
-                    }
-                )
-                if artifact_key:
-                    artifacts[tool_name] = artifact_key
-                new_turns.append(
-                    {
-                        "role": "tool",
-                        "tool": tool_name,
-                        "result_summary": result_summary,
-                        "timestamp": _now(),
-                    }
-                )
-                prompt = _append_tool_result(prompt, tool_name, result_summary)
-
-                decision = _extract_blocking_skill_decision(result_data)
-                if decision:
-                    artifacts.pop(tool_name, None)
-                    pending_followup = _prefer_followup(
-                        pending_followup,
-                        {"kind": "blocked", "message": _decision_pushback_text(decision)},
-                    )
-                    continue
-
-                followup = _extract_governor_followup(result_data)
-                if followup:
-                    if followup["kind"] == "blocked":
-                        artifacts.pop(tool_name, None)
-                    pending_followup = _prefer_followup(pending_followup, followup)
-
-            if pending_followup:
-                forced_followup = pending_followup
-                forced_reply = pending_followup["message"]
-
-        if parallel_executed and not forced_reply:
-            reply = _build_parallel_reply(tool_calls, decision_context=decision_context)
-            return _finalize_turn(reply)
-
-    if not forced_reply:
-        forge_result = await forge.run_turn(
-            session_id=customer_id,
-            user_message=user_message,
-            context=context,
-            history=history,
-        )
-        reply = forge_result.reply
-        for tc in forge_result.tool_calls:
-            tool_calls.append(
-                {
-                    "tool": tc.tool,
-                    "args": tc.args,
-                    "result_summary": tc.result.summary,
-                    "result_data": dict(tc.result.data or {}),
-                    "artifact_key": tc.result.artifact_key or "",
-                }
-            )
+    if isinstance(forge_result.artifacts, dict):
         artifacts.update(forge_result.artifacts)
-
-    if forced_reply:
-        if forced_followup and tool_calls:
-            reply = _build_parallel_reply(
-                tool_calls,
-                decision_context=decision_context,
-                followup=forced_followup,
-            )
-        else:
-            reply = forced_reply
-
     return _finalize_turn(reply)
 
 # ── Tool dispatch ─────────────────────────────────────────────────────────────
@@ -969,46 +675,62 @@ def _parse_terraform_sub_agent_result(result: Any) -> dict[str, str]:
                 data = loaded
         except Exception:
             data = {"main_tf": raw}
+    if isinstance(data.get("files"), dict):
+        return {
+            str(filename): str(content or "")
+            for filename, content in data["files"].items()
+            if str(filename or "").strip()
+        }
     mapping = {
         "main_tf": "main.tf",
         "variables_tf": "variables.tf",
         "outputs_tf": "outputs.tf",
         "readme_md": "README.md",
+        "terraform_tfvars_example": "terraform.tfvars.example",
+        "tfvars_example": "terraform.tfvars.example",
     }
     files = {
         filename: str(data.get(source_key) or "")
         for source_key, filename in mapping.items()
     }
+    if "terraform.tfvars.example" in data:
+        files["terraform.tfvars.example"] = str(data.get("terraform.tfvars.example") or "")
     if not any(content.strip() for content in files.values()):
         files["main.tf"] = raw
+    if not str(files.get("terraform.tfvars.example", "") or "").strip():
+        files["terraform.tfvars.example"] = _default_terraform_tfvars_example()
     return files
 
-def _skill_preflight_for_tool(
-    *,
-    tool_name: str,
-    args: dict,
-    user_message: str,
-    context_summary: str,
-) -> _SkillDecision | None:
-    _ = (args, user_message, context_summary)
-    path_id = _tool_to_path_id(tool_name)
-    if not path_id:
-        return None
-    return _SkillDecision(path_id=path_id, phase="preflight", status="allow")
+def _default_terraform_tfvars_example() -> str:
+    return (
+        'region = "us-ashburn-1"\n'
+        'compartment_ocid = "ocid1.compartment.oc1..example"\n'
+        'compartment_id = "ocid1.compartment.oc1..example"\n'
+        'availability_domain = "example:US-ASHBURN-AD-1"\n'
+        'image_ocid = "ocid1.image.oc1.iad.example"\n'
+        'object_storage_namespace = "example"\n'
+        'object_storage_service_id = "ocid1.service.oc1.iad.objectstorage"\n'
+    )
 
-def _decision_pushback_text(decision: _SkillDecision) -> str:
-    lines = [decision.pushback_message.strip() or "This request is blocked by expert skill validation."]
-    if decision.reasons:
+def _ensure_waf_markdown_sections(content: str) -> str:
+    text = str(content or "").strip()
+    lowered = text.lower()
+    required = {
+        "security and compliance": "Security and Compliance",
+        "reliability and resilience": "Reliability and Resilience",
+        "performance and cost optimization": "Performance and Cost Optimization",
+        "operational efficiency": "Operational Efficiency",
+        "distributed cloud": "Distributed Cloud",
+    }
+    missing = [title for marker, title in required.items() if marker not in lowered]
+    if not missing:
+        return text
+    lines = [text, "", "## Archie WAF Section Alignment"]
+    for title in missing:
         lines.append("")
-        lines.append("Reasons:")
-        for reason in decision.reasons:
-            lines.append(f"- {reason}")
-    if decision.retry_instructions:
-        lines.append("")
-        lines.append("Next steps:")
-        for step in decision.retry_instructions:
-            lines.append(f"- {step}")
-    return "\n".join(lines).strip()
+        lines.append(f"### {title}")
+        lines.append("See the corresponding pillar findings above; this heading is retained for WAF artifact consumers.")
+    return "\n".join(lines).strip() + "\n"
 
 def _extract_blocking_skill_decision(result_data: dict | None) -> _SkillDecision | None:
     if not isinstance(result_data, dict):
@@ -2243,521 +1965,9 @@ def _relevant_waf_pillars(
             pillars.append(pillar)
     return pillars or ["Security", "Reliability", "Cost Optimization"]
 
-def _append_tool_result(prompt: str, tool_name: str, result_summary: str) -> str:
-    base = prompt.rstrip()
-    if base.endswith("ASSISTANT:"):
-        base = base[: -len("ASSISTANT:")].rstrip()
-    return base + (
-        f"\n\n[Tool result: {tool_name}] {result_summary}\n\nASSISTANT:"
-    )
-
-def _build_parallel_reply(
-    tool_calls: list[dict[str, Any]],
-    *,
-    decision_context: dict[str, Any] | None = None,
-    followup: dict[str, str] | None = None,
-) -> str:
-    if not tool_calls:
-        return "Requested tool execution completed."
-    if len(tool_calls) == 1 and followup is None:
-        call = tool_calls[0]
-        if str(call.get("tool", "") or "") == "generate_diagram":
-            return _append_management_summary(
-                _build_single_diagram_reply(call, decision_context=decision_context),
-                tool_calls,
-                decision_context=decision_context,
-            )
-        summary = str(call.get("result_summary", "") or "").strip()
-        if str(call.get("tool", "") or "") == "generate_bom":
-            data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
-            if archie_memory._bom_call_was_memory_revision(data) and "BOM revision was performed" not in summary:
-                summary = f"BOM revision was performed from updated memory.\n\n{summary}".strip()
-            section = _bom_resolved_inputs_reply_section(data)
-            if section:
-                summary = "\n".join([summary or "Final BOM prepared.", *section]).strip()
-        return _append_management_summary(
-            summary or f"Completed `{call.get('tool', 'requested_tool')}`.",
-            tool_calls,
-            decision_context=decision_context,
-        )
-
-    lines = ["Completed the requested outputs:"]
-    for call in tool_calls:
-        tool_name = str(call.get("tool", "") or "requested_tool")
-        label = archie_memory._tool_goal_label(tool_name)
-        summary = str(call.get("result_summary", "") or "").strip()
-        if summary:
-            lines.append(f"- {label}: {summary}")
-        else:
-            lines.append(f"- {label} completed.")
-        if tool_name == "generate_bom":
-            data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
-            if archie_memory._bom_call_was_memory_revision(data) and "BOM revision was performed" not in lines[-1]:
-                lines.append("  BOM revision was performed from updated memory.")
-            lines.extend(_bom_resolved_inputs_reply_section(data))
-    merged_assumptions = archie_memory._merge_assumption_lists(
-        list((decision_context or {}).get("assumptions", []) or []),
-        [],
-    )
-    for call in tool_calls:
-        data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
-        merged_assumptions = archie_memory._merge_assumption_lists(
-            merged_assumptions,
-            list((data.get("decision_context", {}) or {}).get("assumptions", []) or []),
-        )
-        merged_assumptions = archie_memory._merge_assumption_lists(
-            merged_assumptions,
-            list(data.get("assumptions_used", []) or []),
-        )
-    assumptions = [
-        f"{str(item.get('statement', '') or '').strip()} (risk: {str(item.get('risk', '') or 'low').strip().lower() or 'low'})"
-        for item in merged_assumptions
-        if str(item.get("statement", "") or "").strip()
-    ]
-    missing_inputs = list(dict.fromkeys([
-        *[str(item).strip() for item in (decision_context or {}).get("missing_inputs", []) or [] if str(item).strip()],
-        *[
-            str(item).strip()
-            for call in tool_calls
-            for item in ((call.get("result_data", {}) or {}).get("decision_context", {}) or {}).get("missing_inputs", []) or []
-            if str(item).strip()
-        ],
-    ]))
-    if assumptions and (len(tool_calls) > 1 or followup is not None):
-        lines.append("")
-        lines.append("Assumptions applied:")
-        lines.extend(f"- {assumption}" for assumption in assumptions)
-    if missing_inputs and followup is None:
-        lines.append("")
-        lines.append("Missing inputs to tighten the next pass:")
-        lines.extend(f"- {item}" for item in missing_inputs)
-    if followup:
-        lines.append("")
-        lines.append(str(followup.get("message", "")).strip())
-        return "\n".join(lines)
-    return _append_management_summary(
-        "\n".join(lines),
-        tool_calls,
-        decision_context=decision_context,
-    )
-
-def _bom_diagram_pair_plan_for_message(user_message: str) -> list[dict[str, str]]:
-    requested = _requested_generation_tools(user_message)
-    if not {"generate_bom", "generate_diagram"} <= requested:
-        return []
-    if _request_references_existing_bom(user_message):
-        return []
-
-    scenarios = _extract_numbered_scenarios(user_message)
-    if not scenarios:
-        scenarios = [{"label": "Scenario 1", "text": str(user_message or "").strip()}]
-    return scenarios
-
-def _extract_numbered_scenarios(user_message: str) -> list[dict[str, str]]:
-    text = str(user_message or "").strip()
-    if not text:
-        return []
-    matches = list(re.finditer(r"(?:^|[\n\r]|\s)(\d{1,2})[.)]\s+", text))
-    if len(matches) < 2:
-        return []
-
-    scenarios: list[dict[str, str]] = []
-    for idx, match in enumerate(matches):
-        start = match.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-        scenario_text = text[start:end].strip(" \t\r\n.;")
-        if not scenario_text:
-            continue
-        number = match.group(1)
-        scenarios.append({"label": f"Scenario {number}", "text": scenario_text})
-    return scenarios
-
-def _build_scenario_bom_prompt(
-    *,
-    scenario_label: str,
-    scenario_text: str,
-    user_message: str,
-) -> str:
-    lines = [
-        f"{scenario_label}: generate the OCI BOM for this architecture option.",
-        f"Scenario: {scenario_text.strip()}",
-        "Create the BOM first because the diagram will be generated from this BOM result.",
-        "Original request:",
-        str(user_message or "").strip(),
-    ]
-    return "\n".join(line for line in lines if line.strip()).strip()
-
-def _bom_result_can_feed_diagram(result_summary: str, result_data: dict[str, Any] | None) -> bool:
-    data = dict(result_data or {})
-    if _extract_blocking_skill_decision(data):
-        return False
-    if isinstance(data.get("archie_question_bundle"), dict):
-        return False
-    if str(data.get("type", "") or "").strip().lower() == "question":
-        return False
-    if str(data.get("error_code", "") or "").strip():
-        return False
-    summary = str(result_summary or "").strip().lower()
-    if not summary:
-        return False
-    return "clarification required" not in summary and "not ready" not in summary
-
-def _compact_bom_payload_for_diagram(result_data: dict[str, Any] | None) -> str:
-    data = dict(result_data or {})
-    payload = data.get("bom_payload", {}) if isinstance(data.get("bom_payload"), dict) else {}
-    if not payload:
-        return ""
-    lines = ["[Generated BOM Context]"]
-    architecture_option = str(payload.get("architecture_option", "") or "").strip()
-    if architecture_option:
-        lines.append(f"Architecture option: {architecture_option}")
-        if "native" in architecture_option.lower():
-            lines.append("Diagram directive: OCI Native Services, no OCVS/vCenter/NSX/ESXi boxes.")
-    target_services = list((payload.get("structured_inputs", {}) or {}).get("target_services", []) or [])
-    if target_services:
-        lines.append("Native target services: " + ", ".join(str(item) for item in target_services if str(item).strip()))
-    mapping = list((payload.get("structured_inputs", {}) or {}).get("workload_service_mapping", []) or [])
-    if mapping:
-        lines.append("Workload-to-service mapping:")
-        for item in mapping[:10]:
-            if isinstance(item, dict) and item.get("workload") and item.get("target_service"):
-                lines.append(f"- {item.get('workload')} -> {item.get('target_service')}")
-    resolved_inputs = list(payload.get("resolved_inputs", []) or [])
-    if resolved_inputs:
-        lines.append("Resolved BOM inputs:")
-        for item in resolved_inputs[:12]:
-            if isinstance(item, dict) and item.get("question_id") and item.get("answer"):
-                lines.append(f"- {item.get('question_id')}: {item.get('answer')}")
-    line_items = list(payload.get("line_items", []) or [])
-    if line_items:
-        lines.append("Line items:")
-        for idx, item in enumerate(line_items[:20], start=1):
-            if not isinstance(item, dict):
-                continue
-            sku = str(item.get("sku", "") or item.get("part_number", "") or "").strip()
-            desc = str(item.get("description", "") or item.get("name", "") or item.get("service", "") or "").strip()
-            qty = item.get("quantity", item.get("qty", ""))
-            notes = str(item.get("notes", "") or "").strip()
-            bits = [f"{idx}."]
-            if sku:
-                bits.append(sku)
-            if desc:
-                bits.append(desc)
-            if qty not in ("", None):
-                bits.append(f"qty={qty}")
-            if notes:
-                bits.append(f"notes={notes}")
-            lines.append(" ".join(str(bit) for bit in bits if str(bit).strip()))
-    totals = payload.get("totals", {}) if isinstance(payload.get("totals"), dict) else {}
-    if totals:
-        lines.append("Totals: " + json.dumps(totals, ensure_ascii=True, sort_keys=True))
-    assumptions = [str(item).strip() for item in payload.get("assumptions", []) or [] if str(item).strip()]
-    if assumptions:
-        lines.append("Assumptions: " + "; ".join(assumptions[:8]))
-    lines.append("[End Generated BOM Context]")
-    return "\n".join(lines).strip()
-
-def _build_diagram_bom_text_from_bom_result(
-    *,
-    scenario_label: str,
-    scenario_text: str,
-    user_message: str,
-    bom_summary: str,
-    bom_result_data: dict[str, Any] | None,
-) -> str:
-    lines = [
-        f"{scenario_label}: generate the OCI architecture diagram for this architecture option.",
-        f"Scenario: {scenario_text.strip()}",
-        "Use the generated BOM below as the source of truth for diagram components.",
-        "Represent the core OCI topology: VCN/subnets, connectivity, compute/app tier, data/storage tier, and security controls as supported by the BOM.",
-        "Original request:",
-        str(user_message or "").strip(),
-        "",
-        "[Generated BOM Summary]",
-        str(bom_summary or "").strip(),
-        "[End Generated BOM Summary]",
-    ]
-    payload_context = _compact_bom_payload_for_diagram(bom_result_data)
-    if payload_context:
-        lines.extend(["", payload_context])
-    return "\n".join(line for line in lines if line is not None).strip()
-
-def _build_paired_bom_diagram_reply(
-    scenarios: list[dict[str, str]],
-    tool_calls: list[dict[str, Any]],
-    *,
-    decision_context: dict[str, Any] | None = None,
-) -> str:
-    lines = ["I built the requested workflow in prerequisite order:"]
-    calls_by_scenario: dict[str, list[dict[str, Any]]] = {}
-    for call in tool_calls:
-        calls_by_scenario.setdefault(str(call.get("scenario_label", "") or "Scenario"), []).append(call)
-
-    for scenario in scenarios:
-        label = str(scenario.get("label", "") or "Scenario").strip()
-        text = str(scenario.get("text", "") or "").strip()
-        lines.append("")
-        lines.append(f"{label}: {text}")
-        scenario_calls = calls_by_scenario.get(label, [])
-        if not scenario_calls:
-            lines.append("- No tools executed.")
-            continue
-        diagram_ran = False
-        for call in scenario_calls:
-            tool_name = str(call.get("tool", "") or "requested_tool")
-            label = archie_memory._tool_goal_label(tool_name)
-            summary = str(call.get("result_summary", "") or "").strip()
-            if tool_name == "generate_diagram":
-                diagram_ran = True
-            lines.append(f"- {label}: {summary or 'completed.'}")
-        if not diagram_ran:
-            lines.append("- Architecture diagram: skipped until the BOM clarification above is resolved.")
-
-    merged_assumptions = archie_memory._merge_assumption_lists(
-        list((decision_context or {}).get("assumptions", []) or []),
-        [],
-    )
-    for call in tool_calls:
-        data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
-        merged_assumptions = archie_memory._merge_assumption_lists(
-            merged_assumptions,
-            list((data.get("decision_context", {}) or {}).get("assumptions", []) or []),
-        )
-        merged_assumptions = archie_memory._merge_assumption_lists(
-            merged_assumptions,
-            list(data.get("assumptions_used", []) or []),
-        )
-    assumptions = [
-        f"{str(item.get('statement', '') or '').strip()} (risk: {str(item.get('risk', '') or 'low').strip().lower() or 'low'})"
-        for item in merged_assumptions
-        if str(item.get("statement", "") or "").strip()
-    ]
-    missing_inputs = list(dict.fromkeys([
-        *[str(item).strip() for item in (decision_context or {}).get("missing_inputs", []) or [] if str(item).strip()],
-        *[
-            str(item).strip()
-            for call in tool_calls
-            for item in ((call.get("result_data", {}) or {}).get("decision_context", {}) or {}).get("missing_inputs", []) or []
-            if str(item).strip()
-        ],
-    ]))
-    if assumptions:
-        lines.append("")
-        lines.append("Assumptions applied:")
-        lines.extend(f"- {assumption}" for assumption in assumptions)
-    if missing_inputs:
-        lines.append("")
-        lines.append("Missing inputs to tighten the next pass:")
-        lines.extend(f"- {item}" for item in missing_inputs)
-    return _append_management_summary(
-        "\n".join(lines).strip(),
-        tool_calls,
-        decision_context=decision_context,
-    )
-
-def _generation_workflow_plan_for_message(
-    *,
-    user_message: str,
-    requested_tools: set[str],
-    context: dict[str, Any] | None,
-    decision_context: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    if not requested_tools:
-        return None
-
-    pov_or_jep = requested_tools & {"generate_pov", "generate_jep"}
-    if pov_or_jep and not _engagement_context_supports_documents(
-        context=context,
-        decision_context=decision_context,
-        user_message=user_message,
-    ):
-        docs = " and ".join(archie_memory._tool_goal_label(tool) for tool in _ordered_requested_tools(pov_or_jep))
-        return {
-            "status": "ask",
-            "message": (
-                f"I need engagement context before drafting the {docs}. "
-                "Please paste or upload discovery notes, or give me the customer profile, business outcomes, "
-                "workload scope, and target OCI architecture."
-            ),
-        }
-
-    if requested_tools <= {"generate_pov", "generate_jep"}:
-        if len(requested_tools) == 1:
-            tool_name = next(iter(requested_tools))
-            return {
-                "status": "sequence",
-                "sequence": [tool_name],
-                "scenarios": [{"label": "Scenario 1", "text": str(user_message or "").strip()}],
-                "bom_feeds_diagram": False,
-            }
-        return None
-
-    has_architecture = archie_memory._has_architecture_definition(context)
-    diagram_requested = "generate_diagram" in requested_tools
-    bom_requested = "generate_bom" in requested_tools
-    diagram_will_be_built = diagram_requested
-
-    terraform_args = {"_user_request_text": user_message, "prompt": user_message}
-    terraform_scope_bounded = archie_memory._terraform_scope_details_are_bounded(
-        context=context,
-        args=terraform_args,
-        decision_context=decision_context,
-        user_message=user_message,
-    )
-    if "generate_terraform" in requested_tools and (
-        not terraform_scope_bounded or (not has_architecture and not diagram_will_be_built)
-    ):
-        lines = ["I need one more set of details before Terraform so the code has a safe boundary:"]
-        if not has_architecture and not diagram_will_be_built:
-            lines.append("- Architecture definition or diagram context to implement.")
-        if not terraform_scope_bounded:
-            lines.extend(f"- {item['question']}" for item in archie_memory._terraform_targeted_questions())
-        return {
-            "status": "ask",
-            "message": "\n".join(lines),
-        }
-
-    if "generate_waf" in requested_tools and not has_architecture and not diagram_will_be_built:
-        return {
-            "status": "ask",
-            "message": (
-                "I need an architecture diagram before I can run the Well-Architected review. "
-                "Ask me to generate the diagram first, or provide the existing diagram context."
-            ),
-        }
-
-    if "generate_terraform" in requested_tools and not has_architecture and not diagram_will_be_built:
-        return {
-            "status": "ask",
-            "message": (
-                "I need an architecture definition or diagram before Terraform. "
-                "Provide the architecture context, or ask for the diagram and Terraform together with bounded module, state, and security scope."
-            ),
-        }
-
-    if diagram_will_be_built and not bom_requested:
-        diagram_args = {"_user_request_text": user_message, "bom_text": user_message}
-        if not archie_memory._diagram_has_sufficient_context(
-            context=context,
-            args=diagram_args,
-            user_message=user_message,
-        ):
-            return {
-                "status": "ask",
-                "message": (
-                    "I need topology context before building the diagram. "
-                    "Please describe the major OCI components, network exposure, data tier, and region/DR posture."
-                ),
-            }
-
-    sequence: list[str] = []
-    if bom_requested:
-        sequence.append("generate_bom")
-    if diagram_will_be_built:
-        sequence.append("generate_diagram")
-    for tool_name in ("generate_waf", "generate_terraform", "generate_pov", "generate_jep"):
-        if tool_name in requested_tools:
-            sequence.append(tool_name)
-
-    if not sequence:
-        return None
-
-    scenarios = _extract_numbered_scenarios(user_message) if bom_requested and diagram_will_be_built else []
-    if not scenarios:
-        scenarios = [{"label": "Scenario 1", "text": str(user_message or "").strip()}]
-
-    return {
-        "status": "sequence",
-        "sequence": sequence,
-        "scenarios": scenarios,
-        "bom_feeds_diagram": bom_requested and diagram_will_be_built and not _request_references_existing_bom(user_message),
-    }
-
 def _ordered_requested_tools(tools: set[str]) -> list[str]:
     order = ["generate_bom", "generate_diagram", "generate_waf", "generate_terraform", "generate_pov", "generate_jep"]
     return [tool for tool in order if tool in tools]
-
-def _engagement_context_supports_documents(
-    *,
-    context: dict[str, Any] | None,
-    decision_context: dict[str, Any] | None,
-    user_message: str,
-) -> bool:
-    args = {"_user_request_text": user_message, "feedback": user_message}
-    return archie_memory._pov_has_sufficient_context(
-        context=context,
-        decision_context=decision_context,
-        args=args,
-        user_message=user_message,
-    )
-
-def _workflow_call_is_blocked(call: dict[str, Any]) -> bool:
-    result_data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
-    if _extract_blocking_skill_decision(result_data):
-        return True
-    if isinstance(result_data.get("archie_question_bundle"), dict):
-        return True
-    summary = str(call.get("result_summary", "") or "").lower()
-    return "clarification required" in summary or "please upload or paste" in summary
-
-def _build_downstream_workflow_prompt(tool_name: str, scenario_text: str, user_message: str) -> str:
-    scenario = str(scenario_text or "").strip()
-    request = str(user_message or "").strip()
-    if tool_name == "generate_waf":
-        intent = "Review the latest generated architecture diagram for OCI Well-Architected risks."
-    elif tool_name == "generate_terraform":
-        intent = "Draft Terraform for the latest generated architecture diagram using the bounded module, state, and security scope in the request."
-    elif tool_name == "generate_pov":
-        intent = "Draft the customer POV from the current engagement context and requested workflow."
-    elif tool_name == "generate_jep":
-        intent = "Draft the JEP from the current engagement context and requested workflow."
-    else:
-        intent = "Continue the requested generation workflow."
-    lines = [intent]
-    if scenario:
-        lines.append(f"Scenario: {scenario}")
-    if request:
-        lines.append(f"Original request: {request}")
-    return "\n".join(lines).strip()
-
-def _build_generation_workflow_reply(
-    workflow_plan: dict[str, Any],
-    tool_calls: list[dict[str, Any]],
-    *,
-    decision_context: dict[str, Any] | None = None,
-) -> str:
-    sequence = list(workflow_plan.get("sequence", []) or [])
-    followup = _workflow_followup_from_calls(tool_calls)
-    if len(tool_calls) == 1:
-        return _build_parallel_reply(tool_calls, decision_context=decision_context, followup=followup)
-
-    if "generate_bom" in sequence and "generate_diagram" in sequence:
-        reply = _build_paired_bom_diagram_reply(
-            list(workflow_plan.get("scenarios", []) or []),
-            tool_calls,
-            decision_context=decision_context,
-        )
-        if followup:
-            return f"{reply}\n\n{followup['message']}".strip()
-        return reply
-
-    return _build_parallel_reply(tool_calls, decision_context=decision_context, followup=followup)
-
-def _workflow_followup_from_calls(tool_calls: list[dict[str, Any]]) -> dict[str, str] | None:
-    pending_followup: dict[str, str] | None = None
-    for call in tool_calls:
-        result_data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
-        decision = _extract_blocking_skill_decision(result_data)
-        if decision:
-            pending_followup = _prefer_followup(
-                pending_followup,
-                {"kind": "blocked", "message": _decision_pushback_text(decision)},
-            )
-            continue
-        followup = _extract_governor_followup(result_data)
-        if followup:
-            pending_followup = _prefer_followup(pending_followup, followup)
-    return pending_followup
 
 _ACTION_PRODUCTION_MARKERS = (
     "export",
@@ -3291,45 +2501,6 @@ def _build_artifact_verification_reply(
         lines.append("I did not infer missing files from chat history; the status above comes from persisted keys only.")
     return "\n".join(lines)
 
-def _parallel_plan_for_message(user_message: str) -> list[dict]:
-    """
-    Plan safe concurrent tool calls from explicit SA intent.
-    """
-    msg = user_message.lower()
-    wants_bom = "bom" in msg or "bill of materials" in msg
-    wants_explicit_diagram = any(
-        term in msg for term in (
-            "generate diagram",
-            "build diagram",
-            "create diagram",
-            " bom and diagram",
-            " diagram and bom",
-            "architecture diagram",
-            "drawio",
-            "draw.io",
-        )
-    ) or (wants_bom and "diagram" in msg)
-    if wants_bom and wants_explicit_diagram:
-        if _request_references_existing_bom(user_message):
-            return [{"tool": "generate_diagram", "args": {"bom_text": user_message.strip()}}]
-        return [
-            {"tool": "generate_bom", "args": {"prompt": user_message.strip()}},
-            {"tool": "generate_diagram", "args": {"bom_text": user_message.strip()}},
-        ]
-    if wants_bom and not any(term in msg for term in ("pov", "jep", "waf", "terraform", "diagram")):
-        return [{"tool": "generate_bom", "args": {"prompt": user_message.strip()}}]
-
-    wants_pov = "pov" in msg or "point of view" in msg
-    wants_jep = "jep" in msg or "joint execution plan" in msg
-    if not (wants_pov and wants_jep):
-        return []
-    if any(term in msg for term in ("terraform", "diagram", "waf", "bom")):
-        return []
-    return [
-        {"tool": "generate_pov", "args": {}},
-        {"tool": "generate_jep", "args": {}},
-    ]
-
 def _requested_generation_tools(user_message: str) -> set[str]:
     """
     Infer explicitly requested generation tools from the current user turn.
@@ -3338,18 +2509,8 @@ def _requested_generation_tools(user_message: str) -> set[str]:
     msg = (user_message or "").lower()
     requested: set[str] = set()
     generation_or_export = any(token in msg for token in ("build", "create", "generate", "draft", "make", "export", "download"))
-    bom_artifact_terms = (
-        "bom",
-        "bill of materials",
-        "xlsx",
-        "xlxs",
-        "xlsc",
-        "excel",
-        "spreadsheet",
-        "workbook",
-    )
     bom_pricing_terms = ("pricing", "priced", "sku", "skus")
-    if any(term in msg for term in bom_artifact_terms) or (
+    if _message_requests_bom_generation(msg) or (
         generation_or_export and any(term in msg for term in bom_pricing_terms)
     ):
         requested.add("generate_bom")
@@ -3361,9 +2522,40 @@ def _requested_generation_tools(user_message: str) -> set[str]:
         requested.add("generate_pov")
     if "jep" in msg or "joint execution plan" in msg:
         requested.add("generate_jep")
-    if "waf" in msg or "well-architected" in msg or "well architected" in msg:
+    if _message_requests_waf_review(msg):
         requested.add("generate_waf")
     return requested
+
+def _message_requests_bom_generation(msg: str) -> bool:
+    generation_or_export = any(token in msg for token in ("build", "create", "generate", "draft", "make", "export", "download", "need"))
+    if any(term in msg for term in ("xlsx", "xlxs", "xlsc", "excel", "spreadsheet", "workbook")):
+        return True
+    if "bom" in msg:
+        if re.search(r"\b(?:include|cover|section)\s+(?:a\s+|the\s+)?bom\b", msg):
+            return False
+        return generation_or_export or bool(re.search(r"\bbom\b.{0,40}\b(?:file|artifact|download)\b", msg))
+    if "bill of materials" not in msg:
+        return False
+    if re.search(r"\b(?:include|cover|section)\b.{0,60}\bbill of materials\b", msg):
+        return False
+    return generation_or_export or bool(re.search(r"\bbill of materials\b.{0,40}\b(?:file|artifact|download)\b", msg))
+
+def _message_requests_waf_review(msg: str) -> bool:
+    if "well-architected" in msg or "well architected" in msg:
+        return True
+    if "waf" not in msg:
+        return False
+    if re.search(r"\b(?:run|perform|create|generate|draft|make|build)\b.{0,120}(?:,\s*and\s+|\sand\s+)waf\b", msg):
+        return True
+    if re.search(r"\b(?:run|perform|create|generate|draft|make|build)\b.{0,80}\bwaf\b\s+for\b", msg):
+        return True
+    review_terms = ("review", "assessment", "assess", "score", "rating", "report")
+    if any(term in msg for term in review_terms):
+        return bool(
+            re.search(r"\b(?:run|perform|create|generate|draft|make)\b.{0,80}\bwaf\b", msg)
+            or re.search(r"\bwaf\b.{0,80}\b(?:review|assessment|assess|score|rating|report)\b", msg)
+        )
+    return False
 
 def _message_requests_diagram_generation(msg: str) -> bool:
     if "drawio" in msg or "draw.io" in msg or "topology file" in msg:
@@ -3407,26 +2599,6 @@ def _message_requests_diagram_revision(msg: str) -> bool:
         )
     )
     return revision_marker and visual_target
-
-def _single_requested_tool_to_force(requested_tools: set[str], tool_calls: list[dict[str, Any]]) -> str:
-    if len(requested_tools) != 1:
-        return ""
-    tool_name = next(iter(requested_tools))
-    if any(call.get("tool") == tool_name for call in tool_calls):
-        return ""
-    return tool_name
-
-def _default_generation_tool_args(tool_name: str, user_message: str) -> dict[str, Any]:
-    text = str(user_message or "").strip()
-    if tool_name == "generate_diagram":
-        return {"bom_text": text}
-    if tool_name == "generate_bom":
-        return {"prompt": text}
-    if tool_name == "generate_terraform":
-        return {"prompt": text}
-    if tool_name in {"generate_pov", "generate_jep", "generate_waf"}:
-        return {"feedback": text}
-    return {}
 
 def _deliverable_requires_specialist_reply(requested_tools: set[str]) -> str:
     label = ", ".join(_ordered_requested_tools(requested_tools)) or "requested deliverable"
@@ -3924,14 +3096,20 @@ async def _legacy_tool_core_compat(
         )
         if str(response.get("status") or "").lower() == "needs_input":
             return str(response.get("result") or f"{agent_name.upper()} needs more input."), "", response
+        content = str(response.get("result") or "")
+        if tool_name == "generate_waf":
+            content = _ensure_waf_markdown_sections(content)
+            response["result"] = content
         saved = await asyncio.to_thread(
             document_store.save_doc,
             store,
             agent_name,
             customer_id,
-            str(response.get("result") or ""),
+            content,
             {"trace": response.get("trace", {}), "source": "sub_agent_client"},
         )
+        response["result_length"] = len(content)
+        response.pop("result", None)
         key = str(saved.get("key", "") or "")
         return f"{agent_name.upper()} v{saved.get('version')} saved. Key: {key}", key, response
     if tool_name == "generate_bom":

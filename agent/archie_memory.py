@@ -4,8 +4,8 @@ archie_memory.py
 Context assembly, memory enforcement, BOM intent detection,
 infrastructure profiling, and specialist-question management for Archie.
 
-Called by agent.archie_loop. Specialist-question retries dispatch back
-through archie_loop._execute_tool via a late import to avoid circular
+Called by agent.archie_session. Specialist-question retries dispatch back
+through archie_session._execute_tool via a late import to avoid circular
 module initialization.
 """
 from __future__ import annotations
@@ -44,9 +44,9 @@ _DIAGRAM_COMPONENT_MARKERS = (
 
 
 async def _execute_tool(*args: Any, **kwargs: Any) -> tuple[str, str, dict[str, Any]]:
-    import agent.archie_loop as archie_loop
+    import agent.archie_session as archie_session
 
-    return await archie_loop._execute_tool(*args, **kwargs)
+    return await archie_session._execute_tool(*args, **kwargs)
 
 
 def _now() -> str:
@@ -2014,18 +2014,8 @@ def _requested_generation_tools(user_message: str) -> set[str]:
     msg = (user_message or "").lower()
     requested: set[str] = set()
     generation_or_export = any(token in msg for token in ("build", "create", "generate", "draft", "make", "export", "download"))
-    bom_artifact_terms = (
-        "bom",
-        "bill of materials",
-        "xlsx",
-        "xlxs",
-        "xlsc",
-        "excel",
-        "spreadsheet",
-        "workbook",
-    )
     bom_pricing_terms = ("pricing", "priced", "sku", "skus")
-    if any(term in msg for term in bom_artifact_terms) or (
+    if _message_requests_bom_generation(msg) or (
         generation_or_export and any(term in msg for term in bom_pricing_terms)
     ):
         requested.add("generate_bom")
@@ -2037,9 +2027,40 @@ def _requested_generation_tools(user_message: str) -> set[str]:
         requested.add("generate_pov")
     if "jep" in msg or "joint execution plan" in msg:
         requested.add("generate_jep")
-    if "waf" in msg or "well-architected" in msg or "well architected" in msg:
+    if _message_requests_waf_review(msg):
         requested.add("generate_waf")
     return requested
+
+def _message_requests_bom_generation(msg: str) -> bool:
+    generation_or_export = any(token in msg for token in ("build", "create", "generate", "draft", "make", "export", "download", "need"))
+    if any(term in msg for term in ("xlsx", "xlxs", "xlsc", "excel", "spreadsheet", "workbook")):
+        return True
+    if "bom" in msg:
+        if re.search(r"\b(?:include|cover|section)\s+(?:a\s+|the\s+)?bom\b", msg):
+            return False
+        return generation_or_export or bool(re.search(r"\bbom\b.{0,40}\b(?:file|artifact|download)\b", msg))
+    if "bill of materials" not in msg:
+        return False
+    if re.search(r"\b(?:include|cover|section)\b.{0,60}\bbill of materials\b", msg):
+        return False
+    return generation_or_export or bool(re.search(r"\bbill of materials\b.{0,40}\b(?:file|artifact|download)\b", msg))
+
+def _message_requests_waf_review(msg: str) -> bool:
+    if "well-architected" in msg or "well architected" in msg:
+        return True
+    if "waf" not in msg:
+        return False
+    if re.search(r"\b(?:run|perform|create|generate|draft|make|build)\b.{0,120}(?:,\s*and\s+|\sand\s+)waf\b", msg):
+        return True
+    if re.search(r"\b(?:run|perform|create|generate|draft|make|build)\b.{0,80}\bwaf\b\s+for\b", msg):
+        return True
+    review_terms = ("review", "assessment", "assess", "score", "rating", "report")
+    if any(term in msg for term in review_terms):
+        return bool(
+            re.search(r"\b(?:run|perform|create|generate|draft|make)\b.{0,80}\bwaf\b", msg)
+            or re.search(r"\bwaf\b.{0,80}\b(?:review|assessment|assess|score|rating|report)\b", msg)
+        )
+    return False
 
 def _parse_specialist_answers_from_user(
     *,

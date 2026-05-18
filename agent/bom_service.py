@@ -285,6 +285,34 @@ class BomService:
             "allowed_types": ["normal", "question", "final"],
         }
 
+    def _build_shape_catalog(self, price_table: dict[str, dict]) -> str:
+        """
+        Build a compact shape→SKU reference from the live price table.
+        Returns a pipe-delimited string for injection into LLM prompts.
+        """
+        SHAPE_KEYWORDS = [
+            ("e4", "E4.Flex (AMD)", "OCPU"),
+            ("e5", "E5.Flex (AMD)", "OCPU"),
+            ("e6", "E6.Flex (AMD)", "OCPU"),
+            ("x9", "X9 (Intel Standard)", "OCPU"),
+            ("a1", "A1.Flex (Ampere)", "OCPU"),
+            ("gpu", "GPU shapes", "GPU"),
+        ]
+        lines = ["Shape | CPU SKU | CPU $/hr | Mem SKU | Mem $/hr"]
+        for keyword, label, _ in SHAPE_KEYWORDS:
+            for sku, row in price_table.items():
+                desc = row.get("description", "").lower()
+                metric = row.get("metric", "").lower()
+                if keyword in desc and "ocpu" in metric:
+                    mem_sku = CPU_SKU_TO_MEM_SKU.get(sku, "—")
+                    mem_row = price_table.get(mem_sku, {})
+                    lines.append(
+                        f"{label} | {sku} | ${row.get('unit_price', 0):.4f} "
+                        f"| {mem_sku} | ${mem_row.get('unit_price', 0):.4f}"
+                    )
+                    break
+        return "\n".join(lines)
+
     def chat(
         self,
         *,
@@ -314,6 +342,7 @@ class BomService:
             }
 
         intent = self._classify_intent(message)
+        shape_catalog = ""
 
         if intent == "normal":
             reply = (
@@ -331,6 +360,7 @@ class BomService:
             payload = None
         else:
             raw_payload = self._draft_bom_payload(message, snap.pricing_table)
+            shape_catalog = str(raw_payload.pop("_shape_catalog", "") or "")
             repaired_payload, attempts, errors = self._repair_until_valid(raw_payload, snap.pricing_table)
             if errors:
                 result_type = "question"
@@ -353,6 +383,8 @@ class BomService:
             "cache_source": snap.source,
             "latency_ms": elapsed_ms,
         }
+        if intent == "final" and shape_catalog:
+            trace["shape_catalog"] = shape_catalog
         response: dict[str, Any] = {
             "type": result_type,
             "reply": reply,
@@ -576,7 +608,7 @@ class BomService:
         ocpu = float(compute.get("ocpu") or 0.0)
         mem_gb = float(memory.get("gb") or 0.0)
         block_gb = float(storage.get("block_gb") or 0.0)
-        cpu_sku = "B97384" if is_native else "B94176"
+        cpu_sku = "B97384"   # E5.Flex default for all paths
         mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
 
         line_items = []
@@ -677,7 +709,7 @@ class BomService:
         def _has(*markers: str) -> bool:
             return any(marker in text for marker in markers)
 
-        if _has("autonomous database", "oracle database", "oracle databases", "oracle db", "adb", "atp", "adw"):
+        if _has("autonomous database", "oracle database", "oracle databases", "oracle db", "database", "data tier", "db", "adb", "atp", "adw"):
             rows.append(
                 self._build_line(
                     "B99060",
@@ -807,11 +839,27 @@ class BomService:
             return "question"
         return "normal"
 
+    @staticmethod
+    def _user_request_text(message: str) -> str:
+        """Return only the user-supplied portion of message, stripping any Archie Canonical Memory block."""
+        if "[End Archie Canonical Memory]" in message:
+            parts = message.split("[End Archie Canonical Memory]", 1)
+            return parts[1].strip()
+        return message
+
     def _draft_bom_payload(self, message: str, price_table: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        # Use only the user-supplied portion for shape/SKU hints so that old
+        # E4 descriptions in the canonical memory block don't force E4 selection.
+        user_text = self._user_request_text(message).lower()
         text = message.lower()
         is_gpu = "gpu" in text
         mentions_non_oci = self._mentions_non_oci_provider(text)
         table_signals = self._extract_table_signals(message)
+
+        # Detect instance count ("2 servers", "3 nodes", etc.) from user text only.
+        _server_count = max(1, int(self._extract_number(
+            r"(\d+)\s*(?:server|instance|vm|node|host)s?\b", user_text, default=1.0
+        )))
 
         ocpu = float(table_signals.get("ocpu") or 0.0)
         if ocpu <= 0:
@@ -832,27 +880,58 @@ class BomService:
         mem_notes = str(table_signals.get("mem_notes") or "Primary compute memory")
         block_notes = str(table_signals.get("block_notes") or "Block storage capacity")
 
+        # Detect "N servers/instances/nodes" and multiply per-server sizing
+        _server_count = max(1, int(
+            self._extract_number(
+                r"(\d+)\s*(?:server|instance|vm|node)s?\b",
+                user_text,
+                default=1.0,
+            )
+        ))
+        if _server_count > 1:
+            _per_ocpu = ocpu
+            _per_mem  = mem_gb
+            ocpu   = _per_ocpu * _server_count
+            mem_gb = _per_mem  * _server_count
+            ocpu_notes = (
+                f"Compute OCPU — {_server_count} servers × {int(_per_ocpu)} OCPU"
+            )
+            mem_notes  = (
+                f"Compute memory — {_server_count} servers × {int(_per_mem)} GB"
+            )
+
         shape_hint = str(table_signals.get("cpu_family") or "").lower()
         if not shape_hint:
-            if "ampere" in text or "a1" in text:
+            if "ampere" in user_text or "a1" in user_text:
                 shape_hint = "a1"
-            elif "e6" in text:
+            elif "e6" in user_text:
                 shape_hint = "e6"
 
-        if shape_hint == "a1":
+        # Determine CPU SKU from user request only; default to E5 (AMD general-purpose)
+        if shape_hint == "a1" or "ampere" in user_text:
             cpu_sku = "B93297"
-        elif shape_hint == "e6":
+        elif "e6" in user_text or shape_hint == "e6":
             cpu_sku = "B111129"
+        elif "e4" in user_text or shape_hint == "e4":
+            cpu_sku = "B93113"
+        elif "x9" in user_text or "intel" in user_text:
+            x9_sku = "B94176"
+            cpu_sku = x9_sku
         else:
-            cpu_sku = "B94176"
+            cpu_sku = "B97384"   # E5.Flex — OCI default general-purpose VM
         mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
+        shape_catalog = self._build_shape_catalog(price_table)
 
         line_items: list[dict[str, Any]] = []
-        line_items.append(self._build_line(cpu_sku, ocpu, price_table, "compute", ocpu_notes))
+        cpu_line = self._build_line(cpu_sku, ocpu, price_table, "compute", ocpu_notes)
+        cpu_line["instance_count"] = _server_count
+        line_items.append(cpu_line)
 
         # non-GPU compute must be split into OCPU + memory rows
         if not is_gpu:
-            line_items.append(self._build_line(mem_sku, mem_gb, price_table, "compute", mem_notes))
+            mem_line = self._build_line(mem_sku, mem_gb, price_table, "compute", mem_notes)
+            mem_line["instance_count"] = _server_count
+            line_items.append(mem_line)
 
         line_items.append(self._build_line("B91961", block_gb, price_table, "storage", block_notes))
         line_items.append(
@@ -873,6 +952,28 @@ class BomService:
                     price_table,
                     "network",
                     "Flexible load balancer",
+                )
+            )
+
+        if "waf" in text or "web application firewall" in text:
+            line_items.append(
+                self._build_line(
+                    "BWAF01",
+                    1.0,
+                    price_table,
+                    "network",
+                    "Web Application Firewall policy",
+                )
+            )
+
+        if "database" in text or "data tier" in text or re.search(r"\bdb\b", text):
+            line_items.append(
+                self._build_line(
+                    "B99060",
+                    max(2.0, ocpu * 0.25),
+                    price_table,
+                    "database",
+                    "Database layer",
                 )
             )
 
@@ -900,6 +1001,7 @@ class BomService:
             "currency": "USD",
             "line_items": line_items,
             "assumptions": assumptions,
+            "_shape_catalog": shape_catalog,
         }
 
     @staticmethod
@@ -1345,6 +1447,7 @@ class BomService:
             row["extended_price"] = round(qty * price * multiplier, 4)
             total += float(row["extended_price"])
         norm["currency"] = str(norm.get("currency") or "USD")
+        norm["monthly_total"] = round(total, 4)
         norm["totals"] = {"estimated_monthly_cost": round(total, 4)}
         assumptions = norm.get("assumptions")
         if not isinstance(assumptions, list):
@@ -1356,9 +1459,13 @@ class BomService:
         ws = wb.active
         ws.title = "BOM"
 
+        # Columns: A=SKU, B=Description, C=Instance Count, D=Category,
+        #          E=Metric, F=Quantity, G=Monthly Multiplier,
+        #          H=Unit Price (USD), I=Monthly Cost (USD), J=Notes
         headers = [
             "SKU",
             "Description",
+            "Instance Count",
             "Category",
             "Metric",
             "Quantity",
@@ -1373,10 +1480,13 @@ class BomService:
 
         line_items = payload.get("line_items") or []
         for item in line_items:
+            raw_count = item.get("instance_count")
+            count_val = int(raw_count) if raw_count not in (None, "", 0) else ""
             ws.append(
                 [
                     item.get("sku", ""),
                     item.get("description", ""),
+                    count_val,
                     item.get("category", ""),
                     item.get("metric", ""),
                     float(item.get("quantity") or 0),
@@ -1390,23 +1500,24 @@ class BomService:
         start_row = 2
         end_row = max(1, len(line_items) + 1)
         for row_idx in range(start_row, end_row + 1):
-            ws.cell(row=row_idx, column=8, value=f"=E{row_idx}*F{row_idx}*G{row_idx}")
+            ws.cell(row=row_idx, column=9, value=f"=F{row_idx}*G{row_idx}*H{row_idx}")
 
         total_row = end_row + 2
-        ws.cell(row=total_row, column=7, value="TOTAL")
-        ws.cell(row=total_row, column=8, value=f"=SUM(H{start_row}:H{end_row})")
-        ws.cell(row=total_row, column=7).font = Font(bold=True)
+        ws.cell(row=total_row, column=8, value="TOTAL")
+        ws.cell(row=total_row, column=9, value=f"=SUM(I{start_row}:I{end_row})")
         ws.cell(row=total_row, column=8).font = Font(bold=True)
+        ws.cell(row=total_row, column=9).font = Font(bold=True)
 
         ws.column_dimensions["A"].width = 14
         ws.column_dimensions["B"].width = 38
-        ws.column_dimensions["C"].width = 14
-        ws.column_dimensions["D"].width = 32
-        ws.column_dimensions["E"].width = 12
-        ws.column_dimensions["F"].width = 18
+        ws.column_dimensions["C"].width = 16
+        ws.column_dimensions["D"].width = 14
+        ws.column_dimensions["E"].width = 32
+        ws.column_dimensions["F"].width = 12
         ws.column_dimensions["G"].width = 18
-        ws.column_dimensions["H"].width = 20
-        ws.column_dimensions["I"].width = 42
+        ws.column_dimensions["H"].width = 18
+        ws.column_dimensions["I"].width = 20
+        ws.column_dimensions["J"].width = 42
 
         output = io.BytesIO()
         wb.save(output)

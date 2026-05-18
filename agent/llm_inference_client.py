@@ -14,6 +14,7 @@ Returns the raw LLM text string; callers are responsible for JSON parsing.
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
@@ -118,6 +119,103 @@ def run_inference(
         len(text),
     )
     return text
+
+
+def run_inference_with_tools(
+    prompt: str,
+    *,
+    endpoint: str,
+    model_id: str,
+    compartment_id: str,
+    tools: list[dict],
+    tool_choice: str = "auto",
+    system_message: str = "",
+    max_tokens: int = 4000,
+    temperature: float = 0.0,
+    top_p: float = 0.9,
+) -> dict | str:
+    """
+    Call OCI GenAI with tool declarations.
+    Returns {"tool": str, "args": dict} if the model called a tool.
+    Returns str (the prose response) if the model replied conversationally.
+    Raises RuntimeError or oci.exceptions.ServiceError on failure.
+    """
+    try:
+        import oci  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "oci SDK not available. Install with: pip install oci"
+        ) from exc
+
+    signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
+    client = oci.generative_ai_inference.GenerativeAiInferenceClient(
+        config={},
+        signer=signer,
+        service_endpoint=endpoint,
+        timeout=(10, 180),
+    )
+
+    oci_tools = []
+    for t in tools:
+        fn = oci.generative_ai_inference.models.FunctionDefinition()
+        fn.type = "FUNCTION"
+        fn.name = t["name"]
+        fn.description = t["description"]
+        fn.parameters = t["parameters"]
+        oci_tools.append(fn)
+
+    if tool_choice == "required":
+        tc = oci.generative_ai_inference.models.ToolChoiceRequired()
+    elif tool_choice == "none":
+        tc = oci.generative_ai_inference.models.ToolChoiceNone()
+    else:
+        tc = oci.generative_ai_inference.models.ToolChoiceAuto()
+
+    content = oci.generative_ai_inference.models.TextContent()
+    content.text = prompt
+
+    message = oci.generative_ai_inference.models.Message()
+    message.role = "USER"
+    message.content = [content]
+
+    chat_request = oci.generative_ai_inference.models.GenericChatRequest()
+    chat_request.api_format = (
+        oci.generative_ai_inference.models.BaseChatRequest.API_FORMAT_GENERIC
+    )
+    chat_request.messages = [message]
+    chat_request.tools = oci_tools
+    chat_request.tool_choice = tc
+    chat_request.max_tokens = max_tokens
+    chat_request.temperature = temperature
+    chat_request.top_p = top_p
+    if system_message:
+        chat_request.system = system_message
+
+    chat_detail = oci.generative_ai_inference.models.ChatDetails()
+    chat_detail.serving_mode = (
+        oci.generative_ai_inference.models.OnDemandServingMode(model_id=model_id)
+    )
+    chat_detail.chat_request = chat_request
+    chat_detail.compartment_id = compartment_id
+
+    logger.info(
+        "OCI tool inference request: model=%s prompt_len=%d tools=%d choice=%s",
+        model_id,
+        len(prompt),
+        len(oci_tools),
+        tool_choice,
+    )
+    result = client.chat(chat_detail)
+
+    response_msg = result.data.chat_response.choices[0].message
+    tool_calls = getattr(response_msg, "tool_calls", None) or []
+    if tool_calls:
+        fn_call = tool_calls[0]
+        raw_args = fn_call.arguments or "{}"
+        args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+        return {"tool": fn_call.name, "args": args}
+
+    return _extract_text(result)
 
 
 def _extract_text(response) -> str:

@@ -175,3 +175,34 @@ Before calling the Terraform sub-agent I confirm: target region set, compartment
 OCID present (or placeholder accepted), resource scope explicit and bounded, and
 naming/tagging conventions known. I drop this hat when the five-file bundle is
 delivered, `artifact_key` is present, and the customer has the download link.
+
+## Pre-Action Checklist
+
+As the OCI Terraform Expert, confirm the following before calling `generate_terraform`.
+
+- Compartment OCID: available, or templated as a variable named `var.compartment_id`?
+- Region: confirmed? (default: us-chicago-1)
+- Resource list: VCN, subnets, compute, LB, DB — which are in scope?
+- Naming prefix: stated, or use `local.name_prefix` as default?
+- BYOL DB licences: yes or no? (affects `license_model` on DB resources)
+
+★ Required: compartment OCID (or explicit templating) and region must be confirmed.
+★ Required: at least one resource type must be named.
+
+## Post-Action Review
+
+After `generate_terraform` returns, I review the result as the OCI Terraform Expert.
+
+Mandatory checks:
+- Five required files present: `main.tf`, `variables.tf`, `outputs.tf`,
+  `provider.tf`, `terraform.tfvars.example`
+- `provider.tf` pins `hashicorp/oci` to `>= 5.40`
+- A `locals` block defines `name_prefix` and `freeform_tags` in `main.tf`
+- No hardcoded OCIDs anywhere in `.tf` files — all OCIDs are `var.*` references
+- `terraform.tfvars.example` includes stubs for all required variables
+- `artifact_key` is present — bundle was persisted
+
+Decision:
+- All checks pass → approve for critic
+- Missing file or hardcoded OCID → iterate with correction
+- Missing resource type → surface gap to user

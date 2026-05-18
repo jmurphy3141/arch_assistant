@@ -128,6 +128,12 @@ class _SpecialistHandler:
 
         feedback = str(args.get("feedback", "") or "")
         raw_request = feedback or _default_request(self._agent_name)
+        correction = str(args.pop("_forge_correction", "") or "").strip()
+        if correction:
+            raw_request = (
+                f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
+                f"{raw_request}"
+            ).strip()
 
         try:
             response = await sub_agent_client.call_sub_agent(
@@ -155,14 +161,22 @@ class _SpecialistHandler:
                 clarification=clarification,
             )
 
+        content = str(response.get("result") or "")
+        summary_content = content
+        if self._agent_name == "waf":
+            content = _ensure_waf_markdown_sections(content)
+            response["result"] = content
+
         saved = await asyncio.to_thread(
             document_store.save_doc,
             self._store,
             self._doc_type,
             self._customer_id,
-            str(response.get("result") or ""),
+            content,
             {"trace": response.get("trace", {}), "source": "sub_agent_client"},
         )
+        response["result_length"] = len(content)
+        response.pop("result", None)
         key = str(saved.get("key", "") or "")
 
         if self._agent_name == "jep":
@@ -175,8 +189,41 @@ class _SpecialistHandler:
             )
             response.update({"jep_state": jep_state, "lock_outcome": "allowed"})
 
+        findings_summary = ""
+        if self._agent_name == "waf":
+            try:
+                import json as _json
+
+                waf_data = (
+                    _json.loads(summary_content)
+                    if summary_content.strip().startswith("{")
+                    else {}
+                )
+                pillars = waf_data.get("pillars") or {}
+                total_findings = sum(
+                    len(v.get("findings", []))
+                    for v in pillars.values()
+                    if isinstance(v, dict)
+                )
+                p1_count = sum(
+                    1
+                    for v in pillars.values()
+                    if isinstance(v, dict)
+                    for f in v.get("findings", [])
+                    if f.get("severity") == "P1"
+                )
+                if total_findings:
+                    findings_summary = (
+                        f" {total_findings} findings ({p1_count} P1)."
+                    )
+            except Exception:
+                pass
+
         return ToolResult(
-            summary=f"{self._agent_name.upper()} v{saved.get('version')} saved.",
+            summary=(
+                f"{self._agent_name.upper()} v{saved.get('version')} saved."
+                f"{findings_summary}"
+            ),
             status="ok",
             artifact_key=key,
             data=response,
@@ -202,3 +249,24 @@ def _default_request(agent_name: str) -> str:
     if agent_name == "pov":
         return "Generate a customer POV from current engagement context."
     return f"Generate the {agent_name.upper()} from current engagement context."
+
+
+def _ensure_waf_markdown_sections(content: str) -> str:
+    text = str(content or "").strip()
+    lowered = text.lower()
+    required = {
+        "security and compliance": "Security and Compliance",
+        "reliability and resilience": "Reliability and Resilience",
+        "performance and cost optimization": "Performance and Cost Optimization",
+        "operational efficiency": "Operational Efficiency",
+        "distributed cloud": "Distributed Cloud",
+    }
+    missing = [title for marker, title in required.items() if marker not in lowered]
+    if not missing:
+        return text
+    lines = [text, "", "## Archie WAF Section Alignment"]
+    for title in missing:
+        lines.append("")
+        lines.append(f"### {title}")
+        lines.append("See the corresponding pillar findings above; this heading is retained for WAF artifact consumers.")
+    return "\n".join(lines).strip() + "\n"

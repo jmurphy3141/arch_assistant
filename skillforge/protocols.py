@@ -13,9 +13,41 @@ inheriting from a base class.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from skillforge.types import MemorySnapshot, ToolResult
+
+
+@dataclass
+class ArgSchema:
+    description: str
+    type: str
+    required: bool = False
+
+
+@dataclass
+class ToolSchema:
+    name: str
+    description: str
+    args: dict[str, ArgSchema] = field(default_factory=dict)
+
+    def to_api_dict(self) -> dict:
+        """Convert to the dict format expected by run_inference_with_tools."""
+        properties = {
+            k: {"type": v.type, "description": v.description}
+            for k, v in self.args.items()
+        }
+        required = [k for k, v in self.args.items() if v.required]
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        }
 
 
 @runtime_checkable
@@ -131,3 +163,10 @@ class PromptEnricher(Protocol):
 # The LLM call abstraction — must be async.
 # Signature: (prompt, system_message, label) -> raw_text
 AsyncTextRunner = Callable[[str, str, str], Awaitable[str]]
+
+# New callable type: orchestrator tool-aware runner
+# Returns {"tool": str, "args": dict} | str
+AsyncToolRunner = Callable[
+    [str, str, list[ToolSchema], str],
+    Awaitable[dict | str],
+]

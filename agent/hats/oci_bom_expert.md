@@ -103,8 +103,12 @@ hat for any BOM generation, SKU selection, cost estimate, or XLSX export task.
 5. `monthly_total` is the arithmetic sum of all `quantity × unit_price × 730`
    line items — not an estimate.
 6. An XLSX artifact has been persisted: `artifact_key` is present in the result.
-7. GPU requests include explicit shape name (A10, H100, V100) and per-unit cost.
-8. `assumptions` list is non-empty whenever any input was defaulted.
+7. The result summary is in the enriched format:
+   "BOM generated (N services, $X/mo): service1, service2, ..."
+   Verify N matches the number of line_items in the BOM payload and that
+   the named services correspond to what the user requested.
+8. GPU requests include explicit shape name (A10, H100, V100) and per-unit cost.
+9. `assumptions` list is non-empty whenever any input was defaulted.
 
 ## Output Contract
 
@@ -114,17 +118,17 @@ hat for any BOM generation, SKU selection, cost estimate, or XLSX export task.
   "bom_payload": {
     "line_items": [
       {
-        "sku": "B93113",
-        "description": "Compute - E4.Flex OCPU",
+        "sku": "B97384",
+        "description": "Compute - E5.Flex OCPU",
         "quantity": 16,
         "unit": "OCPU Per Hour",
-        "unit_price": 0.025,
-        "monthly_cost": 292.0,
-        "notes": "4 × E4.Flex VMs, 4 OCPU each, active-active HA (×2 ADs)"
+        "unit_price": 0.03,
+        "monthly_cost": 350.4,
+        "notes": "4 × E5.Flex VMs, 4 OCPU each, active-active HA (×2 ADs)"
       }
     ],
     "assumptions": [
-      "E4.Flex selected as default general-purpose shape",
+      "E5.Flex selected as default general-purpose shape",
       "730 hours/month standard billing period",
       "Block Volume: Balanced tier (10 VPU/GB)"
     ],
@@ -150,7 +154,7 @@ hat for any BOM generation, SKU selection, cost estimate, or XLSX export task.
 
 ## Failure Questions
 
-- "What compute shape did you intend — E4.Flex (AMD general-purpose),
+- "What compute shape did you intend — E5.Flex (AMD general-purpose, default),
    A1.Flex (Ampere/Graviton-equivalent), X9 (Intel-compatible), BM.GPU.A10,
    or another?"
 - "Is the storage Block Volume (boot + data disks), Object Storage (unstructured
@@ -170,3 +174,46 @@ OCPU count + memory sizing present or defaulted with justification, region
 confirmed, storage sizing present, and optional managed services scoped. I drop
 this hat once a structured BOM payload with `artifact_key` has been returned and
 the customer has the XLSX download link.
+
+## Pre-Action Checklist
+
+As the OCI BOM Expert, confirm the following before calling `generate_bom`.
+These are YOUR checks as the expert — not validation rules for the sub-agent.
+
+- Compute shape family: E5.Flex (AMD, default), A1.Flex (Ampere), X9 (Intel), GPU, or custom?
+  Default is E5.Flex unless the customer specifies otherwise.
+- OCPU count and memory GB: stated, or can I default with documented justification?
+- Region: confirmed? (default: us-chicago-1)
+- Storage: type (Block Volume / Object Storage / File Storage), tier, size in GB/TB?
+- HA mode: single-AD or active-active across ADs? (active-active doubles compute quantity)
+- Managed services: OKE, Autonomous DB, OpenSearch — in scope? BYOL DB licences?
+- Budget: stated? If yes, I must surface a delta if monthly_total exceeds it.
+
+If any item marked with ★ is unconfirmed, ask the user before calling the sub-agent:
+★ Compute shape or family
+★ Region
+★ Storage sizing
+
+Unstarred items may be defaulted — document the assumption.
+
+## Post-Action Review
+
+After `generate_bom` returns, I review the result as the OCI BOM Expert.
+
+Mandatory checks (every BOM):
+- Every line item has a real OCI SKU (B-prefix part number — no invented numbers)
+- Compute is split: separate OCPU row + separate memory row per shape instance
+- `monthly_total` equals the arithmetic sum of quantity × unit_price × hours (verify the math)
+- `assumptions` list is non-empty whenever any input was defaulted
+- `artifact_key` is present — XLSX was actually persisted
+
+If budget was stated: delta between monthly_total and budget is surfaced to the user.
+
+GPU checks (if applicable):
+- Shape name is explicit (BM.GPU.A10, BM.GPU4.8, etc.)
+- Per-unit cost sourced from live price table, not hardcoded
+
+Decision:
+- All checks pass → approve for critic
+- Math error or missing artifact_key → iterate with correction to sub-agent
+- Unknown SKUs or missing mandatory fields → surface to user for clarification

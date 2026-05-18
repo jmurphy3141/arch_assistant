@@ -87,7 +87,7 @@ hat for any diagram generation, update, or validation request.
   Any deviation must be an explicit architectural decision, not an error.
 
 - **Instance count labels:** When a service has `instance_count > 1`, label it
-  `"{N} × {ShapeName}"` (e.g., `"3 × E4.Flex"`). Single instances use plain
+  `"{N} × {ShapeName}"` (e.g., `"3 × E5.Flex"`). Single instances use plain
   service name.
 
 - **HA/DR topology:**
@@ -113,14 +113,16 @@ hat for any diagram generation, update, or validation request.
 7. Instance count labels are applied for any node with count > 1.
 8. An `artifact_key` pointing to the saved `.drawio` file is present in the
    result.
-9. `node_count` reflects the actual number of OCI service nodes (not cells).
-10. **AI/ML services**: if the user requested any of the following, they MUST
-    appear as nodes in the diagram or the result is incomplete:
-    - "LLM endpoint", "Generative AI", "OCI GenAI" → `oci_type: "generative ai"`
-    - "RAG", "vector search", "embeddings" → `oci_type: "opensearch"` (vector
-      store) AND `oci_type: "generative ai"` (embeddings/inference)
-    - "Data Science", "ML training" → `oci_type: "data science"`
-    - "AI Language", "AI Vision", "AI Speech" → appropriate AI service node
+9. The result summary contains a node inventory in the format
+   "N nodes: category×count, ..." — verify N is plausible for the requested
+   architecture (a 3-tier HA web app should have ≥ 8 nodes).
+10. AI/ML services are present in the node inventory whenever the user
+    requested an AI diagram, LLM endpoint, RAG pipeline, or GenAI feature
+    (look for `generativeai`, `aiservice`, `datasciencenotebook`, or similar
+    categories in the inventory string).
+11. No obviously required service category is missing given the request
+    (e.g. a "secure web app" must have a load balancer and WAF node; a
+    "database tier" must have a database node).
 
 ## Output Contract
 
@@ -129,7 +131,7 @@ hat for any diagram generation, update, or validation request.
   "artifact_key": "diagrams/customer-123/v2.drawio",
   "drawio_xml": "<mxGraphModel>...</mxGraphModel>",
   "node_count": 14,
-  "summary": "3-tier OCI architecture: Public LB + WAF, 3×E4.Flex app nodes in
+  "summary": "3-tier OCI architecture: Public LB + WAF, 3×E5.Flex app nodes in
               Private subnet across 2 ADs, Autonomous DB in Data tier, OCI Vault
               in Management subnet. FastConnect DRG for on-premises link."
 }
@@ -157,7 +159,7 @@ hat for any diagram generation, update, or validation request.
   compute instances?"
 - "Is there a DRG or FastConnect requirement for on-premises connectivity?"
 - "Should the Bastion Service be shown for SSH/RDP management access?"
-- "How many compute instances per tier — e.g., '3 × E4.Flex' in the app tier?"
+- "How many compute instances per tier — e.g., '3 × E5.Flex' in the app tier?"
 
 ## Activation & Drop
 
@@ -176,17 +178,10 @@ As the OCI Diagram Architect, confirm the following before calling `generate_dia
 - Region and AD count: single-AD or multi-AD? (affects subnet layout and gateway count)
 - Connectivity: internet-facing, private, or hybrid?
 - Instance counts: are VM counts per tier specified, or should I use defaults (1)?
-- **AI/ML components**: did the user mention any of these?
-  - "LLM", "GenAI", "Generative AI", "AI endpoint" → include `generative ai` node
-  - "RAG", "vector search", "semantic search", "embeddings" → include both
-    `opensearch` (vector store) and `generative ai` (embeddings + inference) nodes
-  - "Data Science", "ML training" → include `data science` node
-  - Object Storage + AI → include both; label Object Storage as corpus/data store
 
 ★ Required: at least one subnet tier and one service type must be confirmed.
-If only a vague description exists ("I want an AI app"), ask one focused
-question to identify the AI service (GenAI? RAG? Data Science?) and the app
-tier topology before calling the sub-agent.
+If only a vague description exists ("I want a web app"), ask one focused
+question to identify the primary topology before calling the sub-agent.
 
 ## Post-Action Review
 
@@ -199,10 +194,8 @@ Mandatory checks:
 - Instance count labels appear on compute nodes when count > 1
 - Only OCI icons from `agent/oci_standards.py` are used — no fabricated stencil IDs
 - `artifact_key` is present — draw.io file was persisted
-- **AI/ML completeness**: if GenAI/RAG/Data Science were requested, those nodes
-  must be present in the XML; if missing, iterate with explicit node list
 
 Decision:
 - All checks pass → approve for critic
 - Wrong parent or gateway position → iterate with layout correction
-- Missing subnet tiers or requested AI nodes → surface gap to user
+- Missing subnet tiers → surface gap to user

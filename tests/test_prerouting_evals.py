@@ -22,9 +22,9 @@ def test_recall_intent_not_hardcoded_in_run_turn():
     """_is_recall_intent should not be called from run_turn after migration."""
     import ast
     import inspect
-    import agent.archie_loop as archie_loop
+    import agent.archie_session as archie_session
 
-    source = inspect.getsource(archie_loop.run_turn)
+    source = inspect.getsource(archie_session.run_turn)
     assert "_is_recall_intent" not in source, \
         "_is_recall_intent is still called from run_turn — remove the Python block"
 
@@ -32,9 +32,9 @@ def test_recall_intent_not_hardcoded_in_run_turn():
 def test_note_capture_not_hardcoded_in_run_turn():
     """_is_note_capture_only_request should not be called from run_turn after migration."""
     import inspect
-    import agent.archie_loop as archie_loop
+    import agent.archie_session as archie_session
 
-    source = inspect.getsource(archie_loop.run_turn)
+    source = inspect.getsource(archie_session.run_turn)
     assert "_is_note_capture_only_request" not in source, \
         "_is_note_capture_only_request is still called from run_turn — remove the Python block"
 
@@ -42,9 +42,9 @@ def test_note_capture_not_hardcoded_in_run_turn():
 def test_architecture_chat_not_hardcoded_in_run_turn():
     """_is_architecture_chat_only_request should not be called from run_turn."""
     import inspect
-    import agent.archie_loop as archie_loop
+    import agent.archie_session as archie_session
 
-    source = inspect.getsource(archie_loop.run_turn)
+    source = inspect.getsource(archie_session.run_turn)
     assert "_is_architecture_chat_only_request" not in source, \
         "_is_architecture_chat_only_request still in run_turn — remove the Python block"
 
@@ -52,7 +52,7 @@ def test_architecture_chat_not_hardcoded_in_run_turn():
 @pytest.mark.asyncio
 async def test_run_turn_still_returns_reply_for_conversational_message(monkeypatch):
     """After removing Python blocks, run_turn still handles conversational messages."""
-    import agent.archie_loop as archie_loop
+    import agent.archie_session as archie_session
     from skillforge.types import TurnResult
 
     fake_result = TurnResult(reply="Great question!", tool_calls=[], artifacts={}, history_length=1)
@@ -60,13 +60,13 @@ async def test_run_turn_still_returns_reply_for_conversational_message(monkeypat
     mock_forge.run_turn = AsyncMock(return_value=fake_result)
     mock_forge.invoke_tool = AsyncMock()
 
-    monkeypatch.setattr(archie_loop, "_get_forge", lambda **_kw: mock_forge)
-    monkeypatch.setattr(archie_loop.document_store, "load_conversation_history", lambda *a: [])
-    monkeypatch.setattr(archie_loop.document_store, "save_conversation_turns", lambda *a, **kw: None)
-    monkeypatch.setattr(archie_loop.context_store, "read_context", lambda *a: {})
+    monkeypatch.setattr(archie_session, "_get_forge", lambda **_kw: mock_forge)
+    monkeypatch.setattr(archie_session.document_store, "load_conversation_history", lambda *a: [])
+    monkeypatch.setattr(archie_session.document_store, "save_conversation_turns", lambda *a, **kw: None)
+    monkeypatch.setattr(archie_session.context_store, "read_context", lambda *a: {})
 
     with patch("agent.notifications.notify"):
-        result = await archie_loop.run_turn(
+        result = await archie_session.run_turn(
             customer_id="c1",
             customer_name="Acme",
             user_message="What is the difference between OCI and AWS?",

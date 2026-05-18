@@ -10,39 +10,63 @@ The project started as a single diagram-generation agent and has grown into a mu
 
 ## Architecture Overview
 
+**Forge is the framework. Archie is the personality (system prompt + tools + hats).**
+
 ```
 User (browser UI or API)
   │
   ▼
 drawing_agent_server.py  ← FastAPI, port 8080, v1.9.1
-  │   /api/chat           → archie_loop.py via orchestrator_agent.py shim
+  │   /api/chat/stream    → chat_stream.py → archie_session.py → Forge
   │   /upload-bom         → direct diagram pipeline
   │   /api/bom/*          → bom_service.py
-  │   /api/terraform/*    → jep/pov/waf/terraform agents
   │   /health, /download
   │
-  ├─ orchestrator_agent.py   26-line compatibility shim for existing imports
-  ├─ archie_loop.py          ReAct loop; dispatches internal tools:
-  │    generate_diagram       → diagram pipeline (A2A self-call)
-  │    generate_bom           → bom_service.py
-  │    generate_pov           → pov_agent.py
-  │    generate_jep           → jep_agent.py
-  │    generate_waf           → waf_agent.py
-  │    generate_terraform     → sub_agents/terraform/
-  │    save_notes / get_summary / get_document
+  ├─ orchestrator_agent.py   Thin compatibility shim (26 lines)
+  │
+  ├─ archie_session.py       Thin session wrapper (~150 lines):
+  │    load history + context → forge.run_turn() → save results
+  │
+  ├─ SkillForge (skillforge/)    Domain-agnostic ReAct orchestrator
+  │    forge.py              Forge.run_turn() — the primary loop:
+  │      step3_planning      → structured planning LLM call before tools
+  │      requires_hat gate   → auto-activates expert hat before domain tools
+  │      expert pre-action   → expert LLM call before tool dispatch
+  │      tool dispatch       → calls registered tool handlers
+  │      expert post-review  → quality + correctness review after tool
+  │      correction loop     → injects review concern on iterate
+  │    registry.py           Tool registration (ToolSpec, requires_hat)
+  │    types.py              TurnResult, ToolCallRecord, TurnEvent
+  │
+  ├─ Archie wiring (agent/archie_wiring.py)
+  │    build_forge()         Constructs Forge with Archie system prompt,
+  │                          9 registered tools, and hat_engine
+  │
+  ├─ Tool handlers (agent/tools/)
+  │    diagram.py            DiagramHandler → A2A diagram sub-agent
+  │    bom.py                BomHandler → bom_service.py
+  │    specialists.py        WafHandler / PovHandler / JepHandler → A2A
+  │    terraform.py          TerraformHandler → sub_agents/terraform/
+  │    notes.py              save_notes / get_summary / get_document
   │
   ├─ Hat system
-  │    hat_engine.py          Loads agent/hats/*.md and exposes use_hat_* tools
-  │    hats/critic.md         Critic lens for reviewing specialist output
-  │    hats/governor.md       Guardrail lens for cost/security/quality review
+  │    hat_engine.py              Loads agent/hats/*.md, exposes use_hat_* tools
+  │    hats/diagram_for_oci.md    Expert lens: OCI diagram quality + AI/ML checks
+  │    hats/oci_bom_expert.md     Expert lens: BOM service list + pricing review
+  │    hats/oci_waf_reviewer.md   Expert lens: WAF findings + P1 severity
+  │    hats/terraform_for_oci.md  Expert lens: Terraform correctness
+  │    hats/oci_customer_pov_writer.md  Expert lens: POV document quality
+  │    hats/jep_writer.md         Expert lens: JEP document quality
+  │    hats/critic.md             Critic post-review lens (manual only)
+  │    hats/governor.md           Guardrail lens (manual only)
   │
-  ├─ Sub-agents
-  │    sub_agents/bom/        BOM specialist A2A service
-  │    sub_agents/diagram/    Diagram specialist A2A service
-  │    sub_agents/pov/        POV specialist A2A service
-  │    sub_agents/jep/        JEP specialist A2A service
-  │    sub_agents/waf/        WAF specialist A2A service
-  │    sub_agents/terraform/  Terraform specialist A2A service
+  ├─ Sub-agents (independent A2A services)
+  │    sub_agents/bom/        BOM specialist
+  │    sub_agents/diagram/    Diagram specialist
+  │    sub_agents/pov/        POV specialist
+  │    sub_agents/jep/        JEP specialist
+  │    sub_agents/waf/        WAF specialist
+  │    sub_agents/terraform/  Terraform specialist
   │
   ├─ Diagram pipeline
   │    bom_parser.py          BOM.xlsx / inline text → ServiceItem list + LLM prompt
@@ -50,11 +74,6 @@ drawing_agent_server.py  ← FastAPI, port 8080, v1.9.1
   │    intent_compiler.py     LayoutIntent → validated layout spec
   │    layout_engine.py       Spec → absolute x,y positions
   │    drawio_generator.py    Positions → flat draw.io XML
-  │
-  ├─ Reference architecture
-  │    reference_architecture.py     Selects Oracle reference patterns
-  │    external_corpus_scorer.py     Scores diagrams against corpus
-  │    standards/oracle_reference_bundle.json
   │
   └─ Persistence
        document_store.py      Notes, docs, conversation history, Terraform bundles
@@ -78,11 +97,18 @@ arch_assistant/
 ├── Dockerfile
 ├── deploy/oci-agent.service    # systemd unit for production
 │
+├── skillforge/                 # Domain-agnostic ReAct orchestrator framework
+│   ├── forge.py                # Forge class — run_turn(), reasoning loop, hat gates
+│   ├── registry.py             # ToolSpec, register_tool(), requires_hat
+│   ├── types.py                # TurnResult, ToolCallRecord, TurnEvent, ToolResult
+│   └── __init__.py
+│
 ├── agent/
-│   ├── orchestrator_agent.py   # Thin compatibility shim for Agent 0 imports
-│   ├── archie_loop.py          # Agent 0 ReAct loop, routing, and tool dispatch
+│   ├── orchestrator_agent.py   # Thin compatibility shim for existing imports
+│   ├── archie_session.py       # Thin session wrapper: load state → forge.run_turn() → save
+│   ├── archie_wiring.py        # build_forge(): Archie system prompt + tool registration
 │   ├── archie_memory.py        # Memory/context assembly and enforcement helpers
-│   ├── hat_engine.py           # Loads hats and exposes hat activation tools
+│   ├── hat_engine.py           # Loads hats and exposes use_hat_* tools
 │   ├── safety_rules.py         # Thin deterministic safety checks
 │   ├── bom_parser.py           # BOM → ServiceItem list + LLM prompt
 │   ├── bom_service.py          # Live OCI pricing, BOM generation, repair loop
@@ -95,7 +121,6 @@ arch_assistant/
 │   ├── jep_agent.py            # JEP document writer
 │   ├── jep_lifecycle.py        # JEP state machine
 │   ├── waf_agent.py            # WAF review agent
-│   ├── diagram_waf_orchestrator.py  # Diagram + WAF combined loop
 │   ├── reference_architecture.py    # Oracle reference pattern selector
 │   ├── external_corpus_scorer.py    # Diagram quality scorer vs. corpus
 │   ├── context_store.py        # Per-customer working context
@@ -110,9 +135,22 @@ arch_assistant/
 │   ├── layout_intent.py        # LayoutIntent dataclass + validator
 │   ├── png_exporter.py         # draw.io CLI → PNG (requires CLI)
 │   │
-│   ├── hats/                   # Archie expert lenses selected as tools
-│   │   ├── critic.md, governor.md, diagram_builder.md, bom_reviewer.md
-│   │   └── terraform_reviewer.md, waf_reviewer.md
+│   ├── tools/                  # Forge tool handlers (called by forge.run_turn)
+│   │   ├── diagram.py          # DiagramHandler — calls diagram sub-agent A2A
+│   │   ├── bom.py              # BomHandler — calls bom_service.py
+│   │   ├── specialists.py      # WafHandler, PovHandler, JepHandler — A2A
+│   │   ├── terraform.py        # TerraformHandler — calls terraform sub-agent
+│   │   └── notes.py            # save_notes, get_summary, get_document
+│   │
+│   ├── hats/                   # Expert lenses (markdown) loaded by hat_engine
+│   │   ├── diagram_for_oci.md       # OCI diagram quality, AI/ML completeness
+│   │   ├── oci_bom_expert.md        # BOM service list and pricing review
+│   │   ├── oci_waf_reviewer.md      # WAF findings, P1 severity checks
+│   │   ├── terraform_for_oci.md     # Terraform correctness and best practices
+│   │   ├── oci_customer_pov_writer.md  # POV document quality
+│   │   ├── jep_writer.md            # JEP document quality
+│   │   ├── critic.md                # Critic post-review (manual activation only)
+│   │   └── governor.md              # Guardrail lens (manual activation only)
 │
 │   └── standards/
 │       └── oracle_reference_bundle.json
@@ -172,11 +210,20 @@ Layout engine overrides gateway X after computing subnet bounding boxes:
 - IGW, NAT, DRG: `x = vcn_left - icon_w/2`
 - SGW: `x = vcn_right - icon_w/2`
 
-### Archie loop and hats
-`agent/orchestrator_agent.py` is only a compatibility shim. The real Agent 0
-implementation is `agent/archie_loop.py`; memory/context helpers live in
-`agent/archie_memory.py`. Expert lenses are markdown hats in `agent/hats/`,
-loaded by `agent/hat_engine.py` and selected by Archie via `use_hat_*` tools.
+### Forge is the orchestrator — Archie is the personality
+`skillforge/forge.py` owns ALL orchestration: planning, hat activation, expert
+pre-action, tool dispatch, expert post-review, and correction loops.
+`agent/archie_session.py` is a thin session wrapper (~150 lines) that loads
+state, calls `forge.run_turn()`, and saves results. It must never contain
+routing logic, LLM calls, or tool dispatch.
+
+`agent/archie_wiring.py` builds the Forge instance with the Archie system
+prompt (OCI architect persona + tool sequencing rules) and registers the 9
+domain tools via `build_forge()`.
+
+Expert lenses are markdown hats in `agent/hats/`, loaded by `hat_engine.py`.
+Forge auto-activates the required hat before any domain tool call via the
+`requires_hat` field on each registered tool.
 
 ### Sub-agents are A2A services
 Specialists live under `sub_agents/`: BOM, diagram, POV, JEP, WAF, and
@@ -259,12 +306,21 @@ curl -X POST http://10.0.3.47:8080/upload-bom \
 
 ## Known Debt — Do Not Make Worse
 
-1. **Keep `orchestrator_agent.py` thin.** New Agent 0 work belongs in
-   `archie_loop.py` or a focused helper module, not in the compatibility shim.
+1. **Keep `orchestrator_agent.py` thin.** New work belongs in `archie_session.py`
+   (session management) or `skillforge/forge.py` (orchestration), not in the
+   compatibility shim.
 
 2. **`server/` directory** is a secondary FastAPI app for OCI Object Storage
    proxying. It is a separate process, not part of the main server startup. Do
    not merge its routes into `drawing_agent_server.py`.
+
+3. **`archie_session.py` is a thin session wrapper.** It must not contain
+   routing logic, LLM calls outside `forge.run_turn()`, or tool dispatch.
+   All orchestration belongs in `skillforge/forge.py`. All sequencing rules
+   belong in the Archie system prompt in `agent/archie_wiring.py`. Any code
+   added to `archie_session.py` that bypasses `forge.run_turn()` silently
+   kills the p39–p43 expert reasoning for that request type.
+   `tests/test_archie_forge_wiring.py` will catch regressions.
 
 ---
 

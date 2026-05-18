@@ -90,6 +90,18 @@ def _terraform_fallback_files() -> dict[str, str]:
     }
 
 
+def _default_tfvars_example() -> str:
+    return (
+        'region = "us-ashburn-1"\n'
+        'compartment_ocid = "ocid1.compartment.oc1..example"\n'
+        'compartment_id = "ocid1.compartment.oc1..example"\n'
+        'availability_domain = "example:US-ASHBURN-AD-1"\n'
+        'image_ocid = "ocid1.image.oc1.iad.example"\n'
+        'object_storage_namespace = "example"\n'
+        'object_storage_service_id = "ocid1.service.oc1.iad.objectstorage"\n'
+    )
+
+
 async def generate_terraform_bundle(
     *,
     customer_id: str,
@@ -168,6 +180,8 @@ async def generate_terraform_bundle(
             "main_tf": "main.tf",
             "variables_tf": "variables.tf",
             "outputs_tf": "outputs.tf",
+            "terraform_tfvars_example": "terraform.tfvars.example",
+            "tfvars_example": "terraform.tfvars.example",
             "readme_md": "README.md",
         }
         files = {
@@ -175,6 +189,8 @@ async def generate_terraform_bundle(
             for name, content in parsed_result.items()
             if str(content or "").strip()
         }
+        if not str(files.get("terraform.tfvars.example", "") or "").strip():
+            files["terraform.tfvars.example"] = _default_tfvars_example()
         summary = str(response.get("summary") or "Terraform generation completed")
         result_data = {
             "ok": status == "ok" and bool(files),
@@ -346,7 +362,7 @@ class TerraformHandler:
                 clarification=clarification,
             )
 
-        from agent.archie_loop import _parse_terraform_sub_agent_result
+        from agent.archie_session import _parse_terraform_sub_agent_result
 
         files = _parse_terraform_sub_agent_result(response.get("result"))
         saved = await asyncio.to_thread(
@@ -364,5 +380,6 @@ class TerraformHandler:
             data={
                 "terraform_files": files,
                 "terraform_bundle": saved,
+                "bundle": saved,
             },
         )

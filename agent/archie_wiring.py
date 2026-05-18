@@ -2,7 +2,7 @@
 archie_wiring.py - wire every OCI tool handler into a Forge instance.
 
 Call build_forge() once per customer session to get a fully configured Forge.
-archie_loop.py imports build_forge() for the p2i cutover task.
+archie_session.py imports build_forge() for the p2i cutover task.
 """
 from __future__ import annotations
 
@@ -17,11 +17,52 @@ from agent.tools.diagram import DiagramHandler
 from agent.tools.notes import NotesHandlers
 from agent.tools.specialists import JepHandler, PovHandler, WafHandler
 from agent.tools.terraform import TerraformHandler
-from skillforge import Forge
+from skillforge import ArgSchema, Forge
 from skillforge.types import MemorySnapshot
 
 
 _INTENT_ROUTING_SKILL = Path(__file__).parent.parent / "skills" / "intent_routing.md"
+
+_TOOL_SEQUENCING_RULES = """
+## Tool Sequencing Rules
+
+These rules are mandatory. Follow them on every generation request.
+
+### Ordering
+1. When the user requests both a BOM and a diagram in the same turn, always call generate_bom FIRST. Pass the BOM result payload to generate_diagram.
+2. generate_waf and generate_terraform both require an existing diagram.
+   If no diagram exists for the customer, generate one first.
+3. generate_pov and generate_jep can be requested in the same turn and may
+   be called sequentially in one turn.
+
+### Single-tool requests
+4. If the user asks only for a BOM, call generate_bom once and return.
+5. If the user asks only for a diagram, call generate_diagram once and return.
+6. Do not generate unrequested deliverables.
+
+### Artifact re-use
+7. If the user asks for a download link or asks to view an existing artifact,
+   return the artifact key from context -- do not re-generate.
+
+### Update requests
+8. If the user says "update everything" or "regenerate all", identify which tools have existing artifacts in context and re-run them in this order:
+   generate_bom -> generate_diagram -> generate_waf -> generate_terraform ->
+   generate_pov -> generate_jep (skip any that were not previously generated).
+
+### Tool-call discipline (mandatory)
+9. You MUST output a tool-call JSON line for every generation request. Never
+   respond with prose describing what you are about to do. Prose responses are
+   ONLY for conversational turns where no tool is needed.
+   Correct: {"tool": "generate_bom", "args": {"prompt": "..."}}
+   Wrong: "I'll generate a BOM for your web service architecture now."
+
+10. After step3_planning, if the plan identifies a generation action, immediately
+    output the tool-call JSON. Do not narrate the plan -- execute it.
+
+11. The tool-call JSON must appear alone on a single line with no surrounding text.
+    If you need to say something to the user as well, wait until after the tool
+    result is returned -- Forge will give you another turn.
+"""
 
 
 class ArchiePromptEnricher:
@@ -63,6 +104,8 @@ def build_forge(
     text_runner: Callable,
     a2a_base_url: str = "",
     base_system_prompt: str = "",
+    step3_planning: bool = True,
+    tool_runner: Callable | None = None,
 ) -> Forge:
     """
     Instantiate and return a Forge wired with all OCI tool handlers.
@@ -82,7 +125,9 @@ def build_forge(
     if _INTENT_ROUTING_SKILL.exists():
         routing_guidance = _INTENT_ROUTING_SKILL.read_text()
 
-    full_prompt = (routing_guidance + "\n\n" + base_system_prompt).strip()
+    full_prompt = (
+        routing_guidance + "\n\n" + base_system_prompt + "\n\n" + _TOOL_SEQUENCING_RULES
+    ).strip()
 
     forge = Forge(
         base_system_prompt=full_prompt,
@@ -91,7 +136,8 @@ def build_forge(
         text_runner=text_runner,
         prompt_enricher=enricher,
         max_iterations=5,
-        step3_planning=True,
+        step3_planning=step3_planning,
+        tool_runner=tool_runner,
     )
 
     notes = NotesHandlers(
@@ -110,8 +156,23 @@ def build_forge(
             text_runner=text_runner,
             a2a_base_url=a2a_base_url,
         ),
+        description=(
+            "Generate a priced OCI Bill of Materials with SKU-backed line items "
+            "and monthly cost totals. Call when the user asks for a BOM, pricing, "
+            "cost estimate, or bill of materials."
+        ),
+        args={"prompt": ArgSchema(
+            description=(
+                "The user's BOM request, copied verbatim. Do not interpret, pre-size, "
+                "or substitute shape names. If the user said '2 E5 servers 6 OCPU', "
+                "pass exactly that. The BOM service extracts sizing from the raw text."
+            ),
+            type="string",
+            required=True,
+        )},
         memory_contract=True,
         critique_enabled=True,
+        requires_hat="oci_bom_expert",
     )
     forge.register_tool(
         "generate_diagram",
@@ -122,8 +183,18 @@ def build_forge(
             text_runner=text_runner,
             a2a_base_url=a2a_base_url,
         ),
+        description=(
+            "Generate an OCI architecture diagram as a draw.io file. Call when the "
+            "user asks for a diagram, architecture drawing, or visual of the design."
+        ),
+        args={"prompt": ArgSchema(
+            description="Architecture description or BOM payload to diagram.",
+            type="string",
+            required=True,
+        )},
         memory_contract=True,
         critique_enabled=True,
+        requires_hat="diagram_for_oci",
     )
     forge.register_tool(
         "generate_terraform",
@@ -134,24 +205,66 @@ def build_forge(
             text_runner=text_runner,
             a2a_base_url=a2a_base_url,
         ),
+        description=(
+            "Generate OCI Terraform files (main.tf, variables.tf, outputs.tf). "
+            "Call when the user asks for Terraform, IaC, or infrastructure code."
+        ),
+        args={"prompt": ArgSchema(
+            description="Terraform generation request describing the OCI resources needed.",
+            type="string",
+            required=False,
+        )},
         memory_contract=True,
         critique_enabled=True,
+        requires_hat="terraform_for_oci",
     )
     forge.register_tool(
         "generate_pov",
         PovHandler(store=store, customer_id=customer_id, customer_name=customer_name),
+        description=(
+            "Generate a Point of View document for the customer engagement. "
+            "Call when the user asks for a POV, executive summary, or customer brief."
+        ),
+        args={"feedback": ArgSchema(
+            description="Optional focus areas or additional context for the POV document.",
+            type="string",
+            required=False,
+        )},
         memory_contract=True,
+        critique_enabled=True,
+        requires_hat="oci_customer_pov_writer",
     )
     forge.register_tool(
         "generate_jep",
         JepHandler(store=store, customer_id=customer_id, customer_name=customer_name),
+        description=(
+            "Generate a Joint Execution Plan document for the customer engagement. "
+            "Call when the user asks for a JEP, joint plan, or execution roadmap."
+        ),
+        args={"feedback": ArgSchema(
+            description="Optional milestones, scope, or context for the JEP document.",
+            type="string",
+            required=False,
+        )},
         memory_contract=True,
+        critique_enabled=True,
+        requires_hat="jep_writer",
     )
     forge.register_tool(
         "generate_waf",
         WafHandler(store=store, customer_id=customer_id, customer_name=customer_name),
+        description=(
+            "Generate a Well-Architected Framework review document for the customer's "
+            "OCI architecture. Call when the user asks for a WAF review or assessment."
+        ),
+        args={"feedback": ArgSchema(
+            description="Optional additional context or focus areas for the WAF review.",
+            type="string",
+            required=False,
+        )},
         memory_contract=True,
         critique_enabled=True,
+        requires_hat="oci_waf_reviewer",
     )
 
     return forge

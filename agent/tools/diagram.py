@@ -22,6 +22,38 @@ def _safe_diagram_name(value: Any, fallback: str) -> str:
     return fallback_name or "diagram"
 
 
+def _ensure_drawio_mxfile(drawio_xml: str, *, diagram_name: str = "OCI Architecture") -> str:
+    xml = str(drawio_xml or "").strip()
+    if not xml:
+        return ""
+    lowered = xml.lower()
+    if "<mxfile" in lowered:
+        return xml
+    if "<mxgraphmodel" in lowered:
+        safe_name = (
+            str(diagram_name or "OCI Architecture")
+            .replace("&", "&amp;")
+            .replace('"', "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        return f'<mxfile host="app.diagrams.net"><diagram name="{safe_name}">{xml}</diagram></mxfile>'
+    return xml
+
+
+def _summarise_drawio(xml: str) -> str:
+    """Return a brief service-inventory string parsed from drawio XML."""
+    categories: dict[str, int] = {}
+    for m in re.finditer(r'shape=mxgraph\.oci2\.(\w+)', xml):
+        cat = m.group(1).lower()
+        categories[cat] = categories.get(cat, 0) + 1
+    if not categories:
+        return ""
+    total = sum(categories.values())
+    parts = [f"{cat}×{n}" for cat, n in sorted(categories.items())]
+    return f"{total} nodes: {', '.join(parts)}"
+
+
 class DiagramHandler:
     def __init__(
         self,
@@ -45,7 +77,7 @@ class DiagramHandler:
         context: dict[str, Any],
         trace_id: str,
     ) -> ToolResult:
-        from agent.archie_loop import _call_generate_diagram
+        from agent.archie_session import _call_generate_diagram
 
         ctx = context
         decision_context = memory.decision_context if memory else {}
@@ -85,6 +117,17 @@ class DiagramHandler:
                 clarification=message,
             )
 
+        correction = str(args.pop("_forge_correction", "") or "").strip()
+        if correction:
+            existing_prompt = str(args.get("prompt") or "")
+            args = {
+                **args,
+                "prompt": (
+                    f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
+                    f"{existing_prompt}"
+                ).strip(),
+            }
+
         try:
             summary, artifact_key, result_data = await _call_generate_diagram(
                 args=args,
@@ -111,6 +154,8 @@ class DiagramHandler:
                     result_data.get("diagram_name") or args.get("diagram_name"),
                     trace_id or "diagram",
                 )
+                drawio_xml = _ensure_drawio_mxfile(drawio_xml, diagram_name=diagram_name)
+                result_data["drawio_xml"] = drawio_xml
                 latest = await asyncio.to_thread(
                     persist_artifacts,
                     self._store,
@@ -128,8 +173,11 @@ class DiagramHandler:
                     result_data["drawio_key"] = artifact_key
                     result_data["object_key"] = artifact_key
                     summary = f"Diagram generated. Key: {artifact_key}"
+        xml = result_data.get("drawio_xml") or ""
+        inventory = _summarise_drawio(xml) if xml else ""
+        full_summary = f"{summary} ({inventory})" if inventory else summary
         return ToolResult(
-            summary=summary,
+            summary=full_summary,
             status="ok",
             artifact_key=artifact_key,
             data=result_data,

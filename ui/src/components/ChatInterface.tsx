@@ -120,68 +120,155 @@ function mdToHtml(md: string): string {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
+const TOOL_LABELS: Record<string, string> = {
+  generate_bom:       'BOM Generator',
+  generate_diagram:   'Architecture Diagram',
+  generate_pov:       'POV Document',
+  generate_jep:       'JEP Document',
+  generate_waf:       'WAF Review',
+  generate_terraform: 'Terraform',
+  save_notes:         'Save Notes',
+  get_summary:        'Get Summary',
+  get_document:       'Get Document',
+};
+
+function toolLabel(tool: string): string {
+  return TOOL_LABELS[tool] ?? tool.replace(/_/g, ' ');
+}
+
+function toolRequestText(call: ChatToolCall): string {
+  const a = call.args ?? {};
+  for (const key of ['prompt', 'feedback', 'bom_text', 'text', 'type']) {
+    const v = a[key];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return '';
+}
+
 function ToolChip({ call }: { call: ChatToolCall }) {
   const [open, setOpen] = useState(false);
-  const trace = (call.result_data?.trace ?? {}) as Record<string, unknown>;
+  const trace    = (call.result_data?.trace ?? {}) as Record<string, unknown>;
   const governor = (trace.governor ?? {}) as Record<string, unknown>;
   const checkpoint = (trace.checkpoint ?? null) as Record<string, unknown> | null;
-  const decisionContext = (trace.decision_context ?? {}) as Record<string, unknown>;
-  const traceSummary = {
-    path_id: typeof trace.path_id === 'string' ? trace.path_id : '',
-    applied_skills: Array.isArray(trace.applied_skills) ? trace.applied_skills : [],
-    model_profile: typeof trace.model_profile === 'string' ? trace.model_profile : '',
-    refinement_count: typeof trace.refinement_count === 'number' ? trace.refinement_count : 0,
-    max_refinements: typeof trace.max_refinements === 'number' ? trace.max_refinements : 0,
-    overall_pass: typeof trace.overall_pass === 'boolean' ? trace.overall_pass : true,
-    warnings: Array.isArray(trace.warnings) ? trace.warnings : [],
-    constraint_tags: Array.isArray(trace.constraint_tags) ? trace.constraint_tags : [],
-    assumption_count: typeof trace.assumption_count === 'number' ? trace.assumption_count : 0,
-    governor_status: typeof governor.overall_status === 'string' ? governor.overall_status : '',
-    checkpoint_type: checkpoint && typeof checkpoint.type === 'string' ? checkpoint.type : '',
-    decision_context_goal: typeof decisionContext.goal === 'string' ? decisionContext.goal : '',
-  };
-  const chipStyle: React.CSSProperties = {
-    display:      'inline-flex',
-    alignItems:   'center',
-    gap:          '0.3rem',
-    background:   'rgba(232,87,26,0.08)',
-    border:       '1px solid rgba(232,87,26,0.25)',
-    borderRadius: 4,
-    padding:      '0.2rem 0.5rem',
-    fontSize:     '0.7rem',
-    color:        '#e8571a',
-    cursor:       'pointer',
+
+  const refinements  = typeof trace.refinement_count === 'number' ? trace.refinement_count : 0;
+  const overallPass  = typeof trace.overall_pass === 'boolean' ? trace.overall_pass : true;
+  const skills       = Array.isArray(trace.applied_skills) ? (trace.applied_skills as string[]) : [];
+  const warnings     = Array.isArray(trace.warnings) ? (trace.warnings as string[]) : [];
+  const modelProfile = typeof trace.model_profile === 'string' ? trace.model_profile : '';
+  const govStatus    = typeof governor.overall_status === 'string' ? governor.overall_status : '';
+  const checkType    = checkpoint && typeof checkpoint.type === 'string' ? checkpoint.type : '';
+
+  const hasIssue = !overallPass || warnings.length > 0 || govStatus === 'blocked' || govStatus === 'checkpoint_required';
+  const statusColor = hasIssue ? '#f0b35a' : '#52c46a';
+  const statusIcon  = hasIssue ? '⚠' : '✓';
+
+  const requestText = toolRequestText(call);
+  const previewText = call.result_summary
+    ? (call.result_summary.length > 120 ? call.result_summary.slice(0, 120) + '…' : call.result_summary)
+    : '';
+
+  const blockStyle: React.CSSProperties = {
+    marginTop:    '0.45rem',
+    border:       '1px solid #1c2030',
+    borderRadius: 6,
+    overflow:     'hidden',
     fontFamily:   "'JetBrains Mono', monospace",
-    marginTop:    '0.3rem',
-    userSelect:   'none',
   };
+  const headerStyle: React.CSSProperties = {
+    display:        'flex',
+    alignItems:     'center',
+    gap:            '0.45rem',
+    padding:        '0.35rem 0.6rem',
+    background:     'rgba(232,87,26,0.06)',
+    cursor:         'pointer',
+    userSelect:     'none',
+    borderBottom:   open ? '1px solid #1c2030' : 'none',
+  };
+  const sectionLabel: React.CSSProperties = {
+    fontSize:      '0.6rem',
+    letterSpacing: '0.08em',
+    color:         '#4b5470',
+    textTransform: 'uppercase',
+    marginBottom:  '0.2rem',
+  };
+  const codeBlock: React.CSSProperties = {
+    margin:      0,
+    padding:     '0.45rem 0.6rem',
+    background:  '#0b0d14',
+    fontSize:    '0.67rem',
+    color:       '#8b93a8',
+    whiteSpace:  'pre-wrap',
+    wordBreak:   'break-word',
+    borderRadius: 0,
+  };
+
   return (
-    <div>
-      <span data-testid={`tool-chip-${call.tool}`} style={chipStyle} onClick={() => setOpen(v => !v)}>
-        ⚙ {call.tool} {open ? '▲' : '▼'}
-      </span>
+    <div data-testid={`tool-chip-${call.tool}`} style={blockStyle}>
+      {/* ── header row ── */}
+      <div style={headerStyle} onClick={() => setOpen(v => !v)}>
+        <span style={{ color: statusColor, fontSize: '0.7rem' }}>{statusIcon}</span>
+        <span style={{ fontSize: '0.72rem', color: '#c9d1e4', fontWeight: 600 }}>
+          Used {toolLabel(call.tool)}
+        </span>
+        {refinements > 0 && (
+          <span style={{ fontSize: '0.62rem', color: '#6b7491' }}>
+            · {refinements} refinement{refinements !== 1 ? 's' : ''}
+          </span>
+        )}
+        {checkType && (
+          <span style={{ fontSize: '0.62rem', color: '#f0b35a' }}>· checkpoint</span>
+        )}
+        <span style={{ marginLeft: 'auto', fontSize: '0.62rem', color: '#4b5470' }}>
+          {open ? '▲' : '▼'}
+        </span>
+      </div>
+
+      {/* ── result preview (always visible) ── */}
+      {previewText && (
+        <div style={{ padding: '0.3rem 0.6rem', fontSize: '0.7rem', color: '#6b7491', fontStyle: 'italic' }}>
+          {previewText}
+        </div>
+      )}
+
+      {/* ── expanded detail ── */}
       {open && (
-        <pre style={{
-          marginTop:    '0.3rem',
-          padding:      '0.5rem',
-          background:   '#0b0d14',
-          border:       '1px solid #1c2030',
-          borderRadius: 4,
-          fontSize:     '0.68rem',
-          color:        '#8b93a8',
-          whiteSpace:   'pre-wrap',
-          wordBreak:    'break-all',
-        }}>
-          {`args: ${JSON.stringify(call.args, null, 2)}\nresult: ${call.result_summary}`}
-          {(traceSummary.applied_skills.length > 0 || traceSummary.max_refinements > 0) && (
-            <span
-              data-testid="tool-trace-summary"
-              style={{ display: 'block', marginTop: '0.45rem', color: '#aeb5c8' }}
-            >
-              {`\ntrace: ${JSON.stringify(traceSummary, null, 2)}`}
-            </span>
+        <div style={{ borderTop: '1px solid #1c2030' }}>
+          {requestText && (
+            <div style={{ padding: '0.45rem 0.6rem' }}>
+              <div style={sectionLabel}>Request</div>
+              <pre style={codeBlock}>{requestText.length > 600 ? requestText.slice(0, 600) + '\n…' : requestText}</pre>
+            </div>
           )}
-        </pre>
+
+          {call.result_summary && (
+            <div style={{ padding: '0.45rem 0.6rem', borderTop: '1px solid #131726' }}>
+              <div style={sectionLabel}>Response</div>
+              <pre style={{ ...codeBlock, color: '#aeb5c8' }}>{call.result_summary}</pre>
+            </div>
+          )}
+
+          {(skills.length > 0 || modelProfile || warnings.length > 0 || govStatus) && (
+            <div style={{ padding: '0.45rem 0.6rem', borderTop: '1px solid #131726' }}>
+              <div style={sectionLabel}>Expert review</div>
+              <div style={{ fontSize: '0.67rem', color: '#8b93a8', display: 'flex', flexDirection: 'column', gap: '0.18rem' }}>
+                {skills.length > 0 && (
+                  <span data-testid="tool-trace-summary">skills: {skills.join(', ')}</span>
+                )}
+                {modelProfile && <span>model: {modelProfile}</span>}
+                {typeof trace.overall_pass === 'boolean' && (
+                  <span style={{ color: overallPass ? '#52c46a' : '#f0b35a' }}>
+                    verdict: {overallPass ? 'approved' : 'iterate'}
+                  </span>
+                )}
+                {warnings.length > 0 && (
+                  <span style={{ color: '#f0b35a' }}>warnings: {warnings.join(' · ')}</span>
+                )}
+                {govStatus && <span style={{ color: '#f0b35a' }}>governor: {govStatus}</span>}
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -427,7 +514,17 @@ function MessageBubble({
         </div>
       )}
       {toolCalls && toolCalls.length > 0 && (
-        <div style={{ paddingLeft: '0.25rem' }}>
+        <div style={{ marginTop: '0.5rem' }}>
+          <div style={{
+            fontSize:      '0.65rem',
+            color:         '#4b5470',
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            marginBottom:  '0.15rem',
+            fontFamily:    "'JetBrains Mono', monospace",
+          }}>
+            {toolCalls.length} tool{toolCalls.length !== 1 ? 's' : ''} used
+          </div>
           {toolCalls.map((tc, i) => <ToolChip key={i} call={tc} />)}
         </div>
       )}
@@ -649,7 +746,9 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
   const [attachedFile,  setAttachedFile]  = useState<string | null>(null);
   const [attachLoading, setAttachLoading] = useState(false);
   const [streamingReply, setStreamingReply] = useState('');
+  const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
   const [archieWorkingMessage, setArchieWorkingMessage] = useState(ARCHIE_WORKING_MESSAGES[0]);
+  const [activeHats, setActiveHats] = useState<string[]>([]);
   const threadRef = useRef<HTMLDivElement>(null);
   const bottomRef   = useRef<HTMLDivElement>(null);
   const inputRef    = useRef<HTMLTextAreaElement>(null);
@@ -688,7 +787,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
       }
     });
     return () => window.cancelAnimationFrame(rafId);
-  }, [messages, loading, streamingReply, historyLoaded]);
+  }, [messages, loading, streamingReply, thinkingStatus, historyLoaded]);
 
   useEffect(() => {
     onArtifactsChange?.(latestManifestDownloads(messages));
@@ -746,6 +845,8 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
     );
     setLoading(true);
     setStreamingReply('');
+    setThinkingStatus(null);
+    setActiveHats([]);
 
     try {
       let streamed = '';
@@ -757,6 +858,21 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
       };
       try {
         resp = await apiChatStream(customerId, effectiveCustomerName, text, {
+          onEvent: event => {
+            const eventHat = (event as { hat?: unknown }).hat;
+            if ((event.event_type as string) === 'hat_activate' && typeof eventHat === 'string' && eventHat.trim()) {
+              const hat = eventHat.trim();
+              setActiveHats(prev => prev.includes(hat) ? prev : [...prev, hat]);
+            } else if ((event.event_type as string) === 'hat_drop' && typeof eventHat === 'string' && eventHat.trim()) {
+              const hat = eventHat.trim();
+              setActiveHats(prev => prev.filter(h => h !== hat));
+            } else if ((event.event_type as string) === 'thinking') {
+              const label = (event as { label?: unknown }).label;
+              setThinkingStatus(typeof label === 'string' && label.trim() ? label : 'Thinking...');
+            } else if ((event.event_type as string) === 'completion') {
+              setThinkingStatus(null);
+            }
+          },
           onToken: delta => {
             streamed += delta;
             setStreamingReply(prev => prev + delta);
@@ -776,10 +892,12 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
       };
       setMessages(prev => [...prev, assistantMsg]);
       setStreamingReply('');
+      setThinkingStatus(null);
     } catch (err: unknown) {
       const e = err as { status: number; detail: string };
       setError(`Error ${e.status}: ${e.detail}`);
       setStreamingReply('');
+      setThinkingStatus(null);
     } finally {
       setLoading(false);
       inputRef.current?.focus();
@@ -792,6 +910,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
     try {
       await apiClearChatHistory(customerId);
       setMessages([]);
+      setActiveHats([]);
       setAttachedFile(null);
       setError(null);
     } catch (err: unknown) {
@@ -944,6 +1063,50 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
             busy={loading}
           />
         ))}
+        {activeHats.length > 0 && (
+          <div
+            data-testid="active-hat-badges"
+            style={{
+              display: 'flex',
+              gap: '0.5rem',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              padding: '0.25rem 0.4rem',
+              fontSize: '0.72rem',
+              color: '#8b93a8',
+              fontFamily: "'JetBrains Mono', monospace",
+            }}
+          >
+            <span>Active:</span>
+            {activeHats.map(hat => (
+              <span
+                key={hat}
+                style={{
+                  background: '#dbeafe',
+                  color: '#1d4ed8',
+                  padding: '0.12rem 0.55rem',
+                  borderRadius: 999,
+                  fontWeight: 700,
+                }}
+              >
+                {hat.replace(/_/g, ' ')}
+              </span>
+            ))}
+          </div>
+        )}
+        {thinkingStatus && (
+          <div
+            data-testid="chat-thinking-status"
+            style={{
+              color: '#8b93a8',
+              fontSize: '0.74rem',
+              alignSelf: 'flex-start',
+              fontFamily: "'JetBrains Mono', monospace",
+            }}
+          >
+            {thinkingStatus}
+          </div>
+        )}
         {streamingReply && (
           <div style={{ display: 'flex', flexDirection: 'column', alignSelf: 'flex-start', maxWidth: '88%' }}>
             <div

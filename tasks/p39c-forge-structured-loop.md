@@ -1,26 +1,22 @@
-# Task p39c: Forge Structured Turn — Planning Call + Expert Self-Review
+# Task p39c: Strengthen Step 6 — Expert Post-Review with Iterate/Surface Decision
 
-## Goal
+## Objective
 
-Extend `skillforge/forge.py` with two new private methods:
+Add `_run_expert_post_review()` to `skillforge/forge.py`. After a
+critique-enabled tool returns ok, the manager (still wearing its expert hat)
+reviews the result, decides whether to approve, iterate, or surface to the
+user — and logs its reasoning. Only after approval does the critic hat fire.
 
-1. `_run_planning_call()` — fires **before** the first ReAct iteration when
-   hats are active. Produces a structured Step 1–3 plan (plain text) and
-   appends it to the running prompt so all subsequent iterations see it.
-
-2. `_run_expert_review()` — fires **after** a critique_enabled tool returns ok
-   and **before** `_run_critique_pass()`. Reviews the result while the expert
-   hat is still active. Appends any expert concerns as `EXPERT_REVIEW:` notes.
-
-No changes to `__init__`, `register_tool`, or the external API.  
-No new public methods. Only `run_turn()` and the two new private helpers change.
+This is Step 6 of the manager reasoning loop. It completes the loop that
+p39a began.
 
 ---
 
 ## Scope
 
-**Only touch:** `skillforge/forge.py`.  
-**Do NOT touch:** tests, hat files, skill files, or other Python modules.
+**Original p39c scope:** `skillforge/forge.py`.
+**p39d update:** keep this method spec aligned with the hardened contract.
+**Do NOT touch:** hat files, skill files, tests, other Python modules.
 
 ---
 
@@ -28,68 +24,26 @@ No new public methods. Only `run_turn()` and the two new private helpers change.
 
 ```bash
 python3.11 -m compileall skillforge/forge.py
-grep "planning_call\|expert_review" skillforge/forge.py  # should be zero before edit
+grep "_run_expert_post_review" skillforge/forge.py  # must be zero before edit
+grep "_run_expert_pre_action" skillforge/forge.py   # must be ≥ 2 (from p39a)
 ```
 
 ---
 
 ## What to implement
 
-### 1. Add `_run_planning_call()` private method
+### 1. Add `_run_expert_post_review()` private method
 
-Add this method to the `Forge` class, near `_run_critique_pass()` (around
-line 725 in the original file):
-
-```python
-async def _run_planning_call(
-    self,
-    *,
-    prompt: str,
-    active_hats: list[str],
-    session_id: str,
-) -> str:
-    """
-    Fire a lightweight pre-loop planning call (Steps 1–3 of the reasoning loop).
-
-    Returns the updated prompt with the planning output appended.
-    If the call fails, returns the original prompt unchanged.
-    Only fires when at least one non-critic, non-governor hat is active.
-    """
-    expert_hats = [h for h in active_hats if h not in _MANUAL_ONLY_HATS]
-    if not expert_hats:
-        return prompt
-
-    planning_prompt = (
-        f"{prompt}\n\n[PLANNING — Steps 1–3]\n"
-        "Before calling any tool, reason through Steps 1–3 of the manager "
-        "reasoning loop:\n"
-        "Step 1: What is the user's real goal?\n"
-        "Step 2: What is already known? What is missing?\n"
-        "Step 3: What is the plan? Which tool (if any) will be called next?\n"
-        "Output your reasoning as plain text. Do NOT call a tool here."
-    )
-    system_msg = self._build_active_system_msg(active_hats)
-
-    try:
-        raw = await self._text_runner(planning_prompt, system_msg, "planning")
-    except Exception:
-        logger.exception(
-            "Planning call failed session=%s", session_id
-        )
-        return prompt
-
-    plan_text = raw.strip()
-    if plan_text:
-        prompt = f"{prompt}\n\nPLANNING:\n{plan_text}"
-    return prompt
-```
-
-### 2. Add `_run_expert_review()` private method
-
-Add this method adjacent to `_run_planning_call()`:
+Add this method to the `Forge` class, adjacent to `_run_expert_pre_action()`
+and `_run_critique_pass()`:
 
 ```python
-async def _run_expert_review(
+_EXPERT_REVIEW_APPROVED = "EXPERT_APPROVED"
+_EXPERT_REVIEW_ITERATE  = "EXPERT_ITERATE:"
+_EXPERT_REVIEW_SURFACE  = "EXPERT_SURFACE:"
+_EXPERT_REVIEW_MIN_CHARS = 500
+
+async def _run_expert_post_review(
     self,
     *,
     prompt: str,
@@ -97,95 +51,194 @@ async def _run_expert_review(
     result: ToolResult,
     active_hats: list[str],
     session_id: str,
-) -> str:
+    events: list,
+    memory_snapshot: MemorySnapshot | None = None,
+) -> tuple[str, str]:
     """
-    Fire an expert self-review (Step 6) after a critique_enabled tool returns ok.
+    Step 6 of the manager reasoning loop: expert post-action review.
 
-    The active expert hat is still present; it reviews the result against its
-    own Post-Action Review checklist before the critic hat fires.
-    Returns the updated prompt with any expert concerns appended.
-    If the call fails or no expert hat is active, returns the original prompt.
+    The manager, still wearing the active expert hat, reviews the sub-agent
+    result against the hat's Quality Bar, Post-Action Review checklist, and
+    in-scope memory snapshot values.
+
+    Returns:
+        (updated_prompt, decision)
+        decision is one of:
+          "approved"  — all checks pass; critic may fire
+          "iterate"   — fixable gap found; caller should retry the tool
+          "surface"   — unfixable gap; caller should return to user
+
+    Logs expert review at INFO level and appends an expert_post_review event.
+    No-op (returns "approved") when no expert hat is active.
     """
     expert_hats = [h for h in active_hats if h not in _MANUAL_ONLY_HATS]
     if not expert_hats:
-        return prompt
+        return prompt, "approved"
+
+    hat_label = ", ".join(expert_hats)
+    memory_context = ""
+    if memory_snapshot is not None:
+        formatted = getattr(memory_snapshot, "formatted", "") or ""
+        if formatted.strip():
+            memory_context = (
+                "\n\nMEMORY SNAPSHOT (confirmed values from this session):\n"
+                f"{formatted.strip()}\n"
+            )
 
     review_prompt = (
-        f"{prompt}\n\n[EXPERT SELF-REVIEW — Step 6]\n"
-        f"You just executed '{tool_name}'. Review the result above using "
-        "your hat's '## Post-Action Review' checklist.\n"
-        "If all checks pass, output: EXPERT_APPROVED\n"
-        "If any check fails, describe the specific issue(s) as plain text. "
+        f"{prompt}{memory_context}\n\n"
+        "╔══════════════════════════════════╗\n"
+        "║  STEP 6 — EXPERT POST-REVIEW     ║\n"
+        "╚══════════════════════════════════╝\n"
+        f"You are wearing the [{hat_label}] hat. You received the result of "
+        f"'{tool_name}'. You are NOT rubber-stamping — review honestly.\n\n"
+        "PHASE A — Quality Bar check:\n"
+        "Work through each item in your hat's ## Quality Bar section.\n"
+        "For each item write: PASS or FAIL: <specific value that was wrong>\n\n"
+        "PHASE B — Post-Action Review checklist:\n"
+        "Work through each item in your hat's ## Post-Action Review section.\n"
+        "For each item write: PASS or FAIL: <specific field and expected value>\n\n"
+        "PHASE C — Memory consistency check:\n"
+        "Compare the result against the MEMORY SNAPSHOT above.\n"
+        "Flag any value in the result that contradicts confirmed memory "
+        "(e.g. wrong region, wrong shape, wrong HA mode).\n"
+        "Write: CONSISTENT or CONFLICT: <field> expected=<memory value> got=<result value>\n\n"
+        "FINAL DECISION — after completing Phases A, B, and C, output EXACTLY ONE line:\n"
+        f"  {_EXPERT_REVIEW_APPROVED}          — every Phase A + B item is PASS and Phase C is CONSISTENT\n"
+        f"  {_EXPERT_REVIEW_ITERATE} <issue>    — at least one fixable FAIL or CONFLICT\n"
+        f"  {_EXPERT_REVIEW_SURFACE} <issue>    — unfixable gap requiring user clarification\n\n"
+        "You MUST complete all three phases before writing the final decision line.\n"
         "Do NOT call a tool here."
     )
     system_msg = self._build_active_system_msg(active_hats)
 
     try:
-        raw = await self._text_runner(review_prompt, system_msg, "expert_review")
+        raw = await self._text_runner(review_prompt, system_msg, "expert_post_review")
     except Exception:
         logger.exception(
-            "Expert review call failed session=%s tool=%s", session_id, tool_name
+            "[EXPERT_POST_REVIEW] Call failed session=%s tool=%s",
+            session_id,
+            tool_name,
         )
-        return prompt
+        return prompt, "approved"
 
     review_text = raw.strip()
-    if review_text and review_text != "EXPERT_APPROVED":
-        prompt = f"{prompt}\n\nEXPERT_REVIEW: {review_text}"
-    return prompt
-```
-
-### 3. Wire `_run_planning_call()` into `run_turn()`
-
-In `run_turn()`, add the planning call **after** the initial memory assembly
-and hat coordination block, **before** the `for iteration in range(...)` loop.
-
-The insertion point is just before `for iteration in range(self._max_iterations):`.
-
-Add these lines (preserve all surrounding indentation):
-
-```python
-        # Step 1–3 planning call (fires once per turn when expert hats are active)
-        prompt = await self._run_planning_call(
-            prompt=prompt,
-            active_hats=active_hats,
-            session_id=session_id,
+    if len(review_text) < _EXPERT_REVIEW_MIN_CHARS:
+        logger.warning(
+            "[EXPERT_POST_REVIEW] Shallow response (%d chars) for tool '%s' session=%s — retrying",
+            len(review_text), tool_name, session_id,
         )
+        retry_prompt = (
+            f"{review_prompt}\n\n"
+            "[Your response was too brief. You must complete all three phases "
+            "(Quality Bar, Post-Action Review, Memory Consistency) with a PASS/FAIL "
+            "or CONSISTENT/CONFLICT for every item before writing the final decision.]"
+        )
+        try:
+            raw = await self._text_runner(
+                retry_prompt, system_msg, "expert_post_review_retry"
+            )
+            review_text = raw.strip()
+        except Exception:
+            logger.exception(
+                "[EXPERT_POST_REVIEW] Retry failed session=%s tool=%s",
+                session_id,
+                tool_name,
+            )
+        if len(review_text) < _EXPERT_REVIEW_MIN_CHARS:
+            logger.warning(
+                "[EXPERT_POST_REVIEW] Still shallow after retry (%d chars) session=%s",
+                len(review_text), session_id,
+            )
 
-        for iteration in range(self._max_iterations):
+    # Find the decision on the LAST non-empty line (after per-item checks).
+    lines = [l.strip() for l in review_text.splitlines() if l.strip()]
+    final_line = lines[-1] if lines else ""
+    decision = "iterate"
+
+    if final_line.startswith(_EXPERT_REVIEW_APPROVED):
+        decision = "approved"
+    elif final_line.startswith(_EXPERT_REVIEW_ITERATE):
+        decision = "iterate"
+    elif final_line.startswith(_EXPERT_REVIEW_SURFACE):
+        decision = "surface"
+
+    logger.info(
+        "[EXPERT_POST_REVIEW] [%s] tool='%s' session=%s decision=%s:\n%s",
+        hat_label, tool_name, session_id, decision, review_text,
+    )
+    events.append(
+        TurnEvent(
+            type="expert_post_review",
+            message=f"Expert post-review [{hat_label}] for '{tool_name}': {decision}",
+            data={"hat": hat_label, "tool": tool_name, "decision": decision, "review": review_text},
+        )
+    )
+
+    if final_line.startswith(_EXPERT_REVIEW_ITERATE):
+        concern = final_line[len(_EXPERT_REVIEW_ITERATE):].strip()
+        prompt = f"{prompt}\n\nEXPERT_REVIEW (iterate): {concern}"
+        return prompt, "iterate"
+
+    if final_line.startswith(_EXPERT_REVIEW_SURFACE):
+        concern = final_line[len(_EXPERT_REVIEW_SURFACE):].strip()
+        prompt = f"{prompt}\n\nEXPERT_REVIEW (surface): {concern}"
+        return prompt, "surface"
+
+    if final_line.startswith(_EXPERT_REVIEW_APPROVED):
+        return prompt, "approved"
+
+    prompt = (
+        f"{prompt}\n\nEXPERT_REVIEW (iterate): "
+        "Expert review did not provide a valid final decision."
+    )
+    return prompt, "iterate"
 ```
 
-Replace the existing bare `for iteration in range(self._max_iterations):` line
-with the block above. The `for` line itself does not change — you only prepend
-the planning call block before it.
+### 2. Wire `_run_expert_post_review()` into `run_turn()`
 
-### 4. Wire `_run_expert_review()` into `run_turn()`
-
-In `run_turn()`, locate the existing post-tool critic block (approximately):
-
-```python
-            # Post-tool critic pass
-            if spec.critique_enabled and result.status == "ok":
-                prompt, active_hats = await self._run_critique_pass(
-                    prompt=prompt,
-                    tool_name=tool_name,
-                    result=result,
-                    active_hats=active_hats,
-                    session_id=session_id,
-                )
-```
-
-Replace it with the expert review + critic sequence:
+In `run_turn()`, locate the post-tool critic block added in p39a:
 
 ```python
             # Post-tool expert self-review (Step 6) then critic pass
             if spec.critique_enabled and result.status == "ok":
-                prompt = await self._run_expert_review(
+                prompt = await self._run_expert_review(...)   # old p39a name if present
+                prompt, active_hats = await self._run_critique_pass(...)
+```
+
+Or the original (pre-p39a) block:
+
+```python
+            # Post-tool critic pass
+            if spec.critique_enabled and result.status == "ok":
+                prompt, active_hats = await self._run_critique_pass(...)
+```
+
+Replace the entire `if spec.critique_enabled and result.status == "ok":` block
+with the following. This handles all three decisions from the expert review:
+
+```python
+            # Step 6: expert post-review, then critic pass
+            if spec.critique_enabled and result.status == "ok":
+                prompt, review_decision = await self._run_expert_post_review(
                     prompt=prompt,
                     tool_name=tool_name,
                     result=result,
                     active_hats=active_hats,
                     session_id=session_id,
+                    events=events,
+                    memory_snapshot=memory_snapshot,
                 )
+                if review_decision == "surface":
+                    # Expert found an unfixable gap — surface to user
+                    surface_msg = prompt.rsplit("EXPERT_REVIEW (surface):", 1)[-1].strip()
+                    reply = surface_msg
+                    break
+                if review_decision == "iterate":
+                    # Expert found a fixable gap — continue loop for another attempt
+                    # (do not fire critic; next iteration will re-plan and re-execute)
+                    continue
+                # "approved" — fire the critic
                 prompt, active_hats = await self._run_critique_pass(
                     prompt=prompt,
                     tool_name=tool_name,
@@ -204,44 +257,41 @@ Replace it with the expert review + critic sequence:
    python3.11 -m compileall skillforge/forge.py
    ```
 
-2. Planning call is present and wired:
+2. `_run_expert_post_review` present at definition + call site:
    ```bash
-   grep "_run_planning_call\|planning_call\|Step 1.*Step 2\|PLANNING:" skillforge/forge.py
+   grep "_run_expert_post_review" skillforge/forge.py | wc -l
+   # must be ≥ 2
    ```
-   Must match at least 3 lines.
 
-3. Expert review is present and wired:
-   ```bash
-   grep "_run_expert_review\|post_action\|EXPERT_REVIEW\|Post-Action" skillforge/forge.py
-   ```
-   Must match at least 3 lines.
-
-4. Expert review fires BEFORE critic pass:
+3. Expert review fires BEFORE critic pass in source order:
    ```bash
    python3.11 -c "
    import inspect, skillforge.forge as f
    src = inspect.getsource(f.Forge.run_turn)
-   expert_pos = src.index('_run_expert_review')
+   post_pos = src.index('_run_expert_post_review')
    critic_pos = src.index('_run_critique_pass')
-   assert expert_pos < critic_pos, 'Expert review must fire before critic'
+   assert post_pos < critic_pos, 'post_review must appear before critique_pass'
    print('ordering OK')
    "
    ```
 
-5. No regressions:
+4. Three decision strings are defined as module constants:
    ```bash
-   pytest tests/test_forge.py -q --tb=short
+   grep "EXPERT_REVIEW_APPROVED\|EXPERT_REVIEW_ITERATE\|EXPERT_REVIEW_SURFACE" skillforge/forge.py | wc -l
+   # must be ≥ 3
    ```
-   Pass count must be identical to pre-change baseline.
 
-6. Forge still instantiates and processes a turn without error when no hats
-   are active (planning call and expert review are no-ops):
+5. Expert review logs at INFO level:
+   ```bash
+   grep "logger.info.*expert_post_review\|logger.info.*Expert post-review" skillforge/forge.py
+   ```
+
+6. No-hat path still works (no regression):
    ```bash
    python3.11 -c "
    import asyncio
    from skillforge.forge import Forge
-   from skillforge.protocols import Memory, HatEngine
-   from skillforge.types import MemorySnapshot, ToolResult
+   from skillforge.types import MemorySnapshot
 
    class NullMemory:
        def assemble(self, *, session_id, context, user_message):
@@ -277,9 +327,14 @@ Replace it with the expert review + critic sequence:
    result = asyncio.run(forge.run_turn(
        session_id='test', user_message='hello', context={}
    ))
-   assert result.reply == 'plain reply', f'Got: {result.reply}'
-   print('no-hat run_turn OK')
+   assert result.reply == 'plain reply'
+   print('no-hat path OK')
    "
+   ```
+
+7. No regressions:
+   ```bash
+   pytest tests/test_forge.py -q --tb=short
    ```
 
 ---
@@ -287,13 +342,7 @@ Replace it with the expert review + critic sequence:
 ## Commit Message
 
 ```
-p39c: Forge planning call (Steps 1–3) + expert self-review (Step 6) before critic
+p39c: expert post-review (Step 6) with iterate/surface/approve decision before critic
 ```
 
-Branch: `claude/p39c` (from `claude/p39a` merge into `claude/p39b`, then merge
-both into `claude/p39c`).
-
-**Or** simply branch from main and apply all three diffs (p39a, p39b, p39c)
-onto a single branch, since the files don't conflict.
-
-Push when done.
+Branch: `claude/p39c` (from `claude/p39b`). Push when done.

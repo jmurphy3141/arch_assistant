@@ -6,9 +6,11 @@ ToolHandler implementation for the generate_bom pipeline.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from agent import archie_memory, sub_agent_client
+from agent.bom_service import BomService, DEFAULT_PRICE_TABLE
 from agent.persistence_objectstore import ObjectStoreBase
 from skillforge.types import MemorySnapshot, ToolResult
 
@@ -69,6 +71,17 @@ class BomHandler:
                 clarification=message,
             )
 
+        correction = str(args.pop("_forge_correction", "") or "").strip()
+        if correction:
+            existing = str(args.get("prompt") or "")
+            args = {
+                **args,
+                "prompt": (
+                    f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
+                    f"{existing}"
+                ).strip(),
+            }
+
         try:
             body = await sub_agent_client.call_sub_agent(
                 "bom",
@@ -98,8 +111,34 @@ class BomHandler:
                 status="blocked",
             )
         bom_payload = _extract_bom_payload(parsed)
+        bom_payload = _enrich_bom_payload_for_prompt(
+            bom_payload,
+            prompt="\n".join(
+                part
+                for part in (
+                    str(args.get("prompt") or ""),
+                    user_message,
+                )
+                if part
+            ),
+        )
+        line_items = bom_payload.get("line_items") or []
+        service_count = len(line_items)
+        service_names = ", ".join(
+            str(item.get("description") or item.get("sku") or "")[:30]
+            for item in line_items[:6]
+        )
+        if len(line_items) > 6:
+            service_names += f", +{len(line_items) - 6} more"
+        monthly = bom_payload.get("monthly_total") or 0
+        bom_summary = (
+            f"BOM generated ({service_count} services, ${monthly:,.2f}/mo): "
+            f"{service_names}."
+            if service_names else
+            f"BOM generated ({service_count} services, ${monthly:,.2f}/mo)."
+        )
         return ToolResult(
-            summary="BOM generated with structured payload.",
+            summary=bom_summary,
             status="ok",
             data={
                 "bom_payload": bom_payload,
@@ -118,3 +157,33 @@ def _extract_bom_payload(parsed: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         return payload
     return parsed
+
+
+def _enrich_bom_payload_for_prompt(payload: dict[str, Any], *, prompt: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    text = str(prompt or "").lower()
+    line_items = payload.get("line_items")
+    if not isinstance(line_items, list):
+        return payload
+    present = {
+        str(row.get("sku") or "").strip().upper()
+        for row in line_items
+        if isinstance(row, dict)
+    }
+    service = BomService()
+    price_table = dict(DEFAULT_PRICE_TABLE)
+
+    def _append_missing(sku: str, quantity: float, category: str, notes: str) -> None:
+        if sku in present:
+            return
+        line_items.append(service._build_line(sku, quantity, price_table, category, notes))
+        present.add(sku)
+
+    if "waf" in text or "web application firewall" in text:
+        _append_missing("BWAF01", 1.0, "network", "Prompt requested WAF coverage")
+    if "database" in text or "data tier" in text or re.search(r"\bdb\b", text):
+        _append_missing("B99060", 2.0, "database", "Prompt requested database layer")
+
+    payload["line_items"] = line_items
+    return service._normalize_payload(payload)
