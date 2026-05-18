@@ -1,54 +1,69 @@
-# p51/p52: Expert Reasoning Depth — Making Archie a True Senior Architect Partner
+# p51/p52 — Expert Reasoning Depth: Making Archie a Senior Architect Partner
 
-## Goal
+## The Goal
 
-Archie wearing a hat should think and respond like a senior OCI Solutions
-Architect who has seen 100 customer engagements — not a structured note-taker
-who routes to tools.
+Not "structured sections with good content." The goal is an Archie that thinks
+like a senior OCI SA who has seen 100 customer engagements. That expert:
 
-That expert:
-- **Recognizes patterns immediately.** "This is a 3-tier web lift-and-shift.
-  IOPS limits on Block Volume will bite you at this OCPU:storage ratio."
-- **Has opinions and states them.** "E5.Flex, not X9 — same workload, 25% less
-  per OCPU, no Intel-binary dependency in your stack."
+- **Recognizes patterns immediately.** "This is a LAMP stack lift-and-shift.
+  They'll hit block volume IOPS limits if compute sizing is wrong."
+- **Has opinions and states them.** "I'd use E5.Flex. E6 is same price but lower
+  AD availability in us-chicago-1 — no benefit here."
 - **Catches obvious mistakes before they happen.** "You're about to generate
-  Terraform for a VCN with no DRG. If this needs on-prem connectivity, you'll
-  redesign the routing table. Confirm scope now."
-- **Flags what comes next.** "BOM done. Before you deploy, you need WAF — you
-  have a public-facing API with no ingress filtering."
+  Terraform for a VCN without a DRG. If this needs on-prem connectivity later,
+  you'll redesign the routing table. Confirm scope now."
+- **Flags what comes next.** "BOM done. Before you deploy, you need WAF — you've
+  got a public-facing API with no ingress filtering."
 
-The SkillForge enforcement machinery is correct: 600-char minimums, required
-headers, retry logic, EXPERT_APPROVED sentinels. The **content** the machinery
-is enforcing is the gap. This spec fixes that.
+The current framework has the enforcement machinery right (600 char min, retries,
+sentinels). The **content** of the expert reasoning is the gap. This spec fixes that.
 
 ---
 
-## Current State
+## Architecture: How Expert Reasoning Flows Today
 
-### What Works
+Understanding where reasoning happens is critical to knowing what to fix.
 
-1. `_run_expert_pre_action()` has 4 required headers (KNOWN FACTS, GAPS, EXPERT
-   ASSESSMENT, SUB-AGENT INSTRUCTIONS), a 600-char minimum, and retries on
-   shallow responses. Structure is enforced.
+```
+User message
+     │
+     ▼
+forge.run_turn()
+     │
+     ├─ step3_planning          LLM call: STEP 1/2/3 structure
+     │    Decides: deliverable, confirmed facts, which hat to activate
+     │    Gap: never asks "what is the primary architectural risk?"
+     │
+     ├─ requires_hat gate       Auto-activates expert hat for domain tools
+     │
+     ├─ _run_expert_pre_action  LLM call with expert system message
+     │    hat_engine injects: Core Principles, Quality Bar, Output Contract,
+     │                        Critic Evaluation Guidance, Failure Questions
+     │    Gap 1: Pre-Action Checklist and Post-Action Review NOT injected
+     │    Gap 2: EXPERT ASSESSMENT elicits "what?" not "why?" or "what risk?"
+     │
+     ├─ tool dispatch            Calls registered handler (BomHandler, etc.)
+     │    Sub-agent executes (deterministic pipeline for BOM)
+     │
+     ├─ _run_expert_post_review LLM call: 3-phase review
+     │    Phase A: Quality Bar checks
+     │    Phase B: Post-Action Review (hat checklist — but it's NOT injected)
+     │    Phase C: Memory consistency
+     │    Gap: No Phase D — "is this the right architecture for this customer?"
+     │
+     └─ _run_critique_pass      LLM call: critic evaluation
+          Gap: 3-line unstructured prompt, never applies Quality Bar
+```
 
-2. `_run_expert_post_review()` runs 3 phases (Quality Bar, Post-Action Review,
-   Memory Consistency), has an 800-char minimum, and routes on decision sentinels
-   (`EXPERT_APPROVED` / `EXPERT_ITERATE:` / `EXPERT_SURFACE:`). Not a rubber stamp.
+---
 
-3. `_run_step3_planning()` fires before every turn. 3 required headers enforced.
-   Archie must plan before acting.
+## Root Cause Analysis
 
-4. Hat content for WAF, POV, and JEP is expert-grade — 6-pillar maturity scoring,
-   structured discovery, risk registries. These hats demand real thinking.
+### Root Cause 1 — CRITICAL: Missing hat sections in expert context
 
-5. `requires_hat` gate auto-activates the expert hat before every domain tool
-   call. The expert always gets a turn.
-
-### What's Wrong
-
-#### Gap 1 — CRITICAL: Hat Pre-Action Checklist and Post-Action Review are NOT in context
-
-`build_expert_block()` in `agent/hat_engine.py` lines 164–170 injects:
+`build_expert_block()` in `agent/hat_engine.py` (lines 165–174) builds the
+`[ACTIVE EXPERT]` system message block that the LLM sees during expert calls.
+It includes:
 
 ```python
 for section in (
@@ -60,141 +75,138 @@ for section in (
 ):
 ```
 
-`_run_expert_pre_action()` at line 1182 instructs the LLM:
+It does NOT include `"Pre-Action Checklist"` or `"Post-Action Review"`.
+
+Yet `_run_expert_pre_action()` (forge.py ~line 1182) says:
 > "List every unconfirmed prerequisite from **this hat's Pre-Action Checklist**."
 
-`_run_expert_post_review()` at line 1354–1355 instructs:
-> "Work through each item in your hat's ## Post-Action Review section."
+And `_run_expert_post_review()` (forge.py ~line 1355) says:
+> "Work through each item in **your hat's ## Post-Action Review section**."
 
-Neither `"Pre-Action Checklist"` nor `"Post-Action Review"` appears in the
-`build_expert_block()` sections tuple. The LLM is told to reference sections
-that are not in its context. It must hallucinate or infer from Core Principles
-alone. Every expert call is degraded by this.
+The LLM is instructed to reference sections that are not in its context. It
+must hallucinate or infer from Core Principles alone. Every hat has carefully
+crafted checklists that are never seen by the expert.
 
-**Fix: 2 lines.** Add both section names to the tuple.
-
----
-
-#### Gap 2: EXPERT ASSESSMENT elicits facts, not judgment
-
-`_run_expert_pre_action()` lines 1184–1186:
-
-```python
-"EXPERT ASSESSMENT:\n"
-"- [As the expert, what is the right solution? State your recommendation "
-"with specifics (shape names, SKUs, topology, module names) — not generic advice.]\n\n"
-```
-
-This produces: "Use E5.Flex with 4 OCPU."
-
-A senior SA produces: "3-tier web — E5.Flex over X9 because no Intel dependency
-and 25% cost saving. Single-AD assumed; note that HA doubles compute costs.
-Note: public LB scoped but no WAF — flag this."
-
-The current prompt elicits a solution. It does not elicit:
-- The **workload pattern** (which determines which risks and services are relevant)
-- **WHY this over the alternative** (which constraint justifies the choice)
-- The **top risk** (the most likely failure mode and its mitigation)
-- A **proactive flag** (what the customer should know that they haven't asked)
-
-These four additions transform fact-listing into architectural judgment.
+**Fix:** Two lines — add `"Pre-Action Checklist"` and `"Post-Action Review"` to
+the sections tuple. Maximum impact per line of code in this entire codebase.
 
 ---
 
-#### Gap 3: Post-review checks correctness, not architectural soundness
+### Root Cause 2: Expert pre-action is fact-listing, not architectural judgment
 
-`_run_expert_post_review()` lines 1351–1367 runs:
-- Phase A: Quality Bar (is it technically correct?)
-- Phase B: Post-Action Review checklist
-- Phase C: Memory consistency
+The `EXPERT ASSESSMENT` section in `_run_expert_pre_action()` asks:
+> "As the expert, what is the right solution? State your recommendation with
+> specifics (shape names, SKUs, topology, module names) — not generic advice."
 
-A technically correct BOM for the wrong workload size passes all three phases.
-Phase A checks that SKUs are real and math is right. Phase B checks that
-artifact_key exists. Phase C checks that the region matches memory.
+This produces a recommendation but elicits no architectural thinking:
+- No workload pattern identification
+- No justification of *why this approach over alternatives*
+- No identification of the primary risk
+- No proactive customer guidance ("you haven't asked but you should know...")
 
-None of the phases ask: "Is this the right architecture for this customer?
-Does the sizing fit the stated workload? Are there antipatterns? What's next?"
+The difference between a junior consultant and a senior SA is not whether they
+know the right answer — it's whether they can explain why, identify what could
+go wrong, and anticipate what comes next.
 
-**Fix: Add Phase D — architectural soundness** — after Phase C and before FINAL
-DECISION. Phase D is advisory; it does not change routing. It produces
-GOAL FIT / ANTIPATTERNS / NEXT STEP FLAG content that Archie can surface in
-its final response.
+**Fix:** Replace the single EXPERT ASSESSMENT bullet with five structured
+sub-bullets: WORKLOAD PATTERN, RECOMMENDATION, WHY THIS APPROACH, TOP RISK,
+PROACTIVE FLAG.
 
 ---
 
-#### Gap 4: Critic pass is a 3-line rubber stamp
+### Root Cause 3: Post-review checks correctness but not architectural soundness
 
-`_run_critique_pass()` lines 1487–1492:
+The three post-review phases check:
+- Phase A: Does this meet the technical Quality Bar?
+- Phase B: Does this pass the Post-Action Review checklist?
+- Phase C: Is this consistent with what's in memory?
+
+None of them ask:
+- Is this the right architecture for this customer's actual goal?
+- Are there single points of failure or obvious security gaps?
+- What should the customer do next that they haven't asked about?
+
+A BOM that is technically correct but sized for a test workload when the customer
+said "production" passes all three phases. Phase D — architectural soundness —
+is the senior SA lens that catches fit-for-purpose failures and surfaces
+proactive guidance.
+
+Phase D findings are **advisory only** — they do not change the EXPERT_APPROVED
+/ EXPERT_ITERATE / EXPERT_SURFACE routing decision. They produce structured flags
+that Archie can reference when writing its final response to the user.
+
+---
+
+### Root Cause 4: Critic pass is a 3-line rubber stamp
+
+`_run_critique_pass()` (forge.py ~lines 1487–1492):
 
 ```python
 critic_prompt = (
     f"{prompt}\n\n[CRITIC REVIEW REQUEST]\n"
     f"Review the result of '{tool_name}' above.\n"
-    f"If the result is acceptable, call: {{\"tool\": \"critic_approve\", \"args\": {{}}}}\n"
+    f"If the result is acceptable, call: {\"tool\": \"critic_approve\", \"args\": {}}\n"
     f"If you have concerns, describe them as plain text."
 )
 ```
 
-The critic hat's Quality Bar IS in the injected system message (via
-`build_expert_block()`). But the prompt never instructs the LLM to apply it.
-The LLM takes the path of least resistance: approve in 5 characters.
+No structure. No minimum chars. No instruction to apply the Quality Bar that IS
+in the injected `[ACTIVE EXPERT]` system message. An LLM receiving this will
+take the path of least resistance and approve immediately.
 
-No minimum char enforcement. No per-item PASS/FAIL. No structure.
-The critic as implemented is a near-guaranteed rubber stamp.
-
-**Fix: Replace the prompt** with a structured per-item Quality Bar review that
-requires PASS or FAIL with evidence for every item, and explicitly names the
-first FAIL instead of calling `critic_approve`.
+**Fix:** Replace with structured prompt that explicitly directs the LLM to apply
+the hat's `## Quality Bar` section, write PASS or FAIL for each item, and forbid
+approval if any item fails.
 
 ---
 
-#### Gap 5: Step3 planning routes to tools, doesn't identify risk
+### Root Cause 5: Step3 planning is tool-routing, not architectural thinking
 
-`_run_step3_planning()` lines 994–1010 asks:
+The three planning questions (forge.py ~lines 998–1011):
+1. What is the user's real goal? Name the deliverable.
+2. What facts are confirmed?
+3. Which hat to activate?
 
-```
-STEP 1 — UNDERSTAND: What is the deliverable? New or revision? What's missing?
-STEP 2 — MEMORY ASSESSMENT: What facts are confirmed? What's missing?
-STEP 3 — PLAN + HAT SELECTION: Which hat? What's the plan?
-```
+These are routing decisions. They do not ask:
+- What is the primary architectural risk or constraint in this request?
+- What would cause this project to fail?
+- What assumption needs validation before generating?
 
-None of these questions surfaces the architectural risk or constraint in the
-request. Archie can plan "generate a BOM" for a production workload with no HA
-specified, no WAF, and no compliance scope without ever noting these gaps in
-the planning step.
+Archie plans which tool to call, not what approach is right. The expert
+pre-action then receives a routing decision as its context, not a risk-aware
+plan.
 
-**Fix: Add one sub-question** to STEP 1: "What is the primary architectural risk
-or constraint in this request?" A risk-aware plan primes the expert pre-action
-with better context.
-
----
-
-#### Gap 6: No expert identity for conversational turns
-
-When no hat is active (architecture discussion, follow-up questions, revision
-clarification), the Archie system prompt contains tool routing rules and
-"be architect-level" instructions. No OCI-specific expert framing. No pattern
-recognition. No risk instinct.
-
-A user asking "what's the best HA approach for a 3-tier web app in OCI?"
-gets a helpful assistant response. They should get a senior SA response that
-names specific OCI topology (multi-AD, cross-region DRG), shapes, and the
-specific cost delta for HA.
-
-**Fix: Add `_EXPERT_IDENTITY` constant** to `archie_wiring.py` and prepend it
-to the system prompt before the tool sequencing rules.
+**Fix:** Add one sub-question to STEP 1: "What is the primary architectural risk
+or constraint in this request?"
 
 ---
 
-## Design
+### Root Cause 6: No expert identity for conversational turns
 
-### Change 1 — `agent/hat_engine.py`: Inject Pre-Action Checklist and Post-Action Review
+When no hat is active (architecture discussion, follow-up questions, clarifying
+turns), Archie's system prompt contains:
+- Generic "be conversational, concise, and architect-level" instruction
+- Tool contracts
+- Routing rules
 
-**File:** `agent/hat_engine.py`  
-**Function:** `build_expert_block()` (lines 164–170)
+No OCI-specific expert framing. No pattern recognition instinct. No risk flags
+enumerated. An SA asking "what's the best HA approach for a 3-tier web app?"
+gets a helpful assistant response, not an expert architect response.
 
-**Before:**
+**Fix:** Add `_EXPERT_IDENTITY` constant that establishes OCI SA persona with
+PATTERN RECOGNITION, RISK INSTINCT, SPECIFICITY, ASSUMPTION SURFACING, and
+PROACTIVE GUIDANCE as named behaviors. Prepend to full system prompt.
+
+---
+
+## The Seven Changes
+
+### p51a — hat_engine.py: inject missing sections
+
+**File:** `agent/hat_engine.py`, `build_expert_block()` (lines 165–174)
+
 ```python
+# Before
 for section in (
     "Core Principles",
     "Quality Bar",
@@ -202,154 +214,96 @@ for section in (
     "Critic Evaluation Guidance",
     "Failure Questions",
 ):
-```
 
-**After:**
-```python
+# After
 for section in (
     "Core Principles",
     "Quality Bar",
-    "Pre-Action Checklist",
-    "Post-Action Review",
+    "Pre-Action Checklist",      # ← ADD
+    "Post-Action Review",        # ← ADD
     "Output Contract",
     "Critic Evaluation Guidance",
     "Failure Questions",
 ):
 ```
 
-Placement: Pre-Action Checklist and Post-Action Review go after Quality Bar.
-The LLM sees the quality standard before the operational procedure.
+The two new sections go after Quality Bar so the LLM sees quality standards
+before operational procedure.
 
-**Impact:** When `_run_expert_pre_action()` says "List every unconfirmed
-prerequisite from this hat's Pre-Action Checklist," the checklist is now in
-the system message. When `_run_expert_post_review()` says "Work through each
-item in your hat's ## Post-Action Review section," the section is there.
+**Impact:** When expert pre-action fires and says "List every unconfirmed
+prerequisite from this hat's Pre-Action Checklist," the checklist is now actually
+in context. Same for post-review's "Work through each item in your Post-Action
+Review section." This single fix makes every subsequent expert call more
+grounded and specific.
 
 ---
 
-### Change 2 — `skillforge/forge.py`: Expert pre-action architectural judgment
+### p51b — forge.py: architectural judgment in expert pre-action
 
-**File:** `skillforge/forge.py`  
-**Function:** `_run_expert_pre_action()` (lines ~1170–1191)  
-**Also:** `_EXPERT_PRE_ACTION_HEADERS` tuple (line 67)
+**File:** `skillforge/forge.py`, `_run_expert_pre_action()` (~lines 1164–1210)
 
-**Part A — Replace pre_action_prompt:**
+Replace the `pre_action_prompt` string and update `_EXPERT_PRE_ACTION_HEADERS`.
 
-Current (lines 1170–1191):
-```python
-pre_action_prompt = (
-    f"{prompt}{retry_context}\n\n"
-    "╔══════════════════════════════════╗\n"
-    "║  STEP 4 — EXPERT PRE-ACTION      ║\n"
-    "╚══════════════════════════════════╝\n"
-    f"You are wearing the [{hat_label}] hat. You ARE the expert.\n"
-    f"Before calling '{tool_name}', produce your expert reasoning using "
-    "EXACTLY this structure:\n\n"
-    "KNOWN FACTS:\n"
-    "- [List every confirmed value: shape, region, OCPU, memory, storage, HA mode, "
-    "budget, compliance scope, etc. Be specific — no vague summaries.]\n\n"
-    "GAPS:\n"
-    "- [List every unconfirmed prerequisite from this hat's Pre-Action Checklist. "
-    "If none, write 'None — all prerequisites confirmed.']\n\n"
-    "EXPERT ASSESSMENT:\n"
-    "- [As the expert, what is the right solution? State your recommendation "
-    "with specifics (shape names, SKUs, topology, module names) — not generic advice.]\n\n"
-    "SUB-AGENT INSTRUCTIONS:\n"
-    "- [Exact task description you will pass to the sub-agent. Be precise.]\n\n"
-    "Do NOT call a tool here. If GAPS contains any starred (★) required items, "
-    "output only: NEEDS_CLARIFICATION: <focused question for the user>"
-)
+**New prompt structure:**
+
+```
+╔══════════════════════════════════╗
+║  STEP 4 — EXPERT PRE-ACTION      ║
+╚══════════════════════════════════╝
+You are wearing the [hat_label] hat. You ARE the expert.
+Before calling 'tool_name', think as a senior OCI Solutions Architect...
+
+KNOWN FACTS:
+- [Every confirmed value from memory: shape, region, OCPU, memory, storage,
+  HA mode, budget, compliance scope. Specific values only.]
+
+GAPS:
+- [Every unconfirmed item from this hat's Pre-Action Checklist.
+  For each: state the DEFAULT and why. Only NEEDS_CLARIFICATION if unsafe.]
+
+EXPERT ASSESSMENT:
+- WORKLOAD PATTERN: [3-tier web / microservices / ML inference / data platform /
+  batch / lift-and-shift / RAG pipeline / hybrid connectivity. 1-2 critical reqs.]
+- RECOMMENDATION: [Exact OCI services, shapes, SKUs, quantities, topology tiers.]
+- WHY THIS APPROACH: [One sentence: why this over the main alternative.
+  Must cite a specific constraint from KNOWN FACTS or workload pattern.]
+- TOP RISK: [Most likely failure mode. How you are mitigating it.]
+- PROACTIVE FLAG: [One thing the customer hasn't asked but should know.
+  "Note: single-AD assumed — if SLA > 99.9%, costs double for HA."
+  If nothing relevant: None.]
+
+SUB-AGENT TASK:
+- [Complete, self-contained instruction for the sub-agent. All sizing, shapes,
+  services, and constraints. The sub-agent has no other context.]
 ```
 
-Replace with:
-```python
-pre_action_prompt = (
-    f"{prompt}{retry_context}\n\n"
-    "╔══════════════════════════════════╗\n"
-    "║  STEP 4 — EXPERT PRE-ACTION      ║\n"
-    "╚══════════════════════════════════╝\n"
-    f"You are wearing the [{hat_label}] hat. You ARE the expert.\n"
-    f"Before calling '{tool_name}', think as a senior OCI Solutions Architect "
-    "who has seen this workload pattern before. Use EXACTLY this structure:\n\n"
-    "KNOWN FACTS:\n"
-    "- [List every confirmed value from memory and conversation: shape, region, "
-    "OCPU, memory, storage, HA mode, budget, compliance scope, customer name. "
-    "No vague summaries — specific values only.]\n\n"
-    "GAPS:\n"
-    "- [List every unconfirmed item from this hat's Pre-Action Checklist. "
-    "For each: state what you will DEFAULT and why. "
-    "Only flag NEEDS_CLARIFICATION if a default is architecturally unsafe.]\n\n"
-    "EXPERT ASSESSMENT:\n"
-    "- WORKLOAD PATTERN: [Name the architecture pattern: "
-    "3-tier web / microservices / ML inference / data platform / batch / "
-    "lift-and-shift / RAG pipeline / hybrid connectivity / other. "
-    "State the 1-2 critical requirements this workload must satisfy.]\n"
-    "- RECOMMENDATION: [Exact solution: specific OCI services, shapes, SKUs, "
-    "quantities, topology tiers. No generic advice.]\n"
-    "- WHY THIS APPROACH: [One sentence: why this over the main alternative. "
-    "Must reference a specific constraint from KNOWN FACTS or workload pattern.]\n"
-    "- TOP RISK: [The most likely failure mode. How you are mitigating it "
-    "in your sub-agent instructions.]\n"
-    "- PROACTIVE FLAG: [One thing the customer should know that they have not "
-    "asked. Frame as: 'Note: <specific concern or recommendation for next step>'. "
-    "Example: 'Note: single-AD assumed — if SLA > 99.9%, costs double for HA.' "
-    "Example: 'Note: WAF not scoped but public API present — recommend post-BOM.' "
-    "If genuinely nothing relevant: None.]\n\n"
-    "SUB-AGENT TASK:\n"
-    "- [Exact, complete task instruction for the sub-agent. "
-    "Include all sizing, shapes, services, constraints from KNOWN FACTS "
-    "and your defaults from GAPS. This must be self-contained — "
-    "the sub-agent has no other context.]\n\n"
-    "Do NOT call a tool here. "
-    "If a GAPS item is architecturally unsafe to default "
-    "(e.g., GPU shape without cost confirmation, compliance scope that changes design), "
-    "output only: NEEDS_CLARIFICATION: <one focused question>"
-)
-```
-
-**Part B — Update `_EXPERT_PRE_ACTION_HEADERS`** (line 67–72):
-
-Current:
+**Updated `_EXPERT_PRE_ACTION_HEADERS`:**
 ```python
 _EXPERT_PRE_ACTION_HEADERS = (
     "KNOWN FACTS:",
     "GAPS:",
     "EXPERT ASSESSMENT:",
-    "SUB-AGENT INSTRUCTIONS:",
+    "SUB-AGENT TASK:",     # was SUB-AGENT INSTRUCTIONS:
 )
 ```
 
-Replace:
-```python
-_EXPERT_PRE_ACTION_HEADERS = (
-    "KNOWN FACTS:",
-    "GAPS:",
-    "EXPERT ASSESSMENT:",
-    "SUB-AGENT TASK:",
-)
-```
+The change from `SUB-AGENT INSTRUCTIONS:` to `SUB-AGENT TASK:` reinforces that
+this is a directive to an execution specialist, not a set of instructions to
+itself.
 
-Note: "SUB-AGENT INSTRUCTIONS:" → "SUB-AGENT TASK:" aligns the header tuple
-with the new prompt text. No other validation logic changes.
+**Impact:** Every expert pre-action call now produces a named workload pattern,
+a justified recommendation, an explicit risk, and a proactive customer flag.
+The sub-agent receives a complete, self-contained task description instead of
+whatever leaked through from EXPERT ASSESSMENT prose.
 
 ---
 
-### Change 3 — `skillforge/forge.py`: Structured critic with Quality Bar
+### p51c — forge.py: structured critic with Quality Bar
 
-**File:** `skillforge/forge.py`  
-**Function:** `_run_critique_pass()` (lines 1487–1492)
+**File:** `skillforge/forge.py`, `_run_critique_pass()` (~lines 1487–1492)
 
-**Before:**
-```python
-critic_prompt = (
-    f"{prompt}\n\n[CRITIC REVIEW REQUEST]\n"
-    f"Review the result of '{tool_name}' above.\n"
-    f"If the result is acceptable, call: {{\"tool\": \"critic_approve\", \"args\": {{}}}}\n"
-    f"If you have concerns, describe them as plain text."
-)
-```
+**New `critic_prompt`:**
 
-**After:**
 ```python
 critic_prompt = (
     f"{prompt}\n\n"
@@ -372,20 +326,18 @@ critic_prompt = (
 )
 ```
 
-The `[ACTIVE EXPERT]` block with Quality Bar is already in the system message
-via `build_expert_block()`. This prompt now directs the LLM to explicitly apply
-every item in that section before deciding.
+**Impact:** The Quality Bar in the `[ACTIVE EXPERT]` block (put there by p51a
+and already present before) is now explicitly applied item by item. An approval
+requires evidence of PASS for each item. A failure requires naming the exact
+field and expected value — not vague concerns.
 
 ---
 
-### Change 4 — `skillforge/forge.py`: Phase D architectural soundness
+### p51d — forge.py: Phase D architectural soundness in post-review
 
-**File:** `skillforge/forge.py`  
-**Function:** `_run_expert_post_review()` (lines 1344–1368)  
-**Also:** `_EXPERT_REVIEW_MIN_CHARS` (line 78)
+**File:** `skillforge/forge.py`, `_run_expert_post_review()` (~lines 1344–1381)
 
-**In review_prompt**, after the Phase C block and before the FINAL DECISION line,
-insert:
+Add Phase D block after Phase C and before FINAL DECISION in `review_prompt`:
 
 ```python
 "PHASE D — Architectural soundness:\n"
@@ -402,56 +354,44 @@ insert:
 "Append them after FINAL DECISION so the orchestrator can surface them.\n\n"
 ```
 
-Also update the FINAL DECISION instructions to reference all four phases:
+Also raise `_EXPERT_REVIEW_MIN_CHARS` from 800 to 1000. The review now has 4
+phases; the higher minimum ensures Phase D gets substantive content.
 
-Change: `"FINAL DECISION — after completing Phases A, B, and C, output EXACTLY ONE line:\n"`  
-To:     `"FINAL DECISION — after completing Phases A, B, C, and D, output EXACTLY ONE line:\n"`
-
-**Also raise `_EXPERT_REVIEW_MIN_CHARS`** (line 78):
-
-```python
-# Before:
-_EXPERT_REVIEW_MIN_CHARS = 800
-
-# After:
-_EXPERT_REVIEW_MIN_CHARS = 1000
-```
-
-Four phases need more room than three. The higher minimum ensures Phase D gets
-real content rather than being compressed to fit the old bar.
-
-**What Phase D enables at runtime:** Post-review with Phase D produces SUGGEST
-findings in the prompt context. When Archie writes its final user-visible
-response after EXPERT_APPROVED, it can reference the SUGGEST content as proactive
-guidance — the "what should the customer know next" behavior.
+**Phase D findings mechanism:** When the expert post-review completes, its full
+output (including Phase D) is appended to the prompt context before Archie
+writes its final response to the user. When Phase D produces a SUGGEST, Archie
+can reference it proactively: "BOM delivered. Note: your LB is public-facing and
+WAF wasn't scoped — recommend adding it before production."
 
 ---
 
-### Change 5 — `skillforge/forge.py`: Architectural risk in step3 planning
+### p52a — forge.py: architectural risk in step3 planning
 
-**File:** `skillforge/forge.py`  
-**Function:** `_run_step3_planning()` (lines 994–998)
+**File:** `skillforge/forge.py`, `_run_step3_planning()` (~lines 998–1011)
 
-In `planning_prompt`, after the last sub-bullet of STEP 1 (`"- Is anything
-ambiguous? If so, what is missing?\n\n"`), add one sub-question before STEP 2:
+Add one sub-question to the end of STEP 1 in `planning_prompt`:
 
 ```python
 "- What is the primary architectural risk or constraint in this request? "
 "(HA exposure, compliance requirement, budget ceiling, migration complexity, "
-"public ingress without filtering, data sensitivity). Name it — do not skip.\n\n"
+"public ingress without filtering, data sensitivity). Name it — do not skip.\n"
 ```
 
-This is a sub-question within STEP 1, not a new required section header.
-`_STEP3_PLANNING_HEADERS` is unchanged.
+This is a sub-question within STEP 1, not a new required header. The
+`_STEP3_PLANNING_HEADERS` validation tuple is unchanged.
+
+**Impact:** Every planning call produces a named risk statement before tool
+selection. The expert pre-action then operates with risk context already
+established, not starting from scratch.
 
 ---
 
-### Change 6 — `agent/archie_wiring.py`: Expert identity for all turns
+### p52b — archie_wiring.py: expert identity for all turns
 
 **File:** `agent/archie_wiring.py`
 
-Add a new constant `_EXPERT_IDENTITY` between the imports block and
-`_TOOL_SEQUENCING_RULES`:
+Add `_EXPERT_IDENTITY` constant (after imports, before `_TOOL_SEQUENCING_RULES`)
+and prepend it to `full_prompt` in `build_forge()`.
 
 ```python
 _EXPERT_IDENTITY = """
@@ -497,35 +437,31 @@ of an architect who understands the engagement lifecycle.
 """
 ```
 
-In `build_forge()`, update the `full_prompt` assembly to prepend
-`_EXPERT_IDENTITY`:
+In `build_forge()`, update `full_prompt`:
 
 ```python
-# Before:
+# Before
 full_prompt = (
     routing_guidance + "\n\n" + base_system_prompt + "\n\n" + _TOOL_SEQUENCING_RULES
 ).strip()
 
-# After:
+# After
 full_prompt = (
-    _EXPERT_IDENTITY + "\n\n" + routing_guidance + "\n\n" + base_system_prompt + "\n\n" + _TOOL_SEQUENCING_RULES
+    _EXPERT_IDENTITY + "\n\n" + routing_guidance + "\n\n" + base_system_prompt
+    + "\n\n" + _TOOL_SEQUENCING_RULES
 ).strip()
 ```
 
-`_EXPERT_IDENTITY` goes first to establish the persona before tool routing rules.
+`_EXPERT_IDENTITY` goes first to establish persona before tool routing rules.
 
 ---
 
-### Change 7 — `agent/archie_memory_impl.py`: Enrich memory injection
+### p52c — archie_memory_impl.py: enrich memory injection
 
-**File:** `agent/archie_memory_impl.py`  
-**Class:** `ArchiePromptEnricher.__call__()` (lines 80–97)
+**File:** `agent/archie_memory_impl.py`, `ArchiePromptEnricher.__call__()`
+(lines ~80–97)
 
-Currently injects only `facts_summary` and `constraints`. `MemorySnapshot`
-contains additional fields populated during some sessions but never surfaced:
-`infrastructure_profile` and `resolved_questions`.
-
-After the `if memory.constraints:` block and before the `return` statement, add:
+After the existing `constraints` injection block, add:
 
 ```python
 infra_profile = str((memory.facts or {}).get("infrastructure_profile") or "").strip()
@@ -543,146 +479,136 @@ if resolved:
     )
 ```
 
-Expert KNOWN FACTS reasoning now has access to confirmed infrastructure details
-and previously answered architecture questions — reducing unnecessary "unknown"
-entries in GAPS.
+`MemorySnapshot.facts` already carries these fields when populated. The expert
+KNOWN FACTS section in pre-action currently operates on a partial view of session
+knowledge. With this change, confirmed infrastructure details and previously
+answered questions are visible to the expert without requiring redundant
+re-confirmation.
 
 ---
 
 ## Files Changed
 
-| File | Task | Change | Priority |
+| Task | File | Type of change | Lines |
 |---|---|---|---|
-| `agent/hat_engine.py` | p51a | Add `"Pre-Action Checklist"` and `"Post-Action Review"` to `build_expert_block()` sections list | CRITICAL |
-| `skillforge/forge.py` | p51b | Replace `pre_action_prompt` with 5-part EXPERT ASSESSMENT; update `_EXPERT_PRE_ACTION_HEADERS` | HIGH |
-| `skillforge/forge.py` | p51c | Replace 3-line `critic_prompt` with structured Quality Bar PASS/FAIL review | HIGH |
-| `skillforge/forge.py` | p51d | Add Phase D to `review_prompt`; `_EXPERT_REVIEW_MIN_CHARS` 800 → 1000 | HIGH |
-| `skillforge/forge.py` | p52a | Add architectural risk sub-question to STEP 1 in `planning_prompt` | MEDIUM |
-| `agent/archie_wiring.py` | p52b | Add `_EXPERT_IDENTITY` constant; prepend to `full_prompt` | MEDIUM |
-| `agent/archie_memory_impl.py` | p52c | Inject `infrastructure_profile` and `resolved_questions` | MEDIUM |
+| p51a | `agent/hat_engine.py` | +2 section names in tuple | ~2 |
+| p51b | `skillforge/forge.py` | Replace `pre_action_prompt`; update `_EXPERT_PRE_ACTION_HEADERS` | ~35 |
+| p51c | `skillforge/forge.py` | Replace `critic_prompt` | ~15 |
+| p51d | `skillforge/forge.py` | Add Phase D block to `review_prompt`; raise `_EXPERT_REVIEW_MIN_CHARS` | ~14 |
+| p52a | `skillforge/forge.py` | Add one sub-question to step3 STEP 1 | ~4 |
+| p52b | `agent/archie_wiring.py` | Add `_EXPERT_IDENTITY`; update `full_prompt` assembly | ~30 |
+| p52c | `agent/archie_memory_impl.py` | Add two memory field injections | ~10 |
 
 ---
 
 ## Run Order
 
 ```
-p51a  (CRITICAL — prerequisite)
-  ↓
-p51b + p51c + p51d  (parallel — same file, recommend same PR)
-  ↓
-p52a + p52b + p52c  (parallel — independent files, may be separate PRs)
+p51a (prerequisite)
+  │
+  ├─ p51b (same file as p51c/p51d — recommend single PR for all three)
+  ├─ p51c
+  └─ p51d
+       │
+       ├─ p52a
+       ├─ p52b
+       └─ p52c
 ```
 
-p51a is a prerequisite for the others to have full effect: once Pre-Action
-Checklist and Post-Action Review are injected, p51b's WHY reasoning operates
-on the actual hat checklist and p51c's Quality Bar critique references the
-actual Quality Bar.
+p51a is the prerequisite because p51b and p51c reference sections that p51a
+makes visible in the expert context. They are safe to implement without p51a,
+but they reach their full potential only after the hat sections are injected.
 
-p51b, p51c, and p51d all touch `skillforge/forge.py`. Recommend a single PR
-for these three to avoid merge conflicts. p52a also touches `forge.py` and
-may be included in the same PR.
+p51b, p51c, p51d all touch `skillforge/forge.py` — recommend a single branch
+`claude/p51-forge` for all three to avoid merge conflicts.
+
+p52a, p52b, p52c touch different files and can be independent branches.
 
 ---
 
 ## Expected Experience After These Changes
 
-### Before (current state)
+### Before (current behavior)
 
 **User:** "Generate a BOM for a web application"
 
-**Archie expert pre-action:**
+**Archie pre-action output:**
 ```
-KNOWN FACTS:
-- Region: us-chicago-1
-- Shape: E5.Flex (default)
-
-GAPS:
-- OCPU count unconfirmed
-- Storage sizing unconfirmed
-
-EXPERT ASSESSMENT:
-- Use E5.Flex with 4 OCPU. Standard configuration for web applications.
-
-SUB-AGENT INSTRUCTIONS:
-- Generate BOM for web application using E5.Flex shape.
+KNOWN FACTS: region us-chicago-1, shape E5.Flex, customer Acme Corp.
+GAPS: OCPU count not confirmed — defaulting to 4.
+EXPERT ASSESSMENT: Use E5.Flex with 4 OCPU and 32 GB memory.
+SUB-AGENT INSTRUCTIONS: Generate BOM for web application with E5.Flex.
 ```
 
-**Archie final response:** "Here is your BOM for a web application..."
+**Archie final response:** "Here's your BOM."
 
 ---
 
 ### After p51/p52
 
-**Archie expert pre-action:**
+**Archie pre-action output:**
 ```
-KNOWN FACTS:
-- Customer: Acme Corp
-- Region: us-chicago-1 (confirmed)
-- Shape: E5.Flex (no shape specified — default)
-- OCPU: not stated
-- HA mode: not stated
-- Compliance scope: not stated
-- Budget: not stated
-
+KNOWN FACTS: customer Acme Corp, region us-chicago-1, shape E5.Flex,
+  no HA confirmed, no budget stated, no compliance scope stated.
 GAPS:
-- OCPU count: defaulting to 4 OCPU per server (standard 3-tier web tier sizing)
-- Memory: defaulting to 32 GB (8 GB/OCPU E5.Flex ratio)
-- Storage: defaulting to 500 GB Block Volume Balanced (boot + data, single volume)
-- HA mode: defaulting to single-AD (no production SLA stated)
-- Server count: defaulting to 2 app + 1 DB tier (standard 3-tier minimum)
-
+  - OCPU count: defaulting to 4 OCPU/server (standard 3-tier web tier sizing)
+  - Memory: defaulting to 32 GB/server (8 GB/OCPU E5.Flex ratio)
+  - HA mode: defaulting to single-AD (customer can revise to multi-AD)
+  - Storage: defaulting to 500 GB Block Volume Balanced tier per app server
 EXPERT ASSESSMENT:
-- WORKLOAD PATTERN: 3-tier web application. Critical requirements: stateless
-  app tier (horizontal scale), durable DB tier (data persistence, IOPS), and
-  public ingress handling. No GPU, no compliance scope stated.
-- RECOMMENDATION: 2× VM.Standard.E5.Flex (4 OCPU, 32 GB) for app tier +
-  1× VM.Standard.E5.Flex (4 OCPU, 32 GB) for DB tier + OCI LB Flexible 10 Mbps.
-  Shapes: B97384/B97385. Block Volume: 500 GB Balanced tier (B91961).
-  Total: ~$280/month at us-chicago-1 list price.
-- WHY THIS APPROACH: E5.Flex over X9 — workload has no Intel-binary dependency
-  and E5 costs ~25% less per OCPU at equivalent throughput for web tier workloads.
-- TOP RISK: Single-AD deployment — a fault domain event affects all tiers
-  simultaneously. Noted in BOM assumptions; user should confirm SLA requirement.
-- PROACTIVE FLAG: Note: Public LB is in scope but no WAF is scoped. If this
-  API is internet-facing, recommend adding WAF post-BOM — unfiltered public
-  ingress is a P1 security gap in production.
-
-SUB-AGENT TASK:
-Generate OCI BOM for Acme Corp 3-tier web application.
-Compute: 2× E5.Flex app tier + 1× E5.Flex DB tier, 4 OCPU each, 32 GB each.
-Shapes: B97384 (OCPU) + B97385 (memory). Storage: 500 GB Block Volume Balanced
-(B91961) per server. Load Balancer: Flexible 10 Mbps (B90737). Region: us-chicago-1.
-HA: single-AD. Assumptions: OCPU defaulted to 4, memory 8 GB/OCPU, storage 500 GB,
-single-AD, no WAF.
+  - WORKLOAD PATTERN: 3-tier web application. Critical requirements: horizontal
+    scalability for web tier, data persistence for DB tier, public ingress handling.
+  - RECOMMENDATION: 2× VM.Standard.E5.Flex (4 OCPU, 32 GB) app tier, 1×
+    VM.Standard.E5.Flex (4 OCPU, 32 GB) DB tier, OCI LB 100 Mbps. Shapes:
+    B97384/B97385. Storage: 500 GB Block Volume Balanced (B91961) per server.
+  - WHY THIS APPROACH: E5.Flex over X9 — this workload has no Intel-binary
+    dependency and E5 delivers the same throughput at 25% lower OCPU cost.
+  - TOP RISK: Single-AD deployment means a fault domain failure affects all
+    tiers simultaneously. Noting the assumption in BOM so customer can evaluate.
+  - PROACTIVE FLAG: Note: WAF not scoped but a public-facing load balancer is
+    present. Public API without ingress filtering is a P1 security gap — recommend
+    adding OCI WAF as a follow-up or in a revised BOM.
+SUB-AGENT TASK: Generate BOM for 2× VM.Standard.E5.Flex app servers (4 OCPU,
+  32 GB each, B97384/B97385) + 1× VM.Standard.E5.Flex DB server (4 OCPU, 32 GB)
+  + OCI LB 100 Mbps + 500 GB Block Volume Balanced per server. Region
+  us-chicago-1. Single-AD. Assumptions: OCPU=4, memory=32 GB, storage=500 GB BV,
+  single-AD, no WAF, no managed DB service.
 ```
 
 **Post-review Phase D:**
 ```
 PHASE D — Architectural soundness:
-- GOAL FIT: YES — BOM covers the stated 3-tier web pattern.
-- ANTIPATTERNS: FLAG: No WAF line item despite public-facing LB. A public API
-  without ingress filtering is a P1 security exposure in production.
-- NEXT STEP FLAG: SUGGEST: After BOM approval, generate architecture diagram
-  to validate tier placement. Add WAF to revised BOM before Terraform generation.
+- GOAL FIT: YES — BOM covers the stated 3-tier web workload.
+- ANTIPATTERNS: FLAG: No WAF line item despite public-facing load balancer.
+  Public API without ingress filtering is a P1 security exposure.
+- NEXT STEP FLAG: SUGGEST: Generate architecture diagram to validate tier
+  topology and confirm LB → app → DB path before Terraform. Add WAF to scope.
 ```
 
 **Archie final response:**
-> "Here's your BOM for Acme Corp — 3-tier web app on E5.Flex, ~$280/month.
+> "Here's your BOM for the 3-tier web app — $847/month for 3× E5.Flex VMs,
+> OCI LB, and block storage.
 >
-> Two things worth noting before you proceed:
-> 1. I assumed **single-AD** deployment. If you need 99.95% SLA, multi-AD
->    roughly doubles the compute cost (~$560/month). Confirm before Terraform.
-> 2. The load balancer is public-facing with **no WAF scoped**. For production,
->    I'd add OCI WAF to the next BOM revision — unfiltered public ingress is a
->    common P1 finding in WAF reviews.
->
-> Want me to generate the architecture diagram next, or revise the BOM to include WAF?"
+> Two things to note: I assumed single-AD deployment (no HA multiplier) and no
+> WAF in scope. Your load balancer is public-facing, so I'd recommend adding OCI
+> WAF before production — it's a straightforward addition to the BOM. Want me
+> to revise it with WAF included, or generate the architecture diagram first so
+> we can validate the topology?"
 
 ---
 
 ## What This Does NOT Address
 
-- BOM sub-agent LLM reasoning (deterministic Python regex pipeline — not an LLM)
-- Governor as a hard code-enforced blocker (separate Forge core change)
-- Cross-hat synthesis: BOM ↔ Diagram ↔ WAF consistency validation (future work)
-- Streaming partial expert reasoning to the UI (separate infrastructure change)
+- **BOM sub-agent LLM reasoning.** The BOM sub-agent is a deterministic Python
+  regex extraction pipeline, not an LLM. Expert hat reasoning influences it only
+  through the parseable `[SUB-AGENT INSTRUCTIONS]` sizing block (addressed in
+  p50a). Making the BOM sub-agent itself LLM-driven is a Phase 6+ decision.
+
+- **Governor as hard code-enforced blocker.** The governor currently runs as a
+  hat with soft blocking. Elevating it to a hard code-enforced gate in Forge
+  (before tools fire) is a separate Forge core change.
+
+- **Cross-hat synthesis.** Ensuring BOM, Diagram, WAF, and Terraform are
+  architecturally consistent with each other (e.g., WAF references the same
+  VCN topology as the diagram) is a future capability requiring a synthesis
+  layer above individual hats.
