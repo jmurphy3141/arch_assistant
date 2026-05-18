@@ -1505,10 +1505,23 @@ class Forge:
             return prompt, active_hats
 
         critic_prompt = (
-            f"{prompt}\n\n[CRITIC REVIEW REQUEST]\n"
-            f"Review the result of '{tool_name}' above.\n"
-            f"If the result is acceptable, call: {{\"tool\": \"critic_approve\", \"args\": {{}}}}\n"
-            f"If you have concerns, describe them as plain text."
+            f"{prompt}\n\n"
+            "╔══════════════════════════════════╗\n"
+            "║  CRITIC REVIEW                   ║\n"
+            "╚══════════════════════════════════╝\n"
+            f"You are reviewing the result of '{tool_name}'. "
+            "You are NOT rubber-stamping.\n\n"
+            "Apply your ## Quality Bar section to this result.\n"
+            "For each Quality Bar item write: PASS or FAIL: <specific evidence>\n\n"
+            "Then write EXACTLY ONE final line — nothing after it:\n"
+            f"  {{\"tool\": \"critic_approve\", \"args\": {{}}}}   "
+            "— if and only if every Quality Bar item is PASS\n"
+            "  <plain-text first FAIL: exact field name and what was wrong>  "
+            "— if any item fails\n\n"
+            "Rules:\n"
+            "- Do NOT approve if any item fails — name the failure.\n"
+            "- Cite the specific field, SKU, or value — not vague concern.\n"
+            "- Do NOT call any other tool."
         )
         enriched = self._hat_engine.inject_hats(critic_prompt, active_hats)
         system_msg = self._build_active_system_msg(active_hats)
