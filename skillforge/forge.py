@@ -1180,7 +1180,7 @@ class Forge:
             "OCPU, memory, storage, HA mode, budget, compliance scope, customer name. "
             "No vague summaries — specific values only.]\n\n"
             "GAPS:\n"
-            "- [List every unconfirmed prerequisite from this hat's Pre-Action Checklist. "
+            "- [List every unconfirmed item from this hat's Pre-Action Checklist. "
             "For each: state what you will DEFAULT and why. "
             "Only flag NEEDS_CLARIFICATION if a default is architecturally unsafe.]\n\n"
             "EXPERT ASSESSMENT:\n"
