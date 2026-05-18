@@ -68,7 +68,7 @@ _EXPERT_PRE_ACTION_HEADERS = (
     "KNOWN FACTS:",
     "GAPS:",
     "EXPERT ASSESSMENT:",
-    "SUB-AGENT INSTRUCTIONS:",
+    "SUB-AGENT TASK:",
 )
 _STEP3_PLANNING_HEADERS = (
     "STEP 1 — UNDERSTAND:",
@@ -1173,21 +1173,41 @@ class Forge:
             "║  STEP 4 — EXPERT PRE-ACTION      ║\n"
             "╚══════════════════════════════════╝\n"
             f"You are wearing the [{hat_label}] hat. You ARE the expert.\n"
-            f"Before calling '{tool_name}', produce your expert reasoning using "
-            "EXACTLY this structure:\n\n"
+            f"Before calling '{tool_name}', think as a senior OCI Solutions Architect "
+            "who has seen this workload pattern before. Use EXACTLY this structure:\n\n"
             "KNOWN FACTS:\n"
-            "- [List every confirmed value: shape, region, OCPU, memory, storage, HA mode, "
-            "budget, compliance scope, etc. Be specific — no vague summaries.]\n\n"
+            "- [List every confirmed value from memory and conversation: shape, region, "
+            "OCPU, memory, storage, HA mode, budget, compliance scope, customer name. "
+            "No vague summaries — specific values only.]\n\n"
             "GAPS:\n"
             "- [List every unconfirmed prerequisite from this hat's Pre-Action Checklist. "
-            "If none, write 'None — all prerequisites confirmed.']\n\n"
+            "For each: state what you will DEFAULT and why. "
+            "Only flag NEEDS_CLARIFICATION if a default is architecturally unsafe.]\n\n"
             "EXPERT ASSESSMENT:\n"
-            "- [As the expert, what is the right solution? State your recommendation "
-            "with specifics (shape names, SKUs, topology, module names) — not generic advice.]\n\n"
-            "SUB-AGENT INSTRUCTIONS:\n"
-            "- [Exact task description you will pass to the sub-agent. Be precise.]\n\n"
-            "Do NOT call a tool here. If GAPS contains any starred (★) required items, "
-            "output only: NEEDS_CLARIFICATION: <focused question for the user>"
+            "- WORKLOAD PATTERN: [Name the architecture pattern: "
+            "3-tier web / microservices / ML inference / data platform / batch / "
+            "lift-and-shift / RAG pipeline / hybrid connectivity / other. "
+            "State the 1-2 critical requirements this workload must satisfy.]\n"
+            "- RECOMMENDATION: [Exact solution: specific OCI services, shapes, SKUs, "
+            "quantities, topology tiers. No generic advice.]\n"
+            "- WHY THIS APPROACH: [One sentence: why this over the main alternative. "
+            "Must reference a specific constraint from KNOWN FACTS or workload pattern.]\n"
+            "- TOP RISK: [The most likely failure mode. How you are mitigating it "
+            "in your sub-agent instructions.]\n"
+            "- PROACTIVE FLAG: [One thing the customer should know that they have not "
+            "asked. Frame as: 'Note: <specific concern or recommendation for next step>'. "
+            "Example: 'Note: single-AD assumed — if SLA > 99.9%, costs double for HA.' "
+            "Example: 'Note: WAF not scoped but public API present — recommend post-BOM.' "
+            "If genuinely nothing relevant: None.]\n\n"
+            "SUB-AGENT TASK:\n"
+            "- [Exact, complete task instruction for the sub-agent. "
+            "Include all sizing, shapes, services, constraints from KNOWN FACTS "
+            "and your defaults from GAPS. This must be self-contained — "
+            "the sub-agent has no other context.]\n\n"
+            "Do NOT call a tool here. "
+            "If a GAPS item is architecturally unsafe to default "
+            "(e.g., GPU shape without cost confirmation, compliance scope that changes design), "
+            "output only: NEEDS_CLARIFICATION: <one focused question>"
         )
         system_msg = self._build_active_system_msg(active_hats)
 
