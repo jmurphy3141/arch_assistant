@@ -1098,8 +1098,9 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
           <div
             data-testid="chat-thinking-status"
             style={{
-              color: '#8b93a8',
-              fontSize: '0.74rem',
+              color: thinkingStatus.startsWith('Running') ? '#61dafb' : '#a8b4cc',
+              fontWeight: thinkingStatus.startsWith('Running') ? 600 : 400,
+              fontSize: '0.78rem',
               alignSelf: 'flex-start',
               fontFamily: "'JetBrains Mono', monospace",
             }}
