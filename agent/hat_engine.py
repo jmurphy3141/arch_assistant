@@ -164,6 +164,8 @@ def build_expert_block(name: str) -> str:
     for section in (
         "Core Principles",
         "Quality Bar",
+        "Pre-Action Checklist",
+        "Post-Action Review",
         "Output Contract",
         "Critic Evaluation Guidance",
         "Failure Questions",
