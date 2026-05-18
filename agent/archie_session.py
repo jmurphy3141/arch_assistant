@@ -2001,10 +2001,6 @@ _ACTION_VERIFY_MARKERS = (
     "verify files",
     "check file",
     "check files",
-    "check whether",
-    "check if",
-    "exists",
-    " exist ",
     "list files",
     "list the files",
 )
@@ -2118,7 +2114,7 @@ def _is_explicit_artifact_download_request(
 
 def _is_explicit_artifact_verification_request(user_message: str, target_artifact: str) -> bool:
     msg = f" {str(user_message or '').lower()} "
-    explicit_verify = any(marker in msg for marker in (" verify", " check ", " exists", " exist ", " list "))
+    explicit_verify = any(marker in msg for marker in (" verify", " check ", " list "))
     explicit_location = any(marker in msg for marker in (" in the bucket", " in object storage", " object-store", " persisted"))
     file_terms = any(marker in msg for marker in (" file", " files", " artifact", " artifacts", " xlsx", " workbook", " bom", " diagram", " terraform"))
     uploaded_state = any(marker in msg for marker in (" uploaded", " upload complete", " present"))
