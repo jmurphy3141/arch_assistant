@@ -2,29 +2,24 @@
 
 ## Background
 
-Deep-dive analysis of the SkillForge expert reasoning loop reveals six root
-causes of shallow responses. The enforcement machinery is correct (600-char
-minimum, required headers, retry logic, EXPERT_APPROVED sentinels). The
-**content** of the expert reasoning is the gap.
+Full analysis and design in `tasks/p51-expert-reasoning-depth.md`.
 
-**The core goal:** Archie wearing a hat should think and respond like a senior
-OCI Solutions Architect who has seen 100 customer engagements — recognizing
-patterns, justifying choices over alternatives, surfacing risks proactively, and
-guiding the engagement lifecycle.
+The enforcement machinery in SkillForge is correct (600-char minimums, required
+headers, retry logic, decision sentinels). The **content** of the expert
+reasoning is the gap. Six root causes:
 
-Root causes:
-1. Hat Pre-Action Checklist and Post-Action Review are NOT injected into the
-   expert system message — the LLM is told to reference them but they're missing.
+1. Hat Pre-Action Checklist and Post-Action Review are NOT injected — the LLM
+   is told to reference them but they are not in context.
 2. EXPERT ASSESSMENT elicits a recommendation but not WHY — no tradeoff
-   justification, no alternatives considered.
+   justification, no workload pattern, no top risk, no proactive flag.
 3. Post-review checks technical correctness but not architectural soundness.
 4. Critic pass is a 3-line rubber stamp — never applies the hat's Quality Bar.
-5. Step3 planning routes to tools but never identifies the architectural risk.
+5. Step3 planning is tool-routing only — never identifies the architectural risk.
 6. No expert identity framing for conversational turns (no hat active).
 
 Run order: p51a → p51b + p51c + p51d (parallel) → p52a + p52b + p52c (parallel).
-p51a is a prerequisite for the others: once hat sections are injected, p51b's
-WHY reasoning and p51c's Quality Bar critique operate on actual hat content.
+p51a is prerequisite: once hat sections are injected, p51b/p51c operate on
+actual hat content rather than LLM inference.
 
 ---
 
