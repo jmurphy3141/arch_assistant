@@ -75,7 +75,7 @@ _STEP3_PLANNING_HEADERS = (
     "STEP 2 — MEMORY ASSESSMENT:",
     "STEP 3 — PLAN + HAT SELECTION:",
 )
-_EXPERT_REVIEW_MIN_CHARS = 800
+_EXPERT_REVIEW_MIN_CHARS = 1000
 _EXPERT_REVIEW_APPROVED = "EXPERT_APPROVED"
 _EXPERT_REVIEW_ITERATE = "EXPERT_ITERATE:"
 _EXPERT_REVIEW_SURFACE = "EXPERT_SURFACE:"
@@ -1379,6 +1379,18 @@ class Forge:
             "Flag any value in the result that contradicts confirmed memory "
             "(e.g. wrong region, wrong shape, wrong HA mode).\n"
             "Write: CONSISTENT or CONFLICT: <field> expected=<memory value> got=<result value>\n\n"
+            "PHASE D — Architectural soundness:\n"
+            "Step back from the checklists. Is this the right architecture for this customer?\n"
+            "- GOAL FIT: Does this output directly serve the customer's stated goal? "
+            "Write: YES or CONCERN: <what it misses>\n"
+            "- ANTIPATTERNS: Any single points of failure, missing security controls, "
+            "obvious over/under-sizing for the stated workload? "
+            "Write: NONE or FLAG: <specific issue and why it matters>\n"
+            "- NEXT STEP FLAG: What should the customer do or know next that they "
+            "haven't asked about? "
+            "Write: NONE or SUGGEST: <specific recommendation>\n"
+            "Phase D findings are advisory. They do NOT change the FINAL DECISION above. "
+            "Append them after FINAL DECISION so the orchestrator can surface them.\n\n"
             "FINAL DECISION — after completing Phases A, B, and C, output EXACTLY ONE line:\n"
             f"  {_EXPERT_REVIEW_APPROVED}          — every Phase A + B item is PASS and Phase C is CONSISTENT\n"
             f"  {_EXPERT_REVIEW_ITERATE} <issue>    — at least one fixable FAIL or CONFLICT\n"
