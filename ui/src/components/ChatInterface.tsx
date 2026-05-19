@@ -1094,20 +1094,6 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
             ))}
           </div>
         )}
-        {thinkingStatus && (
-          <div
-            data-testid="chat-thinking-status"
-            style={{
-              color: thinkingStatus.startsWith('Running') ? '#61dafb' : '#a8b4cc',
-              fontWeight: thinkingStatus.startsWith('Running') ? 600 : 400,
-              fontSize: '0.78rem',
-              alignSelf: 'flex-start',
-              fontFamily: "'JetBrains Mono', monospace",
-            }}
-          >
-            {thinkingStatus}
-          </div>
-        )}
         {streamingReply && (
           <div style={{ display: 'flex', flexDirection: 'column', alignSelf: 'flex-start', maxWidth: '88%' }}>
             <div
@@ -1131,8 +1117,17 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
           </div>
         )}
         {loading && (
-          <div data-testid="archie-working-message" style={{ color: '#8b93a8', fontSize: '0.75rem', alignSelf: 'flex-start' }}>
-            {archieWorkingMessage}
+          <div
+            data-testid={thinkingStatus ? 'chat-thinking-status' : 'archie-working-message'}
+            style={{
+              color: thinkingStatus ? '#c8b8f0' : '#8b93a8',
+              fontSize: '0.8rem',
+              alignSelf: 'flex-start',
+              fontFamily: "'JetBrains Mono', monospace",
+              fontStyle: thinkingStatus ? 'normal' : 'italic',
+            }}
+          >
+            {thinkingStatus || archieWorkingMessage}
           </div>
         )}
         <div ref={bottomRef} />
