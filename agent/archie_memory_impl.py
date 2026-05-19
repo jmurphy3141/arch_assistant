@@ -12,6 +12,45 @@ from agent.persistence_objectstore import ObjectStoreBase
 from skillforge.types import MemorySnapshot, ToolResult
 
 
+class ArchiePromptEnricher:
+    """
+    Injects per-round OCI context into the prompt before each LLM call.
+    """
+
+    def __call__(self, prompt: str, memory: MemorySnapshot) -> str:
+        parts: list[str] = []
+
+        facts_summary = str((memory.facts or {}).get("facts_summary") or "").strip()
+        if facts_summary:
+            parts.append(f"[Archie Facts]\n{facts_summary}\n[/Archie Facts]")
+
+        if memory.constraints:
+            import json
+
+            constraints_text = json.dumps(memory.constraints, ensure_ascii=False)
+            parts.append(
+                f"[Archie Constraints]\n{constraints_text}\n[/Archie Constraints]"
+            )
+
+        infra_profile = str((memory.facts or {}).get("infrastructure_profile") or "").strip()
+        if infra_profile:
+            parts.append(
+                f"[Archie Infrastructure Profile]\n{infra_profile}\n"
+                "[/Archie Infrastructure Profile]"
+            )
+
+        resolved = str((memory.facts or {}).get("resolved_questions") or "").strip()
+        if resolved:
+            parts.append(
+                f"[Archie Resolved Questions]\n{resolved}\n"
+                "[/Archie Resolved Questions]"
+            )
+
+        if not parts:
+            return prompt
+        return "\n\n".join(parts) + "\n\n" + prompt
+
+
 class ArchieMemory:
     """
     Implements skillforge.protocols.Memory for the Archie OCI context store.
