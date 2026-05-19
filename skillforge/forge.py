@@ -71,9 +71,9 @@ _EXPERT_PRE_ACTION_HEADERS = (
     "SUB-AGENT TASK:",
 )
 _STEP3_PLANNING_HEADERS = (
-    "STEP 1 — UNDERSTAND:",
-    "STEP 2 — MEMORY ASSESSMENT:",
-    "STEP 3 — PLAN + HAT SELECTION:",
+    "STEP 1 - UNDERSTAND:",
+    "STEP 2 - MEMORY ASSESSMENT:",
+    "STEP 3 - PLAN + HAT SELECTION:",
 )
 _EXPERT_REVIEW_MIN_CHARS = 1000
 _EXPERT_REVIEW_APPROVED = "EXPERT_APPROVED"
@@ -991,20 +991,20 @@ class Forge:
             "║  STEP 3 — PLANNING               ║\n"
             "╚══════════════════════════════════╝\n"
             "Before entering the execution loop, reason through Steps 1–3:\n\n"
-            "STEP 1 — UNDERSTAND:\n"
+            "STEP 1 - UNDERSTAND:\n"
             "- What is the user's real goal? Name the deliverable "
             "(BOM, diagram, Terraform, POV, JEP, WAF review, or none).\n"
             "- Is this a new request, a revision, or a clarification?\n"
             "- Is anything ambiguous? If so, what is missing?\n"
             "- What is the primary architectural risk or constraint in this request? "
             "(HA exposure, compliance requirement, budget ceiling, migration complexity, "
-            "public ingress without filtering, data sensitivity). Name it — do not skip.\n\n"
-            "STEP 2 — MEMORY ASSESSMENT:\n"
+            "public ingress without filtering, data sensitivity). Name it - do not skip.\n\n"
+            "STEP 2 - MEMORY ASSESSMENT:\n"
             "- What facts are already confirmed (shapes, region, services, "
             "budget, HA mode, customer name, compliance scope)?\n"
             "- What is missing or unconfirmed?\n"
             "- Is there enough to produce a complete deliverable, or must you ask first?\n\n"
-            "STEP 3 — PLAN + HAT SELECTION:\n"
+            "STEP 3 - PLAN + HAT SELECTION:\n"
             f"- {already_active}\n"
             f"- Available hats: {available}\n"
             "- Which hat (if any) should you activate for this request, and why?\n"
@@ -1036,8 +1036,8 @@ class Forge:
                 f"{planning_prompt}\n\n"
                 f"[Your response is missing required sections: {', '.join(missing_planning)}. "
                 "You MUST include all three labeled sections exactly as shown: "
-                "STEP 1 — UNDERSTAND:, STEP 2 — MEMORY ASSESSMENT:, "
-                "STEP 3 — PLAN + HAT SELECTION:. Rewrite with all three sections present.]"
+                "STEP 1 - UNDERSTAND:, STEP 2 - MEMORY ASSESSMENT:, "
+                "STEP 3 - PLAN + HAT SELECTION:. Rewrite with all three sections present.]"
             )
             try:
                 raw = await self._text_runner(
