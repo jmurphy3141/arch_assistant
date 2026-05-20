@@ -211,9 +211,13 @@ def build_forge(
         ),
         args={"prompt": ArgSchema(
             description=(
-                "The user's BOM request, copied verbatim. Do not interpret, pre-size, "
-                "or substitute shape names. If the user said '2 E5 servers 6 OCPU', "
-                "pass exactly that. The BOM service extracts sizing from the raw text."
+                "BOM request for the sub-agent. Include: (1) a one-sentence summary of "
+                "the workload, and (2) the complete [SUB-AGENT INSTRUCTIONS] block from "
+                "your pre-action output — copy it exactly as produced. The BOM pipeline "
+                "reads the structured fields (Server count, OCPU per server, Total OCPU, "
+                "Compute shape, Block Volume GB, etc.) from that block. Do NOT omit the "
+                "[SUB-AGENT INSTRUCTIONS] block — without it the pipeline falls back to "
+                "defaults and produces incorrect sizing."
             ),
             type="string",
             required=True,
