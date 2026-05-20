@@ -203,8 +203,8 @@ Defaults when not stated by the customer:
 - Block Volume: 500 GB Balanced tier
 - HA mode: single-AD (do not double compute unless customer says HA)
 
-End your pre-action output with a concrete sizing table in this exact format
-so the BOM sub-agent (a deterministic regex pipeline) can extract the numbers:
+End your pre-action output with a concrete sizing block in this exact format.
+The BOM service parser reads every field by name — use exact labels and numeric values.
 
 [SUB-AGENT INSTRUCTIONS]
 Region: us-chicago-1
@@ -216,9 +216,23 @@ Memory per server GB: 32
 Total memory GB: 32
 Block Volume GB: 500
 Block Volume tier: Balanced
+Object Storage GB: 0
+Load Balancer count: 1
 HA mode: single-AD
 Monthly hours: 730
 [/SUB-AGENT INSTRUCTIONS]
+
+Important: If the customer has multiple VM tiers with different sizing (e.g. 2x
+app servers at 8 OCPU + 1x DB server at 16 OCPU), sum all OCPUs and memory into
+the Total fields and set Server count to the total VM count. The sub-agent prices
+one compute shape — use the dominant shape or the one the customer named.
+
+Do NOT include a managed database line item (B99060 / Autonomous DB / PostgreSQL)
+when the workload uses Oracle Database BYOL on a compute VM (e.g. EBS, OBIEE,
+E-Business Suite). Oracle BYOL licensing runs on the compute VM — it is not a
+separately priced OCI managed service. Only add a database line item when the
+customer explicitly requests OCI Autonomous Database, MySQL HeatWave, or another
+OCI managed database service.
 
 ## Post-Action Review
 

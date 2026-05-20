@@ -841,82 +841,147 @@ class BomService:
 
     @staticmethod
     def _user_request_text(message: str) -> str:
-        """Return only the user-supplied portion of message, stripping any Archie Canonical Memory block."""
+        """Return only the user-supplied portion, stripping canonical memory and reusable inputs blocks."""
         if "[End Archie Canonical Memory]" in message:
             parts = message.split("[End Archie Canonical Memory]", 1)
-            return parts[1].strip()
+            message = parts[1].strip()
+        # Strip the reusable approved inputs block — it contains accumulated facts
+        # (including stale shape references) that should not override the current request.
+        if "[Archie Reusable Approved Inputs]" in message:
+            parts = message.split("[Archie Reusable Approved Inputs]", 1)
+            message = parts[0].strip()
         return message
+
+    @staticmethod
+    def _parse_sub_agent_instructions(message: str) -> dict[str, Any]:
+        """Extract structured sizing from the [SUB-AGENT INSTRUCTIONS] block emitted by the hat."""
+        import re as _re
+        result: dict[str, Any] = {}
+        block_match = _re.search(
+            r"\[SUB-AGENT INSTRUCTIONS\](.*?)\[/SUB-AGENT INSTRUCTIONS\]",
+            message,
+            _re.DOTALL | _re.IGNORECASE,
+        )
+        if not block_match:
+            return result
+        block = block_match.group(1)
+
+        def _first_int(pattern: str) -> int | None:
+            m = _re.search(pattern, block, _re.IGNORECASE)
+            return int(m.group(1)) if m else None
+
+        def _first_float(pattern: str) -> float | None:
+            m = _re.search(pattern, block, _re.IGNORECASE)
+            return float(m.group(1)) if m else None
+
+        server_count = _first_int(r"server\s+count\s*:\s*(\d+)")
+        ocpu_per_server = _first_float(r"ocpu\s+per\s+server\s*:\s*(\d+(?:\.\d+)?)")
+        total_ocpu = _first_float(r"total\s+ocpu\s*:\s*(\d+(?:\.\d+)?)")
+        mem_per_server = _first_float(r"memory\s+per\s+server\s+gb\s*:\s*(\d+(?:\.\d+)?)")
+        total_mem = _first_float(r"total\s+memory\s+gb\s*:\s*(\d+(?:\.\d+)?)")
+        block_gb = _first_float(r"block\s+volume\s+gb\s*:\s*(\d+(?:\.\d+)?)")
+        object_gb = _first_float(r"object\s+storage\s+gb\s*:\s*(\d+(?:\.\d+)?)")
+        lb_qty = _first_float(r"load\s+balancer(?:\s+count)?\s*:\s*(\d+(?:\.\d+)?)")
+
+        shape_m = _re.search(r"compute\s+shape\s*:\s*(\S+)", block, _re.IGNORECASE)
+        if shape_m:
+            result["compute_shape"] = shape_m.group(1).upper()
+
+        if server_count is not None:
+            result["server_count"] = server_count
+        if total_ocpu is not None and total_ocpu > 0:
+            result["ocpu"] = total_ocpu
+        elif ocpu_per_server is not None and server_count:
+            result["ocpu"] = ocpu_per_server * server_count
+        elif ocpu_per_server is not None:
+            result["ocpu"] = ocpu_per_server
+        if total_mem is not None and total_mem > 0:
+            result["mem_gb"] = total_mem
+        elif mem_per_server is not None and server_count:
+            result["mem_gb"] = mem_per_server * server_count
+        if block_gb is not None and block_gb > 0:
+            result["block_gb"] = block_gb
+        if object_gb is not None and object_gb > 0:
+            result["object_storage_gb"] = object_gb
+        if lb_qty is not None:
+            result["load_balancer_qty"] = lb_qty
+        return result
 
     def _draft_bom_payload(self, message: str, price_table: dict[str, dict[str, Any]]) -> dict[str, Any]:
         # Use only the user-supplied portion for shape/SKU hints so that old
-        # E4 descriptions in the canonical memory block don't force E4 selection.
+        # E4 descriptions in the canonical memory block or reusable inputs block
+        # don't force E4 selection on a fresh request.
         user_text = self._user_request_text(message).lower()
         text = message.lower()
         is_gpu = "gpu" in text
         mentions_non_oci = self._mentions_non_oci_provider(text)
         table_signals = self._extract_table_signals(message)
 
-        # Detect instance count ("2 servers", "3 nodes", etc.) from user text only.
-        _server_count = max(1, int(self._extract_number(
+        # Parse structured [SUB-AGENT INSTRUCTIONS] block from the hat pre-action.
+        # This takes priority over regex extraction from free-form text.
+        si = self._parse_sub_agent_instructions(message)
+
+        # Detect instance count — instructions block first, then regex.
+        _server_count = si.get("server_count") or max(1, int(self._extract_number(
             r"(\d+)\s*(?:server|instance|vm|node|host)s?\b", user_text, default=1.0
         )))
 
-        ocpu = float(table_signals.get("ocpu") or 0.0)
-        if ocpu <= 0:
+        ocpu = si.get("ocpu") or float(table_signals.get("ocpu") or 0.0)
+        if not ocpu:
             ocpu = self._extract_number(r"(\d+(?:\.\d+)?)\s*ocpu", text, default=4.0)
 
-        mem_gb = float(table_signals.get("mem_gb") or 0.0)
-        if mem_gb <= 0:
+        mem_gb = si.get("mem_gb") or float(table_signals.get("mem_gb") or 0.0)
+        if not mem_gb:
             mem_gb = self._extract_number(r"(\d+(?:\.\d+)?)\s*gb\s*(?:memory|ram)?", text, default=ocpu * 16)
 
-        block_gb = float(table_signals.get("block_gb") or 0.0)
-        if block_gb <= 0:
+        block_gb = si.get("block_gb") or float(table_signals.get("block_gb") or 0.0)
+        if not block_gb:
             block_tb = self._extract_number(r"(\d+(?:\.\d+)?)\s*tb\s*(?:block|storage)", text, default=1.0)
             block_gb = block_tb * 1024.0
 
-        object_storage_gb = float(table_signals.get("object_storage_gb") or 0.0)
-        load_balancer_qty = float(table_signals.get("load_balancer_qty") or 0.0)
+        object_storage_gb = si.get("object_storage_gb") or float(table_signals.get("object_storage_gb") or 0.0)
+        load_balancer_qty = si.get("load_balancer_qty") or float(table_signals.get("load_balancer_qty") or 0.0)
         ocpu_notes = str(table_signals.get("ocpu_notes") or "Primary compute OCPU")
         mem_notes = str(table_signals.get("mem_notes") or "Primary compute memory")
         block_notes = str(table_signals.get("block_notes") or "Block storage capacity")
 
-        # Detect "N servers/instances/nodes" and multiply per-server sizing
-        _server_count = max(1, int(
-            self._extract_number(
-                r"(\d+)\s*(?:server|instance|vm|node)s?\b",
-                user_text,
-                default=1.0,
-            )
-        ))
         if _server_count > 1:
-            _per_ocpu = ocpu
-            _per_mem  = mem_gb
-            ocpu   = _per_ocpu * _server_count
-            mem_gb = _per_mem  * _server_count
+            _per_ocpu = ocpu / _server_count if si.get("ocpu") else ocpu
+            _per_mem  = mem_gb / _server_count if si.get("mem_gb") else mem_gb
+            if not si.get("ocpu"):
+                ocpu   = _per_ocpu * _server_count
+                mem_gb = _per_mem  * _server_count
             ocpu_notes = (
-                f"Compute OCPU — {_server_count} servers × {int(_per_ocpu)} OCPU"
+                f"Compute OCPU — {_server_count} servers × {int(ocpu / _server_count)} OCPU"
             )
             mem_notes  = (
-                f"Compute memory — {_server_count} servers × {int(_per_mem)} GB"
+                f"Compute memory — {_server_count} servers × {int(mem_gb / _server_count)} GB"
             )
 
+        # Shape selection — instructions block takes priority, then user text hints.
+        # E5.Flex is the default; E4 is legacy and must be explicitly requested.
+        # Check E5 explicitly before E4 so "E5.Flex" in the instructions block wins
+        # over any stale "E4" reference that may appear elsewhere in user_text.
+        si_shape = si.get("compute_shape", "").upper()
         shape_hint = str(table_signals.get("cpu_family") or "").lower()
         if not shape_hint:
-            if "ampere" in user_text or "a1" in user_text:
+            if "A1" in si_shape or "ampere" in user_text or "a1.flex" in user_text:
                 shape_hint = "a1"
-            elif "e6" in user_text:
+            elif "E6" in si_shape or "e6" in user_text:
                 shape_hint = "e6"
+            elif "E5" in si_shape or "e5" in user_text:
+                shape_hint = "e5"
+            elif "E4" in si_shape or "e4" in user_text:
+                shape_hint = "e4"
 
-        # Determine CPU SKU from user request only; default to E5 (AMD general-purpose)
         if shape_hint == "a1" or "ampere" in user_text:
             cpu_sku = "B93297"
-        elif "e6" in user_text or shape_hint == "e6":
+        elif shape_hint == "e6" or ("e6" in user_text and "e5" not in user_text and "e4" not in user_text):
             cpu_sku = "B111129"
-        elif "e4" in user_text or shape_hint == "e4":
+        elif shape_hint == "e4" or ("e4" in user_text and "e5" not in user_text):
             cpu_sku = "B93113"
         elif "x9" in user_text or "intel" in user_text:
-            x9_sku = "B94176"
-            cpu_sku = x9_sku
+            cpu_sku = "B94176"
         else:
             cpu_sku = "B97384"   # E5.Flex — OCI default general-purpose VM
         mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
@@ -966,14 +1031,22 @@ class BomService:
                 )
             )
 
-        if "database" in text or "data tier" in text or re.search(r"\bdb\b", text):
+        # Only add a managed database line item when explicitly requested as a
+        # managed service. "db" / "database" in the prompt usually refers to a
+        # customer's existing DB (e.g. EBS Oracle DB BYOL on compute VMs), not
+        # a separately priced OCI managed database service.
+        _managed_db_markers = (
+            "autonomous database", "adb", "mysql heatwave", "postgresql service",
+            "nosql", "goldengate", "managed database", "oracle db service",
+        )
+        if any(m in text for m in _managed_db_markers):
             line_items.append(
                 self._build_line(
                     "B99060",
                     max(2.0, ocpu * 0.25),
                     price_table,
                     "database",
-                    "Database layer",
+                    "Managed database service",
                 )
             )
 
