@@ -6,6 +6,8 @@ ToolHandler implementations for POV, JEP, and WAF specialist sub-agents.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -171,6 +173,7 @@ class _SpecialistHandler:
 
         metadata = {"trace": response.get("trace", {}), "source": "sub_agent_client"}
         if self._agent_name == "sales_deck":
+            content, pptx_bytes = _extract_sales_deck_artifacts(content)
             saved = await asyncio.to_thread(
                 _save_json_doc,
                 self._store,
@@ -179,6 +182,18 @@ class _SpecialistHandler:
                 content,
                 metadata,
             )
+            if pptx_bytes:
+                pptx_key = await asyncio.to_thread(
+                    _save_binary_doc,
+                    self._store,
+                    self._doc_type,
+                    self._customer_id,
+                    "pptx",
+                    pptx_bytes,
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    int(saved.get("version") or 1),
+                )
+                response["pptx_artifact_key"] = pptx_key
         else:
             saved = await asyncio.to_thread(
                 document_store.save_doc,
@@ -276,6 +291,22 @@ def _default_request(agent_name: str) -> str:
     return f"Generate the {agent_name.upper()} from current engagement context."
 
 
+def _extract_sales_deck_artifacts(content: str) -> tuple[str, bytes | None]:
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return content, None
+
+    pptx_raw = str(payload.pop("pptx_b64", "") or "")
+    pptx_bytes = None
+    if pptx_raw:
+        try:
+            pptx_bytes = base64.b64decode(pptx_raw, validate=True)
+        except (binascii.Error, ValueError):
+            payload["pptx_render_error"] = "Invalid pptx_b64 returned by sales_deck sub-agent."
+    return json.dumps(payload, indent=2), pptx_bytes
+
+
 def _save_json_doc(
     store: ObjectStoreBase,
     doc_type: str,
@@ -332,6 +363,44 @@ def _save_json_doc(
         content_type="application/json",
     )
     return {"version": version, "key": version_key, "latest_key": latest_key}
+
+
+def _save_binary_doc(
+    store: ObjectStoreBase,
+    doc_type: str,
+    customer_id: str,
+    extension: str,
+    content: bytes,
+    content_type: str,
+    version: int,
+) -> str:
+    version_key = document_store._doc_key(
+        doc_type, customer_id, f"v{version}.{extension}", customer_first=False
+    )
+    version_customer_key = document_store._doc_key(
+        doc_type, customer_id, f"v{version}.{extension}", customer_first=True
+    )
+    latest_key = document_store._doc_key(
+        doc_type, customer_id, f"LATEST.{extension}", customer_first=False
+    )
+    latest_customer_key = document_store._doc_key(
+        doc_type, customer_id, f"LATEST.{extension}", customer_first=True
+    )
+    document_store._put_dual(
+        store,
+        customer_key=version_customer_key,
+        legacy_key=version_key,
+        content=content,
+        content_type=content_type,
+    )
+    document_store._put_dual(
+        store,
+        customer_key=latest_customer_key,
+        legacy_key=latest_key,
+        content=content,
+        content_type=content_type,
+    )
+    return version_key
 
 
 def _ensure_waf_markdown_sections(content: str) -> str:
