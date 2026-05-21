@@ -7,6 +7,8 @@ hat_rules:
     - "user requests diagram update, refinement, change, or correction"
     - "BOM is approved and diagram generation is the natural next step"
     - "user uploads a BOM.xlsx and expects a visual result"
+    - "tech research report approved and diagram is the natural next step"
+    - "research payload contains oci_services_required and diagram is requested"
   can_hand_off_to:
     - "oci_waf_reviewer"
     - "terraform_for_oci"

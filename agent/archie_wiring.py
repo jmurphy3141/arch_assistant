@@ -15,7 +15,7 @@ from agent.persistence_objectstore import ObjectStoreBase
 from agent.tools.bom import BomHandler
 from agent.tools.diagram import DiagramHandler
 from agent.tools.notes import NotesHandlers
-from agent.tools.specialists import JepHandler, PovHandler, WafHandler
+from agent.tools.specialists import JepHandler, PovHandler, TechResearchHandler, WafHandler
 from agent.tools.terraform import TerraformHandler
 from skillforge import ArgSchema, Forge
 from skillforge.types import MemorySnapshot
@@ -71,6 +71,10 @@ _TOOL_SEQUENCING_RULES = """
 These rules are mandatory. Follow them on every generation request.
 
 ### Ordering
+0. When the user has not yet established an architecture direction, call
+   generate_tech_report first. Pass sizing_hints to generate_bom and
+   oci_services_required to generate_diagram. Skip if architecture is
+   already confirmed or if the user is only asking for a cost estimate.
 1. When the user requests both a BOM and a diagram in the same turn, always call generate_bom FIRST. Pass the BOM result payload to generate_diagram.
 2. generate_waf and generate_terraform both require an existing diagram.
    If no diagram exists for the customer, generate one first.
@@ -88,8 +92,9 @@ These rules are mandatory. Follow them on every generation request.
 
 ### Update requests
 8. If the user says "update everything" or "regenerate all", identify which tools have existing artifacts in context and re-run them in this order:
-   generate_bom -> generate_diagram -> generate_waf -> generate_terraform ->
-   generate_pov -> generate_jep (skip any that were not previously generated).
+   generate_tech_report (if previously generated) -> generate_bom -> generate_diagram ->
+   generate_waf -> generate_terraform -> generate_pov -> generate_jep
+   (skip any that were not previously generated).
 
 ### Tool-call discipline (mandatory)
 9. You MUST output a tool-call JSON line for every generation request. Never
@@ -297,6 +302,34 @@ def build_forge(
         memory_contract=True,
         critique_enabled=True,
         requires_hat="jep_writer",
+    )
+    forge.register_tool(
+        "generate_tech_report",
+        TechResearchHandler(
+            store=store,
+            customer_id=customer_id,
+            customer_name=customer_name,
+        ),
+        description=(
+            "Research OCI infrastructure options for a workload. Evaluates ≥2 "
+            "architecture options with pros/cons and OCI service mapping. "
+            "Produces a structured report with sizing hints (for BOM) and "
+            "service list (for Diagram). Call when the user asks which OCI "
+            "services to use, how to architect a workload, or wants to compare "
+            "infrastructure options before committing to a design."
+        ),
+        args={"feedback": ArgSchema(
+            description=(
+                "Optional additional context, constraints, or focus areas for the research. "
+                "Include workload description, compliance requirements, migration source, "
+                "or specific services to evaluate."
+            ),
+            type="string",
+            required=False,
+        )},
+        memory_contract=True,
+        critique_enabled=True,
+        requires_hat="infra_tech_research",
     )
     forge.register_tool(
         "generate_waf",

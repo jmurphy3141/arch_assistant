@@ -245,6 +245,11 @@ class WafHandler(_SpecialistHandler):
         super().__init__("waf", "waf", store, customer_id, customer_name)
 
 
+class TechResearchHandler(_SpecialistHandler):
+    def __init__(self, store, customer_id, customer_name):
+        super().__init__("tech_research", "research", store, customer_id, customer_name)
+
+
 def _default_request(agent_name: str) -> str:
     if agent_name == "pov":
         return "Generate a customer POV from current engagement context."

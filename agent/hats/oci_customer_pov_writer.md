@@ -26,6 +26,9 @@ memory_focus:
     - "risks_and_objections"
     - "oci_services_in_scope"
     - "competitive_context"
+    - "workload_pattern"
+    - "architecture_options_evaluated"
+    - "recommendation"
   summary_style: "narrative_oriented"
   include_full_memory: false
   emphasis: >
