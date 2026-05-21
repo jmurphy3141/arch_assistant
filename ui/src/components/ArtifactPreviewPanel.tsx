@@ -4,6 +4,7 @@ import type { ChatArtifactDownload } from '../api/client';
 interface ArtifactPreviewPanelProps {
   artifacts: ChatArtifactDownload[];
   compact?: boolean;
+  onQuickPrompt?: (text: string) => void;
 }
 
 function titleForArtifact(artifact: ChatArtifactDownload): string {
@@ -12,7 +13,7 @@ function titleForArtifact(artifact: ChatArtifactDownload): string {
   return `${artifact.type}: ${artifact.filename ?? artifact.tool ?? 'artifact'}`;
 }
 
-export function ArtifactPreviewPanel({ artifacts, compact = false }: ArtifactPreviewPanelProps) {
+export function ArtifactPreviewPanel({ artifacts, compact = false, onQuickPrompt: _onQuickPrompt }: ArtifactPreviewPanelProps) {
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
   const [selectedLabel, setSelectedLabel] = useState<string>('');
   const [previewText, setPreviewText] = useState<string>('');

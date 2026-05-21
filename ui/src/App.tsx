@@ -34,12 +34,19 @@ function getLastCustomerId(): string {
 function saveLastCustomerId(id: string) {
   try { localStorage.setItem('last_customer_id', id); } catch { /* ignore */ }
 }
+function getLastCustomerName(): string {
+  try { return localStorage.getItem('last_customer_name') ?? ''; } catch { return ''; }
+}
+function saveLastCustomerName(name: string) {
+  try { localStorage.setItem('last_customer_name', name); } catch { /* ignore */ }
+}
 
 export function App() {
   const clientId = useClientId();
   const [mode, setMode] = useState<Mode>('chat');
   const [diagramName, setDiagramName] = useState<string>(getLastDiagramName);
   const [customerId, setCustomerId] = useState<string>(getLastCustomerId);
+  const [customerName, setCustomerName] = useState<string>(getLastCustomerName);
   const [result, setResult] = useState<GenerateResponse | null>(null);
   const [orchestrationResult, setOrchestrationResult] = useState<OrchestrationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +75,17 @@ export function App() {
   function handleCustomerIdChange(id: string) {
     setCustomerId(id);
     saveLastCustomerId(id);
+  }
+
+  function handleCustomerNameChange(name: string) {
+    setCustomerName(name);
+    saveLastCustomerName(name);
+  }
+
+  const [pendingPrompt, setPendingPrompt] = useState<{ text: string; seq: number } | null>(null);
+  function handleQuickPrompt(text: string) {
+    setPendingPrompt(prev => ({ text, seq: (prev?.seq ?? 0) + 1 }));
+    switchMode('chat');
   }
 
   function handleResult(r: GenerateResponse | OrchestrationResult) {
@@ -175,6 +193,7 @@ export function App() {
       setSelectedProjectName(selectedItem.project_name || selectedItem.customer_name || selectedItem.project_id);
     }
     handleCustomerIdChange(nextCustomerId);
+    handleCustomerNameChange(nextCustomerName ?? nextCustomerId);
     setChatSessionKey(v => v + 1);
     setMobileSidebarOpen(false);
     setChatArtifacts([]);
@@ -188,6 +207,7 @@ export function App() {
       // ignore
     }
     handleCustomerIdChange('');
+    handleCustomerNameChange('');
     setChatSessionKey(v => v + 1);
     setMobileSidebarOpen(false);
     setChatArtifacts([]);
@@ -453,6 +473,46 @@ export function App() {
         New chat
       </button>
 
+      {/* Customer session context */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+        <div style={{ fontSize: '0.62rem', color: '#5a6278', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Session</div>
+        <input
+          data-testid="chat-customer-id"
+          placeholder="Customer ID"
+          value={customerId}
+          onChange={e => handleCustomerIdChange(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { setChatSessionKey(v => v + 1); setChatArtifacts([]); } }}
+          style={{
+            background: '#090b11',
+            border: '1px solid #252b3d',
+            borderRadius: 6,
+            color: '#cdd2e0',
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: '0.78rem',
+            padding: '0.42rem 0.55rem',
+            width: '100%',
+            boxSizing: 'border-box' as const,
+          }}
+        />
+        <input
+          data-testid="chat-customer-name"
+          placeholder="Customer Name"
+          value={customerName}
+          onChange={e => handleCustomerNameChange(e.target.value)}
+          style={{
+            background: '#090b11',
+            border: '1px solid #252b3d',
+            borderRadius: 6,
+            color: '#cdd2e0',
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: '0.78rem',
+            padding: '0.42rem 0.55rem',
+            width: '100%',
+            boxSizing: 'border-box' as const,
+          }}
+        />
+      </div>
+
       <nav aria-label="Workspace navigation">
         <div style={groupHeadingStyle}>Workspace</div>
         <div style={{ display: 'grid', gap: '0.2rem' }}>
@@ -583,14 +643,18 @@ export function App() {
           <div style={{ minWidth: 0 }}>
             <ChatInterface
               key={chatSessionKey}
+              customerId={customerId}
+              customerName={customerName}
               onCustomerIdChange={handleCustomerIdChange}
+              onCustomerNameChange={handleCustomerNameChange}
               onArtifactsChange={setChatArtifacts}
+              pendingPrompt={pendingPrompt}
               projectId={selectedProjectId}
               projectName={selectedProjectName}
             />
           </div>
           {(!isCompactChat || chatArtifacts.length > 0) && (
-            <ArtifactPreviewPanel artifacts={chatArtifacts} compact={isCompactChat} />
+            <ArtifactPreviewPanel artifacts={chatArtifacts} compact={isCompactChat} onQuickPrompt={handleQuickPrompt} />
           )}
         </div>
         )}

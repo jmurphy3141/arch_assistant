@@ -51,26 +51,9 @@ function pickArchieMessage(messages: string[], seed: string): string {
   return messages[messageSeed(seed) % messages.length];
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function getStoredCustomer(): { id: string; name: string } {
-  try {
-    return {
-      id:   localStorage.getItem('chat_customer_id')   ?? '',
-      name: localStorage.getItem('chat_customer_name') ?? '',
-    };
-  } catch { return { id: '', name: '' }; }
-}
-function saveStoredCustomer(id: string, name: string) {
-  try {
-    localStorage.setItem('chat_customer_id',   id);
-    localStorage.setItem('chat_customer_name', name);
-  } catch { /* ignore */ }
-}
-
 // ── Markdown renderer ─────────────────────────────────────────────────────────
 
-/** Block-aware Markdown → HTML: headings, lists, hr, bold, inline code. */
+/** Block-aware Markdown → HTML: headings, lists, hr, bold, italic, inline code, fenced code, tables. */
 function mdToHtml(md: string): string {
   const escape = (s: string) =>
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -78,43 +61,87 @@ function mdToHtml(md: string): string {
   const inline = (s: string) =>
     escape(s)
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/`([^`]+)`/g,
-        '<code style="color:#e8571a;background:rgba(232,87,26,0.1);padding:0 2px;border-radius:2px">$1</code>');
+      .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
+      .replace(/`([^`]+)`/g, '<code class="archie-code-inline">$1</code>');
 
-  const lines = md.split('\n');
-  const out: string[] = [];
-  let inUl = false, inOl = false;
-
-  const closeList = () => {
-    if (inUl) { out.push('</ul>'); inUl = false; }
-    if (inOl) { out.push('</ol>'); inOl = false; }
-  };
-
-  for (const raw of lines) {
-    const line = raw.trimEnd();
-    if (/^---+$/.test(line)) {
-      closeList();
-      out.push('<hr style="border:none;border-top:1px solid #1c2030;margin:0.5rem 0"/>');
-    } else if (/^### /.test(line)) {
-      closeList();
-      out.push(`<h3 style="margin:0.5rem 0 0.2rem;font-size:0.85rem;color:#e8571a">${inline(line.slice(4))}</h3>`);
-    } else if (/^## /.test(line)) {
-      closeList();
-      out.push(`<h2 style="margin:0.6rem 0 0.25rem;font-size:0.95rem;color:#fff">${inline(line.slice(3))}</h2>`);
-    } else if (/^[-*] /.test(line)) {
-      if (inOl) { out.push('</ol>'); inOl = false; }
-      if (!inUl) { out.push('<ul style="margin:0.2rem 0;padding-left:1.2rem">'); inUl = true; }
-      out.push(`<li style="margin:0.1rem 0">${inline(line.slice(2))}</li>`);
-    } else if (/^\d+\. /.test(line)) {
-      if (inUl) { out.push('</ul>'); inUl = false; }
-      if (!inOl) { out.push('<ol style="margin:0.2rem 0;padding-left:1.2rem">'); inOl = true; }
-      out.push(`<li style="margin:0.1rem 0">${inline(line.replace(/^\d+\. /, ''))}</li>`);
-    } else {
-      closeList();
-      out.push(line === '' ? '<br/>' : `<span>${inline(line)}</span><br/>`);
-    }
+  // Split out fenced code blocks first
+  const parts: Array<{ type: 'code' | 'text'; content: string; lang?: string }> = [];
+  const fence = /^```(\w*)\n?([\s\S]*?)^```/gm;
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+  while ((m = fence.exec(md)) !== null) {
+    if (m.index > lastIdx) parts.push({ type: 'text', content: md.slice(lastIdx, m.index) });
+    parts.push({ type: 'code', content: m[2] ?? '', lang: m[1] || undefined });
+    lastIdx = m.index + m[0].length;
   }
-  closeList();
+  if (lastIdx < md.length) parts.push({ type: 'text', content: md.slice(lastIdx) });
+  if (parts.length === 0) parts.push({ type: 'text', content: md });
+
+  const out: string[] = [];
+
+  for (const seg of parts) {
+    if (seg.type === 'code') {
+      const langAttr = seg.lang ? ` data-lang="${escape(seg.lang)}"` : '';
+      out.push(`<pre class="archie-code-block"${langAttr}><code>${escape(seg.content.trimEnd())}</code></pre>`);
+      continue;
+    }
+
+    const lines = seg.content.split('\n');
+    let inUl = false, inOl = false;
+    let tableRows: string[][] = [];
+
+    const flushTable = () => {
+      if (tableRows.length === 0) return;
+      out.push('<table class="archie-table">');
+      let bodyStarted = false;
+      tableRows.forEach((cells, idx) => {
+        const isSep = cells.every(c => /^[-: ]+$/.test(c.trim()));
+        if (idx === 0) {
+          out.push('<thead><tr>' + cells.map(c => `<th>${inline(c.trim())}</th>`).join('') + '</tr></thead>');
+        } else if (!isSep) {
+          if (!bodyStarted) { out.push('<tbody>'); bodyStarted = true; }
+          out.push('<tr>' + cells.map(c => `<td>${inline(c.trim())}</td>`).join('') + '</tr>');
+        }
+      });
+      if (bodyStarted) out.push('</tbody>');
+      out.push('</table>');
+      tableRows = [];
+    };
+
+    const closeList = () => {
+      if (inUl) { out.push('</ul>'); inUl = false; }
+      if (inOl) { out.push('</ol>'); inOl = false; }
+    };
+
+    for (const raw of lines) {
+      const line = raw.trimEnd();
+      if (line.startsWith('|') && line.includes('|', 1)) {
+        closeList();
+        tableRows.push(line.replace(/^\||\|$/g, '').split('|'));
+        continue;
+      } else if (tableRows.length > 0) {
+        flushTable();
+      }
+      if (/^---+$/.test(line)) { closeList(); out.push('<hr class="archie-hr"/>'); }
+      else if (/^# /.test(line)) { closeList(); out.push(`<h1 class="archie-h1">${inline(line.slice(2))}</h1>`); }
+      else if (/^## /.test(line)) { closeList(); out.push(`<h2 class="archie-h2">${inline(line.slice(3))}</h2>`); }
+      else if (/^### /.test(line)) { closeList(); out.push(`<h3 class="archie-h3">${inline(line.slice(4))}</h3>`); }
+      else if (/^[-*] /.test(line)) {
+        if (inOl) { out.push('</ol>'); inOl = false; }
+        if (!inUl) { out.push('<ul class="archie-ul">'); inUl = true; }
+        out.push(`<li>${inline(line.slice(2))}</li>`);
+      } else if (/^\d+\. /.test(line)) {
+        if (inUl) { out.push('</ul>'); inUl = false; }
+        if (!inOl) { out.push('<ol class="archie-ol">'); inOl = true; }
+        out.push(`<li>${inline(line.replace(/^\d+\. /, ''))}</li>`);
+      } else {
+        closeList();
+        out.push(line === '' ? '<br/>' : `<span>${inline(line)}</span><br/>`);
+      }
+    }
+    flushTable();
+    closeList();
+  }
   return out.join('');
 }
 
@@ -459,8 +486,9 @@ function MessageBubble({
     alignSelf:    isUser ? 'flex-end' : 'flex-start',
     background:   isUser ? 'linear-gradient(180deg, rgba(232,87,26,0.18), rgba(232,87,26,0.12))' : '#101421',
     border:       `1px solid ${isUser ? 'rgba(232,87,26,0.42)' : '#273047'}`,
+    borderLeft:   isUser ? undefined : '3px solid #2a3a6e',
     borderRadius: 12,
-    padding:      '0.78rem 0.95rem',
+    padding:      '1rem 1.25rem',
     fontSize:     '0.86rem',
     lineHeight:   1.55,
     color:        '#dde3f3',
@@ -476,7 +504,7 @@ function MessageBubble({
         {isUser ? (
           <span data-testid="chat-user-message">{content}</span>
         ) : (
-          <span data-testid="chat-assistant-message" dangerouslySetInnerHTML={{ __html: mdToHtml(content) }} />
+          <span data-testid="chat-assistant-message" className="archie-md" dangerouslySetInnerHTML={{ __html: mdToHtml(content) }} />
         )}
       </div>
       {traceWarnings.length > 0 && (
@@ -591,8 +619,12 @@ interface LocalMessage {
 }
 
 interface ChatInterfaceProps {
+  customerId: string;
+  customerName: string;
   onCustomerIdChange?: (id: string) => void;
+  onCustomerNameChange?: (name: string) => void;
   onArtifactsChange?: (downloads: ChatArtifactDownload[]) => void;
+  pendingPrompt?: { text: string; seq: number } | null;
   projectId?: string;
   projectName?: string;
 }
@@ -734,10 +766,7 @@ function isNearBottom(element: HTMLElement, threshold = 96): boolean {
   return remaining <= threshold;
 }
 
-export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId, projectName }: ChatInterfaceProps) {
-  const stored = getStoredCustomer();
-  const [customerId,    setCustomerId]    = useState(stored.id);
-  const [customerName,  setCustomerName]  = useState(stored.name);
+export function ChatInterface({ customerId, customerName, onCustomerIdChange, onCustomerNameChange, onArtifactsChange, pendingPrompt, projectId, projectName }: ChatInterfaceProps) {
   const [messages,      setMessages]      = useState<LocalMessage[]>([]);
   const [input,         setInput]         = useState('');
   const [loading,       setLoading]       = useState(false);
@@ -793,15 +822,11 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
     onArtifactsChange?.(latestManifestDownloads(messages));
   }, [messages, onArtifactsChange]);
 
-  function handleCustomerIdChange(id: string) {
-    setCustomerId(id);
-    saveStoredCustomer(id, customerName);
-    onCustomerIdChange?.(id);
-  }
-  function handleCustomerNameChange(name: string) {
-    setCustomerName(name);
-    saveStoredCustomer(customerId, name);
-  }
+  useEffect(() => {
+    if (!pendingPrompt) return;
+    setInput(pendingPrompt.text);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }, [pendingPrompt]);
 
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -989,35 +1014,7 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
   );
 
   return (
-    <div style={{ display: 'grid', gridTemplateRows: 'auto 1fr auto auto auto', gap: '0.75rem', minHeight: '72vh' }}>
-      {/* Customer identity fields */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.6rem' }}>
-        <div>
-          <label style={{ fontSize: '0.7rem', color: '#9aa4bb', display: 'block', marginBottom: '0.28rem', letterSpacing: '0.06em' }}>
-            CUSTOMER ID
-          </label>
-          <input
-            data-testid="chat-customer-id"
-            style={fieldStyle}
-            value={customerId}
-            placeholder="e.g. acme001"
-            onChange={e => handleCustomerIdChange(e.target.value)}
-          />
-        </div>
-        <div>
-          <label style={{ fontSize: '0.7rem', color: '#9aa4bb', display: 'block', marginBottom: '0.28rem', letterSpacing: '0.06em' }}>
-            CUSTOMER NAME
-          </label>
-          <input
-            data-testid="chat-customer-name"
-            style={fieldStyle}
-            value={customerName}
-            placeholder="e.g. ACME Corp"
-            onChange={e => handleCustomerNameChange(e.target.value)}
-          />
-        </div>
-      </div>
-
+    <div style={{ display: 'grid', gridTemplateRows: '1fr auto auto auto', gap: '0.75rem', minHeight: '72vh' }}>
       {/* Message thread */}
       <div style={{
         minHeight:     '50vh',
@@ -1098,13 +1095,15 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
           <div style={{ display: 'flex', flexDirection: 'column', alignSelf: 'flex-start', maxWidth: '88%' }}>
             <div
               data-testid="chat-streaming-message"
+              className="archie-md"
               style={{
                 maxWidth: '88%',
                 alignSelf: 'flex-start',
                 background: '#101421',
                 border: '1px solid #273047',
+                borderLeft: '3px solid #2a3a6e',
                 borderRadius: 12,
-                padding: '0.78rem 0.95rem',
+                padding: '1rem 1.25rem',
                 fontSize: '0.86rem',
                 lineHeight: 1.55,
                 color: '#dde3f3',
@@ -1121,12 +1120,15 @@ export function ChatInterface({ onCustomerIdChange, onArtifactsChange, projectId
             data-testid={thinkingStatus ? 'chat-thinking-status' : 'archie-working-message'}
             style={{
               color: thinkingStatus ? '#c8b8f0' : '#8b93a8',
-              fontSize: '0.8rem',
+              fontSize: '0.78rem',
               alignSelf: 'flex-start',
               fontFamily: "'JetBrains Mono', monospace",
               fontStyle: thinkingStatus ? 'normal' : 'italic',
+              display: 'flex',
+              alignItems: 'center',
             }}
           >
+            <span className="archie-status-dot" />
             {thinkingStatus || archieWorkingMessage}
           </div>
         )}
