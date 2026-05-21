@@ -787,15 +787,17 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
   // Load history on mount / customer change
   useEffect(() => {
     if (!customerId.trim()) return;
+    let cancelled = false;
     setHistoryLoaded(false);
+    setMessages([]);
     apiGetChatHistory(customerId)
       .then(resp => {
-        const loaded = normalizeHistoryMessages(resp.history, customerId);
-        // Avoid clobbering newly-sent local messages if history returns late.
-        setMessages(prev => (prev.length > 0 ? prev : loaded));
+        if (cancelled) return;
+        setMessages(normalizeHistoryMessages(resp.history, customerId));
         setHistoryLoaded(true);
       })
-      .catch(() => setHistoryLoaded(true));
+      .catch(() => { if (!cancelled) setHistoryLoaded(true); });
+    return () => { cancelled = true; };
   }, [customerId]);
 
   function syncAutoScrollPreference() {
