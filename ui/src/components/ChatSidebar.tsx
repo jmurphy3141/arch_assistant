@@ -36,9 +36,25 @@ interface ChatSidebarProps {
 
 function statusColor(status?: string): string {
   if (!status) return '#454d64';
-  if (status.toLowerCase().includes('needs input')) return '#e8b11a';
-  if (status.toLowerCase().includes('completed')) return '#25c26e';
+  const s = status.toLowerCase();
+  if (s.includes('needs input')) return '#e8b11a';
+  if (s.includes('completed'))   return '#25c26e';
+  if (s.includes('in progress')) return '#e8571a';
   return '#8b93a8';
+}
+
+function relativeTime(ts?: string): string {
+  if (!ts) return '';
+  const diff = Date.now() - Date.parse(ts);
+  const min = Math.floor(diff / 60000);
+  if (min < 2)   return 'just now';
+  if (min < 60)  return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24)   return `${hr}h ago`;
+  const d = Math.floor(hr / 24);
+  if (d === 1)   return 'yesterday';
+  if (d < 7)     return `${d}d ago`;
+  return new Date(ts).toLocaleDateString();
 }
 
 export function ChatSidebar({
@@ -177,7 +193,16 @@ export function ChatSidebar({
         padding: '0.55rem',
       }}>
         <section style={{ minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ color: '#7d879a', fontSize: '0.68rem', fontWeight: 700, marginBottom: '0.35rem' }}>
+          <div style={{
+            color: '#5a6278',
+            fontSize: '0.6rem',
+            fontWeight: 700,
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+            marginBottom: '0.35rem',
+            paddingTop: '0.2rem',
+            borderTop: '1px solid #1a1f2e',
+          }}>
             Projects
           </div>
           <div
@@ -206,11 +231,12 @@ export function ChatSidebar({
                   onClick={() => onSelectProject?.(project.project_id, project.project_name)}
                   style={{
                     textAlign: 'left',
-                    border: active ? '1px solid rgba(143,180,255,0.5)' : '1px solid #252b3d',
-                    background: active ? 'rgba(143,180,255,0.12)' : '#10141f',
+                    border: active ? '1px solid rgba(143,180,255,0.35)' : '1px solid #1c2233',
+                    borderLeft: active ? '3px solid #8fb4ff' : '3px solid transparent',
+                    background: active ? 'rgba(143,180,255,0.08)' : '#0e111a',
                     borderRadius: 7,
-                    padding: '0.58rem',
-                    cursor: 'pointer',
+                    padding: '0.58rem 0.65rem',
+                    cursor: active ? 'default' : 'pointer',
                     color: '#cdd2e0',
                     fontFamily: "'JetBrains Mono', monospace",
                   }}
@@ -233,7 +259,16 @@ export function ChatSidebar({
         </section>
 
         <section style={{ minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ color: '#7d879a', fontSize: '0.68rem', fontWeight: 700, marginBottom: '0.35rem' }}>
+          <div style={{
+            color: '#5a6278',
+            fontSize: '0.6rem',
+            fontWeight: 700,
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+            marginBottom: '0.35rem',
+            paddingTop: '0.2rem',
+            borderTop: '1px solid #1a1f2e',
+          }}>
             Chats
           </div>
           <div
@@ -263,27 +298,45 @@ export function ChatSidebar({
                   onClick={() => onSelectCustomer(item.customer_id, item.customer_name)}
                   style={{
                     textAlign: 'left',
-                    border: active ? '1px solid rgba(143,180,255,0.5)' : '1px solid #252b3d',
-                    background: active ? 'rgba(143,180,255,0.12)' : '#10141f',
+                    border: active ? '1px solid rgba(232,87,26,0.35)' : '1px solid #1c2233',
+                    borderLeft: active ? '3px solid #e8571a' : '3px solid transparent',
+                    background: active ? 'rgba(232,87,26,0.08)' : '#0e111a',
                     borderRadius: 7,
-                    padding: '0.65rem',
-                    cursor: 'pointer',
+                    padding: '0.58rem 0.65rem',
+                    cursor: active ? 'default' : 'pointer',
                     color: '#cdd2e0',
                     fontFamily: "'JetBrains Mono', monospace",
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
-                    <strong style={{ fontSize: '0.76rem', color: '#fff' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                    <strong style={{ fontSize: '0.76rem', color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
                       {item.customer_name || item.customer_id}
                     </strong>
-                    <span style={{ fontSize: '0.66rem', color: '#7f89a4' }}>
-                      {item.last_timestamp ? new Date(item.last_timestamp).toLocaleDateString() : ''}
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flex: '0 0 auto' }}>
+                      {item.status && (
+                        <span
+                          data-testid={`chat-sidebar-status-${item.customer_id}`}
+                          style={{
+                            fontSize: '0.58rem',
+                            color: statusColor(item.status),
+                            border: `1px solid ${statusColor(item.status)}55`,
+                            borderRadius: 999,
+                            padding: '0.08rem 0.35rem',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {item.status}
+                        </span>
+                      )}
+                      <span style={{ fontSize: '0.62rem', color: '#5a6278', whiteSpace: 'nowrap' }}>
+                        {relativeTime(item.last_timestamp)}
+                      </span>
+                    </div>
                   </div>
                   <div style={{ fontSize: '0.69rem', color: '#9aa4bb', marginTop: '0.24rem' }}>
                     {item.customer_id}
                   </div>
-                 <div
+                  <div
                     style={{
                       fontSize: '0.71rem',
                       color: '#c0c8da',
@@ -295,22 +348,6 @@ export function ChatSidebar({
                   >
                     {item.last_message || 'No messages yet'}
                   </div>
-                  {item.status && (
-                    <div
-                      data-testid={`chat-sidebar-status-${item.customer_id}`}
-                      style={{
-                        marginTop: '0.3rem',
-                        fontSize: '0.62rem',
-                        color: statusColor(item.status),
-                        border: `1px solid ${statusColor(item.status)}55`,
-                        borderRadius: 999,
-                        padding: '0.1rem 0.45rem',
-                        width: 'fit-content',
-                      }}
-                    >
-                      {item.status}
-                    </div>
-                  )}
                 </button>
               );
             })}
