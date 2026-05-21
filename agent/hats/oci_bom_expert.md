@@ -9,6 +9,8 @@ hat_rules:
     - "user asks which compute shape to use"
     - "user wants to know monthly cost for a workload"
     - "user asks for suggested service to match"
+    - "tech research report has been delivered and BOM is the next step"
+    - "research payload contains sizing_hints and BOM generation is requested"
   can_hand_off_to:
     - "diagram_for_oci"
     - "terraform_for_oci"
@@ -45,6 +47,7 @@ coordination:
     - "diagram_for_oci"
   parallel_with:
     - "diagram_for_oci"
+    - "infra_tech_research"
   handoff_message: >
     BOM delivered. Suggest architecture diagram next; WAF and Terraform can
     follow once the diagram is approved.
