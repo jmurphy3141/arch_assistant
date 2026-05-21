@@ -133,6 +133,7 @@ sub_agents:
   jep:       "http://localhost:8085"
   waf:       "http://localhost:8086"
   terraform: "http://localhost:8087"
+  sales_deck: "http://localhost:8088"
 
 # Auth is configured entirely via environment variables (see .env.example).
 # No auth settings belong here — they contain secrets or per-deployment values.

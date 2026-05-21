@@ -15,7 +15,7 @@ from agent.persistence_objectstore import ObjectStoreBase
 from agent.tools.bom import BomHandler
 from agent.tools.diagram import DiagramHandler
 from agent.tools.notes import NotesHandlers
-from agent.tools.specialists import JepHandler, PovHandler, TechResearchHandler, WafHandler
+from agent.tools.specialists import JepHandler, PovHandler, SalesDeckHandler, TechResearchHandler, WafHandler
 from agent.tools.terraform import TerraformHandler
 from skillforge import ArgSchema, Forge
 from skillforge.types import MemorySnapshot
@@ -93,7 +93,7 @@ These rules are mandatory. Follow them on every generation request.
 ### Update requests
 8. If the user says "update everything" or "regenerate all", identify which tools have existing artifacts in context and re-run them in this order:
    generate_tech_report (if previously generated) -> generate_bom -> generate_diagram ->
-   generate_waf -> generate_terraform -> generate_pov -> generate_jep
+   generate_waf -> generate_terraform -> generate_pov -> generate_sales_deck -> generate_jep
    (skip any that were not previously generated).
 
 ### Tool-call discipline (mandatory)
@@ -346,6 +346,28 @@ def build_forge(
         memory_contract=True,
         critique_enabled=True,
         requires_hat="oci_waf_reviewer",
+    )
+    forge.register_tool(
+        "generate_sales_deck",
+        SalesDeckHandler(
+            store=store,
+            customer_id=customer_id,
+            customer_name=customer_name,
+        ),
+        description=(
+            "Generate a structured OCI customer sales deck (PowerPoint slide spec). "
+            "Produces an 8-slide solution recommendation deck hydrated from POV, BOM, "
+            "and diagram artifacts. Call when the user asks for a deck, presentation, "
+            "slides, or customer briefing."
+        ),
+        args={"feedback": ArgSchema(
+            description="Optional deck type, slide count, or focus areas (default: 8-slide solution recommendation).",
+            type="string",
+            required=False,
+        )},
+        memory_contract=True,
+        critique_enabled=True,
+        requires_hat="oci_sales_deck",
     )
 
     return forge
