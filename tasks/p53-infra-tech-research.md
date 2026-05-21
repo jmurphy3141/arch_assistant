@@ -31,12 +31,14 @@ The hat is the **first stage of the engagement lifecycle**:
 
 ```
 Context: The infra_tech_research hat has been added to agent/hats/ and wired into
-archie_wiring.py. Verify everything is discoverable and the module compiles.
+archie_wiring.py on branch claude/explore-repo-Os53i. Verify everything is
+discoverable and the module compiles.
 
-IMPORTANT: Branch from origin/main.
+IMPORTANT: Branch from claude/explore-repo-Os53i (NOT origin/main — all p53 files
+live on this branch).
 
   git fetch origin
-  git checkout -b claude/p53a origin/main
+  git checkout -b claude/p53a origin/claude/explore-repo-Os53i
 
 Run ALL acceptance criteria:
 
@@ -80,7 +82,7 @@ Run ALL acceptance criteria:
   from agent.archie_wiring import build_forge
   forge = build_forge(store=store, customer_id='test', customer_name='Test',
                       text_runner=runner, step3_planning=False)
-  tools = list(getattr(forge, '_registry', {}).keys())
+  tools = list(forge._registry.names())
   assert 'generate_tech_report' in tools, f'FAIL: tool not registered. Got: {tools}'
   print('PASS: generate_tech_report registered in Forge')
   required = ['generate_tech_report', 'generate_bom', 'generate_diagram',
@@ -88,6 +90,13 @@ Run ALL acceptance criteria:
   for t in required:
       assert t in tools, f'FAIL: {t} missing. Got: {tools}'
       print(f'PASS: {t} registered')
+  spec = forge._registry.get('generate_tech_report')
+  assert getattr(spec, 'requires_hat', None) == 'infra_tech_research', f'FAIL: requires_hat wrong: {getattr(spec, \"requires_hat\", None)}'
+  print('PASS: requires_hat = infra_tech_research')
+  assert getattr(spec, 'memory_contract', False), 'FAIL: memory_contract not set'
+  print('PASS: memory_contract = True')
+  assert getattr(spec, 'critique_enabled', False), 'FAIL: critique_enabled not set'
+  print('PASS: critique_enabled = True')
   "
 
   # Verify coordination updates in existing hats
@@ -124,10 +133,11 @@ The main server registers sub-agents in config.yaml or drawing_agent_server.py.
 Check both locations for how existing sub-agents (pov port 8084, jep, waf) are
 registered and add tech_research on port 8087 using the same pattern.
 
-IMPORTANT: Branch from p53a (or origin/main if p53a is merged).
+IMPORTANT: Branch from claude/explore-repo-Os53i (same base as p53a — all p53
+files live there).
 
   git fetch origin
-  git checkout -b claude/p53b origin/main
+  git checkout -b claude/p53b origin/claude/explore-repo-Os53i
 
 Search for where pov sub-agent is registered (port 8084). The pattern is likely:
   grep -n "8084\|pov.*port\|sub_agent.*port" config.yaml drawing_agent_server.py
@@ -169,18 +179,22 @@ the correct hat and returns a ToolResult with artifact_key.
 
 File to create: tests/test_tech_research_forge.py
 
-IMPORTANT: Branch from p53b (or origin/main if merged).
+IMPORTANT: Branch from claude/explore-repo-Os53i (all p53 files live there).
 
   git fetch origin
-  git checkout -b claude/p53c origin/main
+  git checkout -b claude/p53c origin/claude/explore-repo-Os53i
+
+Note: forge._registry is a ToolRegistry object. Use forge._registry.names() to
+list registered tool names and forge._registry.get('tool_name') to fetch a spec.
+Do NOT call forge._registry.keys() — that method does not exist.
 
 Follow the pattern from tests/test_archie_forge_wiring.py (Forge wiring tests).
 The test should:
 1. Build a Forge instance via build_forge() with a mock store and mock text_runner.
-2. Assert generate_tech_report is in forge._registry.
-3. Assert the tool spec has requires_hat == 'infra_tech_research'.
-4. Assert memory_contract is True on the tool spec.
-5. Assert critique_enabled is True on the tool spec.
+2. Assert 'generate_tech_report' in list(forge._registry.names()).
+3. Assert forge._registry.get('generate_tech_report').requires_hat == 'infra_tech_research'.
+4. Assert forge._registry.get('generate_tech_report').memory_contract is True.
+5. Assert forge._registry.get('generate_tech_report').critique_enabled is True.
 
 No live LLM calls. Use MagicMock for store and text_runner.
 
