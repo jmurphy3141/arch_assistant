@@ -69,3 +69,119 @@ select:focus {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* ── Archie markdown rendering ─────────────────────────────────────────────── */
+
+.archie-md .archie-code-block {
+  margin: 0.5rem 0;
+  padding: 0.7rem 0.85rem;
+  background: #07080e;
+  border: 1px solid #1c2233;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: #b4bcd0;
+  white-space: pre;
+  overflow-x: auto;
+  line-height: 1.5;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.archie-md .archie-code-block[data-lang]::before {
+  content: attr(data-lang);
+  display: block;
+  font-size: 0.6rem;
+  color: #4b5470;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 0.4rem;
+}
+
+.archie-md .archie-code-inline {
+  color: #e8571a;
+  background: rgba(232, 87, 26, 0.1);
+  padding: 0 3px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.archie-md .archie-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5rem 0;
+  font-size: 0.78rem;
+}
+
+.archie-md .archie-table th {
+  background: rgba(143, 180, 255, 0.08);
+  color: #8fb4ff;
+  font-weight: 700;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid #1c2233;
+  text-align: left;
+}
+
+.archie-md .archie-table td {
+  padding: 0.35rem 0.65rem;
+  border: 1px solid #1c2233;
+  color: #cdd2e0;
+}
+
+.archie-md .archie-table tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.archie-md .archie-h1 {
+  margin: 0.7rem 0 0.3rem;
+  font-size: 1rem;
+  color: #f4f7ff;
+  font-weight: 800;
+}
+
+.archie-md .archie-h2 {
+  margin: 0.6rem 0 0.25rem;
+  font-size: 0.92rem;
+  color: #dde3f3;
+  font-weight: 700;
+}
+
+.archie-md .archie-h3 {
+  margin: 0.5rem 0 0.2rem;
+  font-size: 0.82rem;
+  color: #e8571a;
+  font-weight: 700;
+}
+
+.archie-md .archie-ul,
+.archie-md .archie-ol {
+  margin: 0.2rem 0;
+  padding-left: 1.3rem;
+}
+
+.archie-md .archie-ul li,
+.archie-md .archie-ol li {
+  margin: 0.15rem 0;
+}
+
+.archie-md .archie-hr {
+  border: none;
+  border-top: 1px solid #1c2030;
+  margin: 0.6rem 0;
+}
+
+/* ── Status pill ────────────────────────────────────────────────────────────── */
+
+@keyframes archie-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.archie-status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: archie-pulse 1.4s ease-in-out infinite;
+  margin-right: 0.35rem;
+  vertical-align: middle;
+}
