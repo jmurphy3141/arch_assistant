@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +78,26 @@ async def handle(req: A2ARequest) -> A2AResponse:
             system_message=_system_message,
         )
     )
+    text = _attach_pptx_rendering(text)
     return A2AResponse(result=text, status="ok", trace={"agent": card.name, "trace_id": req.trace_id})
+
+
+def _attach_pptx_rendering(llm_response: str) -> str:
+    try:
+        response_data = json.loads(llm_response)
+    except json.JSONDecodeError:
+        return llm_response
+
+    try:
+        deck_payload = response_data.get("deck_payload", {})
+        if deck_payload:
+            from agent.pptx_builder import build_pptx
+
+            pptx_bytes = build_pptx(deck_payload)
+            response_data["pptx_b64"] = base64.b64encode(pptx_bytes).decode()
+    except Exception as exc:
+        response_data["pptx_render_error"] = str(exc)
+    return json.dumps(response_data)
 
 
 app = make_agent_app(card, handle)
