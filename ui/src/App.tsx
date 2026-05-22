@@ -245,8 +245,8 @@ export function App() {
         if (!active) return;
         setSidebarHistoryItems(
           (historyResp.items ?? []).map(item => ({
-            customer_id: item.customer_id,
-            customer_name: item.customer_name,
+            customer_id: item.customer_id || item.engagement_id || item.project_id || '',
+            customer_name: item.customer_name || item.customer_id || item.engagement_id || '',
             engagement_id: item.engagement_id ?? item.customer_id,
             project_id: item.project_id,
             project_name: item.project_name,
@@ -264,8 +264,8 @@ export function App() {
             last_timestamp: project.last_activity_timestamp,
             status: project.status,
             engagements: project.engagements.map(item => ({
-              customer_id: item.customer_id,
-              customer_name: item.customer_name,
+              customer_id: item.customer_id || item.engagement_id || item.project_id || '',
+              customer_name: item.customer_name || item.customer_id || item.engagement_id || '',
               engagement_id: item.engagement_id ?? item.customer_id,
               project_id: item.project_id,
               project_name: item.project_name,
