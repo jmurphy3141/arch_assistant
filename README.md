@@ -1,8 +1,47 @@
 # OCI Architecture Assistant — Archie
 
-A conversational OCI solutions architect assistant. An SA describes a customer
-workload; Archie produces architecture diagrams, BOM pricing, POV documents,
-JEP documents, WAF reviews, and Terraform — in one chat session.
+A conversational OCI solutions architect assistant built for SE teams that close deals with technical POCs. Describe a customer workload; Archie plans the right POC, then produces all artifacts simultaneously — architecture diagrams, BOM pricing, POV documents, JEP execution plans, WAF reviews, Terraform, and a client-ready PowerPoint deck.
+
+---
+
+## POC Workflow
+
+**Rough requirements → 3 parallel POC options → pick one → all artifacts in parallel → demo → sale**
+
+```
+SE: "Customer is AWS, 200-node K8s, CFO flagged $2M cloud bill, exec review in 3 weeks"
+
+Archie: [explores 3 angles in parallel]
+  ├─ Option 1: Oracle DB → ADB migration  (relevance 9/10, 4h build)
+  ├─ Option 2: OKE + AI/ML platform       (relevance 7/10, 6h build)
+  └─ Option 3: Cost optimization TCO      (relevance 8/10, 3h build)
+  → Recommends Option 1: "Customer mentioned cost 3× — DB migration proves it in 4h"
+
+SE: "go with option 1"
+
+Archie: [generates all 5 artifacts in parallel, ~90 seconds]
+  ├─ Architecture diagram (.drawio)
+  ├─ BOM with OCI pricing (.xlsx)
+  ├─ JEP execution plan (markdown)
+  ├─ Terraform scripts (.tf)
+  └─ Client PowerPoint deck (.pptx)
+```
+
+**Background mode:** Kick off POC generation during a meeting. Archie runs in the background and sends a Telegram notification when done.
+
+### Key tools
+
+| Tool | What it does |
+|---|---|
+| `generate_poc_plan` | Explores 3 POC options in parallel (migration, AI/ML, cost angles), returns ranked options with demo scripts |
+| `generate_presentation` | Produces a 7-slide Oracle-standard PowerPoint deck using official OCI icon stencils |
+| `generate_diagram` | OCI architecture diagram (.drawio) |
+| `generate_bom` | Live OCI pricing BOM (.xlsx) |
+| `generate_jep` | JEP execution plan |
+| `generate_terraform` | Terraform for the recommended architecture |
+| `generate_waf` | WAF security review |
+| `generate_pov` | Point-of-Value document |
+| `generate_tech_report` | Technical research and service selection |
 
 ---
 
