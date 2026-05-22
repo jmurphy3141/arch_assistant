@@ -315,6 +315,9 @@ sudo systemctl enable --now oci-agent oci-bom oci-diagram oci-pov oci-jep oci-wa
 | JEP sub-agent | 8085 |
 | WAF sub-agent | 8086 |
 | Terraform sub-agent | 8087 |
+| Tech Research sub-agent | 8086 |
+| POC Strategist sub-agent | 8087 |
+| Presentation sub-agent | 8088 |
 
 ---
 
