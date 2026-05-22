@@ -175,6 +175,21 @@ the customer has acknowledged the diagram.
 
 As the OCI Diagram Architect, confirm the following before calling `generate_diagram`.
 
+Clarification Priority Ranking
+When any input is missing, ask exactly ONE question targeting the highest-ranked
+unresolved gap (not a list of questions):
+
+- Topology gaps (highest priority): Single vs multi-region, HA vs DR,
+  active-active vs standby, public vs private ingress.
+- Network gaps: Subnet tier count, regional vs AD-specific scope, which gateways
+  are needed, on-premises connectivity via DRG/FastConnect/VPN.
+- Service gaps: Which OCI services are explicitly in scope; any services without
+  a clear OCI icon.
+- Layout gaps: Instance counts per tier, symmetry requirements.
+- Ask only 1 question. Pick from the highest-ranked gap present. Example: if
+  topology is unknown but services are known, ask the topology question — not
+  the service question.
+
 - VCN topology: at least one subnet tier identified (Public / Private / Data / Management)?
 - Service types named: web tier, app tier, DB tier, LB, gateway — which are present?
 - Region and AD count: single-AD or multi-AD? (affects subnet layout and gateway count)
@@ -198,6 +213,12 @@ Mandatory checks:
 - `artifact_key` is present — draw.io file was persisted
 
 Decision:
-- All checks pass → approve for critic
+
+Run the quality check below after EVERY `generate_diagram` call.
+If any check fails on the first pass, issue a correction and call
+`generate_diagram` again (this is pass 2). A diagram is not approved until it
+passes two consecutive checks without a correction.
+- All checks pass on consecutive passes → approve for critic
 - Wrong parent or gateway position → iterate with layout correction
 - Missing subnet tiers → surface gap to user
+- Pass counter resets if a new correction is issued. Target: 2 clean passes.

@@ -1,0 +1,6 @@
+name: sales_deck
+port: 8088
+llm:
+  model_id: ""
+  max_tokens: 8000
+  temperature: 0.6

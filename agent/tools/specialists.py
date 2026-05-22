@@ -6,6 +6,8 @@ ToolHandler implementations for POV, JEP, and WAF specialist sub-agents.
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import datetime, timezone
 from typing import Any
 
 from agent import archie_memory, document_store, sub_agent_client
@@ -167,14 +169,25 @@ class _SpecialistHandler:
             content = _ensure_waf_markdown_sections(content)
             response["result"] = content
 
-        saved = await asyncio.to_thread(
-            document_store.save_doc,
-            self._store,
-            self._doc_type,
-            self._customer_id,
-            content,
-            {"trace": response.get("trace", {}), "source": "sub_agent_client"},
-        )
+        metadata = {"trace": response.get("trace", {}), "source": "sub_agent_client"}
+        if self._agent_name == "sales_deck":
+            saved = await asyncio.to_thread(
+                _save_json_doc,
+                self._store,
+                self._doc_type,
+                self._customer_id,
+                content,
+                metadata,
+            )
+        else:
+            saved = await asyncio.to_thread(
+                document_store.save_doc,
+                self._store,
+                self._doc_type,
+                self._customer_id,
+                content,
+                metadata,
+            )
         response["result_length"] = len(content)
         response.pop("result", None)
         key = str(saved.get("key", "") or "")
@@ -250,10 +263,76 @@ class TechResearchHandler(_SpecialistHandler):
         super().__init__("tech_research", "research", store, customer_id, customer_name)
 
 
+class SalesDeckHandler(_SpecialistHandler):
+    def __init__(self, store, customer_id, customer_name):
+        super().__init__("sales_deck", "deck", store, customer_id, customer_name)
+
+
+
 def _default_request(agent_name: str) -> str:
     if agent_name == "pov":
         return "Generate a customer POV from current engagement context."
+    if agent_name == "sales_deck":
+        return "Generate an OCI customer-facing sales deck from current engagement context."
     return f"Generate the {agent_name.upper()} from current engagement context."
+
+
+def _save_json_doc(
+    store: ObjectStoreBase,
+    doc_type: str,
+    customer_id: str,
+    content: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    version = document_store._get_next_version(store, doc_type, customer_id)
+    try:
+        parsed = json.loads(content)
+        content = json.dumps(parsed, indent=2)
+    except json.JSONDecodeError:
+        pass
+
+    content_bytes = content.encode("utf-8")
+    version_key = document_store._doc_key(doc_type, customer_id, f"v{version}.json", customer_first=False)
+    version_customer_key = document_store._doc_key(doc_type, customer_id, f"v{version}.json", customer_first=True)
+    latest_key = document_store._doc_key(doc_type, customer_id, "LATEST.json", customer_first=False)
+    latest_customer_key = document_store._doc_key(doc_type, customer_id, "LATEST.json", customer_first=True)
+    manifest_key = document_store._doc_key(doc_type, customer_id, "MANIFEST.json", customer_first=False)
+    manifest_customer_key = document_store._doc_key(doc_type, customer_id, "MANIFEST.json", customer_first=True)
+
+    document_store._put_dual(
+        store,
+        customer_key=version_customer_key,
+        legacy_key=version_key,
+        content=content_bytes,
+        content_type="application/json",
+    )
+    document_store._put_dual(
+        store,
+        customer_key=latest_customer_key,
+        legacy_key=latest_key,
+        content=content_bytes,
+        content_type="application/json",
+    )
+
+    manifest = document_store._get_first_json(
+        store,
+        [manifest_customer_key, manifest_key],
+        {"versions": []},
+    )
+    manifest["versions"].append({
+        "version": version,
+        "key": version_key,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "metadata": metadata or {},
+    })
+    document_store._put_dual(
+        store,
+        customer_key=manifest_customer_key,
+        legacy_key=manifest_key,
+        content=json.dumps(manifest, indent=2).encode("utf-8"),
+        content_type="application/json",
+    )
+    return {"version": version, "key": version_key, "latest_key": latest_key}
 
 
 def _ensure_waf_markdown_sections(content: str) -> str:
