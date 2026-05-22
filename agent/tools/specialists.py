@@ -268,6 +268,7 @@ class SalesDeckHandler(_SpecialistHandler):
         super().__init__("sales_deck", "deck", store, customer_id, customer_name)
 
 
+
 def _default_request(agent_name: str) -> str:
     if agent_name == "pov":
         return "Generate a customer POV from current engagement context."
