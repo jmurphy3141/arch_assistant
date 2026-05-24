@@ -8,7 +8,7 @@ options and recommends the best fit, parallel artifact fan-out once the SE
 confirms, and a PowerPoint deck as the final client deliverable.
 
 p55a and p55e are independent — work in parallel. p55b before p55c (fan-out
-extends the handler built in p55b).
+extends the handler built in p55b). p55d after p55b + p55c. p55f after p55a.
 
 Port assignments (do not reuse):
 - 8082–8089: taken (see config.yaml)
@@ -251,4 +251,108 @@ Commit message:
 p55e: PowerPoint presentation generation — 7-slide Oracle-standard POC deck with OCI stencils
 
 Branch: claude/p55e (from main). Push when done.
+```
+
+## p55d — Archie System Prompt: POC Pattern Recognition + Workflow Sequencing
+
+```
+Read tasks/p55d-archie-system-prompt.md carefully end to end before touching any code.
+
+IMPORTANT: Branch from origin/main AFTER p55b and p55c are merged.
+
+  git fetch origin
+  git checkout -b claude/p55d origin/main
+
+Run the prerequisite check first:
+  python3.11 -m py_compile agent/archie_wiring.py
+  grep "POC Planning Workflow\|POC PATTERN RECOGNITION\|confirmed_option_name" agent/archie_wiring.py
+  # must be zero matches
+
+Only one file changes: agent/archie_wiring.py. Both changes are string appends
+inside existing triple-quoted strings — do not restructure or reformat existing content.
+
+Read agent/archie_wiring.py first:
+  - Find _EXPERT_IDENTITY (search for "## Expert Identity") — note the closing triple-quote
+  - Find _TOOL_SEQUENCING_RULES (search for "## Tool Sequencing Rules") — note the closing triple-quote
+
+Implement in this order:
+1. agent/archie_wiring.py — append POC PATTERN RECOGNITION + POC RISK INSTINCT +
+   PROACTIVE RECOMMENDATIONS block to _EXPERT_IDENTITY (before closing triple-quote)
+2. agent/archie_wiring.py — append ### POC Planning Workflow section to
+   _TOOL_SEQUENCING_RULES (before closing triple-quote); include all 8 numbered rules
+
+Run ALL acceptance criteria checks before committing:
+  python3.11 -m py_compile agent/archie_wiring.py
+
+  python3.11 -c "
+  from pathlib import Path
+  src = Path('agent/archie_wiring.py').read_text()
+  checks = [
+      ('POC Planning Workflow',            'workflow section header'),
+      ('action=\"confirm\"',               'confirm mode reference'),
+      ('confirmed_option_name',            'confirmed_option_name arg'),
+      ('Do NOT generate artifacts before', 'no-artifacts-before-confirm rule'),
+      ('stored procedures are the silent', 'proactive recommendation'),
+      ('Compatibility Checker',            'specific proactive tip'),
+      ('Wrong audience',                   'risk instinct: audience mismatch'),
+      ('POC PATTERN RECOGNITION',          'pattern recognition block'),
+  ]
+  for content, label in checks:
+      assert content in src, f'FAIL: {label!r} missing'
+  print('PASS')
+  "
+
+  pytest tests/ -q --tb=short -m "not live" 2>&1 | tail -10
+
+Commit message:
+p55d: POC workflow sequencing and pattern recognition in Archie system prompt
+
+Branch: claude/p55d (from main, after p55b + p55c merged). Push when done.
+```
+
+---
+
+## p55f — Background Job Cleanup (Post-p55a Review)
+
+```
+Read tasks/p55f-background-cleanup.md carefully end to end before touching any code.
+
+IMPORTANT: Branch from origin/main AFTER p55a is merged.
+
+  git fetch origin
+  git checkout -b claude/p55f origin/main
+
+Run the prerequisite check first:
+  python3.11 -m compileall drawing_agent_server.py agent/notifications.py
+  grep "run_turn_background" drawing_agent_server.py  # must be zero matches (it's unused today)
+
+Three focused fixes — one file each. Read the relevant section before each fix.
+
+Fix 1: drawing_agent_server.py
+  Read _run_background_chat() in the /api/chat/background endpoint.
+  Read how the session/forge instance is obtained (search _get_or_create or equivalent).
+  Restructure _run_background_chat() so it calls session.forge.run_turn_background()
+  with on_complete and on_error callbacks. Move _persist_bom_xlsx_downloads,
+  _build_artifact_manifest, _persist_chat_project_membership, and notify() into on_complete.
+
+Fix 2: agent/notifications.py
+  Load config once in _send() and pass cfg dict as second arg to _send_telegram().
+  Update _send_telegram(message, cfg) to accept cfg instead of re-loading it.
+  If tests/test_background_job.py calls _send_telegram directly, update that too.
+
+Fix 3: ui/src/components/ChatInterface.tsx
+  In the backgroundJobId polling useEffect, add setBackgroundMode(false) in both
+  the success path and the error path — immediately after setBackgroundJobId(null).
+
+Run ALL acceptance criteria checks before committing:
+  python3.11 -m compileall drawing_agent_server.py agent/notifications.py
+  grep "run_turn_background" drawing_agent_server.py  # must show call site now
+  grep "_send_telegram" agent/notifications.py        # must show two-arg call
+  cd ui && npm run typecheck
+  pytest tests/test_background_job.py -v
+
+Commit message:
+p55f: background job cleanup — wire run_turn_background, single config load, one-shot mode
+
+Branch: claude/p55f (from main, after p55a merged). Push when done.
 ```
