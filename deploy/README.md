@@ -23,12 +23,14 @@ Copy service files to systemd and enable:
 
 ## Port map
 
-| Service          | Port |
-|------------------|------|
-| oci-agent        | 8080 |
-| oci-diagram      | 8082 |
-| oci-bom          | 8083 |
-| oci-pov          | 8084 |
-| oci-jep          | 8085 |
-| oci-waf          | 8086 |
-| oci-terraform    | 8087 |
+| Service              | Port |
+|----------------------|------|
+| oci-agent            | 8080 |
+| oci-diagram          | 8082 |
+| oci-bom              | 8083 |
+| oci-pov              | 8084 |
+| oci-jep              | 8085 |
+| oci-waf              | 8086 |
+| oci-terraform        | 8087 |
+| oci-tech-research    | 8088 |
+| oci-sales-deck       | 8089 |

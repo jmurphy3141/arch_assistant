@@ -270,34 +270,6 @@ Zero OCI code. Same `Forge`, same `hat_engine`, different tools and `Memory`.
 
 ---
 
-## Migration phases (Archie → SkillForge)
-
-### Phase 1 — Skeleton (this PR)
-`skillforge/` package present with full interfaces and working Forge.
-No production code changed. `archie_loop.py` still owns its own loop.
-
-### Phase 2 — Extract tool handlers
-Create `agent/tools/` with one file per OCI tool. Each exports
-`async def handle(args, *, memory, context, trace_id) -> ToolResult`.
-Extraction order (safest first): `save_notes` → `generate_bom` →
-`generate_diagram` → `generate_terraform` → `pov/jep/waf`.
-Run `pytest tests/test_specialist_mode_routing.py -v` after each file.
-
-### Phase 3 — Wire Forge into archie_loop
-Create `agent/archie_wiring.py` that instantiates `Forge` and registers all
-OCI tool handlers. Shadow-run both `archie_loop.run_turn()` and
-`forge.run_turn()` in parallel with `SKILLFORGE_SHADOW=1` for validation.
-
-### Phase 4 — Cut over
-Replace `archie_loop.run_turn()` body with a ~30-line wrapper around
-`forge.run_turn()`. Delete the inline `_execute_tool()` dispatcher.
-
-### Phase 5 — Extract SkillForge
-Move `skillforge/` to its own package. `agent/` is now purely the OCI
-application layer.
-
----
-
 ## What stays in agent/ (never moves to skillforge/)
 
 - OCI tool implementations (`agent/tools/`)
