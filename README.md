@@ -1,214 +1,306 @@
-# OCI Architecture Assistant — Archie
+# SkillForge + Archie
 
-A conversational OCI solutions architect assistant built for SE teams that close deals with technical POCs. Describe a customer workload; Archie plans the right POC, then produces all artifacts simultaneously — architecture diagrams, BOM pricing, POV documents, JEP execution plans, WAF reviews, Terraform, and a client-ready PowerPoint deck.
+**SkillForge** is a lightweight, domain-agnostic agent orchestration framework.
+**Archie** is the OCI Architecture Manager — Oracle's production implementation of SkillForge for SE teams.
 
 ---
 
-## POC Workflow
+## What Is SkillForge?
 
-**Rough requirements → 3 parallel POC options → pick one → all artifacts in parallel → demo → sale**
+SkillForge gives you a managing orchestrator that:
+
+- Wears **expert hats** — markdown files that inject deep domain knowledge into the reasoning loop
+- Runs a structured **expert reasoning loop** — plans before acting, thinks deeply before calling tools, reviews critically after
+- Delegates to **specialist sub-agents** via A2A over HTTP — each sub-agent runs independently
+- Dispatches **parallel artifact generation** natively — fan out to five specialists at once
+- Keeps **all business logic in prompts and skill files** — adding a new domain means writing markdown, not Python
+
+SkillForge has zero domain knowledge. `import oci`, `import boto3`, or any domain SDK in `skillforge/` is a boundary violation. Domain knowledge lives in registered tool handlers, hat files, and a `Memory` implementation.
+
+**Archie is one example.** The same framework can power an AWS infrastructure manager, a Kubernetes operations center, a sales operations assistant, or any other domain that benefits from a knowledgeable conversational orchestrator.
+
+---
+
+## Archie — OCI Architecture Manager
+
+Archie is the production SkillForge implementation for Oracle SA teams. Describe a customer workload; Archie plans the right POC, then produces all artifacts simultaneously.
+
+### POC Workflow
 
 ```
 SE: "Customer is AWS, 200-node K8s, CFO flagged $2M cloud bill, exec review in 3 weeks"
 
-Archie: [explores 3 angles in parallel]
-  ├─ Option 1: Oracle DB → ADB migration  (relevance 9/10, 4h build)
-  ├─ Option 2: OKE + AI/ML platform       (relevance 7/10, 6h build)
-  └─ Option 3: Cost optimization TCO      (relevance 8/10, 3h build)
-  → Recommends Option 1: "Customer mentioned cost 3× — DB migration proves it in 4h"
+Archie: [wears POC Strategist hat — runs 3 parallel explorations]
+  Option 1: Oracle DB → ADB migration    9/10 relevance  4h build
+  Option 2: OKE + AI/ML platform         7/10 relevance  6h build
+  Option 3: Cost optimization TCO        8/10 relevance  3h build
+  → Recommended: Option 1 — "CFO mentioned cost 3× and ADB migration proves it in 4h"
 
 SE: "go with option 1"
 
-Archie: [generates all 5 artifacts in parallel, ~90 seconds]
-  ├─ Architecture diagram (.drawio)
-  ├─ BOM with OCI pricing (.xlsx)
-  ├─ JEP execution plan (markdown)
-  ├─ Terraform scripts (.tf)
-  └─ Client PowerPoint deck (.pptx)
+Archie: [fans out all 5 artifacts simultaneously, ~90 seconds]
+  ├─ Architecture diagram  (.drawio)
+  ├─ BOM with OCI pricing  (.xlsx)
+  ├─ JEP execution plan    (markdown)
+  ├─ Terraform scripts     (.tf)
+  └─ Client PowerPoint     (.pptx)
 ```
 
-**Background mode:** Kick off POC generation during a meeting. Archie runs in the background and sends a Telegram notification when done.
+**Background mode:** Kick off generation during a meeting. Archie runs in the background and sends a Telegram notification with the top recommendation when done.
 
-### Key tools
+### Archie's Tools
 
 | Tool | What it does |
 |---|---|
-| `generate_poc_plan` | Explores 3 POC options in parallel (migration, AI/ML, cost angles), returns ranked options with demo scripts |
-| `generate_presentation` | Produces a 7-slide Oracle-standard PowerPoint deck using official OCI icon stencils |
-| `generate_diagram` | OCI architecture diagram (.drawio) |
+| `generate_poc_plan` | Explores 3 POC angles in parallel, returns ranked options with demo scripts and risk assessments |
+| `generate_diagram` | OCI architecture diagram (.drawio) with official icon stencils |
 | `generate_bom` | Live OCI pricing BOM (.xlsx) |
-| `generate_jep` | JEP execution plan |
-| `generate_terraform` | Terraform for the recommended architecture |
+| `generate_jep` | JEP execution plan (markdown) |
+| `generate_terraform` | Terraform bundle for the recommended architecture |
 | `generate_waf` | WAF security review |
 | `generate_pov` | Point-of-Value document |
 | `generate_tech_report` | Technical research and service selection |
+| `generate_sales_deck` | Sales enablement deck |
+| `generate_presentation` | 7-slide client-ready PowerPoint using Oracle OCI icon stencils |
 
 ---
 
-## SkillForge — Reusable Agent Orchestration Framework
+## How to Build Your Own Manager
 
-**SkillForge** is the lightweight, domain-agnostic framework that powers Archie.
-Any team can use it to build multi-agent systems with a consistent chat interface
-and an intelligent managing orchestrator — no OCI dependency required.
+A SkillForge manager has four parts: a `Forge` instance, tool handlers, hats, and a `Memory` implementation.
 
-### Vision
-
-SkillForge enables teams to create powerful agent systems where:
-- A central **polymath orchestrator** dynamically wears different expert "hats"
-- Behavior is primarily defined through **prompts and skill files** — not Python code
-- New domains (AWS, Kubernetes, Sales Ops, etc.) can be onboarded quickly with minimal code
-
-### Core Features
-
-| Feature | What it does |
-|---------|-------------|
-| **Dynamic Hats** | Orchestrator switches expert roles on demand; each hat injects a full `[ACTIVE EXPERT]` block at the top of the system prompt |
-| **Structured Hat Files** | Hats are `.md` files with YAML frontmatter (`hat_rules`, `memory_focus`, `coordination`) and structured sections (Core Principles, Quality Bar, Pre-Action Checklist, Post-Action Review, Output Contract, Critic Evaluation Guidance) |
-| **Hat-Specific Memory Views** | Each active hat receives a filtered `[MEMORY VIEW]` built from `memory_focus.priority_fields`; orchestrator retains full canonical memory |
-| **Step 3 Planning** | Before the ReAct loop, Forge reasons through goal, memory state, primary architectural risk, and hat selection — producing a structured plan |
-| **Expert Pre-Action (Step 4)** | Before calling any hat-gated tool, the orchestrator thinks as the active expert: names the workload pattern, states its recommendation with specifics, identifies gaps and defaults, flags the top risk, and writes a self-contained sub-agent brief |
-| **Expert Post-Review (Step 6)** | After a tool returns, the orchestrator reviews the result across four phases: Quality Bar (A), Post-Action Review checklist (B), Memory consistency (C), and architectural soundness (D). Phase D surfaces goal fit, antipatterns, and next-step suggestions |
-| **Structured Critic Pass** | After post-review approves, the critic hat applies its Quality Bar per item with PASS/FAIL evidence — no rubber-stamping; one failing check rejects the result |
-| **Transition Suggestions** | `hat_rules.when_to_activate` triggers are matched against each turn — Forge emits status events suggesting relevant hats before the ReAct loop starts |
-| **Coordination Rules** | `coordination` frontmatter declares `recommended_hats`, `parallel_with`, `handoff_message`, and `synthesis_step` — multi-agent flow lives in skill files, not Python |
-| **Skill Files** | Global routing and domain guidance in `skills/*.md` — injected into the system prompt on every turn |
-| **Forge Orchestrator** | ReAct loop with memory, delegation, parallel execution, and critique |
-| **A2ADelegate** | First-class delegation — wraps any A2A sub-agent endpoint as a callable tool |
-| **Parallel Execution** | Native support for running multiple specialists concurrently |
-| **Declarative Registration** | Register tools from a YAML config — no boilerplate |
-| **Prompt-First Design** | Adding a domain, tuning behavior, or defining coordination patterns requires only editing skill files |
-
-### Architecture
-
-```
-Forge (skillforge/forge.py)
-  │
-  ├─ ToolRegistry          per-tool handler, skill_guidance, critique_enabled
-  ├─ Memory (interface)    assemble() → MemorySnapshot, update() → stores artifacts
-  ├─ HatEngine             loads agent/hats/*.md, exposes use_hat_* tools
-  │
-  ├─ run_turn(session_id, user_message, context)
-  │     │
-  │     ├─ Memory.assemble()              build MemorySnapshot for this turn
-  │     ├─ get_transition_suggestions()   emit status events for relevant hats
-  │     ├─ _build_active_system_msg()     base prompt + [ACTIVE EXPERT] blocks
-  │     ├─ build_memory_view_block()      hat-filtered [MEMORY VIEW] → user prompt
-  │     ├─ STEP 3 — Planning             goal, risk, hat selection (before ReAct loop)
-  │     ├─ ReAct loop
-  │     │     ├─ LLM call (text_runner)
-  │     │     ├─ _parse_tool_call()
-  │     │     ├─ needs_input / parallel / hat / domain tool dispatch
-  │     │     ├─ STEP 4 — Expert Pre-Action   workload pattern, gaps+defaults,
-  │     │     │                               recommendation, risk, sub-agent brief
-  │     │     ├─ tool handler call
-  │     │     ├─ STEP 6 — Expert Post-Review  Phase A Quality Bar · Phase B Post-Action
-  │     │     │                               Phase C Memory · Phase D Soundness (advisory)
-  │     │     ├─ coordination trigger check → handoff/parallel status events
-  │     │     └─ _run_critique_pass()     per-item Quality Bar PASS/FAIL (critique_enabled=True)
-  │     └─ Memory.update()               persist artifacts and facts
-  │
-  └─ invoke_tool(tool_name, args, session_id, context)
-        Direct tool call bypassing the LLM loop
-```
-
-### Quick Example
+### 1. Wire up Forge
 
 ```python
 from skillforge import Forge, SimpleMemory
 import agent.hat_engine as hat_engine
 
-async def my_runner(prompt, system, label=""):
-    # your LLM client here
-    return await call_my_llm(prompt, system)
-
 forge = Forge(
-    base_system_prompt="You are a helpful assistant.",
+    base_system_prompt="You are an AWS solutions architect...",
     hat_engine=hat_engine,
     memory=SimpleMemory(),
-    text_runner=my_runner,
+    text_runner=my_llm_call,          # async (prompt, system, label) -> str
 )
+```
 
-# Register tools from YAML
-forge.register_tools_from_config("forge_tools.yaml")
+### 2. Register tools
 
-# Inject global skill guidance
-forge.register_skill_file("skills/intent_routing.md")
+```python
+from skillforge import ArgSchema
 
-# Run a turn
+forge.register_tool(
+    "size_ec2",
+    ec2_sizing_handler,               # async (args, *, memory, context, trace_id) -> ToolResult
+    description="Size EC2 instances for a workload.",
+    memory_contract=True,             # handler receives MemorySnapshot
+    critique_enabled=True,            # critic hat reviews the result
+    requires_hat="aws_sizing_expert", # expert hat auto-activates before this tool
+    args={
+        "workload": ArgSchema(description="Workload description", type="string"),
+    },
+)
+```
+
+Or declaratively from YAML:
+
+```yaml
+# forge_tools.yaml
+tools:
+  - name: size_ec2
+    handler: "myapp.tools.ec2:EC2SizingHandler"
+    description: "Size EC2 instances for a workload."
+    critique_enabled: true
+
+  - name: generate_cfn
+    handler:
+      type: a2a_delegate
+      base_url: "http://localhost:9090"
+    description: "Generate CloudFormation templates."
+```
+
+### 3. Write a hat
+
+Drop a `.md` file in `agent/hats/`. No Python changes needed — SkillForge auto-discovers it.
+
+```markdown
+---
+version: "1.0"
+display_name: "AWS Sizing Expert"
+hat_rules:
+  when_to_activate: ["user asks about EC2 sizing or instance types"]
+memory_focus:
+  priority_fields: ["workload_type", "region", "concurrency", "budget"]
+  include_full_memory: false
+---
+
+# AWS Sizing Expert
+
+## Core Principles
+You recognize compute patterns immediately: "web tier with 10k concurrent" → c6g.xlarge
+candidates with ALB. "batch processing" → spot fleet with checkpointing.
+
+## Pre-Action Checklist
+Before calling the sizing tool, confirm:
+- workload_type: required. If absent → NEEDS_CLARIFICATION: "What workload type?"
+- region: default us-east-1 if absent — document assumption.
+
+## Post-Action Review
+Verify: instance type is available in region, cost is within budget signal if stated.
+```
+
+### 4. Run a turn
+
+```python
 result = await forge.run_turn(
-    session_id="customer-123",
-    user_message="Generate a BOM for my workload",
+    session_id="customer-abc",
+    user_message="Size a 3-tier web app for 10k concurrent users",
     context={},
 )
 print(result.reply)
 ```
 
-```yaml
-# forge_tools.yaml
-tools:
-  - name: generate_bom
-    handler: "agent.tools.bom:BomHandler"
-    description: "Generate an OCI BOM"
-    skill_guidance: "skills/bom_guidance.md"
-    critique_enabled: true
+### Full working example
 
-  - name: call_cfn
-    handler:
-      type: a2a_delegate
-      base_url: "http://localhost:9090"
-      endpoint: "/a2a"
-    description: "Generate CloudFormation templates"
-```
-
-### AWS Quickstart
-
-See `examples/aws_quickstart/` for a self-contained example using SkillForge
-with zero OCI dependencies.
+See `examples/aws_quickstart/` — a self-contained manager with zero OCI dependencies.
 
 ---
 
-## Archie — OCI Architecture Assistant
-
-Archie is the production implementation of SkillForge for Oracle SA engagements.
-
-### System Architecture
+## SkillForge Architecture
 
 ```
-User (browser UI)
+Forge (skillforge/forge.py)
+  │
+  ├─ ToolRegistry         tool handlers, hat requirements, critique flags
+  ├─ Memory (interface)   assemble() → MemorySnapshot per turn
+  ├─ HatEngine            loads agent/hats/*.md; exposes use_hat_* tools
+  │
+  └─ run_turn(session_id, user_message, context)
+        │
+        ├─ Memory.assemble()           build MemorySnapshot
+        ├─ STEP 3 — Planning           goal · risk · hat selection
+        ├─ ReAct loop
+        │     ├─ LLM call
+        │     ├─ STEP 4 — Pre-Action   KNOWN FACTS → GAPS → EXPERT ASSESSMENT → SUB-AGENT TASK
+        │     ├─ tool handler call
+        │     ├─ STEP 6 — Post-Review  Quality Bar · Checklist · Memory · Soundness
+        │     └─ Critic pass           per-item PASS/FAIL; rejects on any failure
+        └─ Memory.update()
+```
+
+### Expert Reasoning Loop
+
+Every tool call goes through four steps:
+
+**Step 3 — Planning** (before the loop): Forge reasons through the goal, memory state, primary architectural risk, and which hat to activate.
+
+**Step 4 — Expert Pre-Action**: Wearing the hat, the orchestrator produces:
+- `KNOWN FACTS` — every confirmed value from memory
+- `GAPS` — every unconfirmed field; state the default and whether it's safe to assume
+- `EXPERT ASSESSMENT` — workload pattern → specific recommendation → top risk → proactive flag
+- `SUB-AGENT TASK` — a complete, self-contained brief for the sub-agent (no context references)
+
+**Step 6 — Expert Post-Review**: Four phases after the tool returns:
+- **Phase A** — Quality Bar: per-item PASS/FAIL against the hat's checklist
+- **Phase B** — Post-Action Review: domain-specific correctness checks
+- **Phase C** — Memory consistency: result values vs. confirmed memory
+- **Phase D** — Architectural soundness (advisory): goal fit, antipatterns, next step
+
+**Critic Pass**: After post-review approves, the critic hat applies per-tool validation schemas. One failing check rejects the result. This is the final quality gate.
+
+---
+
+## Hat System
+
+Expert hats live in `agent/hats/` as structured markdown files. When activated, the hat's content is prepended to the system prompt as an `[ACTIVE EXPERT]` block, and the hat's `memory_focus.priority_fields` filter the `[MEMORY VIEW]` the expert receives.
+
+### Archie's Hats
+
+| Hat | Auto-activated by | Role |
+|-----|:-----------------:|------|
+| `oci_poc_strategist` | `generate_poc_plan` | Pattern recognition, deal-stage awareness, risk anticipation, POC success criteria |
+| `oci_bom_expert` | `generate_bom` | BOM sizing, SKU selection, pricing validation |
+| `diagram_for_oci` | `generate_diagram` | OCI topology, traffic paths, icon standards |
+| `oci_waf_reviewer` | `generate_waf` | WAF pillar coverage, P1 severity checks |
+| `terraform_for_oci` | `generate_terraform` | HCL correctness, provider versions, compartment strategy |
+| `oci_customer_pov_writer` | `generate_pov` | POV document quality, executive narrative |
+| `jep_writer` | `generate_jep` | JEP scope, success criteria, phased execution |
+| `oci_presentation_writer` | `generate_presentation` | Synthesis of BOM + research + diagrams into a client deck |
+| `infra_tech_research` | `generate_tech_report` | Service selection, technology research |
+| `critic` | any `critique_enabled` tool | Per-item Quality Bar review |
+| `governor` | manual | Cost, security, and compliance guardrails |
+
+### Hat File Format
+
+```markdown
+---
+version: "1.0"
+display_name: "Expert Name"
+hat_rules:
+  when_to_activate: ["trigger phrases or tool names"]
+  can_hand_off_to: ["other_hat_name"]
+memory_focus:
+  priority_fields: ["field1", "field2"]
+  include_full_memory: false
+coordination:
+  parallel_with: ["other_tool"]
+  suggested_next_hat: "next_hat"
+---
+
+# Expert Name Hat
+
+## Core Principles        ← expert mindset and decision heuristics
+## Quality Bar            ← per-item checklist for Phase A post-review
+## Pre-Action Checklist   ← what the expert confirms before calling the sub-agent (Step 4)
+## Post-Action Review     ← what the expert verifies after the result returns (Step 6)
+## Output Contract        ← required fields in a valid result
+## Critic Evaluation Guidance
+## Failure Questions
+## Activation & Drop
+```
+
+Adding a hat requires only creating the `.md` file — no Python changes.
+
+---
+
+## Archie System Architecture
+
+```
+Browser (React/Vite UI)
   │
   ▼
-drawing_agent_server.py  ── FastAPI, port 8080
-  │  /api/chat + /api/chat/stream   → archie_loop.py via SkillForge Forge
-  │  /api/bom/*                     → bom_service.py
-  │  /api/upload-bom, /api/clarify  → diagram pipeline
-  │  /api/pov, /api/jep, /api/waf   → specialist agents
-  │  /api/terraform/*               → terraform sub-agent
+drawing_agent_server.py      FastAPI, port 8080
+  │  /api/chat/stream         streaming chat
+  │  /api/chat/background     background job + Telegram notification
+  │  /api/job/{id}            job status polling
+  │  /download                artifact download (diagram, BOM, PPTX, Terraform)
+  │  /health
   │
-  ├─ agent/archie_wiring.py      Wires SkillForge Forge; injects Expert Identity
-  │                               (pattern recognition, risk instinct, specificity,
-  │                               assumption surfacing, proactive guidance)
-  ├─ agent/hat_engine.py         Expert lenses — 8 hats, auto-activates on tool dispatch
-  ├─ agent/archie_memory_impl.py Memory adapter — enriches prompts with infrastructure
-  │                               profile, constraints, resolved questions
+  ├─ archie_session.py        thin session wrapper: load context → forge.run_turn() → save
+  ├─ agent/archie_wiring.py   build_forge(): Archie system prompt + 10 tools + hat engine
   │
-  ├─ Sub-agents (independent A2A services)
-  │   ├─ sub_agents/diagram/     port 8082
-  │   ├─ sub_agents/bom/         port 8083
-  │   ├─ sub_agents/pov/         port 8084
-  │   ├─ sub_agents/jep/         port 8085
-  │   ├─ sub_agents/waf/         port 8086
-  │   └─ sub_agents/terraform/   port 8087
+  ├─ SkillForge (skillforge/)
+  │   └─ forge.py             ReAct loop, expert reasoning, parallel dispatch, critique
+  │
+  ├─ Sub-agents (independent A2A HTTP services)
+  │   ├─ sub_agents/diagram/       port 8082
+  │   ├─ sub_agents/bom/           port 8083
+  │   ├─ sub_agents/pov/           port 8084
+  │   ├─ sub_agents/jep/           port 8085
+  │   ├─ sub_agents/waf/           port 8086
+  │   ├─ sub_agents/terraform/     port 8087
+  │   ├─ sub_agents/tech_research/ port 8088
+  │   └─ sub_agents/sales_deck/    port 8089
   │
   ├─ Diagram pipeline
-  │   ├─ agent/bom_parser.py       BOM → ServiceItem list + LLM prompt
-  │   ├─ agent/intent_compiler.py  LayoutIntent → validated spec
-  │   ├─ agent/layout_engine.py    Spec → x,y positions
-  │   └─ agent/drawio_generator.py Positions → draw.io XML
+  │   ├─ agent/bom_parser.py        BOM → ServiceItem list + LLM prompt
+  │   ├─ agent/intent_compiler.py   LayoutIntent → validated spec
+  │   ├─ agent/layout_engine.py     Spec → x,y positions
+  │   └─ agent/drawio_generator.py  Positions → draw.io XML
   │
   └─ Persistence
-      ├─ agent/document_store.py            Notes, docs, history, Terraform bundles
-      ├─ agent/context_store.py             Per-customer working context
-      └─ agent/persistence_objectstore.py   OCI Object Storage adapter
+      ├─ agent/document_store.py           Notes, docs, history, artifacts
+      ├─ agent/context_store.py            Per-customer engagement context
+      └─ agent/persistence_objectstore.py  OCI Object Storage adapter
 ```
 
 ---
@@ -231,59 +323,33 @@ pip3.11 install -r requirements.txt
 
 ### Configure
 
-Edit `config.yaml` with your OCI settings. Copy `.env.example` to `.env` and set:
+Edit `config.yaml` with your OCI resource OCIDs and endpoints. Copy `.env.example` to `.env`:
 
 ```bash
 SESSION_SECRET=$(openssl rand -hex 32)
 ```
 
-### Start the main server
+### Start services
 
 ```bash
-cd ~/drawing-agent
+# Main server
 SESSION_SECRET=<your-secret> \
 nohup python3.11 -m uvicorn drawing_agent_server:app \
   --host 0.0.0.0 --port 8080 > agent.log 2>&1 &
-sleep 3 && curl -s http://localhost:8080/health
-```
 
-### Live prompt-to-file validation
-
-Run live prompt-to-file tests against a known local branch server, not an
-unknown long-running service. Leave OIDC variables unset so local downloads do
-not require a browser session:
-
-```bash
-env -u OIDC_CLIENT_ID -u OIDC_CLIENT_SECRET -u OIDC_REDIRECT_URI \
-  -u OIDC_ISSUER -u OCI_IDENTITY_DOMAIN_URL \
-  python3.11 -m uvicorn drawing_agent_server:app \
-    --host 127.0.0.1 --port 18080
-
-RUN_ARCHIE_PROMPT_FILE_LIVE=1 \
-AGENT_BASE_URL=http://127.0.0.1:18080 \
-pytest tests/test_archie_prompt_to_file_live.py -v -s
-```
-
-When validating against an auth-enabled deployed server, provide the browser
-session cookie so authenticated artifact download URLs can be fetched:
-
-```bash
-RUN_ARCHIE_PROMPT_FILE_LIVE=1 \
-AGENT_BASE_URL=https://archie.example.com \
-AGENT_SESSION_COOKIE='session=<cookie-value>' \
-pytest tests/test_archie_prompt_to_file_live.py -v -s
-```
-
-### Start sub-agents
-
-```bash
+# Sub-agents
 mkdir -p logs
-python3.11 -m uvicorn sub_agents.diagram.server:app   --host 0.0.0.0 --port 8082 > logs/diagram.log 2>&1 &
-python3.11 -m uvicorn sub_agents.bom.server:app       --host 0.0.0.0 --port 8083 > logs/bom.log    2>&1 &
-python3.11 -m uvicorn sub_agents.pov.server:app       --host 0.0.0.0 --port 8084 > logs/pov.log    2>&1 &
-python3.11 -m uvicorn sub_agents.jep.server:app       --host 0.0.0.0 --port 8085 > logs/jep.log    2>&1 &
-python3.11 -m uvicorn sub_agents.waf.server:app       --host 0.0.0.0 --port 8086 > logs/waf.log    2>&1 &
-python3.11 -m uvicorn sub_agents.terraform.server:app --host 0.0.0.0 --port 8087 > logs/terraform.log 2>&1 &
+python3.11 -m uvicorn sub_agents.diagram.server:app       --host 0.0.0.0 --port 8082 > logs/diagram.log 2>&1 &
+python3.11 -m uvicorn sub_agents.bom.server:app           --host 0.0.0.0 --port 8083 > logs/bom.log    2>&1 &
+python3.11 -m uvicorn sub_agents.pov.server:app           --host 0.0.0.0 --port 8084 > logs/pov.log    2>&1 &
+python3.11 -m uvicorn sub_agents.jep.server:app           --host 0.0.0.0 --port 8085 > logs/jep.log    2>&1 &
+python3.11 -m uvicorn sub_agents.waf.server:app           --host 0.0.0.0 --port 8086 > logs/waf.log    2>&1 &
+python3.11 -m uvicorn sub_agents.terraform.server:app     --host 0.0.0.0 --port 8087 > logs/terraform.log 2>&1 &
+python3.11 -m uvicorn sub_agents.tech_research.server:app --host 0.0.0.0 --port 8088 > logs/research.log 2>&1 &
+python3.11 -m uvicorn sub_agents.sales_deck.server:app    --host 0.0.0.0 --port 8089 > logs/sales.log   2>&1 &
+
+# Check health
+curl -s http://localhost:8080/health
 ```
 
 ### Build the UI
@@ -292,11 +358,7 @@ python3.11 -m uvicorn sub_agents.terraform.server:app --host 0.0.0.0 --port 8087
 cd ui && npm install && npm run build
 ```
 
----
-
-## Production Deployment (systemd)
-
-Service files for all processes are in `deploy/`. See `deploy/README.md` for full install instructions.
+### Production deployment (systemd)
 
 ```bash
 sudo cp deploy/oci-*.service /etc/systemd/system/
@@ -304,7 +366,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now oci-agent oci-bom oci-diagram oci-pov oci-jep oci-waf oci-terraform
 ```
 
-### Port Map
+See `deploy/README.md` for full instructions.
+
+---
+
+## Port Map
 
 | Service | Port |
 |---------|------|
@@ -315,13 +381,12 @@ sudo systemctl enable --now oci-agent oci-bom oci-diagram oci-pov oci-jep oci-wa
 | JEP sub-agent | 8085 |
 | WAF sub-agent | 8086 |
 | Terraform sub-agent | 8087 |
-| Tech Research sub-agent | 8086 |
-| POC Strategist sub-agent | 8087 |
-| Presentation sub-agent | 8088 |
+| Tech Research sub-agent | 8088 |
+| Sales Deck sub-agent | 8089 |
 
 ---
 
-## Configuration
+## Configuration Reference
 
 ### config.yaml
 
@@ -331,37 +396,43 @@ sudo systemctl enable --now oci-agent oci-bom oci-diagram oci-pov oci-jep oci-wa
 | `compartment_id` | Compartment OCID for GenAI calls |
 | `inference.model_id` | OCI GenAI model OCID |
 | `inference.service_endpoint` | OCI GenAI endpoint URL |
-| `persistence.bucket_name` | OCI Object Storage bucket (default: `agent_assistante`) |
-| `writing.max_tokens` | Token budget for POV/JEP/WAF generation |
-| `writing.temperature` | Sampling temperature (default: 0.7) |
+| `persistence.bucket_name` | OCI Object Storage bucket |
 | `orchestrator.max_tool_iterations` | Forge ReAct loop max iterations (default: 5) |
 | `orchestrator.history_max_turns` | History turns per prompt (default: 30) |
+| `telegram.enabled` | Enable Telegram notifications (default: false) |
 
 ### .env — secrets
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `SESSION_SECRET` | ✅ | Cookie signing key — `openssl rand -hex 32` |
-| `OIDC_CLIENT_ID` | for auth | OCI Identity Domain confidential app client ID |
+| `OIDC_CLIENT_ID` | for auth | OCI Identity Domain client ID |
 | `OIDC_CLIENT_SECRET` | for auth | Client secret |
 | `OIDC_REDIRECT_URI` | for auth | OAuth callback URL |
-| `OIDC_ISSUER` | for auth | Identity Domain base URL |
-| `OIDC_REQUIRED_GROUP` | optional | Require membership in this group |
+| `TELEGRAM_BOT_TOKEN` | optional | Telegram bot token for background notifications |
+| `TELEGRAM_CHAT_ID` | optional | Telegram chat/group ID |
 
 ---
 
-## API Endpoints
+## API Reference
 
 ### Chat
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/chat` | Single-turn chat |
-| `POST` | `/api/chat/stream` | Streaming chat (`?mode=sse` or `?mode=chunked`) |
+| `POST` | `/api/chat/stream` | Streaming chat (SSE) |
+| `POST` | `/api/chat/background` | Background job — returns 202 + job_id |
+| `GET` | `/api/job/{job_id}` | Background job status polling |
 | `GET` | `/api/chat/{customer_id}/history` | Conversation history |
-| `GET` | `/api/chat/history` | Cross-customer history index |
 | `DELETE` | `/api/chat/{customer_id}/history` | Clear history |
-| `POST` | `/api/chat/{customer_id}/reset-context` | Reset engagement context |
+
+### Artifacts
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/download` | Download any artifact by key (`.drawio`, `.xlsx`, `.tf`, `.pptx`) |
+| `GET` | `/api/terraform/{customer_id}/download/{filename}` | Download Terraform file |
 
 ### BOM
 
@@ -369,170 +440,29 @@ sudo systemctl enable --now oci-agent oci-bom oci-diagram oci-pov oci-jep oci-wa
 |--------|------|-------------|
 | `POST` | `/api/bom/chat` | BOM advisory chat |
 | `POST` | `/api/bom/generate-xlsx` | Export BOM as XLSX |
-| `GET` | `/api/bom/{customer_id}/download/{filename}` | Download BOM XLSX |
 
-### Diagram
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/upload-bom` | Upload BOM.xlsx → diagram |
-| `POST` | `/api/clarify` | Submit clarification answers |
-| `POST` | `/api/generate` | Generate from JSON resource list |
-| `POST` | `/api/refine` | Refine existing diagram |
-| `GET` | `/api/download/{filename}` | Download `.drawio` file |
-
-### Specialists
+### System
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/pov/generate` | Generate POV document |
-| `POST` | `/api/jep/generate` | Generate JEP |
-| `POST` | `/api/jep/approve` | Approve JEP |
-| `POST` | `/api/jep/kickoff` | Generate kickoff questions |
-| `POST` | `/api/jep/revision-request` | Request revision |
-| `POST` | `/api/waf/generate` | Generate WAF review |
-| `POST` | `/api/terraform/generate` | Generate Terraform bundle |
-| `GET` | `/api/terraform/{customer_id}/download/{filename}` | Download Terraform file |
-
-### Notes, Context & System
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/notes/upload` | Upload meeting notes |
-| `GET` | `/api/notes/{customer_id}` | List notes |
-| `GET` | `/api/context/{customer_id}` | Read engagement context |
 | `GET` | `/health` | Health check |
 | `GET` | `/.well-known/agent.json` | A2A agent card |
 
 ---
 
-## Hat System
+## Run Tests
 
-Expert lenses in `agent/hats/` are structured `.md` files with YAML frontmatter
-and named sections. When a hat activates, its full expert context is prepended to
-the system prompt as an `[ACTIVE EXPERT]` block. Each hat also receives a
-filtered `[MEMORY VIEW]` containing only the facts most relevant to its role.
-
-### Active Hats
-
-| Hat | Role | Auto-activated by |
-|-----|------|:-----------------:|
-| `critic` | Per-item Quality Bar review; approves or injects revision prompt | any `critique_enabled` tool |
-| `governor` | Deterministic guardrails for cost, security, compliance | manual |
-| `oci_bom_expert` | BOM sizing, SKU selection, pricing validation | `generate_bom` |
-| `diagram_for_oci` | OCI topology, traffic path, icon standards | `generate_diagram` |
-| `oci_waf_reviewer` | WAF pillar coverage, P1 severity checks | `generate_waf` |
-| `terraform_for_oci` | HCL validation, provider version, compartment strategy | `generate_terraform` |
-| `oci_customer_pov_writer` | POV document quality, press release + FAQ sections | `generate_pov` |
-| `jep_writer` | JEP document quality, success criteria, scope | `generate_jep` |
-
-### Hat File Format
-
-Each hat file uses YAML frontmatter (machine-readable) followed by structured
-markdown sections injected into the LLM system prompt at expert-block build time:
-
-```markdown
----
-version: "1.0"
-display_name: "OCI BOM Expert"
-hat_rules:
-  when_to_activate: ["user asks about cost, pricing, BOM, or budget"]
-  can_hand_off_to: ["diagram_for_oci", "terraform_for_oci"]
-  suggested_next_hat: "diagram_for_oci"
-memory_focus:
-  priority_fields: ["sizing", "cost_assumptions", "budget", "region"]
-  include_full_memory: false
-  emphasis: "Focus on quantities, pricing, and sizing gaps."
-coordination:
-  triggers: ["BOM generation is complete"]
-  recommended_hats: ["diagram_for_oci"]
-  parallel_with: []
-  handoff_message: "BOM review complete. Suggesting diagram generation next."
----
-
-# OCI BOM Expert Hat
-
-## Core Principles        ← expert mindset and invariants
-## Quality Bar            ← per-item checklist applied in critic pass and post-review Phase A
-## Pre-Action Checklist   ← what the expert confirms before calling the sub-agent (Step 4)
-## Post-Action Review     ← what the expert checks after the sub-agent returns (Step 6 Phase B)
-## Output Contract        ← required fields in a valid result
-## Critic Evaluation Guidance  ← specific guidance for the critic hat's review
-## Failure Questions      ← questions to surface if the result is rejected
-## Activation & Drop      ← when this hat activates and when it drops
+```bash
+pytest tests/ -v -m "not live"
 ```
 
-All sections are optional but **Pre-Action Checklist** and **Post-Action Review** are what
-drive the expert reasoning loop (Steps 4 and 6). A hat without them will still work but
-the expert pre-action and post-review will operate without domain-specific checklists.
+Live prompt-to-file tests (requires running server):
 
-See `skills/SKILL_TEMPLATE.md` for the full format reference.
-
-### Adding a New Hat
-
-Drop a `.md` file into `agent/hats/` — no Python changes required. SkillForge
-auto-discovers it and exposes `use_hat_{name}` / `drop_hat_{name}` tool calls.
-
----
-
-## Expert Reasoning Loop
-
-When the orchestrator wears a hat, Forge runs a structured reasoning sequence around
-every tool call. This is what makes the orchestrator feel like a senior expert, not a
-structured router.
-
-### Step 3 — Planning (before the ReAct loop)
-
-Before entering the ReAct loop, Forge reasons through:
-
-- **STEP 1 — UNDERSTAND:** Identifies the deliverable, whether it's new or a revision,
-  what's ambiguous, and **the primary architectural risk** (HA exposure, budget ceiling,
-  public ingress without filtering, compliance scope, etc.)
-- **STEP 2 — MEMORY ASSESSMENT:** What facts are confirmed vs. missing; whether there's
-  enough to produce a complete deliverable or questions must be asked first
-- **STEP 3 — PLAN + HAT SELECTION:** Which hat to activate and why; execution plan
-
-### Step 4 — Expert Pre-Action
-
-Before calling any hat-gated tool, the orchestrator thinks as the expert the hat defines:
-
-| Section | Content |
-|---------|---------|
-| **KNOWN FACTS** | Every confirmed value from memory and conversation — shapes, region, sizing, HA mode, budget, compliance scope. Specific values only. |
-| **GAPS** | Every unconfirmed item from the hat's `## Pre-Action Checklist`. For each: state the default and why it's safe. Unsafe-to-default items become `NEEDS_CLARIFICATION`. |
-| **EXPERT ASSESSMENT** | Workload pattern name → exact recommendation (specific services, shapes, SKUs) → why this over the main alternative → top risk and mitigation → proactive flag for the customer |
-| **SUB-AGENT TASK** | Complete, self-contained task brief for the sub-agent. Includes all confirmed values and defaults. No context references ("as discussed") — fully specified. |
-
-### Step 6 — Expert Post-Review
-
-After the tool returns, the orchestrator reviews the result across four phases:
-
-| Phase | What it checks | Output |
-|-------|---------------|--------|
-| **A — Quality Bar** | Each item in the hat's `## Quality Bar` section | `PASS` or `FAIL: <specific value>` per item |
-| **B — Post-Action Review** | Each item in the hat's `## Post-Action Review` section | `PASS` or `FAIL: <field and expected value>` per item |
-| **C — Memory consistency** | Result values against confirmed memory snapshot | `CONSISTENT` or `CONFLICT: <field> expected=X got=Y` |
-| **D — Architectural soundness** | Is this the right output for this customer? | GOAL FIT · ANTIPATTERNS · NEXT STEP FLAG (advisory — does not change routing) |
-
-Final decision: `EXPERT_APPROVED` / `EXPERT_ITERATE: <issue>` / `EXPERT_SURFACE: <issue>`
-
-### Critic Pass (after post-review approves)
-
-The critic hat applies its per-tool validation schema item by item. One failing check
-rejects the result with the specific field name and what was wrong. The critic can only
-call `critic_approve` — no other tool. This is the final quality gate before the result
-reaches the user.
-
----
-
-## Skills
-
-Global skill files in `skills/` are injected into the system prompt on every turn.
-
-| File | Purpose |
-|------|---------|
-| `skills/intent_routing.md` | When to respond conversationally vs call a tool |
-| `skills/SKILL_TEMPLATE.md` | Full format reference for hat and global skill files |
+```bash
+RUN_ARCHIE_PROMPT_FILE_LIVE=1 \
+AGENT_BASE_URL=http://127.0.0.1:18080 \
+pytest tests/test_archie_prompt_to_file_live.py -v -s
+```
 
 ---
 
@@ -549,15 +479,45 @@ Global skill files in `skills/` are injected into the system prompt on every tur
 
 ---
 
-## Run Tests
+## Repository Structure
 
-```bash
-pytest tests/ -v -m "not live"
+```
+arch_assistant/
+├── drawing_agent_server.py     FastAPI server — main entry point
+├── config.yaml                 All non-secret server config
+├── requirements.txt
+│
+├── skillforge/                 Domain-agnostic orchestration framework
+│   ├── forge.py                Forge class — run_turn(), reasoning loop
+│   ├── registry.py             Tool registration
+│   ├── types.py                TurnResult, ToolResult, MemorySnapshot, ...
+│   └── protocols.py            ToolHandler, Memory, HatEngine interfaces
+│
+├── agent/
+│   ├── archie_session.py       Thin session wrapper: load → forge.run_turn() → save
+│   ├── archie_wiring.py        build_forge(): Archie identity + tool registration
+│   ├── hat_engine.py           Loads hats, exposes use_hat_* tools
+│   ├── hats/                   Expert lenses (.md files)
+│   ├── tools/                  Forge tool handlers (one file per tool)
+│   └── ...                     BOM pipeline, diagram pipeline, persistence
+│
+├── sub_agents/                 Independent A2A specialist services
+│   ├── {name}/server.py        FastAPI A2A handler
+│   ├── {name}/system_prompt.md Sub-agent's own instructions
+│   └── {name}/config.yaml      Port, LLM config
+│
+├── skills/                     Global skill files (injected every turn)
+├── examples/aws_quickstart/    Minimal non-OCI example
+├── ui/                         React + Vite frontend
+├── tests/                      pytest test suite
+├── tasks/                      Codex implementation task files (p1–p55)
+└── docs/                       Architecture specs and requirements
 ```
 
 ---
 
-## Open Issues
+## Contributing / Codex
 
-See [GitHub Issues](https://github.com/jmurphy3141/arch_assistant/issues) for
-current bugs and planned improvements.
+Implementation work is tracked in `tasks/` as `p{N}-{name}.md` files.
+Each task file contains exact file paths, code changes, and runnable acceptance criteria.
+See `AGENTS.md` for the current architecture reference and development workflow.

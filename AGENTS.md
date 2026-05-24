@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Last updated: 2026-04-30 for Archie OCI Architecture Assistant v1.9.x.
+Last updated: 2026-05-24 for Archie OCI Architecture Assistant v1.9.x.
 
 Read this file first, then read `PLAN.md` before touching any code.
 `PLAN.md` is the locked architecture plan. It defines the target state,
@@ -50,8 +50,10 @@ with `PLAN.md`, stop and flag it — do not improvise.
   orchestration glue.
 - `agent/orchestrator_agent.py`: thin compatibility shim for existing Agent 0
   imports.
-- `agent/archie_loop.py`: ReAct loop, tool dispatch, intent classification
-  (moved here from orchestrator_agent.py in Phase 2).
+- `agent/archie_session.py`: thin session wrapper — loads history and context,
+  calls `forge.run_turn()`, saves results. Contains no routing or LLM logic.
+- `agent/archie_wiring.py`: `build_forge()` — constructs the Forge instance
+  with the Archie system prompt and registers all OCI tool handlers.
 - `agent/archie_memory.py`: context assembly, memory enforcement, BOM
   hydration, and specialist-question management.
 - `agent/hat_engine.py`: loads markdown hats and exposes hat activation tools
@@ -74,8 +76,10 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - Backend API: `drawing_agent_server.py` exposes health, artifact, chat,
   generate, clarify, upload, BOM, POV, JEP, WAF, and Terraform endpoints.
 - Static UI: the backend serves the Vite build from `ui/dist/` in production.
-- Orchestrator: `agent/archie_loop.py` decides whether to answer,
-  clarify, run deterministic fast paths, or delegate to specialist workflows.
+- Orchestrator: `skillforge/forge.py` owns the ReAct loop — planning, hat
+  activation, expert pre-action, tool dispatch, expert post-review, and
+  correction. `agent/archie_session.py` is a thin wrapper that loads state,
+  calls `forge.run_turn()`, and saves results.
 - ReAct prompts include internal orchestrator self-guidance; deterministic fast
   paths skip ReAct by design and are not self-guidance failures.
 - Decision Context is generated per turn, persisted to context, included in
