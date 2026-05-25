@@ -8,9 +8,9 @@ from fastapi.testclient import TestClient
 
 import agent.archie_session as archie_session
 import agent.notifications as notifications
-import agent.orchestrator_agent as orchestrator_agent
 import drawing_agent_server
 from agent.persistence_objectstore import InMemoryObjectStore
+from skillforge.types import TurnResult
 
 
 @pytest.fixture
@@ -19,17 +19,27 @@ def client(monkeypatch):
     drawing_agent_server.app.state.object_store = InMemoryObjectStore()
     drawing_agent_server.app.state.llm_runner = object()
 
-    async def fake_run_turn(**_kwargs):
-        return {
-            "reply": "Background POC step complete.",
-            "tool_calls": [],
-            "artifacts": {},
-            "history_length": 2,
-            "events": [],
-        }
+    class FakeForge:
+        async def run_turn_background(
+            self,
+            message,
+            history,
+            context,
+            on_complete,
+            on_error,
+            session_id="background",
+        ):
+            await on_complete(
+                TurnResult(
+                    reply="Background POC step complete.",
+                    tool_calls=[],
+                    artifacts={},
+                    history_length=2,
+                    events=[],
+                )
+            )
 
-    monkeypatch.setattr(archie_session, "run_turn", fake_run_turn)
-    monkeypatch.setattr(orchestrator_agent, "run_turn", fake_run_turn)
+    monkeypatch.setattr(archie_session, "_get_forge", lambda **_kwargs: FakeForge())
     monkeypatch.setattr(notifications, "_load_telegram_config", lambda: {"enabled": False})
 
     with TestClient(drawing_agent_server.app, raise_server_exceptions=True) as test_client:
