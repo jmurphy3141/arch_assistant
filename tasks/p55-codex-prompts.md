@@ -181,6 +181,65 @@ Branch: claude/p55c (from main, after p55b merged). Push when done.
 
 ---
 
+## p55d — Archie System Prompt: POC Pattern Recognition + Workflow Sequencing
+
+```
+Read tasks/p55d-archie-system-prompt.md carefully end to end before touching any code.
+
+IMPORTANT: Branch from origin/main AFTER p55b, p55c, and p55f are merged.
+
+  git fetch origin
+  git checkout -b claude/p55d origin/main
+
+Run the prerequisite check first:
+  python3.11 -m py_compile agent/archie_wiring.py
+  grep "POC Planning Workflow\|POC PATTERN RECOGNITION\|confirmed_option_name" agent/archie_wiring.py
+  # must be zero matches
+
+Only one file changes: agent/archie_wiring.py. Both changes are string appends
+inside existing triple-quoted strings — do not restructure or reformat existing content.
+
+Read agent/archie_wiring.py first:
+  - Find _EXPERT_IDENTITY (search for "## Expert Identity") — note the closing triple-quote
+  - Find _TOOL_SEQUENCING_RULES (search for "## Tool Sequencing Rules") — note the closing triple-quote
+
+Implement in this order:
+1. agent/archie_wiring.py — append POC PATTERN RECOGNITION + POC RISK INSTINCT +
+   PROACTIVE RECOMMENDATIONS block to _EXPERT_IDENTITY (before closing triple-quote)
+2. agent/archie_wiring.py — append ### POC Planning Workflow section to
+   _TOOL_SEQUENCING_RULES (before closing triple-quote); include all 8 numbered rules
+
+Run ALL acceptance criteria checks before committing:
+  python3.11 -m py_compile agent/archie_wiring.py
+
+  python3.11 -c "
+  from pathlib import Path
+  src = Path('agent/archie_wiring.py').read_text()
+  checks = [
+      ('POC Planning Workflow',            'workflow section header'),
+      ('action=\"confirm\"',               'confirm mode reference'),
+      ('confirmed_option_name',            'confirmed_option_name arg'),
+      ('Do NOT generate artifacts before', 'no-artifacts-before-confirm rule'),
+      ('stored procedures are the silent', 'proactive recommendation'),
+      ('Compatibility Checker',            'specific proactive tip'),
+      ('Wrong audience',                   'risk instinct: audience mismatch'),
+      ('POC PATTERN RECOGNITION',          'pattern recognition block'),
+  ]
+  for content, label in checks:
+      assert content in src, f'FAIL: {label!r} missing'
+  print('PASS')
+  "
+
+  pytest tests/ -q --tb=short -m "not live" 2>&1 | tail -10
+
+Commit message:
+p55d: POC workflow sequencing and pattern recognition in Archie system prompt
+
+Branch: claude/p55d (from main, after p55b + p55c + p55f merged). Push when done.
+```
+
+---
+
 ## p55e — PowerPoint Presentation Generation
 
 ```
@@ -257,65 +316,6 @@ p55e: PowerPoint presentation generation — 7-slide Oracle-standard POC deck wi
 
 Branch: claude/p55e (from main, after p55f merged). Push when done.
 ```
-
-## p55d — Archie System Prompt: POC Pattern Recognition + Workflow Sequencing
-
-```
-Read tasks/p55d-archie-system-prompt.md carefully end to end before touching any code.
-
-IMPORTANT: Branch from origin/main AFTER p55b, p55c, and p55f are merged.
-
-  git fetch origin
-  git checkout -b claude/p55d origin/main
-
-Run the prerequisite check first:
-  python3.11 -m py_compile agent/archie_wiring.py
-  grep "POC Planning Workflow\|POC PATTERN RECOGNITION\|confirmed_option_name" agent/archie_wiring.py
-  # must be zero matches
-
-Only one file changes: agent/archie_wiring.py. Both changes are string appends
-inside existing triple-quoted strings — do not restructure or reformat existing content.
-
-Read agent/archie_wiring.py first:
-  - Find _EXPERT_IDENTITY (search for "## Expert Identity") — note the closing triple-quote
-  - Find _TOOL_SEQUENCING_RULES (search for "## Tool Sequencing Rules") — note the closing triple-quote
-
-Implement in this order:
-1. agent/archie_wiring.py — append POC PATTERN RECOGNITION + POC RISK INSTINCT +
-   PROACTIVE RECOMMENDATIONS block to _EXPERT_IDENTITY (before closing triple-quote)
-2. agent/archie_wiring.py — append ### POC Planning Workflow section to
-   _TOOL_SEQUENCING_RULES (before closing triple-quote); include all 8 numbered rules
-
-Run ALL acceptance criteria checks before committing:
-  python3.11 -m py_compile agent/archie_wiring.py
-
-  python3.11 -c "
-  from pathlib import Path
-  src = Path('agent/archie_wiring.py').read_text()
-  checks = [
-      ('POC Planning Workflow',            'workflow section header'),
-      ('action=\"confirm\"',               'confirm mode reference'),
-      ('confirmed_option_name',            'confirmed_option_name arg'),
-      ('Do NOT generate artifacts before', 'no-artifacts-before-confirm rule'),
-      ('stored procedures are the silent', 'proactive recommendation'),
-      ('Compatibility Checker',            'specific proactive tip'),
-      ('Wrong audience',                   'risk instinct: audience mismatch'),
-      ('POC PATTERN RECOGNITION',          'pattern recognition block'),
-  ]
-  for content, label in checks:
-      assert content in src, f'FAIL: {label!r} missing'
-  print('PASS')
-  "
-
-  pytest tests/ -q --tb=short -m "not live" 2>&1 | tail -10
-
-Commit message:
-p55d: POC workflow sequencing and pattern recognition in Archie system prompt
-
-Branch: claude/p55d (from main, after p55b + p55c + p55f merged). Push when done.
-```
-
----
 
 ## p55f — Background Job Cleanup (Post-p55a Review)
 
