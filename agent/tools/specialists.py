@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 from agent import archie_memory, document_store, sub_agent_client
 from agent.persistence_objectstore import ObjectStoreBase
 from agent.sub_agent_client import SubAgentError
-from skillforge.types import MemorySnapshot, ToolResult
+from skillforge.types import MemorySnapshot, ParallelToolCall, ToolResult
 
 
 def build_inference_runner(app_state, *, inference_config: dict):
@@ -282,6 +283,18 @@ class PocStrategistHandler:
         context: dict[str, Any],
         trace_id: str,
     ) -> ToolResult:
+        user_message = str(args.get("_user_message", "") or args.get("prompt", "") or "")
+        confirmed_option = _detect_poc_confirmation(user_message, memory)
+        if confirmed_option is not None:
+            return self._build_fanout_result(confirmed_option, memory)
+        if _poc_confirmation_index(user_message) is not None and not _poc_options_from_memory(memory):
+            clarification = "Please generate a POC plan first with generate_poc_plan."
+            return ToolResult(
+                status="needs_input",
+                summary=clarification,
+                clarification=clarification,
+            )
+
         decision_context = memory.decision_context if memory else {}
         pain = str(decision_context.get("pain_statement") or "").strip()
         platform = str(decision_context.get("current_platform") or "").strip()
@@ -301,7 +314,6 @@ class PocStrategistHandler:
                 clarification=clarification,
             )
 
-        user_message = str(args.get("_user_message", "") or args.get("prompt", "") or "")
         customer_context = {
             "customer_id": self._customer_id,
             "customer_name": self._customer_name,
@@ -396,6 +408,79 @@ class PocStrategistHandler:
             data=payload,
         )
 
+    def _build_fanout_result(
+        self,
+        option: dict[str, Any],
+        memory: MemorySnapshot | None,
+    ) -> ToolResult:
+        poc_name = str(option.get("option_name") or "POC")
+        services = [
+            str(service)
+            for service in option.get("oci_services", [])
+            if str(service).strip()
+        ]
+        service_text = ", ".join(services)
+        dc = memory.decision_context if memory else {}
+        region = str(dc.get("region") or "us-chicago-1")
+        build_sequence = option.get("build_sequence", [])
+        demo_summary = str(option.get("demo_script_summary") or "")
+        wow_moment = str(option.get("wow_moment") or "")
+        base = (
+            f"POC: {poc_name}. "
+            f"Services: {service_text or 'use the confirmed POC option services'}. "
+            f"Demo: {demo_summary or wow_moment}"
+        ).strip()
+
+        return ToolResult(
+            status="parallel",
+            summary=f"POC confirmed: {poc_name}. Generating all artifacts in parallel...",
+            parallel_tools=[
+                ParallelToolCall(
+                    tool="generate_diagram",
+                    args={
+                        "diagram_name": _slugify_poc_name(poc_name),
+                        "prompt": f"Create OCI architecture diagram for: {base}",
+                        "_user_message": f"Create OCI architecture diagram for: {base}",
+                    },
+                ),
+                ParallelToolCall(
+                    tool="generate_bom",
+                    args={
+                        "prompt": f"Generate BOM for POC: {base}. Region: {region}",
+                        "_user_message": f"Generate BOM for POC: {base}. Region: {region}",
+                    },
+                ),
+                ParallelToolCall(
+                    tool="generate_jep",
+                    args={
+                        "feedback": (
+                            f"Create JEP execution plan for POC: {poc_name}. "
+                            f"Build sequence: {build_sequence}. Success criteria: {wow_moment}"
+                        ),
+                        "_user_message": (
+                            f"Create JEP execution plan for POC: {poc_name}. "
+                            f"Build sequence: {build_sequence}. Success criteria: {wow_moment}"
+                        ),
+                    },
+                ),
+                ParallelToolCall(
+                    tool="generate_terraform",
+                    args={
+                        "prompt": f"Generate Terraform for: {base}. Region: {region}",
+                        "_user_message": f"Generate Terraform for: {base}. Region: {region}",
+                    },
+                ),
+                ParallelToolCall(
+                    tool="generate_sales_deck",
+                    args={
+                        "feedback": f"Create client PowerPoint deck for POC: {base}",
+                        "_user_message": f"Create client PowerPoint deck for POC: {base}",
+                        "poc_option": option,
+                    },
+                ),
+            ],
+        )
+
 
 def _default_request(agent_name: str) -> str:
     if agent_name == "pov":
@@ -403,6 +488,54 @@ def _default_request(agent_name: str) -> str:
     if agent_name == "sales_deck":
         return "Generate an OCI customer-facing sales deck from current engagement context."
     return f"Generate the {agent_name.upper()} from current engagement context."
+
+
+_CONFIRMATION_PATTERNS: tuple[tuple[str, int], ...] = (
+    (r"\boption\s*1\b", 0),
+    (r"\boption\s*2\b", 1),
+    (r"\boption\s*3\b", 2),
+    (r"\bgo\s+with\b", 0),
+    (r"\bproceed\b", 0),
+    (r"\bproceed\s+with\b", 0),
+    (r"\bconfirm\b", 0),
+    (r"\blet'?s\s+do\b", 0),
+)
+
+
+def _poc_confirmation_index(user_message: str) -> int | None:
+    text = str(user_message or "").lower()
+    for pattern, index in _CONFIRMATION_PATTERNS:
+        if re.search(pattern, text):
+            return index
+    return None
+
+
+def _poc_options_from_memory(memory: MemorySnapshot | None) -> list[dict[str, Any]]:
+    decision_context = memory.decision_context if memory else {}
+    poc_options = decision_context.get("poc_options", [])
+    if not isinstance(poc_options, list):
+        return []
+    return [option for option in poc_options if isinstance(option, dict)]
+
+
+def _detect_poc_confirmation(
+    user_message: str,
+    memory: MemorySnapshot | None,
+) -> dict[str, Any] | None:
+    """Return the confirmed POC option dict, or None if no confirmation matched."""
+    index = _poc_confirmation_index(user_message)
+    if index is None:
+        return None
+    poc_options = _poc_options_from_memory(memory)
+    if not poc_options:
+        return None
+    safe_index = min(index, len(poc_options) - 1)
+    return poc_options[safe_index]
+
+
+def _slugify_poc_name(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+    return (slug or "poc")[:40]
 
 
 def _poc_option_score(option: dict[str, Any]) -> float:
