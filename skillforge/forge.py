@@ -38,7 +38,7 @@ import json
 import logging
 import re
 import uuid
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from skillforge.protocols import (
     ArgSchema,
@@ -877,6 +877,27 @@ class Forge:
             history_length=len(history or []) + 1,
             events=events,
         )
+
+    async def run_turn_background(
+        self,
+        message: str,
+        history: list[dict[str, Any]] | None,
+        context: dict[str, Any],
+        on_complete: Callable[[TurnResult], Awaitable[None]],
+        on_error: Callable[[Exception], Awaitable[None]],
+        *,
+        session_id: str = "background",
+    ) -> None:
+        try:
+            result = await self.run_turn(
+                session_id=session_id,
+                user_message=message,
+                context=context,
+                history=history,
+            )
+            await on_complete(result)
+        except Exception as exc:
+            await on_error(exc)
 
     async def invoke_tool(
         self,

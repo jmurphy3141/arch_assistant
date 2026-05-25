@@ -3576,6 +3576,69 @@ async def api_chat(req: OrchestratorChatRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.post("/api/chat/background", status_code=202)
+async def api_chat_background(req: OrchestratorChatRequest):
+    """
+    Start a chat turn in the background and return a pollable job ID.
+    """
+    job_id = _new_job()
+    store = _require_object_store()
+    text_runner = _make_orchestrator_text_runner()
+    tool_runner = (
+        None
+        if isinstance(store, InMemoryObjectStore)
+        else _make_orchestrator_tool_runner()
+    )
+    orch_cfg = _cfg.get("orchestrator", {})
+
+    async def _run_background_chat() -> None:
+        try:
+            result = await _run_orchestrator_turn(
+                req=req,
+                store=store,
+                text_runner=text_runner,
+                tool_runner=tool_runner,
+                orch_cfg=orch_cfg,
+            )
+            result = await _persist_bom_xlsx_downloads(req.customer_id, store, result)
+            artifact_manifest = _build_artifact_manifest(req.customer_id, result)
+            project_membership = _persist_chat_project_membership(store, req)
+            payload = {
+                "status":         "ok",
+                "trace_id":       _current_trace_id(),
+                "project_id":     project_membership["project_id"],
+                "project_name":   project_membership["project_name"],
+                "engagement_id":  req.customer_id,
+                "reply":          result["reply"],
+                "tool_calls":     result["tool_calls"],
+                "artifacts":      result["artifacts"],
+                "artifact_manifest": artifact_manifest,
+                "history_length": result["history_length"],
+            }
+            _complete_job(job_id, payload)
+            try:
+                from agent.notifications import notify
+                notify(
+                    "poc_step_complete",
+                    req.customer_id,
+                    detail=str(result.get("reply", ""))[:200],
+                )
+            except Exception:
+                logger.exception("Background chat notification failed job_id=%s", job_id)
+        except Exception as exc:
+            logger.error(
+                "/api/chat/background error customer=%s job_id=%s trace_id=%s: %s",
+                req.customer_id,
+                job_id,
+                _current_trace_id(),
+                exc,
+            )
+            _fail_job(job_id, str(exc))
+
+    asyncio.create_task(_run_background_chat())
+    return {"job_id": job_id, "status": "pending"}
+
+
 @app.post("/api/chat/stream")
 async def api_chat_stream(
     req: OrchestratorChatRequest,
