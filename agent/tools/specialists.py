@@ -268,6 +268,134 @@ class SalesDeckHandler(_SpecialistHandler):
         super().__init__("sales_deck", "deck", store, customer_id, customer_name)
 
 
+class PocStrategistHandler:
+    def __init__(self, store, customer_id, customer_name):
+        self._store = store
+        self._customer_id = customer_id
+        self._customer_name = customer_name
+
+    async def __call__(
+        self,
+        args: dict[str, Any],
+        *,
+        memory: MemorySnapshot | None,
+        context: dict[str, Any],
+        trace_id: str,
+    ) -> ToolResult:
+        decision_context = memory.decision_context if memory else {}
+        pain = str(decision_context.get("pain_statement") or "").strip()
+        platform = str(decision_context.get("current_platform") or "").strip()
+
+        if not pain:
+            clarification = "NEEDS_CLARIFICATION: What is the customer's primary pain?"
+            return ToolResult(
+                status="needs_input",
+                summary=clarification,
+                clarification=clarification,
+            )
+        if not platform:
+            clarification = "NEEDS_CLARIFICATION: What platform is the customer currently running on?"
+            return ToolResult(
+                status="needs_input",
+                summary=clarification,
+                clarification=clarification,
+            )
+
+        user_message = str(args.get("_user_message", "") or args.get("prompt", "") or "")
+        customer_context = {
+            "customer_id": self._customer_id,
+            "customer_name": self._customer_name,
+            "pain_statement": pain,
+            "current_platform": platform,
+            "decision_context": decision_context,
+        }
+        base_task = (
+            f"Customer: {self._customer_name}\n"
+            f"Context: {user_message}\n\n"
+            f"Decision context:\n{json.dumps(decision_context, indent=2, sort_keys=True)}"
+        )
+        angles = [
+            "migration_modernization",
+            "performance_scale_ai",
+            "cost_optimization_tco",
+        ]
+
+        results = await asyncio.gather(
+            *[
+                sub_agent_client.call_sub_agent(
+                    "poc_strategist",
+                    task=base_task,
+                    engagement_context={
+                        "angle": angle,
+                        "customer_id": self._customer_id,
+                        "customer_context": customer_context,
+                    },
+                    trace_id=trace_id,
+                )
+                for angle in angles
+            ],
+            return_exceptions=True,
+        )
+
+        options: list[dict[str, Any]] = []
+        failures: list[str] = []
+        for angle, response in zip(angles, results):
+            if isinstance(response, Exception):
+                failures.append(f"{angle}: {response}")
+                continue
+            if str(response.get("status") or "").lower() != "ok":
+                failures.append(f"{angle}: status={response.get('status')}")
+                continue
+            try:
+                option = json.loads(str(response.get("result") or ""))
+            except json.JSONDecodeError as exc:
+                failures.append(f"{angle}: invalid_json={exc}")
+                continue
+            if isinstance(option, dict):
+                option.setdefault("angle", angle)
+                options.append(option)
+
+        if not options:
+            return ToolResult(
+                status="blocked",
+                summary="All 3 POC exploration angles failed.",
+                data={"failures": failures},
+            )
+
+        options.sort(key=_poc_option_score, reverse=True)
+        recommendation = options[0]
+        recommended_name = str(recommendation.get("option_name") or "recommended POC")
+        relevance = recommendation.get("relevance_score", 0)
+        hours = recommendation.get("executability_hours", 0)
+        payload = {
+            "poc_options": options,
+            "recommendation": {
+                "poc_name": recommended_name,
+                "rationale": (
+                    f"Best fit for the stated pain '{pain}': highest relevance "
+                    f"({relevance}/10) with {hours}h build time."
+                ),
+                "build_sequence": [],
+                "success_criteria": str(recommendation.get("wow_moment") or ""),
+            },
+        }
+
+        saved = await asyncio.to_thread(
+            _save_json_doc,
+            self._store,
+            "poc_plan",
+            self._customer_id,
+            json.dumps(payload, indent=2),
+            {"trace_id": trace_id, "failures": failures},
+        )
+
+        return ToolResult(
+            status="ok",
+            summary=f"Generated {len(options)} POC options. Recommended: {recommended_name}",
+            artifact_key=str(saved.get("key", "") or ""),
+            data=payload,
+        )
+
 
 def _default_request(agent_name: str) -> str:
     if agent_name == "pov":
@@ -275,6 +403,18 @@ def _default_request(agent_name: str) -> str:
     if agent_name == "sales_deck":
         return "Generate an OCI customer-facing sales deck from current engagement context."
     return f"Generate the {agent_name.upper()} from current engagement context."
+
+
+def _poc_option_score(option: dict[str, Any]) -> float:
+    try:
+        relevance = float(option.get("relevance_score") or 0)
+    except (TypeError, ValueError):
+        relevance = 0.0
+    try:
+        hours = float(option.get("executability_hours") or 8)
+    except (TypeError, ValueError):
+        hours = 8.0
+    return relevance / max(hours, 1.0)
 
 
 def _save_json_doc(

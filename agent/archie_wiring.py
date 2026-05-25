@@ -15,7 +15,14 @@ from agent.persistence_objectstore import ObjectStoreBase
 from agent.tools.bom import BomHandler
 from agent.tools.diagram import DiagramHandler
 from agent.tools.notes import NotesHandlers
-from agent.tools.specialists import JepHandler, PovHandler, SalesDeckHandler, TechResearchHandler, WafHandler
+from agent.tools.specialists import (
+    JepHandler,
+    PocStrategistHandler,
+    PovHandler,
+    SalesDeckHandler,
+    TechResearchHandler,
+    WafHandler,
+)
 from agent.tools.terraform import TerraformHandler
 from skillforge import ArgSchema, Forge
 from skillforge.types import MemorySnapshot
@@ -95,6 +102,13 @@ These rules are mandatory. Follow them on every generation request.
    generate_tech_report (if previously generated) -> generate_bom -> generate_diagram ->
    generate_waf -> generate_terraform -> generate_pov -> generate_sales_deck -> generate_jep
    (skip any that were not previously generated).
+
+### POC workflow
+8a. When the user needs to know what to build for a customer, call
+    generate_poc_plan first.
+8b. After poc_plan is confirmed by the user, call generate_diagram +
+    generate_bom + generate_jep + generate_terraform + generate_presentation
+    together (they will fan out in parallel).
 
 ### Tool-call discipline (mandatory)
 9. You MUST output a tool-call JSON line for every generation request. Never
@@ -330,6 +344,31 @@ def build_forge(
         memory_contract=True,
         critique_enabled=True,
         requires_hat="infra_tech_research",
+    )
+    forge.register_tool(
+        "generate_poc_plan",
+        PocStrategistHandler(
+            store=store,
+            customer_id=customer_id,
+            customer_name=customer_name,
+        ),
+        description=(
+            "Explores 3 parallel POC options across migration, performance/AI, "
+            "and cost angles. Returns ranked options with effort and value "
+            "scores, and a recommended POC with demo script."
+        ),
+        args={"prompt": ArgSchema(
+            description=(
+                "Customer context and POC planning request. Include pain, current "
+                "platform, timeline, budget signal, industry, and competitive context "
+                "when known."
+            ),
+            type="string",
+            required=False,
+        )},
+        memory_contract=True,
+        critique_enabled=True,
+        requires_hat="oci_poc_strategist",
     )
     forge.register_tool(
         "generate_waf",

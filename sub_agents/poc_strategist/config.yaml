@@ -1,0 +1,6 @@
+name: poc_strategist
+port: 8090
+llm:
+  model_id: ""
+  max_tokens: 2048
+  temperature: 0.6
