@@ -85,7 +85,7 @@ def _send(event: str, customer_id: str, detail: str) -> None:
     except RuntimeError:
         logger.debug("Skipping Telegram notification outside an active event loop")
         return
-    loop.create_task(_send_telegram(message))
+    loop.create_task(_send_telegram(message, cfg))
 
 
 def _format_message(event: str, customer_id: str, detail: str) -> str:
@@ -115,8 +115,7 @@ def _load_telegram_config() -> dict:
     return legacy if isinstance(legacy, dict) else {}
 
 
-async def _send_telegram(message: str) -> None:
-    cfg = _load_telegram_config()
+async def _send_telegram(message: str, cfg: dict) -> None:
     token_env = cfg.get("bot_token_env", cfg.get("telegram_bot_token_env", "TELEGRAM_BOT_TOKEN"))
     chat_id_env = cfg.get("chat_id_env", cfg.get("telegram_chat_id_env", "TELEGRAM_CHAT_ID"))
     token = os.environ.get(str(token_env), "")

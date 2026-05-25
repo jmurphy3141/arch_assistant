@@ -45,7 +45,9 @@ import time
 import urllib.parse
 import urllib.request as _urlreq
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import anyio
@@ -108,6 +110,7 @@ from agent.document_store import (
     get_jep_questions,
     save_jep_questions,
     load_conversation_history,
+    save_conversation_turns,
     clear_conversation_history,
     clear_conversation_summary,
     list_conversation_summaries,
@@ -3589,53 +3592,121 @@ async def api_chat_background(req: OrchestratorChatRequest):
         if isinstance(store, InMemoryObjectStore)
         else _make_orchestrator_tool_runner()
     )
-    orch_cfg = _cfg.get("orchestrator", {})
+    a2a_base_url = os.environ.get("A2A_BASE_URL", "http://localhost:8080")
 
-    async def _run_background_chat() -> None:
-        try:
-            result = await _run_orchestrator_turn(
-                req=req,
-                store=store,
-                text_runner=text_runner,
-                tool_runner=tool_runner,
-                orch_cfg=orch_cfg,
+    from agent import archie_session
+
+    history = await anyio.to_thread.run_sync(
+        functools.partial(load_conversation_history, store, req.customer_id)
+    )
+    context = await anyio.to_thread.run_sync(
+        functools.partial(read_context, store, req.customer_id, req.customer_name)
+    )
+    forge = archie_session._get_forge(
+        customer_id=req.customer_id,
+        customer_name=req.customer_name,
+        store=store,
+        text_runner=text_runner,
+        tool_runner=tool_runner,
+        a2a_base_url=a2a_base_url,
+    )
+    session = SimpleNamespace(forge=forge, history=history, context=context)
+    new_turns = [
+        {
+            "role": "user",
+            "content": req.message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "customer_name": req.customer_name,
+        }
+    ]
+
+    def _turn_result_to_dict(result) -> dict:
+        tool_calls = []
+        forge_tool_calls = result.tool_calls if isinstance(result.tool_calls, list) else []
+        for tc in forge_tool_calls:
+            tool_calls.append(
+                {
+                    "tool": tc.tool,
+                    "args": tc.args,
+                    "result_summary": tc.result.summary,
+                    "result_data": dict(tc.result.data or {}),
+                    "artifact_key": tc.result.artifact_key or "",
+                }
             )
-            result = await _persist_bom_xlsx_downloads(req.customer_id, store, result)
-            artifact_manifest = _build_artifact_manifest(req.customer_id, result)
-            project_membership = _persist_chat_project_membership(store, req)
-            payload = {
-                "status":         "ok",
-                "trace_id":       _current_trace_id(),
-                "project_id":     project_membership["project_id"],
-                "project_name":   project_membership["project_name"],
-                "engagement_id":  req.customer_id,
-                "reply":          result["reply"],
-                "tool_calls":     result["tool_calls"],
-                "artifacts":      result["artifacts"],
-                "artifact_manifest": artifact_manifest,
-                "history_length": result["history_length"],
+        forge_events = result.events if isinstance(result.events, list) else []
+        return {
+            "reply": result.reply,
+            "tool_calls": tool_calls,
+            "artifacts": dict(result.artifacts or {}),
+            "history_length": len(session.history) + 2,
+            "events": [
+                {
+                    "type": event.type,
+                    "message": event.message,
+                    "data": dict(event.data or {}),
+                }
+                for event in forge_events
+            ],
+        }
+
+    async def on_complete(result) -> None:
+        result_dict = _turn_result_to_dict(result)
+        new_turns.append(
+            {
+                "role": "assistant",
+                "content": result_dict["reply"],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
-            _complete_job(job_id, payload)
-            try:
-                from agent.notifications import notify
-                notify(
-                    "poc_step_complete",
-                    req.customer_id,
-                    detail=str(result.get("reply", ""))[:200],
-                )
-            except Exception:
-                logger.exception("Background chat notification failed job_id=%s", job_id)
-        except Exception as exc:
-            logger.error(
-                "/api/chat/background error customer=%s job_id=%s trace_id=%s: %s",
+        )
+        await anyio.to_thread.run_sync(
+            functools.partial(save_conversation_turns, store, req.customer_id, new_turns)
+        )
+        result_dict = await _persist_bom_xlsx_downloads(req.customer_id, store, result_dict)
+        artifact_manifest = _build_artifact_manifest(req.customer_id, result_dict)
+        project_membership = _persist_chat_project_membership(store, req)
+        payload = {
+            "status":         "ok",
+            "trace_id":       _current_trace_id(),
+            "project_id":     project_membership["project_id"],
+            "project_name":   project_membership["project_name"],
+            "engagement_id":  req.customer_id,
+            "reply":          result_dict["reply"],
+            "tool_calls":     result_dict["tool_calls"],
+            "artifacts":      result_dict["artifacts"],
+            "artifact_manifest": artifact_manifest,
+            "history_length": result_dict["history_length"],
+        }
+        _complete_job(job_id, payload)
+        try:
+            from agent.notifications import notify
+            notify(
+                "poc_step_complete",
                 req.customer_id,
-                job_id,
-                _current_trace_id(),
-                exc,
+                detail=str(result_dict.get("reply", ""))[:200],
             )
-            _fail_job(job_id, str(exc))
+        except Exception:
+            logger.exception("Background chat notification failed job_id=%s", job_id)
 
-    asyncio.create_task(_run_background_chat())
+    async def on_error(exc: Exception) -> None:
+        logger.error(
+            "/api/chat/background error customer=%s job_id=%s trace_id=%s: %s",
+            req.customer_id,
+            job_id,
+            _current_trace_id(),
+            exc,
+        )
+        _fail_job(job_id, str(exc))
+
+    asyncio.create_task(
+        session.forge.run_turn_background(
+            message=req.message,
+            history=session.history,
+            context=session.context,
+            on_complete=on_complete,
+            on_error=on_error,
+            session_id=req.customer_id,
+        )
+    )
     return {"job_id": job_id, "status": "pending"}
 
 

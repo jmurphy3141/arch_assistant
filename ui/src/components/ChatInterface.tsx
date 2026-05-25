@@ -858,11 +858,13 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
         };
         setMessages(prev => [...prev, assistantMsg]);
         setBackgroundJobId(null);
+        setBackgroundMode(false);
       } catch (err: unknown) {
         if (cancelled) return;
         const e = err as { status?: number; detail?: string };
         setError(`Background job failed: ${e.detail ?? 'unknown error'}`);
         setBackgroundJobId(null);
+        setBackgroundMode(false);
       }
     };
     const timer = window.setInterval(() => { void poll(); }, 5000);
