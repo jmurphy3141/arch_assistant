@@ -135,6 +135,7 @@ sub_agents:
   terraform: "http://localhost:8087"
   tech_research: "http://localhost:8088"
   sales_deck: "http://localhost:8089"
+  poc_strategist: "http://localhost:8090"
 
 telegram:
   enabled: false
