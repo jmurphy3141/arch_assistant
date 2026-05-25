@@ -3,7 +3,7 @@
 **Repository:** jmurphy3141/arch_assistant
 **Branch:** claude/explore-repo-Os53i
 **Requirements:** docs/requirements-poc-workflow.md FR-4.*
-**Can be worked in parallel with:** Issue 1
+**Depends on:** p55f merged
 
 ---
 

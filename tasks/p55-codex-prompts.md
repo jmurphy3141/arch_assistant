@@ -7,8 +7,9 @@ kick off generation during a meeting, a POC Strategist that explores 3 parallel
 options and recommends the best fit, parallel artifact fan-out once the SE
 confirms, and a PowerPoint deck as the final client deliverable.
 
-p55a and p55e are independent — work in parallel. p55b before p55c (fan-out
-extends the handler built in p55b). p55d after p55b + p55c. p55f after p55a.
+Run order: p55a → p55f (cleanup). p55b → p55c. p55f → p55d and p55e.
+p55b/p55c and p55a/p55f can run in parallel with each other.
+p55d requires p55b + p55c + p55f. p55e requires p55f.
 
 Port assignments (do not reuse):
 - 8082–8089: taken (see config.yaml)
@@ -185,7 +186,7 @@ Branch: claude/p55c (from main, after p55b merged). Push when done.
 ```
 Read tasks/p55e-powerpoint.md carefully end to end before touching any code.
 
-IMPORTANT: Branch from origin/main. Can develop in parallel with p55a and p55b.
+IMPORTANT: Branch from origin/main AFTER p55f is merged.
 
   git fetch origin
   git checkout -b claude/p55e origin/main
@@ -250,7 +251,7 @@ print('7-slide check passed')
 Commit message:
 p55e: PowerPoint presentation generation — 7-slide Oracle-standard POC deck with OCI stencils
 
-Branch: claude/p55e (from main). Push when done.
+Branch: claude/p55e (from main, after p55f merged). Push when done.
 ```
 
 ## p55d — Archie System Prompt: POC Pattern Recognition + Workflow Sequencing
@@ -258,7 +259,7 @@ Branch: claude/p55e (from main). Push when done.
 ```
 Read tasks/p55d-archie-system-prompt.md carefully end to end before touching any code.
 
-IMPORTANT: Branch from origin/main AFTER p55b and p55c are merged.
+IMPORTANT: Branch from origin/main AFTER p55b, p55c, and p55f are merged.
 
   git fetch origin
   git checkout -b claude/p55d origin/main
@@ -307,7 +308,7 @@ Run ALL acceptance criteria checks before committing:
 Commit message:
 p55d: POC workflow sequencing and pattern recognition in Archie system prompt
 
-Branch: claude/p55d (from main, after p55b + p55c merged). Push when done.
+Branch: claude/p55d (from main, after p55b + p55c + p55f merged). Push when done.
 ```
 
 ---
