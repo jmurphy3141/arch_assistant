@@ -15,6 +15,7 @@ from agent.persistence_objectstore import ObjectStoreBase
 from agent.tools.bom import BomHandler
 from agent.tools.diagram import DiagramHandler
 from agent.tools.notes import NotesHandlers
+from agent.tools.presentation import PresentationHandler
 from agent.tools.specialists import (
     JepHandler,
     PocStrategistHandler,
@@ -434,6 +435,25 @@ def build_forge(
         memory_contract=True,
         critique_enabled=True,
         requires_hat="oci_waf_reviewer",
+    )
+    forge.register_tool("generate_presentation",
+        PresentationHandler(
+            store=store,
+            customer_id=customer_id,
+            customer_name=customer_name,
+        ),
+        description=(
+            "Generates a 7-slide client-facing Oracle-standard PowerPoint POC "
+            "deck with OCI icon stencils."
+        ),
+        args={"poc_option": ArgSchema(
+            description="Optional confirmed POC option payload from generate_poc_plan.",
+            type="object",
+            required=False,
+        )},
+        memory_contract=True,
+        critique_enabled=True,
+        requires_hat="oci_presentation_writer",
     )
     forge.register_tool(
         "generate_sales_deck",

@@ -2362,12 +2362,41 @@ async def generate_from_resources(req: GenerateRequest, _user: dict = Depends(re
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+def _download_pptx_artifact(key: str) -> Response:
+    object_store = getattr(app.state, "object_store", None)
+    if object_store is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        content = object_store.get(key)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="File not found")
+    media_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    artifact_filename = key.split("/")[-1]
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{artifact_filename}"'},
+    )
+
+
+@app.get("/download")
+@app.get("/api/download")
+async def download_artifact_by_key(
+    key: Optional[str] = Query(default=None),
+    _user: dict = Depends(require_user),
+):
+    if key and key.endswith(".pptx"):
+        return _download_pptx_artifact(key)
+    raise HTTPException(status_code=400, detail="Query param key is required.")
+
+
 @app.get("/download/{filename}")
 @app.get("/api/download/{filename}")
 async def download_file(
     filename:     str,
     client_id:    Optional[str] = Query(default=None),
     diagram_name: Optional[str] = Query(default=None),
+    key:          Optional[str] = Query(default=None),
     _user:        dict          = Depends(require_user),
 ):
     """
@@ -2379,6 +2408,9 @@ async def download_file(
       2. Object store via LATEST.json (if app.state.object_store is set)
     Only filenames in ARTIFACT_ALLOWLIST are served from object store.
     """
+    if key and key.endswith(".pptx"):
+        return _download_pptx_artifact(key)
+
     if not client_id or not diagram_name:
         raise HTTPException(
             status_code=400,

@@ -190,7 +190,7 @@ async def test_confirmation_tool_names_correct():
         "generate_bom",
         "generate_jep",
         "generate_terraform",
-        "generate_sales_deck",
+        "generate_presentation",
     }
 
 
