@@ -291,6 +291,24 @@ if artifact_key.endswith(".pptx"):
 
 ---
 
+## Additional requirement from p55c
+
+`agent/tools/specialists.py` `_build_fanout_result()` currently uses
+`generate_sales_deck` as a placeholder because `generate_presentation` was not
+registered when p55c shipped. Once `generate_presentation` is registered here,
+update that one line in `_build_fanout_result()`:
+
+```python
+# Change in _build_fanout_result():
+ParallelToolCall(tool="generate_sales_deck", ...)   # before p55e
+ParallelToolCall(tool="generate_presentation", ...)  # after p55e
+```
+
+Also update `tests/test_poc_strategist.py` `test_confirmation_tool_names_correct`
+to assert `generate_presentation` instead of `generate_sales_deck`.
+
+---
+
 ## Constraints
 
 - Use Oracle toolkit PPTX for icon shapes — not generic python-pptx shapes or clip art

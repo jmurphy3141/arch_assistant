@@ -247,6 +247,10 @@ print('7-slide check passed')
 "
   pytest tests/test_presentation.py -v  # create this file per spec
 
+  # Verify the p55c placeholder swap
+  grep "generate_presentation" agent/tools/specialists.py  # must show in _build_fanout_result
+  grep "generate_presentation" tests/test_poc_strategist.py  # must show in tool names test
+
 Commit message:
 p55e: PowerPoint presentation generation — 7-slide Oracle-standard POC deck with OCI stencils
 
