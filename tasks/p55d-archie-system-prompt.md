@@ -2,7 +2,7 @@
 
 **Repository:** jmurphy3141/arch_assistant
 **Branch:** claude/p55d
-**Depends on:** p55b and p55c merged
+**Depends on:** p55b, p55c, and p55f merged
 **Only file changed:** `agent/archie_wiring.py`
 
 ---
