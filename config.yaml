@@ -136,6 +136,7 @@ sub_agents:
   tech_research: "http://localhost:8088"
   sales_deck: "http://localhost:8089"
   poc_strategist: "http://localhost:8090"
+  presentation: "http://localhost:8091"
 
 telegram:
   enabled: false

@@ -471,9 +471,8 @@ class PocStrategistHandler:
                     },
                 ),
                 ParallelToolCall(
-                    tool="generate_sales_deck",
+                    tool="generate_presentation",
                     args={
-                        "feedback": f"Create client PowerPoint deck for POC: {base}",
                         "_user_message": f"Create client PowerPoint deck for POC: {base}",
                         "poc_option": option,
                     },
