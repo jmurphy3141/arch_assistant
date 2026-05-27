@@ -283,36 +283,45 @@ class PocStrategistHandler:
         context: dict[str, Any],
         trace_id: str,
     ) -> ToolResult:
+        action = str(args.get("action", "") or "").strip().lower()
+        confirmed_option_name = str(args.get("confirmed_option_name", "") or "").strip()
         user_message = str(args.get("_user_message", "") or args.get("prompt", "") or "")
-        confirmed_option = _detect_poc_confirmation(user_message, memory)
-        if confirmed_option is not None:
-            return self._build_fanout_result(confirmed_option, memory)
-        if _poc_confirmation_index(user_message) is not None and not _poc_options_from_memory(memory):
-            clarification = "Please generate a POC plan first with generate_poc_plan."
-            return ToolResult(
-                status="needs_input",
-                summary=clarification,
-                clarification=clarification,
+
+        # action="confirm" with confirmed_option_name takes priority
+        if action == "confirm" or confirmed_option_name:
+            poc_options = _poc_options_from_memory(memory)
+            if not poc_options:
+                clarification = "No POC options in memory yet. Call generate_poc_plan with action='explore' first."
+                return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
+            # Match by name, fall back to first option
+            matched = next(
+                (o for o in poc_options if str(o.get("option_name", "")).lower() == confirmed_option_name.lower()),
+                poc_options[0],
             )
+            return self._build_fanout_result(matched, memory)
+
+        # Legacy: confirmation detected from _user_message (fallback for non-action calls)
+        if action != "explore":
+            confirmed_option = _detect_poc_confirmation(user_message, memory)
+            if confirmed_option is not None:
+                return self._build_fanout_result(confirmed_option, memory)
+            if _poc_confirmation_index(user_message) is not None and not _poc_options_from_memory(memory):
+                clarification = "No POC options yet. Call generate_poc_plan with action='explore' first."
+                return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
 
         decision_context = memory.decision_context if memory else {}
         pain = str(decision_context.get("pain_statement") or "").strip()
         platform = str(decision_context.get("current_platform") or "").strip()
 
+        # Accept context summary or free-form prompt as pain/platform fallback
+        if not pain:
+            pain = str(args.get("context", "") or args.get("customer_context", "") or user_message or "").strip()
+        if not platform:
+            platform = str(decision_context.get("current_state", "") or "").strip() or "unspecified"
+
         if not pain:
             clarification = "NEEDS_CLARIFICATION: What is the customer's primary pain?"
-            return ToolResult(
-                status="needs_input",
-                summary=clarification,
-                clarification=clarification,
-            )
-        if not platform:
-            clarification = "NEEDS_CLARIFICATION: What platform is the customer currently running on?"
-            return ToolResult(
-                status="needs_input",
-                summary=clarification,
-                clarification=clarification,
-            )
+            return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
 
         customer_context = {
             "customer_id": self._customer_id,

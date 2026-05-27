@@ -216,7 +216,7 @@ async def test_confirmation_no_poc_options_in_memory_returns_needs_input(monkeyp
     )
 
     assert result.status == "needs_input"
-    assert result.clarification == "Please generate a POC plan first with generate_poc_plan."
+    assert result.clarification is not None and "generate_poc_plan" in result.clarification
     assert called is False
 
 
