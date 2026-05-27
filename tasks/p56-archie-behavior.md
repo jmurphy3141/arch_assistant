@@ -4,8 +4,8 @@
 **Branch:** claude/p56 (from main)
 **Context:** Issues found during live RGA session on 2026-05-27
 
-Three independent fixes. p56a and p56b can run in parallel. p56c depends on
-understanding from p56a and p56b but touches different files.
+Five fixes. p56a, p56b, and p56d can run in parallel. p56c depends on p56a+p56b.
+p56e depends on p56d.
 
 ---
 
@@ -236,13 +236,138 @@ touches forge.py and must not conflict).
 
 ---
 
+---
+
+## p56d — Sub-agent startup on server restart
+
+**Problem:** `poc_strategist` (port 8090) and `presentation` (port 8091) are new
+sub-agents added in p55b and p55e. They are independent processes that must be
+started alongside the main server. Currently they have no startup wiring — if the
+server restarts, both sub-agents die and all `generate_poc_plan` calls fail with
+"All 3 POC exploration angles failed."
+
+**Fix — two parts:**
+
+**Part 1:** Add the two sub-agents to `deploy/oci-agent.service` (or create
+companion unit files) so systemd starts and restarts them automatically:
+
+```ini
+# deploy/oci-poc-strategist.service
+[Unit]
+Description=Archie POC Strategist Sub-Agent
+After=network.target
+
+[Service]
+User=opc
+WorkingDirectory=/home/opc/drawing-agent
+ExecStart=/usr/bin/python3.11 -m sub_agents.poc_strategist.server
+Restart=always
+StandardOutput=append:/home/opc/drawing-agent/poc_strategist.log
+StandardError=append:/home/opc/drawing-agent/poc_strategist.log
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# deploy/oci-presentation.service
+[Unit]
+Description=Archie Presentation Sub-Agent
+After=network.target
+
+[Service]
+User=opc
+WorkingDirectory=/home/opc/drawing-agent
+ExecStart=/usr/bin/python3.11 -m sub_agents.presentation.server
+Restart=always
+StandardOutput=append:/home/opc/drawing-agent/presentation.log
+StandardError=append:/home/opc/drawing-agent/presentation.log
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Part 2:** Update `deploy/README.md` port table to include the two new sub-agents
+(8090: poc_strategist, 8091: presentation) and document the systemd unit install
+steps.
+
+**Acceptance criteria:**
+```bash
+ls deploy/oci-poc-strategist.service deploy/oci-presentation.service
+grep "8090\|poc_strategist" deploy/README.md
+grep "8091\|presentation" deploy/README.md
+```
+
+**Commit message:**
+```
+p56d: add systemd service units for poc_strategist (8090) and presentation (8091) sub-agents
+```
+
+**Branch:** `claude/p56d` from main. Independent of p56a/b/c.
+
+---
+
+## p56e — UI progress indicator for POC sub-agent calls
+
+**Problem:** When `generate_poc_plan` fires, the user sees a generic "Archie is
+working..." spinner. There is no indication that 3 parallel sub-agent evaluations
+are running or that results are coming from the `poc_strategist` specialist. The
+existing `_TOOL_WAITING_LABELS` in `drawing_agent_server.py` (line 3187) has
+entries for BOM, diagram, JEP etc. but not for `generate_poc_plan`.
+
+**Fix — two parts:**
+
+**Part 1:** Add `generate_poc_plan` and `generate_presentation` to
+`_TOOL_WAITING_LABELS` in `drawing_agent_server.py`:
+
+```python
+_TOOL_WAITING_LABELS = {
+    ...existing entries...
+    "generate_poc_plan":     ("POC Strategy", "POC strategist — 3 parallel evaluations"),
+    "generate_presentation": ("Presentation", "presentation specialist"),
+}
+```
+
+**Part 2:** The `tool_started` SSE event is already wired through the streaming
+endpoint and displayed in `ChatInterface.tsx` as the `thinkingStatus` / working
+message. Verify the message reaches the UI by checking:
+
+```bash
+grep -n "tool_started\|thinkingStatus\|hat.*message\|message.*hat" \
+  ui/src/components/ChatInterface.tsx | head -20
+```
+
+If `tool_started` events update `thinkingStatus`, no UI changes are needed —
+just the server-side label addition is sufficient. If the message is not surfaced,
+add handling in the SSE event loop in `ChatInterface.tsx` to display the
+`message` field from `tool_started` events as the working status text.
+
+**Acceptance criteria:**
+```bash
+python3.11 -m py_compile drawing_agent_server.py
+grep "generate_poc_plan.*POC Strategy\|POC strategist" drawing_agent_server.py
+# UI: trigger generate_poc_plan in a chat session
+# Working status should read "Archie put on the POC Strategy hat and is calling
+# the POC strategist — 3 parallel evaluations."
+```
+
+**Commit message:**
+```
+p56e: add generate_poc_plan and generate_presentation to tool waiting labels — UI shows POC evaluation status
+```
+
+**Branch:** `claude/p56e` from main (after p56d merged, since both touch server files).
+
+---
+
 ## Run order
 
 ```
 p56a  ──┐
-         ├──▶  merge both  ──▶  p56c
-p56b  ──┘
+p56b  ──┼──▶  merge all three  ──▶  p56c
+p56d  ──┘                      ──▶  p56e (after p56d)
 ```
 
-p56a and p56b are independent — run in parallel.
-p56c branches from main after both are merged.
+p56a, p56b, and p56d are independent — run in parallel.
+p56c branches from main after p56a and p56b are merged.
+p56e branches from main after p56d is merged.
