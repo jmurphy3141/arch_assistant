@@ -1970,14 +1970,11 @@ def _ordered_requested_tools(tools: set[str]) -> list[str]:
     return [tool for tool in order if tool in tools]
 
 _ACTION_PRODUCTION_MARKERS = (
-    "export",
     "xlsx",
     "xlxs",
     "xlsc",
-    "excel",
     "spreadsheet",
     "workbook",
-    "download",
     "generate file",
     "save file",
     "pricing export",
@@ -1995,8 +1992,6 @@ _ACTION_ACCESS_MARKERS = (
 _ACTION_VERIFY_MARKERS = (
     "in the bucket",
     "in object storage",
-    "uploaded",
-    "verify",
     "verify file",
     "verify files",
     "check file",
