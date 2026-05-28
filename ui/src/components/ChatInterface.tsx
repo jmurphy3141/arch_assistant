@@ -946,6 +946,9 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
             } else if ((event.event_type as string) === 'thinking') {
               const label = (event as { label?: unknown }).label;
               setThinkingStatus(typeof label === 'string' && label.trim() ? label : 'Thinking...');
+            } else if ((event.event_type as string) === 'status' && (event as { status?: unknown }).status === 'tool_started') {
+              const message = (event as { message?: unknown }).message;
+              if (typeof message === 'string' && message.trim()) setThinkingStatus(message);
             } else if ((event.event_type as string) === 'completion') {
               setThinkingStatus(null);
             }

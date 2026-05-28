@@ -3191,6 +3191,8 @@ _TOOL_WAITING_LABELS = {
     "generate_pov": ("POV", "POV specialist"),
     "generate_jep": ("JEP", "JEP specialist"),
     "generate_waf": ("Well-Architected", "Well-Architected specialist"),
+    "generate_poc_plan": ("POC Strategy", "POC strategist — 3 parallel evaluations"),
+    "generate_presentation": ("Presentation", "presentation specialist"),
     "save_notes": ("notes", "notes tool"),
     "get_summary": ("summary", "summary tool"),
     "get_document": ("document", "document tool"),
