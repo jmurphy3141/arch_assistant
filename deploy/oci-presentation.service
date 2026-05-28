@@ -1,0 +1,14 @@
+[Unit]
+Description=Archie Presentation Sub-Agent
+After=network.target
+
+[Service]
+User=opc
+WorkingDirectory=/home/opc/drawing-agent
+ExecStart=/usr/bin/python3.11 -m sub_agents.presentation.server
+Restart=always
+StandardOutput=append:/home/opc/drawing-agent/presentation.log
+StandardError=append:/home/opc/drawing-agent/presentation.log
+
+[Install]
+WantedBy=multi-user.target
