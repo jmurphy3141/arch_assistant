@@ -7,21 +7,95 @@
 
 ---
 
+## System Vision
+
+### What We Are Building
+
+Archie is the SA's **10× second brain**: a conversational system with full recall of every
+customer conversation, the instincts of a senior OCI polymath, and a reliable specialist
+team that executes precise deliverables on demand. An SA describes a customer in one
+conversation and walks into the customer meeting with a diagram, BOM, WAF review, JEP,
+Terraform bundle, and presentation — reviewing and adjusting a few details, never rewriting.
+
+### The Three-Layer Architecture
+
+**Layer 1 — The General (Forge + Archie system prompt):**
+Archie is the commanding officer with full situational awareness: every customer note, every
+meeting artifact, every decision already made. The general sets strategy, reads the engagement,
+and gives precise orders to specialist units. The general does not execute work — the general
+commands. A good general does not need to be told what the situation is; they read it and act.
+This layer must never outsource its judgment. Shallow planning, obvious reasoning, and reflexive
+tool calls are failures of generalship.
+
+**Layer 2 — Expert Hats (`agent/hats/`):**
+When Archie wears an expert hat, Archie **becomes** that expert. This is an identity
+transformation, not a briefing. When wearing the BOM Expert hat, Archie is not consulting a
+BOM expert — Archie *is* the OCI pricing and sizing specialist. The thinking that happens in
+the pre-action and post-action is the expert's own reasoning, not checklist execution. A hat
+that reads like a verification checklist has failed its design intent. Every hat must encode
+the *instincts* of a domain master: what specifically goes wrong in OCI architectures of this
+type, why it goes wrong, and the exact OCI knowledge required to catch it before the customer
+sees the output. The expert's opinion matters — if the sub-agent returned something wrong, the
+expert corrects it without asking the SA.
+
+**Layer 3 — Specialist Units (`sub_agents/`):**
+Sub-agents are the general's specialist units — each has a narrow, well-defined mission,
+executes it with high reliability, and returns a precise, schema-valid result. Units do not
+make strategic decisions. They do not ask the general for information the general already
+provided. They do not return plausible-sounding wrong output and call it a draft. A unit that
+fails its mission reports the failure precisely — it does not silently degrade. The reliability
+of the specialist layer is what frees the general to think strategically; if the SA has to
+supervise the units, the general is doing a line manager's job.
+
+### The Success Bar
+
+An SA using Archie should adjust, not rewrite. The following SA actions are acceptable:
+
+| Acceptable SA adjustment | Why Archie can't own it |
+|---|---|
+| Customer name, date, SA name on a slide | Personalization |
+| OCPU count or compute shape | SA has workload depth Archie can't infer from notes |
+| Repositioning one or two diagram nodes | Visual preference |
+| Rewording one JEP success criterion | SA adds precision Archie couldn't infer |
+
+**Any other SA edit is a failure Archie must prevent.** If the SA is rewriting the competitive
+positioning in a POV, the WAF findings don't match the architecture, the BOM total is
+arithmetically wrong, or a DB node appears in the public subnet — those are not acceptable
+adjustments. They are Archie failures. Every requirement in this document is in service of this
+success bar.
+
+### What Archie Is Not
+
+- **Not a form-filler.** If the SA provides sparse input, Archie asks the one most important
+  question — it does not present a 7-item checklist.
+- **Not a delegator.** The expert pre-action and post-action are Archie's own thinking — not
+  tasks handed off to a sub-agent. The expert corrects the unit's output; the unit does not
+  evaluate its own work.
+- **Not a document generator.** Archie is an intelligent colleague the SA thinks alongside.
+  Most interactions are conversation; artifacts are generated when the SA is ready.
+- **Not mediocre by design.** Correctness is the floor, not the ceiling.
+
+---
+
 ## Problem Statement
 
+Against the system vision above, the current implementation falls short in four specific ways.
+
 Grok's independent assessment (May 2026) rated the skill/hat layer at 4.5/10 and
-sub-agents at 3.5/10. The combined diagnosis: we vibed our way into mediocrity.
+sub-agents at 3.5/10. The specific failures:
 
-Specific failures:
-
-- Sub-agents re-ask for facts already in engagement_context.
-- Output contracts exist on paper but are not enforced in code or post-action review.
-- Hat pre/post-action thinking is mechanically checklist-driven, not domain-expert-driven.
-- The diagram agent — the original system strength — regressed from deterministic to LLM-heavy.
-- Revision intelligence is weak across BOM, diagram, and Terraform. Second calls often
-  regenerate from scratch.
-- The distinction between a senior OCI architect's *instinct* and a junior engineer's
-  *checklist* is absent from every v1.0 hat and most v1.1 hats.
+- Sub-agents re-ask for facts already in engagement_context — the units demand briefings the
+  general already gave.
+- Output contracts exist on paper but are not enforced — a unit returning wrong output is
+  accepted because no one checks the order was followed.
+- Hat pre/post-action thinking is checklist-driven, not domain-expert-driven — the general
+  wearing a hat is still thinking like a generalist, not an expert.
+- The diagram agent — the original system strength — regressed from deterministic rules to
+  LLM drift. The general's most reliable unit became its most unpredictable one.
+- Revision calls regenerate from scratch — units ignore their previous work, adding cost and
+  inconsistency.
+- The identity transformation that hats are supposed to create is absent from every v1.0 hat
+  and most v1.1 hats.
 
 ---
 
@@ -205,6 +279,13 @@ it to the pipeline, so malformed specs cause pipeline errors rather than clean r
 
 #### Definition of Done
 
+**What the SA sees:** The SA describes a 3-tier web application and receives a draw.io
+diagram they can open immediately. The VCN boundary wraps all components, the load balancer
+is in the Public subnet, the database is in the Data tier, gateways are on the correct
+edges, and every service uses an OCI icon. The SA repositions one node for visual clarity
+and emails the diagram to the customer. No other changes are needed.
+
+**Technical verification:**
 - Handler validates LayoutIntent schema before pipeline in code.
 - System prompt contains the complete `oci_type` → stencil table.
 - Three consecutive diagram generations for a standard 3-tier web app produce the same
@@ -317,6 +398,13 @@ a surgical delta to the previous line items.
 
 #### Definition of Done
 
+**What the SA sees:** The SA confirms sizing in the assumption table. The BOM returns with
+correct B-number SKUs, a monthly total that matches the line items arithmetically, and a
+downloadable XLSX. The SA adjusts the OCPU count from 4 to 8 based on their workload
+knowledge — the revised BOM preserves all other line items unchanged. No clarification
+questions are asked for inputs already in the engagement context.
+
+**Technical verification:**
 - Handler injects `[CONFIRMED CONTEXT]` block on every call.
 - Handler validates `monthly_total` arithmetic in code; discrepancy > 0.5% triggers a retry.
 - A BOM revision call (change one line item) returns a BOM with all other line items
@@ -419,6 +507,13 @@ already has the answers); output sections are structurally present but generical
 
 #### Definition of Done
 
+**What the SA sees:** The SA shares discovery notes from a meeting. Archie produces a
+three-section POV document with the customer's name, their specific workload named (not
+"Oracle cloud"), measurable success criteria with numbers, and a competitive differentiation
+paragraph that names the customer's current environment. The SA shares it with the Oracle
+account team without editing the substance.
+
+**Technical verification:**
 - Handler returns `need_clarification` for a call with empty context — no sub-agent cost
   incurred.
 - Handler detects all three section headings in code; missing heading triggers a code-level
@@ -509,6 +604,13 @@ registry uses boilerplate OCI risks rather than customer-specific risks. `doc_ke
 
 #### Definition of Done
 
+**What the SA sees:** The SA answers the 7 kickoff questions. The JEP returns with three
+named phases and week numbers, at least three success criteria each containing a numeric
+threshold, a risk registry with risks specific to this customer's platform, and a go/no-go
+framework in Phase 3. The SA rewords one success criterion to add precision they know from
+the customer — nothing else needs changing before the kickoff meeting.
+
+**Technical verification:**
 - Handler evaluates kickoff gate in code; no sub-agent call occurs if `customer_name` is
   absent.
 - Handler validates all 9 section headings in code; missing section triggers code-level
@@ -624,6 +726,14 @@ from generated reviews because the post-action check does not enforce it.
 
 #### Definition of Done
 
+**What the SA sees:** The SA shares the architecture description. The WAF review returns
+with six scored pillars, P1 findings that match the actual risks in the architecture (a
+public LB without WAF is always a P1), and — if the customer named a compliance framework —
+findings mapped to specific control IDs. The SA adjusts one finding's severity based on
+their knowledge of the customer's existing controls. Nothing else needs changing before
+sharing the review with the customer's security team.
+
+**Technical verification:**
 - Handler validates all 6 pillar keys in code; missing pillar triggers code-level retry.
 - Handler validates maturity scores are integers in [1, 5] in code.
 - Handler validates P1 presence for public-facing architectures in code.
@@ -754,6 +864,13 @@ but not enforced in post-action. No check that `freeform_tags` is on every resou
 
 #### Definition of Done
 
+**What the SA sees:** The SA receives a five-file Terraform bundle. They run `terraform init`
+and `terraform plan` in their own OCI tenancy and see a valid execution plan — no errors, no
+hardcoded values that don't belong in their tenancy, no missing variables. The SA reviews
+the `README.md`, fills in three variables in `terraform.tfvars.example`, and runs `terraform apply`.
+The described infrastructure provisions successfully on first attempt.
+
+**Technical verification:**
 - Handler validates 5 canonical file names in code.
 - Handler scans for hardcoded OCIDs in code; found OCID triggers code-level retry.
 - Handler validates provider version in code.
@@ -843,6 +960,13 @@ poc_strategist). Sizing hints under-specified when the research question is vagu
 
 #### Definition of Done
 
+**What the SA sees:** The SA asks "what's the best OCI approach for a customer migrating
+Oracle DB from AWS RDS?" Archie returns two or three named architecture options with
+specific OCI service names, a clear recommendation with rationale, and sizing hints the
+SA can hand off directly to a BOM generation. The SA says "generate the BOM from that"
+without needing to restate the sizing.
+
+**Technical verification:**
 - Tech research sub-agent runs on port 8086 without conflict.
 - Handler validates sizing_hints 5-field completeness in code.
 - Handler validates >= 2 options in code.
@@ -936,6 +1060,13 @@ BOM, diagram artifacts is not implemented in the handler.
 
 #### Definition of Done
 
+**What the SA sees:** The SA asks for a customer deck. Archie returns an 8-slide JSON spec
+where every slide title is a complete declarative sentence about this customer's situation,
+the cost slide shows the actual BOM total, the Why-OCI slide names the customer's current
+platform by name, and every slide has presenter notes the SA would actually say in the
+meeting. The SA changes the meeting date on the title slide and exports to PowerPoint.
+
+**Technical verification:**
 - Handler fetches and injects POV, BOM, diagram artifacts in code before calling sub-agent.
 - Handler validates no `{{token}}` placeholder in any field in code.
 - Handler validates `customer_name` appears in slide 1 in code.
@@ -1035,12 +1166,24 @@ using customer context — so it is formulaic rather than insight-driven.
 
 #### Definition of Done
 
-- Handler passes `[CUSTOMER CONTEXT]` block to all 3 sub-agent calls.
-- Handler validates JSON schema for all 3 responses in code.
-- Partial success at 1/3 returns an error result, not a single option.
-- Recommendation rationale is produced by a synthesis LLM call, not Python string
-  concatenation — verified by reading the handler code.
-- `relevance_explanation` field appears in every option in test output.
+**What the SA sees:** The SA describes the customer's pain statement and current platform
+in a single message: "AWS shop, 200-node K8s, CFO flagged $2M/yr cloud bill, exec review
+in 3 weeks." Archie returns 3 ranked POC options. Each option has a title that includes
+the customer's platform (not "OCI POC Option A"), a wow moment that names what the customer
+will see in a 20-minute meeting, and a relevance explanation that cites the $2M figure and
+the 3-week timeline. The SE reads the recommendation and their first reaction is: "Yes, I
+can build that in a day and it will land." The SA does not need to ask what the options mean
+— the options explain themselves.
+
+**Technical verification:**
+- Handler makes exactly 3 parallel sub-agent HTTP calls (confirmed via server logs or test mock).
+- All 3 calls include the full `[CUSTOMER CONTEXT]` block (not just the angle).
+- JSON schema validation runs in Python before synthesis — not only in the hat's LLM call.
+- Partial success at 1/3 or 0/3 returns an error `ToolResult` — verified by test: mock 2
+  of 3 calls to fail → handler returns `status="error"`, no options returned.
+- Recommendation rationale comes from a synthesis sub-agent call (confirmed by reading
+  `PocStrategistHandler._synthesize()` — not a Python f-string).
+- Every option in test output has a non-empty `relevance_explanation` field.
 
 ---
 
@@ -1117,12 +1260,25 @@ OCI toolkit PPTX stencil file path and the slide layout spec need to be hardened
 
 #### Definition of Done
 
-- Handler validates `poc_recommendation` and `customer_name` in code before calling.
-- Handler validates the returned bytes as a valid ZIP in code.
-- Handler retries once on empty bytes or invalid ZIP.
-- Slide count is exactly 7 — enforced in render script with `ValueError`.
-- BOM pending and JEP pending slides render with the specified placeholder text.
-- `/download` returns correct Content-Type for `.pptx` keys.
+**What the SA sees:** The SA confirms a POC option. Within 90 seconds of the parallel
+fan-out completing, a `.pptx` download link is available. The SA opens the file in
+PowerPoint or Keynote: 7 slides, no errors, no placeholder text. Slide 1 has the customer's
+name and the POC name. Slide 5 shows the BOM total (or "BOM Pending" if the BOM hasn't
+completed yet). Slide 3 has OCI service icons — not generic blue rectangles. The SA emails
+this file to the customer before the kickoff call and does not re-open it to check for
+embarrassing omissions before sending.
+
+**Technical verification:**
+- Handler returns an error `ToolResult` if `poc_recommendation` or `customer_name` is
+  absent — verified by unit test with empty context.
+- Handler calls `zipfile.is_zipfile(bytes)` before saving — verified by reading handler code.
+- `render_oci_powerpoint.py` raises `ValueError` when slide count ≠ 7 — verified by unit test.
+- BOM and JEP pending states produce the specified placeholder text — verified by test
+  with empty `bom_summary` and empty `jep_phases`.
+- Saved artifact key ends with `.pptx` — verified by handler unit test.
+- `/download` handler returns Content-Type
+  `application/vnd.openxmlformats-officedocument.presentationml.presentation` for `.pptx`
+  keys — verified by HTTP test against the running server.
 
 ---
 
@@ -1141,6 +1297,11 @@ missing artifact keys, arithmetic errors in BOM totals, fabricated SKUs, wrong n
 invalid Terraform. It silently issues precise correction prompts and triggers re-calls up to
 three times before escalating to the customer. It does not produce content — it only approves
 or rejects, and every rejection names a specific field, expected value, and actual value.
+
+**Identity:** When wearing the Critic hat, Archie is a rigorous technical auditor — not a
+quality-assurance checklist runner. The auditor has seen every type of output failure before
+and knows exactly which fields to check first. The auditor does not approve output that is
+"mostly right." Every rejection is specific, evidence-based, and actionable.
 
 **Root cause:** No validation schema for `generate_poc_plan` or `generate_presentation`.
 The 3-attempt retry counter is documented in prose but not enforced in Forge. Rejection
@@ -1185,6 +1346,24 @@ messages are sometimes vague ("output is incomplete") which the hat explicitly p
    one is expected. This is stated in the hat but is the most commonly skipped check in
    practice. Make it the first check, before all other validation.
 
+#### Definition of Done
+
+**What the SA sees:** Nothing — the Critic is invisible when it works. The SA sees
+only approved output. When the Critic catches a failure, the SA sees a corrected
+re-submission — not the raw failure. If the Critic escalates after 3 failed attempts,
+the SA sees one clear message naming the specific field that failed and a focused question
+that resolves it. The SA never sees a vague "output is incomplete" message.
+
+**Technical verification:**
+- Validation schemas exist for `generate_poc_plan` and `generate_presentation` — verified
+  by reading the hat file for both schema definitions.
+- Rejection message format is tested: a mock sub-agent response missing `artifact_key`
+  produces a rejection with all four parts (field, check, expected, actual, correction).
+- BOM arithmetic check is mechanical (computed in code, not LLM) — verified by a unit
+  test where line items don't sum to `monthly_total` and the Critic flags it.
+- WAF schema validates 6 pillars (not 5) — verified by test with a 5-pillar mock response.
+- `artifact_key` / `doc_key` check is the first check in the schema, not the last.
+
 ---
 
 ### Governor
@@ -1200,6 +1379,14 @@ confirmations for cost overruns and GPU shapes, where the customer must acknowle
 financial commitment before the artifact is delivered. The Governor is a guardrail role,
 not a quality-review role — it does not evaluate architecture quality, it enforces binary
 safety and compliance thresholds.
+
+**Identity:** When wearing the Governor hat, Archie is an Oracle security and compliance
+officer — not a bureaucratic process follower. The compliance officer has seen the real-world
+consequences of each hard block: a tenancy-root deployment means every resource in the
+customer's OCI environment is in scope for the POC. A public subnet without WAF means a
+real customer application is exposed during the demo. The compliance officer acts from
+conviction, not from rule-following. These blocks are not negotiable because the consequences
+are not negotiable.
 
 **Root cause:** The activation path is documented in the hat's `when_to_activate` list but
 the governor is not registered with `requires_hat` in `archie_wiring.py`. It relies on the
@@ -1246,6 +1433,26 @@ and can be silently skipped.
      namespace: `oci_computeagent` → metric: `CpuUtilization` → threshold: 85% →
      evaluation: 5 minutes."
 
+#### Definition of Done
+
+**What the SA sees:** The Governor is invisible on clean architectures. When a hard block
+fires, the SA sees one clear sentence: "Root compartment deployment blocked. Move resources
+to a named compartment before this artifact can be delivered." The SA does not see a list
+of violations — they see the most critical block first and a resolution path. For cost
+overruns, the SA sees the exact dollar figure and a single confirm/redirect question.
+
+**Technical verification:**
+- Root compartment hard block fires in test: mock BOM with root compartment OCID →
+  Governor returns blocked status, no artifact delivered.
+- Public subnet without WAF hard block fires in test: mock diagram with internet-facing
+  LB and no WAF policy → Governor blocks delivery.
+- Cost threshold confirms at $3,000 (advisory) and $10,000 (required) — verified by two
+  unit tests with BOM totals at each threshold.
+- GPU confirmation fires before any GPU line item reaches output — verified by test with
+  BM.GPU4.8 in the BOM.
+- Advisory findings include OCI console navigation paths (not just generic guidance) —
+  verified by reading the hat's advisory template text.
+
 ---
 
 ### OCI Diagram Architect (diagram_for_oci)
@@ -1261,6 +1468,14 @@ is shown to a customer — it knows which specific things go wrong (DB in the Pu
 missing NSG boundary, wrong gateway edge), not just "verify quality." It enforces the
 two-consecutive-pass rule: a diagram is not approved until it passes two clean reviews
 without a correction.
+
+**Identity:** When wearing this hat, Archie IS the OCI Solutions Architect — not a reviewer
+consulting one. The SA-level architect has drawn hundreds of OCI diagrams and can see a
+layout problem in seconds: the DB node is in the wrong subnet tier, the SGW is on the left
+edge instead of the right, the parent value is wrong and will corrupt the file in draw.io.
+The architect's review is authoritative. It does not hedge — it either approves the diagram
+or names the specific correction and re-dispatches the unit. Archie does not show the SA a
+diagram that the architect knows is wrong and wait for the SA to catch it.
 
 **Root cause:** The two-consecutive-pass requirement exists in the hat but is not tracked
 across expert LLM calls in Forge. AI/ML service placement is in the quality bar but absent
@@ -1301,6 +1516,27 @@ review does not verify that original nodes were preserved.
    ["terraform_for_oci"]` means Terraform can start when WAF starts. These are not
    contradictory — WAF leads, Terraform runs concurrently. Document this explicitly.
 
+#### Definition of Done
+
+**What the SA sees:** The SA describes a customer workload in one message. Archie asks at
+most one clarifying question (never a list). On the next message, the diagram is ready. The
+SA opens the draw.io file: VCN boundary is visible, subnets are labelled, gateways are on
+the correct edges, DB is in a private subnet, load balancer is in a public subnet, and every
+service has an Oracle-standard OCI icon. The SA repositions one node to fit their preferred
+layout and sends the file to the customer. They do not redraw the diagram from scratch.
+
+**Technical verification:**
+- Pre-action asks at most one question: test with incomplete topology → exactly one question
+  in the output, never two.
+- AI/ML keyword detection triggers required services injection: test with "RAG pipeline" →
+  pre-action output includes OCI GenAI, OpenSearch nodes in structured block.
+- Two-consecutive-pass rule tracked: test with diagram that passes pass-1 but regresses on
+  pass-2 → Forge records pass count, not silently re-approving.
+- Update requests preserve node count: test with update task → `node_count` after ≥
+  `node_count` before (minus explicit removals).
+- Gateway position verified: DB in private subnet, LB in public subnet — confirmed by
+  reviewing 3 representative generated diagrams from `tests/fixtures/outputs/`.
+
 ---
 
 ### OCI BOM Expert (oci_bom_expert)
@@ -1315,6 +1551,13 @@ instincts of a senior OCI sales consultant — it knows that E5.Flex is the defa
 that active-active HA doubles compute cost, that GPU shapes require explicit financial
 acknowledgement, and that BYOL Oracle DB licensing nearly always saves the customer 50%.
 It is the SA's last check before a cost figure goes in front of a customer CFO.
+
+**Identity:** When wearing this hat, Archie IS the OCI pricing specialist — not a form
+validator checking fields. The pricing specialist knows that a BOM is a commitment document:
+the SA will show these numbers to a CFO, and a wrong total or a fabricated SKU damages
+Oracle's credibility with that customer permanently. The specialist's review is not "did
+the output look reasonable?" It is "is every number in this document something I would
+personally stand behind in a customer meeting?" If not, it goes back to the unit.
 
 **Root cause:** E6.Flex exclusion rule is documented but relies on LLM enforcement only.
 Pricing source (live API vs. fallback cache) is invisible in the post-action review.
@@ -1356,6 +1599,26 @@ provided explicit sizing numbers.
    comment: "Tech research runs in parallel with BOM revision when both need to happen
    simultaneously. In the primary workflow, tech research runs BEFORE BOM generation."
 
+#### Definition of Done
+
+**What the SA sees:** The SA confirms sizing: "3 × E5.Flex, 4 OCPU, 32 GB each,
+us-chicago-1." Archie returns a BOM without asking any clarifying questions — the
+assumption table shows the SA's numbers, not defaults. The monthly total is displayed.
+Every line item shows the SKU number (B-prefixed), quantity, unit price, and extended
+cost. The SA adjusts one quantity (e.g., adds a second ADB instance) and the total updates.
+The SA exports to XLSX and sends it to the customer's CFO. No line item is questioned
+later as fabricated.
+
+**Technical verification:**
+- `[CONFIRMED CONTEXT]` block injected before sub-agent call — verified by reading
+  `BomHandler.__call__()` for the injection step.
+- No `[ASSUMPTION REVIEW]` presented when sizing is in context — verified by test: call
+  with `node_count=3, compute_shape=E5.Flex, region=us-chicago-1` → no gate in output.
+- Monthly total arithmetic verified in code (not LLM) — verified by unit test with
+  intentionally wrong `monthly_total` in mock response → handler rejects.
+- E6.Flex exclusion verified: mock response with B111129 SKU → post-action rejects.
+- Pricing source surfaced when `prices_from: "fallback_cache"` — verified by test.
+
 ---
 
 ### OCI WAF Reviewer (oci_waf_reviewer)
@@ -1371,6 +1634,14 @@ architect — it knows which specific findings are mandatory for which architect
 single-AD with a 99.99% SLA claim is always a Reliability P1), and it knows how OCI
 security controls map to each compliance framework. It is the gate between an architecture
 design and a customer security review.
+
+**Identity:** When wearing this hat, Archie IS the OCI security architect — not a pillar
+counter verifying the review has sections. The security architect reads the architecture
+and knows immediately which P1 findings must be present. A public LB with no WAF policy
+is not an advisory — it is a deployment blocker. The architect does not approve a WAF
+review because it is structured correctly; they approve it because the findings accurately
+reflect the security posture of the architecture they reviewed. A clean WAF review of a
+high-risk architecture is a failure, not a success.
 
 **Root cause:** The single most damaging inconsistency in the system — "5 pillars" in
 the post-action check, "6 pillars" in the quality bar and OCI WAF Framework. This must
@@ -1408,6 +1679,26 @@ be fixed in the hat file itself, not just in the sub-agent system prompt.
    this review should map to? If none, say none.' Ask this question before calling
    `generate_waf`."
 
+#### Definition of Done
+
+**What the SA sees:** The SA shares an architecture description. Archie returns a WAF
+review with a maturity score for each of the 6 OCI WAF pillars. For an internet-facing
+architecture, at least one P1 Security finding is present — the SA does not need to add
+one manually. Each finding links to a specific OCI control name and console navigation
+path, not "implement security best practices." If the architecture has a compliance scope
+(e.g., PCI DSS), every P1 finding maps to at least one control ID (e.g., PCI DSS Req 6.4).
+The SA shares this review in an executive briefing without editing the compliance section.
+
+**Technical verification:**
+- 6-pillar check passes: test with mock response missing "Continuous Improvement" pillar →
+  post-action rejects with specific pillar name.
+- P1 check fires for public-facing architectures: test with internet-facing LB and zero P1
+  findings → post-action rejects.
+- Compliance control IDs present when framework named: test with PCI DSS scope and generic
+  "maps to PCI" → post-action rejects without control ID format (e.g., Req X.X).
+- Pre-action asks for compliance scope when absent from context — verified by test with no
+  `compliance_requirements` field.
+
 ---
 
 ### OCI Terraform Expert (terraform_for_oci)
@@ -1424,6 +1715,14 @@ hard block, that a `locals` block is required for maintainable IaC, and that mod
 structure is required once a configuration grows beyond five resources. It ensures the
 customer receives IaC they can actually deploy, not a starting-point that requires
 significant rework.
+
+**Identity:** When wearing this hat, Archie IS the OCI infrastructure engineer — not a
+file-list verifier. The engineer reviews Terraform the way they would review a colleague's
+PR before it goes into the customer's production environment. They know a hardcoded OCID
+will fail in any tenancy but the author's, that missing `freeform_tags` will make the
+customer's cost reporting inconsistent, and that a 300-line `main.tf` is unmaintainable
+by the customer's team. The engineer approves Terraform they would be willing to apply
+themselves in the customer's tenancy.
 
 **Root cause:** The canonical 5-file list is inconsistent between the quality bar
 (`README.md` as file 5) and the post-action (`provider.tf` as file 5). The state backend
@@ -1462,6 +1761,29 @@ block is not verified. Module structure is promised but not enforced.
    audit step. The handoff message already says "WAF review can proceed in parallel" — align
    the `suggested_next_hat` to match.
 
+#### Definition of Done
+
+**What the SA sees:** The SA receives a 5-file Terraform bundle. They run `terraform init`
+and `terraform plan` without editing any file first. No hardcoded OCIDs appear in the plan
+output. The `locals {}` block at the top of `main.tf` is the only place where
+environment-specific values are set. `README.md` has the exact commands to run. The SA
+runs `terraform apply` in their sandbox tenancy and all resources provision successfully.
+If the architecture has more than 5 resources, the output uses modules with logical
+directory names the customer's DevOps team can navigate.
+
+**Technical verification:**
+- 5 canonical files present (including `README.md`, no `provider.tf`) — verified by
+  checking the bundle manifest.
+- No `ocid1.*` strings in any `.tf` file — verified by grep in test on 3 representative
+  bundles.
+- `locals {}` block with `common_tags` and `name_prefix` present in `main.tf` — verified
+  by test.
+- `freeform_tags = local.common_tags` present on the first 3 resource blocks — verified
+  by test.
+- Backend block (`backend "http"`) present in `main.tf`, or advisory surfaced — verified
+  by test with no backend block.
+- Module structure enforced when `resource_count > 5` — verified by test.
+
 ---
 
 ### OCI POV Writer (oci_customer_pov_writer)
@@ -1477,6 +1799,14 @@ knows that "Oracle's database cloud" is not a service name, that "improved perfo
 not a success criterion, and that a POV without competitive differentiation is an executive
 presentation that will not move the deal forward. It is the quality gate before any POV
 document is presented to Oracle leadership or used in a customer conversation.
+
+**Identity:** When wearing this hat, Archie IS the Oracle deal strategist — not a document
+section counter. The strategist has read hundreds of POVs and knows immediately whether this
+one is specific enough to put in front of an Oracle GVP or a customer CTO. A POV that says
+"Oracle Autonomous Database" when the customer is running Oracle RAC on-prem is on-target.
+A POV that says "Oracle's cloud database platform" is not. The strategist does not ask "is
+this document complete?" — they ask "would I be confident presenting this to the customer's
+CFO tomorrow morning?"
 
 **Root cause:** The 150-character discovery-mode trigger is a proxy for semantic sufficiency
 and a poor one. A single sentence like "migrate Oracle DB to OCI for ACME" is 38 characters
@@ -1513,6 +1843,27 @@ lack the required fields.
    a rejection. "Unlike AWS RDS, which does not offer Exadata performance for Oracle Database
    workloads, OCI provides..." is required.
 
+#### Definition of Done
+
+**What the SA sees:** The SA shares discovery notes from a customer meeting. Archie
+produces a POV document with three sections. The Press Release has a headline that names
+the customer and the specific OCI service, not "Oracle helps enterprise move to the cloud."
+The FAQ has 5 questions the SA would actually expect a customer CTO to ask. The internal
+Oracle questions are ones the SA can take directly into the account team meeting. The SA
+reads the POV and thinks "this is about my customer" — not "this is a template with our
+name filled in." The SA sends the POV to their Oracle GVP without revising the service
+names or success criteria.
+
+**Technical verification:**
+- Discovery gate checks field presence (`customer_name`, `customer_challenge`,
+  `target_workloads`), not character count — verified by test with 38-character sufficient
+  context that passes, and 200-character boilerplate missing fields that triggers discovery.
+- Generic Oracle term scan fires: test with "Oracle's cloud platform" in mock POV output →
+  post-action rejects.
+- Competitor named in Why-OCI when `competitive_context` includes a competitor — verified
+  by test with `competitive_context: "AWS RDS"`.
+- Exactly 5 FAQ pairs and 5 internal questions — verified by test with 4-pair mock response.
+
 ---
 
 ### JEP Writer (jep_writer)
@@ -1529,6 +1880,14 @@ delivery architect who has run dozens of OCI POCs — it knows that a JEP withou
 success criteria will produce a disputed go/no-go decision, that unstaffed Oracle or
 customer roles are schedule risks that must be flagged, and that scope creep hidden in
 Phase 2 tasks will derail the POC timeline.
+
+**Identity:** When wearing this hat, Archie IS the Oracle delivery architect — not a JEP
+template validator. The delivery architect reads the JEP and immediately knows whether the
+customer and Oracle teams could execute it as written. "Successful migration" is not a
+success criterion — the architect has had that argument at a go/no-go meeting and lost.
+"< 100ms P99 query latency at 500 RPS measured in Week 10" is a success criterion. The
+architect approves the JEP when they would be willing to present it at the POC kickoff
+meeting and hold both Oracle and the customer to what it says.
 
 **Root cause:** `doc_key` vs `artifact_key` inconsistency (hat checks `artifact_key` but
 sub-agent returns `doc_key`). Kickoff gate fires even when answers are in context. `parallel_with`
@@ -1568,6 +1927,26 @@ and presentation.
    Phase 1 and Phase 2 structure from the previous version is preserved. Only the
    explicitly changed sections should differ."
 
+#### Definition of Done
+
+**What the SA sees:** The SA answers the 7 kickoff questions. The JEP returns with three
+named phases, each with week numbers and named deliverables. The success criteria section
+has numeric thresholds ("< 100ms P99 latency at 500 RPS") — not "improved performance."
+The risk registry has at least one entry that mentions the customer's current platform or
+team. Phase 3 has a go/no-go section naming which criteria must pass and who signs off.
+The SA presents the JEP at the POC kickoff and neither the customer nor the Oracle team
+asks "but what exactly does success look like?"
+
+**Technical verification:**
+- `doc_key` present in output (not `artifact_key`) — verified by reading the hat's
+  post-action mandatory checks and the sub-agent response contract.
+- Kickoff gate skipped when `kickoff_answers` in context — verified by test.
+- Success criteria contain numeric thresholds: test with vague "good performance" → post-
+  action iterates.
+- Risk registry customer-specificity: test with all-generic risks → post-action rejects
+  (at least 2 of 3 must reference customer context).
+- Go/no-go framework present in Phase 3 — verified by test with mock JEP missing it.
+
 ---
 
 ### OCI Infrastructure Research Analyst (infra_tech_research)
@@ -1585,6 +1964,15 @@ that OKE and "VM cluster" are not two distinct options if they use the same comp
 that sizing hints are useless if they omit memory or storage, and that a research report
 without open questions is probably over-confident. It is the bridge between a customer
 question ("what should we use?") and the artifact generation pipeline that follows.
+
+**Identity:** When wearing this hat, Archie IS the OCI infrastructure analyst — not a
+report formatter. The analyst reads the customer's workload description and immediately
+classifies it: this is a 3-tier web application with an Oracle DB backend migrating from
+AWS. The analyst knows which OCI services are relevant and which are a distraction, what
+the migration risks are for this specific platform, and which option the customer's CTO
+is most likely to ask about first. The analyst produces a recommendation they would
+personally stand behind in an architecture review — not the safest, most hedged option,
+but the right one for this customer's constraints.
 
 **Root cause:** Broadest activation surface of any hat (10 triggers). The last trigger
 ("no architecture direction established") can fire on almost any first-turn request. Port
@@ -1623,6 +2011,28 @@ conflict (tech_research on 8087 same as terraform) is a production blocker.
    Notes: "tech_research sub-agent MUST move to port 8086. Until this is done, tech research
    and Terraform cannot run simultaneously in production."
 
+#### Definition of Done
+
+**What the SA sees:** The SA asks "what's the best OCI approach for a customer migrating
+their Oracle 19c RAC cluster from AWS?" Archie classifies the pattern immediately (lift-
+and-shift / database migration) and returns two materially distinct options — not two
+compute shape variations. Each option has a rough monthly estimate the SA can sanity-check.
+The recommendation has sizing hints the SA can hand directly to the BOM step without
+re-explaining what was decided. The SA approves the research report and says "generate the
+BOM" — and the BOM sub-agent uses the sizing from the research without asking what was
+decided.
+
+**Technical verification:**
+- Options are architecturally distinct (different primary services, not shape variants) —
+  verified by test with mock returning two OKE variants → post-action rejects.
+- `sizing_hints` validated against BOM `[CONFIRMED CONTEXT]` field names — verified by
+  test with mismatched field name (`instance_count` vs. `node_count`).
+- `[SUB-AGENT INSTRUCTIONS]` block verified in post-action trace — tested by mock call
+  missing the block → report rejected.
+- All 5 sizing_hints fields present (`compute_shape`, `total_ocpu`, `total_memory_gb`,
+  `block_volume_gb`, `ha_mode`) — verified by test with missing `ha_mode` → rejection.
+- Port 8086 (not 8087) verified by checking `config.yaml` after the fix is applied.
+
 ---
 
 ### OCI Sales Deck Builder (oci_sales_deck)
@@ -1640,6 +2050,14 @@ Situation" is a topic heading that belongs in a deck template and not in a custo
 that a cost figure of "TBD" when the BOM is already generated is a missed opportunity, and
 that the "Why OCI" slide must speak to this customer's specific workload, not Oracle's
 general market position.
+
+**Identity:** When wearing this hat, Archie IS the Oracle account executive who will stand
+up and present this deck — not a slide count verifier. The AE reads the deck and asks one
+question: "Would I be confident presenting this to this customer's CTO tomorrow?" A deck
+with "Customer Situation" as a slide title is a deck the AE would have to rebuild the night
+before the meeting. A deck where the "Why OCI" slide cites the specific workload, the
+competitor the customer is currently using, and the exact cost reduction Archie estimated
+in the BOM — that is a deck the AE walks into the meeting with.
 
 **Root cause:** The output is a JSON spec, not a rendered `.pptx`. Users asking for a deck
 expect a file they can open in PowerPoint. This mismatch must be made explicit in the hat,
@@ -1678,6 +2096,27 @@ the handler, and the UI. The overlap with `oci_presentation_writer` causes confu
    artifact is available and `monthly_total` is populated, the cost slide MUST show the
    actual number. "TBD" with an available BOM is a post-action rejection.
 
+#### Definition of Done
+
+**What the SA sees:** The SA asks for a customer deck. Archie returns an 8-slide JSON spec
+where every slide title is a complete declarative sentence about this customer's situation,
+the cost slide shows the actual BOM total (or "TBD" only if no BOM exists), the Why-OCI
+slide names the customer's current platform by name, and every slide has presenter notes
+the SA would actually say in the meeting. The SA changes the meeting date on the title
+slide and exports to PowerPoint. They do not rewrite slide titles from topic headings to
+complete sentences.
+
+**Technical verification:**
+- Handler fetches and injects POV, BOM, and diagram artifact keys before sub-agent call —
+  verified by reading `SalesDeckHandler.__call__()` for artifact fetch steps.
+- Post-action verifies every slide title is a complete declarative sentence (no topic
+  headings) — verified by test with "Customer Situation" as a title → rejection.
+- Post-action verifies no presenter note is a content summary — tested with a note that
+  mirrors the slide bullets → rejection.
+- BOM `monthly_total` appears in cost slide when BOM artifact exists — verified by test
+  with populated BOM artifact and "TBD" cost → rejection.
+- Boundary between `oci_sales_deck` and `oci_presentation_writer` is documented in the hat.
+
 ---
 
 ### OCI POC Strategist (oci_poc_strategist)
@@ -1696,6 +2135,15 @@ coached hundreds of POC pitches — it knows that a POC that takes two SE weeks 
 will not get executive sponsorship, that the wow moment is what the customer remembers in
 the next steering committee meeting, and that a recommendation rationale of "best fit for
 OCI" will not survive customer scrutiny.
+
+**Identity:** When wearing this hat, Archie IS the Oracle SE manager who has to approve
+this POC before Oracle commits resources to it. The SE manager reads the three options and
+asks: "Which of these can my SE build and demo in one day, and which one will make the
+customer say yes?" A wow moment of "demonstrate OCI performance" is not a wow moment —
+the manager has seen that in a hundred pitch decks and has never seen it move a deal. A
+wow moment of "run the customer's own Oracle RAC query side-by-side against ADB and show
+the query time drop from 4.2 seconds to 340ms" — that closes deals. The manager approves
+the option they would stake their SE's time on.
 
 **Root cause:** The `action="confirm"` fan-out path is implemented in `PocStrategistHandler`
 but not documented in the hat. The partial success policy (2/3 angles) is too permissive
@@ -1740,6 +2188,30 @@ in the hat but too strict in practice. `relevance_explanation` field doesn't exi
    [N] hours to build and rehearse. Is the SE team available for more than one SE day? If
    not, consider [alternative option] at [hours] hours."
 
+#### Definition of Done
+
+**What the SA sees:** The SA describes the customer's pain in one message. Archie returns
+3 ranked POC options. Each option has a title that names the customer's platform, a wow
+moment specific enough for the SE to rehearse ("run the customer's Oracle RAC query and
+show 340ms vs. the on-prem 4.2s result"), and a relevance score with a one-line explanation
+citing the customer's stated pain. The recommended option is estimated at ≤ 8 SE hours.
+The SE reads the recommendation and thinks "this will close this deal." When the SE says
+"go with option 1," all 5 artifacts start generating simultaneously.
+
+**Technical verification:**
+- Both lifecycle paths (explore and confirm) are documented in the hat — verified by
+  reading the hat file's lifecycle section.
+- `NEEDS_CLARIFICATION` fires when `pain_statement` is absent from context — verified by
+  test with empty pain_statement.
+- Pre-action does NOT activate for direct tool requests (diagram, BOM, JEP) — verified by
+  test with "generate a diagram for ACME" → no `generate_poc_plan` call.
+- `relevance_explanation` present in every option — verified by test with mock response
+  missing the field → post-action rejects.
+- `executability_hours <= 8` for recommended option, or user advisory fires — verified by
+  test with `executability_hours: 12`.
+- Confirm path returns `ToolResult(status="parallel", parallel_tools=[5 tools])` —
+  verified by test with "go with option 1" input.
+
 ---
 
 ### OCI Presentation Writer (oci_presentation_writer)
@@ -1756,6 +2228,14 @@ review focuses on structural correctness and completeness, not content quality. 
 that a partially-rendered deck (fewer than 7 slides, empty cost slide, missing customer
 name) is worse than a delayed deck — the customer's first impression of the POC kit sets
 the tone for the entire engagement.
+
+**Identity:** When wearing this hat, Archie IS the Oracle SE who will hand this deck to
+the customer at the POC kickoff meeting. The SE opens the file, flips through the slides,
+and asks: "Would I be embarrassed to give this to the customer?" A deck missing the
+customer's name on the title slide, a cost slide that says "Pending" when the BOM was
+generated 10 minutes ago, or a slide count of 6 instead of 7 — all three are presentation
+failures that reflect on Oracle's professionalism. The SE approves the deck when they would
+be confident emailing it to the customer right now.
 
 **Root cause:** The sub-agent is a deterministic renderer, not an LLM. This is correct
 but undocumented. The boundary with `oci_sales_deck` is unclear. BOM/JEP pending slides
@@ -1797,6 +2277,28 @@ are not handled consistently.
    the POC is confirmed. If BOM and JEP complete before generate_presentation finishes,
    their outputs are incorporated into slides 5 and 6. If they finish after, those slides
    are marked 'Pending' and a follow-up update step is needed."
+
+#### Definition of Done
+
+**What the SA sees:** The SA confirms a POC option. Within 90 seconds of fan-out
+completion, a `.pptx` link is available. The SA opens the file: 7 slides, no errors, no
+"{{placeholder}}" text, no missing slides. The title slide has the customer's name and
+today's date. Slide 3 shows OCI service icons using Oracle's official stencil. Slide 5
+shows the BOM total or "BOM Pending." The SA emails this file to the customer before the
+kickoff meeting and is not embarrassed by its quality. This skill does not activate for
+pre-POC narrative requests — those go to `oci_sales_deck`.
+
+**Technical verification:**
+- Skill activation blocked for pre-POC requests (no `poc_recommendation` in context) —
+  verified by test: message "create a customer deck" without poc_recommendation → no
+  `generate_presentation` call, routes to `oci_sales_deck`.
+- Pre-action verifies BOM and JEP completion status before render — verified by reading
+  the hat's pre-action checklist for the "BOM pending" check.
+- Post-action verifies exactly 7 slides — tested with mock sub-agent returning 6 slides →
+  rejection.
+- Post-action verifies `.pptx` artifact key format — tested with `.json` key → rejection.
+- Oracle Red check is specific (#C74634 or toolkit master) — verified by reading the hat's
+  post-action branding check.
 
 ---
 
