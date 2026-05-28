@@ -100,6 +100,19 @@ on the sub-agent response before the result reaches the hat post-action. Structu
 
 ### Diagram Sub-Agent
 
+**Purpose:** The Diagram sub-agent ingests written workload descriptions and Bill of
+Materials context and delivers a customer-facing OCI architecture diagram in `.drawio`
+format. It is the most visible artifact in the Archie system — customers judge the quality
+of the entire engagement from the first diagram. The agent must use Oracle's official OCI
+draw.io stencil library icons (from `OCI_Library.xml` v24.2), follow OCI Well-Architected
+Framework topology standards (public/private/data subnet tiers, gateway placement, security
+boundaries), and produce diagrams that match the standard reference architectures Oracle
+publishes at https://docs.oracle.com/solutions/ and https://www.oracle.com/cloud/architecture-center/.
+The output must be immediately usable by the customer — loadable in draw.io or diagrams.net,
+elements independently draggable, and visually consistent with Oracle's customer-facing
+architecture standards. Every BOM service must have a corresponding node; every node must
+use an OCI-standard icon.
+
 **Grok rating:** Regressed / Weak (was the original system strength)
 
 **Root cause:** The early drawing agent had a deterministic pipeline: LayoutIntent JSON →
@@ -205,6 +218,17 @@ it to the pipeline, so malformed specs cause pipeline errors rather than clean r
 
 ### BOM Sub-Agent
 
+**Purpose:** The BOM sub-agent ingests workload descriptions, sizing parameters, and
+engagement context and delivers an itemized Oracle Cloud Infrastructure Bill of Materials
+in XLSX format. The BOM is the financial backbone of every customer conversation — SAs
+use it to anchor budget discussions, justify shape selection, and produce the cost slide
+in customer presentations. The agent must source all unit prices from the live OCI price
+list API (https://apexapps.oracle.com/pls/apex/cetools/api/v1/products/), use only
+verified OCI part numbers (B-prefixed SKUs), and compute monthly totals arithmetically
+— never estimate. The output must be immediately presentable to a customer CFO or
+procurement team: clearly structured XLSX with line items, assumptions documented,
+and a download link the SA can share without further editing.
+
 **Grok rating:** Poor
 
 **Root cause:** Two separate failures. First, the sub-agent re-asks for shape, OCPU, region,
@@ -306,6 +330,18 @@ a surgical delta to the previous line items.
 
 ### POV Sub-Agent
 
+**Purpose:** The POV sub-agent ingests customer discovery notes, engagement context, and
+meeting intelligence and delivers an internal Oracle Point of View document. A POV is a
+strategic alignment document used by Oracle SAs, account executives, and sales leadership
+to build a shared vision for the customer's OCI journey. It is NOT a customer-facing
+document — it is Oracle-internal. The document must be structured in three sections:
+Internal Press Release (a future-state success narrative), Customer FAQ (objection handling
+and proof points), and Internal Oracle Questions (what the Oracle team must resolve to close
+the deal). The POV must name specific OCI services (not generic "Oracle cloud"), include
+measurable success outcomes, position OCI competitively against the customer's current
+environment, and incorporate industry-specific context. SAs use the POV to prepare for
+executive customer meetings and to align internal teams on pursuit strategy.
+
 **Root cause:** Context hydration failure (asks discovery questions when engagement_context
 already has the answers); output sections are structurally present but generically written.
 
@@ -395,6 +431,17 @@ already has the answers); output sections are structurally present but generical
 
 ### JEP Sub-Agent
 
+**Purpose:** The JEP sub-agent ingests POC scope, customer context, success criteria, and
+kickoff question answers and delivers a Joint Execution Plan — the formal document that
+governs an Oracle-customer POC engagement. The JEP is a bilateral commitment document:
+it names what Oracle and the customer will each build, test, and decide within a bounded
+timeframe. It must be specific enough that both teams can execute without daily direction
+from the SA. The output must include a phased execution plan (Assessment → Build → Validate),
+SMART success criteria with numeric thresholds, a risk registry with customer-specific risks
+and mitigations, explicit resource commitments from both Oracle and the customer, and a
+go/no-go decision framework. SAs use the JEP to kick off a POC, align customer stakeholders,
+and document the criteria that define a successful POC outcome.
+
 **Root cause:** Kickoff gate fires even when kickoff answers are in engagement_context. Risk
 registry uses boilerplate OCI risks rather than customer-specific risks. `doc_key` vs
 `artifact_key` naming inconsistency between sub-agent output and hat checks.
@@ -474,6 +521,19 @@ registry uses boilerplate OCI risks rather than customer-specific risks. `doc_ke
 ---
 
 ### WAF Sub-Agent
+
+**Purpose:** The WAF sub-agent ingests architecture descriptions, diagrams, and compliance
+context and delivers an OCI Well-Architected Framework review — a structured assessment of
+the architecture against all six OCI WAF pillars: Security, Reliability, Performance
+Efficiency, Cost Optimisation, Operational Excellence, and Continuous Improvement. The
+review is used by SAs to identify and remediate architecture risks before a customer
+presentation or POC, and by customers to demonstrate architectural maturity to their own
+security and compliance teams. Every finding must cite an OCI-specific service, resource
+type, or configuration — not generic cloud advice. The review must include a maturity score
+(1–5) per pillar, severity-rated findings (P1/P2/P3), and — when the customer operates in
+a regulated industry — explicit mapping to compliance control frameworks (SOC 2, PCI DSS,
+ISO 27001, FedRAMP). The output must be a saved Markdown document the SA can attach to a
+customer presentation or share with the customer's security team.
 
 **Root cause:** The single largest structural bug in the system — the post-action mandatory
 check says "5 pillars" when the quality bar and OCI WAF Framework both require 6. The sixth
@@ -574,6 +634,18 @@ from generated reviews because the post-action check does not enforce it.
 ---
 
 ### Terraform Sub-Agent
+
+**Purpose:** The Terraform sub-agent ingests architecture context, resource scope, and
+infrastructure requirements and delivers a production-ready OCI Terraform bundle — a
+five-file Infrastructure as Code package the customer's engineering team can `terraform init`,
+`plan`, and `apply` against their OCI tenancy. The bundle must follow Oracle's OCI Terraform
+best practices: OCI provider version >= 5.40.0, no hardcoded OCIDs, `locals` block for
+common tags and naming, modular structure for non-trivial architectures, and OCI Object
+Storage as the state backend. The output must be immediately deployable by a customer DevOps
+engineer who has never seen the architecture before — `README.md` explains every prerequisite,
+`terraform.tfvars.example` stubs every required variable, and all resources follow consistent
+naming and tagging conventions. SAs use the Terraform bundle to give customers a working IaC
+starting point for their POC or production deployment, reducing setup time from days to hours.
 
 **Root cause:** File list inconsistency between quality bar (`README.md`) and post-action
 (`provider.tf`). State backend block not verified. Module structure promised in quality bar
@@ -693,6 +765,18 @@ but not enforced in post-action. No check that `freeform_tags` is on every resou
 
 ### Tech Research Sub-Agent
 
+**Purpose:** The Tech Research sub-agent ingests a workload description, architecture
+question, or technology comparison request and delivers a structured OCI technology
+evaluation report. It is the "justify before you build" agent — it answers "which OCI
+services should we use and why?" before the SA commits to a BOM or diagram. The report
+must evaluate at least two concrete OCI architecture options with specific service names,
+shapes, pros/cons, and rough cost estimates; recommend one option with a rationale tied
+to the customer's workload; and provide sizing hints structured for direct use by the BOM
+sub-agent. The agent must draw on Oracle's published reference architectures, OCI service
+documentation, and OCI pricing to produce credible, specific recommendations. SAs use this
+report when a customer asks "what's the best OCI approach for X?" and the answer isn't
+immediately obvious from the BOM or diagram context alone.
+
 **Root cause:** Port 8087 conflict with Terraform sub-agent (both claim the same port —
 they cannot run simultaneously). Output is sometimes markdown-wrapped JSON (same issue as
 poc_strategist). Sizing hints under-specified when the research question is vague.
@@ -770,6 +854,17 @@ poc_strategist). Sizing hints under-specified when the research question is vagu
 ---
 
 ### Sales Deck Sub-Agent
+
+**Purpose:** The Sales Deck sub-agent ingests customer context, existing engagement
+artifacts (POV, BOM, diagram), and the customer's challenge and delivers a JSON slide
+specification for a customer-facing OCI solution recommendation presentation. The deck
+is used by SAs in pre-sales executive meetings to present Oracle's proposed solution
+before a POC is underway. It must tell the customer's story — not Oracle's feature catalog.
+Every slide must connect to the customer's stated problem or business goal. The 8-slide
+default structure moves from customer challenge → OCI solution → architecture → cost →
+why OCI → next steps. The output is a JSON spec (not a rendered `.pptx`) that can be
+reviewed and edited before rendering. SAs use it to prepare for C-suite meetings, QBRs,
+and solution review sessions where a polished, customer-named deck is expected.
 
 **Root cause:** Output is a JSON slide spec, not a rendered `.pptx`. Users asking for a
 deck expect a file they can open in PowerPoint. The hat/handler never explicitly declares
@@ -850,6 +945,19 @@ BOM, diagram artifacts is not implemented in the handler.
 ---
 
 ### POC Strategist Sub-Agent
+
+**Purpose:** The POC Strategist sub-agent ingests customer discovery context — pain
+statement, current platform, deal stage, timeline, budget signal, and competitive context
+— and delivers a ranked set of three POC options, each evaluated against four criteria:
+relevance to the customer's pain, executability within an SE's available time, cost
+defensibility, and security story. It answers the question every SE faces before a POC:
+"What should we build to close this deal?" The agent is called three times in parallel,
+once per angle (migration/modernisation, performance/scale/AI, cost/TCO), and a synthesis
+step produces the final ranked recommendation. Each option must include a specific wow
+moment — a visible, memorable proof point a business or technical sponsor can remember
+after the meeting. SAs use the POC Strategist output to align with their manager, prepare
+the customer for the POC kickoff, and feed all subsequent artifact generation (diagram,
+BOM, JEP, Terraform, presentation).
 
 **Root cause:** Two issues from the p56f cycle. First, the LLM returns markdown-wrapped JSON;
 `_extract_json()` was added but needs to be verified as sufficient. Second, the recommendation
@@ -938,6 +1046,19 @@ using customer context — so it is formulaic rather than insight-driven.
 
 ### Presentation Sub-Agent
 
+**Purpose:** The Presentation sub-agent ingests a confirmed POC recommendation, customer
+context, and existing artifacts (BOM summary, JEP phases, diagram reference) and delivers
+a rendered 7-slide Oracle-standard `.pptx` POC kit the SA can hand to the customer at the
+POC kickoff. It is the final tangible deliverable of the POC planning workflow. The deck
+must use Oracle's official OCI Architecture Toolkit PPTX stencil for service icons, follow
+Oracle's visual design standards (Oracle red, OCI typography, Oracle slide master), and be
+immediately openable in Microsoft PowerPoint and Apple Keynote without errors. The 7-slide
+structure covers: title, customer challenge, OCI architecture, key OCI services, cost
+estimate, implementation plan, and next steps. Unlike the Sales Deck (which is a pre-POC
+narrative deck), this is a post-selection technical POC kit — it describes exactly what
+will be built, how much it costs, and when each phase delivers. The agent is a deterministic
+renderer, not an LLM — it reads the engagement context and runs `render_oci_powerpoint.py`.
+
 **Root cause:** The sub-agent does not call an LLM — it calls `render_oci_powerpoint.render()`
 directly from the engagement_context. This is correct design but is undocumented. The Oracle
 OCI toolkit PPTX stencil file path and the slide layout spec need to be hardened.
@@ -1011,6 +1132,16 @@ OCI toolkit PPTX stencil file path and the slide layout spec need to be hardened
 
 ### Critic
 
+**Purpose:** The Critic skill is a second-pass quality gate that activates after any
+critique-enabled tool returns a result and the manager's expert post-review has approved
+it. Its role is to validate the structural and mathematical correctness of tool outputs
+against a per-tool schema — independently of the manager who just reviewed the same output.
+The Critic catches failures that the manager's expert LLM call might rationalise away:
+missing artifact keys, arithmetic errors in BOM totals, fabricated SKUs, wrong node counts,
+invalid Terraform. It silently issues precise correction prompts and triggers re-calls up to
+three times before escalating to the customer. It does not produce content — it only approves
+or rejects, and every rejection names a specific field, expected value, and actual value.
+
 **Root cause:** No validation schema for `generate_poc_plan` or `generate_presentation`.
 The 3-attempt retry counter is documented in prose but not enforced in Forge. Rejection
 messages are sometimes vague ("output is incomplete") which the hat explicitly prohibits.
@@ -1057,6 +1188,18 @@ messages are sometimes vague ("output is incomplete") which the hat explicitly p
 ---
 
 ### Governor
+
+**Purpose:** The Governor skill enforces non-negotiable guardrails before any deliverable
+reaches the customer. It acts as the last line of defense against four categories of hard
+failures: deploying resources to the tenancy root compartment, exposing a public endpoint
+without a WAF policy, storing regulated data without encryption, and allowing SSH/RDP from
+the open internet. These four blocks cannot be overridden by the SA or the customer — the
+Governor withholds the deliverable until the block is resolved or an explicit
+accepted-risk record is created. Beyond hard blocks, the Governor enforces explicit
+confirmations for cost overruns and GPU shapes, where the customer must acknowledge the
+financial commitment before the artifact is delivered. The Governor is a guardrail role,
+not a quality-review role — it does not evaluate architecture quality, it enforces binary
+safety and compliance thresholds.
 
 **Root cause:** The activation path is documented in the hat's `when_to_activate` list but
 the governor is not registered with `requires_hat` in `archie_wiring.py`. It relies on the
@@ -1107,6 +1250,18 @@ and can be silently skipped.
 
 ### OCI Diagram Architect (diagram_for_oci)
 
+**Purpose:** The OCI Diagram Architect skill is the expert lens that governs every diagram
+generation and update. Before calling the Diagram sub-agent, it ensures the topology intent
+is unambiguous — subnet tiers classified, gateway requirements identified, HA/DR mode
+explicit, and public vs. private exposure decided. After the sub-agent returns, it reviews
+the draw.io XML for OCI architecture standards compliance: flat parent model, correct gateway
+positions, OCI-standard icons, VCN boundary integrity, and service placement by tier. The
+skill embodies the judgment of a senior OCI solutions architect reviewing a diagram before it
+is shown to a customer — it knows which specific things go wrong (DB in the Public subnet,
+missing NSG boundary, wrong gateway edge), not just "verify quality." It enforces the
+two-consecutive-pass rule: a diagram is not approved until it passes two clean reviews
+without a correction.
+
 **Root cause:** The two-consecutive-pass requirement exists in the hat but is not tracked
 across expert LLM calls in Forge. AI/ML service placement is in the quality bar but absent
 from the pre-action checklist. Update requests are supposed to be deltas but the post-action
@@ -1149,6 +1304,17 @@ review does not verify that original nodes were preserved.
 ---
 
 ### OCI BOM Expert (oci_bom_expert)
+
+**Purpose:** The OCI BOM Expert skill is the expert lens that governs every BOM generation,
+revision, and pricing review. Before calling the BOM sub-agent, it confirms sizing parameters,
+presents an assumption table for the SA to review, and ensures no inputs are guessed when
+they are already known. After the sub-agent returns, it verifies that every SKU is a real
+OCI part number, that the monthly total is arithmetically correct, that the XLSX artifact is
+saved, and that the pricing source is disclosed. The skill embodies the pricing and sizing
+instincts of a senior OCI sales consultant — it knows that E5.Flex is the default (not E6),
+that active-active HA doubles compute cost, that GPU shapes require explicit financial
+acknowledgement, and that BYOL Oracle DB licensing nearly always saves the customer 50%.
+It is the SA's last check before a cost figure goes in front of a customer CFO.
 
 **Root cause:** E6.Flex exclusion rule is documented but relies on LLM enforcement only.
 Pricing source (live API vs. fallback cache) is invisible in the post-action review.
@@ -1194,6 +1360,18 @@ provided explicit sizing numbers.
 
 ### OCI WAF Reviewer (oci_waf_reviewer)
 
+**Purpose:** The OCI WAF Reviewer skill is the expert lens that governs every OCI
+Well-Architected Framework review. Before calling the WAF sub-agent, it confirms the
+architecture context exists and the compliance scope is declared. After the sub-agent
+returns, it verifies all six OCI WAF pillars are covered with maturity scores, that P1
+findings are present for any public-facing architecture, and that compliance mappings
+include specific control IDs. The skill embodies the judgment of a senior OCI security
+architect — it knows which specific findings are mandatory for which architecture types
+(WAF-less public LB is always P1, Oracle-managed keys for regulated data is always P1,
+single-AD with a 99.99% SLA claim is always a Reliability P1), and it knows how OCI
+security controls map to each compliance framework. It is the gate between an architecture
+design and a customer security review.
+
 **Root cause:** The single most damaging inconsistency in the system — "5 pillars" in
 the post-action check, "6 pillars" in the quality bar and OCI WAF Framework. This must
 be fixed in the hat file itself, not just in the sub-agent system prompt.
@@ -1233,6 +1411,19 @@ be fixed in the hat file itself, not just in the sub-agent system prompt.
 ---
 
 ### OCI Terraform Expert (terraform_for_oci)
+
+**Purpose:** The OCI Terraform Expert skill is the expert lens that governs every
+Terraform bundle generation. Before calling the Terraform sub-agent, it confirms the
+resource scope is bounded, the compartment OCID is available or templated, and the region
+is confirmed. After the sub-agent returns, it verifies the five canonical files are present,
+no OCIDs are hardcoded, the provider version is correctly pinned, tagging is applied to
+every resource, and the backend block is configured. The skill embodies the judgment of a
+senior OCI cloud engineer who has deployed OCI Terraform at scale — it knows that hardcoded
+AD names fail in other tenancies, that root compartment deployments violate the Governor's
+hard block, that a `locals` block is required for maintainable IaC, and that module
+structure is required once a configuration grows beyond five resources. It ensures the
+customer receives IaC they can actually deploy, not a starting-point that requires
+significant rework.
 
 **Root cause:** The canonical 5-file list is inconsistent between the quality bar
 (`README.md` as file 5) and the post-action (`provider.tf` as file 5). The state backend
@@ -1275,6 +1466,18 @@ block is not verified. Module structure is promised but not enforced.
 
 ### OCI POV Writer (oci_customer_pov_writer)
 
+**Purpose:** The OCI POV Writer skill is the expert lens that governs every Point of View
+document generation. Before calling the POV sub-agent, it evaluates whether the three
+required inputs — customer name, primary challenge, and target workload — are present in
+context, and enters a sequenced discovery mode if not. After the sub-agent returns, it
+verifies that all three document sections are present, that the content is customer-specific
+(not generic Oracle marketing), that success criteria are measurable, and that OCI services
+are named specifically. The skill embodies the judgment of an Oracle deal strategist — it
+knows that "Oracle's database cloud" is not a service name, that "improved performance" is
+not a success criterion, and that a POV without competitive differentiation is an executive
+presentation that will not move the deal forward. It is the quality gate before any POV
+document is presented to Oracle leadership or used in a customer conversation.
+
 **Root cause:** The 150-character discovery-mode trigger is a proxy for semantic sufficiency
 and a poor one. A single sentence like "migrate Oracle DB to OCI for ACME" is 38 characters
 but fully sufficient for a POV. Meanwhile, a 200-character boilerplate paragraph may still
@@ -1313,6 +1516,19 @@ lack the required fields.
 ---
 
 ### JEP Writer (jep_writer)
+
+**Purpose:** The JEP Writer skill is the expert lens that governs every Joint Execution
+Plan generation. Before calling the JEP sub-agent, it confirms that kickoff Q&A answers
+exist — either from the current turn or captured in engagement context — and that the
+three required inputs (customer name, POC use case, at least one OCI service) are present.
+After the sub-agent returns, it verifies that all three phases are present with week
+numbers, that success criteria are SMART with numeric thresholds, that the risk registry
+is customer-specific rather than generic OCI boilerplate, and that the go/no-go decision
+framework is explicit in Phase 3. The skill embodies the judgment of an Oracle CE or
+delivery architect who has run dozens of OCI POCs — it knows that a JEP without numeric
+success criteria will produce a disputed go/no-go decision, that unstaffed Oracle or
+customer roles are schedule risks that must be flagged, and that scope creep hidden in
+Phase 2 tasks will derail the POC timeline.
 
 **Root cause:** `doc_key` vs `artifact_key` inconsistency (hat checks `artifact_key` but
 sub-agent returns `doc_key`). Kickoff gate fires even when answers are in context. `parallel_with`
@@ -1356,6 +1572,20 @@ and presentation.
 
 ### OCI Infrastructure Research Analyst (infra_tech_research)
 
+**Purpose:** The OCI Infrastructure Research Analyst skill is the expert lens that governs
+every technology evaluation and architecture option analysis. Before calling the Tech
+Research sub-agent, it identifies the workload pattern from a canonical list, structures
+the research question into a `[SUB-AGENT INSTRUCTIONS]` block, and defaults all unknown
+parameters without asking the user. After the sub-agent returns, it verifies that at least
+two materially distinct OCI architecture options are present, that the recommendation's
+sizing hints are fully populated for direct BOM use, and that the risk register contains
+customer-specific risks rather than generic cloud concerns. The skill embodies the judgment
+of an OCI Solutions Architect who has evaluated dozens of workload migrations — it knows
+that OKE and "VM cluster" are not two distinct options if they use the same compute shape,
+that sizing hints are useless if they omit memory or storage, and that a research report
+without open questions is probably over-confident. It is the bridge between a customer
+question ("what should we use?") and the artifact generation pipeline that follows.
+
 **Root cause:** Broadest activation surface of any hat (10 triggers). The last trigger
 ("no architecture direction established") can fire on almost any first-turn request. Port
 conflict (tech_research on 8087 same as terraform) is a production blocker.
@@ -1397,6 +1627,20 @@ conflict (tech_research on 8087 same as terraform) is a production blocker.
 
 ### OCI Sales Deck Builder (oci_sales_deck)
 
+**Purpose:** The OCI Sales Deck Builder skill is the expert lens that governs every
+pre-sales presentation generation. Before calling the Sales Deck sub-agent, it pulls
+existing artifacts (POV, BOM, diagram) and structures a deck brief that identifies the
+customer, deck type, slide count, and key differentiators for this customer specifically.
+After the sub-agent returns, it verifies that every slide title is a complete declarative
+sentence (not a topic heading), that presenter notes are actionable talking points (not
+summaries of slide content), that BOM figures come from the actual artifact, and that no
+placeholder text remains. The skill embodies the judgment of an experienced Oracle account
+executive who has seen hundreds of customer presentations — it knows that "Customer
+Situation" is a topic heading that belongs in a deck template and not in a customer meeting,
+that a cost figure of "TBD" when the BOM is already generated is a missed opportunity, and
+that the "Why OCI" slide must speak to this customer's specific workload, not Oracle's
+general market position.
+
 **Root cause:** The output is a JSON spec, not a rendered `.pptx`. Users asking for a deck
 expect a file they can open in PowerPoint. This mismatch must be made explicit in the hat,
 the handler, and the UI. The overlap with `oci_presentation_writer` causes confusion.
@@ -1437,6 +1681,21 @@ the handler, and the UI. The overlap with `oci_presentation_writer` causes confu
 ---
 
 ### OCI POC Strategist (oci_poc_strategist)
+
+**Purpose:** The OCI POC Strategist skill is the expert lens that governs every POC option
+exploration and confirmation. Before calling the POC Strategist sub-agent, it verifies
+that the two hard-required inputs — pain statement and current platform — are present in
+context, and emits a `NEEDS_CLARIFICATION` request for whichever is missing. After the
+sub-agent returns three options, it verifies that each option is customer-platform-specific
+(not generic OCI), that the wow moment is visible and memorable (not technical theater),
+that the recommendation rationale cites specific customer inputs, and that the top
+recommendation is executable by an SE in one day. On the confirmation path, it validates
+that the user has selected a specific option and orchestrates the parallel fan-out to all
+five downstream artifacts. The skill embodies the judgment of an Oracle SE manager who has
+coached hundreds of POC pitches — it knows that a POC that takes two SE weeks to build
+will not get executive sponsorship, that the wow moment is what the customer remembers in
+the next steering committee meeting, and that a recommendation rationale of "best fit for
+OCI" will not survive customer scrutiny.
 
 **Root cause:** The `action="confirm"` fan-out path is implemented in `PocStrategistHandler`
 but not documented in the hat. The partial success policy (2/3 angles) is too permissive
@@ -1484,6 +1743,19 @@ in the hat but too strict in practice. `relevance_explanation` field doesn't exi
 ---
 
 ### OCI Presentation Writer (oci_presentation_writer)
+
+**Purpose:** The OCI Presentation Writer skill is the expert lens that governs every POC
+deck generation. Before calling the Presentation sub-agent, it verifies that `poc_recommendation`
+and `customer_name` are in context (without either, the deck cannot be customer-specific),
+checks the availability of BOM summary and JEP phases for slides 5 and 6, and passes a
+structured render spec to the deterministic renderer. After the sub-agent returns, it verifies
+that exactly 7 slides were produced, the `.pptx` artifact key is correctly formatted, the
+file is a valid PowerPoint archive, and Oracle branding standards are met. The skill is
+aware that the sub-agent is a deterministic renderer — not an LLM — so its post-action
+review focuses on structural correctness and completeness, not content quality. It knows
+that a partially-rendered deck (fewer than 7 slides, empty cost slide, missing customer
+name) is worse than a delayed deck — the customer's first impression of the POC kit sets
+the tone for the entire engagement.
 
 **Root cause:** The sub-agent is a deterministic renderer, not an LLM. This is correct
 but undocumented. The boundary with `oci_sales_deck` is unclear. BOM/JEP pending slides
