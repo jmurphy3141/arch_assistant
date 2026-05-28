@@ -1,3 +1,4 @@
+import json
 import sys
 import types
 
@@ -173,6 +174,81 @@ async def test_waf_ok(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "waf"
         return {"status": "ok", "result": "WAF review text."}
+
+    monkeypatch.setattr(
+        specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+    stub_save_doc(monkeypatch, "docs/waf_v1.md")
+
+    result = await WafHandler(object(), "cust-1", "ACME")(
+        {}, memory=make_memory(), context={"agents": {}}, trace_id="trace-1"
+    )
+
+    assert result.status == "ok"
+    assert result.artifact_key == "docs/waf_v1.md"
+
+
+def _waf_payload(pillars):
+    return json.dumps(
+        {
+            "overall_score": 4,
+            "pillars": {
+                pillar: {"score": 4, "findings": []}
+                for pillar in pillars
+            },
+        }
+    )
+
+
+async def test_waf_blocks_json_result_missing_required_pillar(monkeypatch):
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        assert name == "waf"
+        return {
+            "status": "ok",
+            "result": _waf_payload(
+                [
+                    "Security",
+                    "Reliability",
+                    "Performance Efficiency",
+                    "Cost Optimisation",
+                    "Operational Excellence",
+                ]
+            ),
+        }
+
+    def fail_save_doc(*args, **kwargs):
+        raise AssertionError("incomplete WAF result must not be saved")
+
+    monkeypatch.setattr(
+        specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+    monkeypatch.setattr(specialists_module.document_store, "save_doc", fail_save_doc)
+
+    result = await WafHandler(object(), "cust-1", "ACME")(
+        {}, memory=make_memory(), context={"agents": {}}, trace_id="trace-1"
+    )
+
+    assert result.status == "blocked"
+    assert result.data == {"missing_pillars": ["Continuous Improvement"]}
+    assert "Continuous Improvement" in result.summary
+
+
+async def test_waf_accepts_json_result_with_all_required_pillars(monkeypatch):
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        assert name == "waf"
+        return {
+            "status": "ok",
+            "result": _waf_payload(
+                [
+                    "Security",
+                    "Reliability",
+                    "Performance Efficiency",
+                    "Cost Optimisation",
+                    "Operational Excellence",
+                    "Continuous Improvement",
+                ]
+            ),
+        }
 
     monkeypatch.setattr(
         specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent

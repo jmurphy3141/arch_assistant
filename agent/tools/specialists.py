@@ -17,6 +17,18 @@ from agent.sub_agent_client import SubAgentError
 from skillforge.types import MemorySnapshot, ParallelToolCall, ToolResult
 
 
+REQUIRED_WAF_PILLARS = frozenset(
+    {
+        "Security",
+        "Reliability",
+        "Performance Efficiency",
+        "Cost Optimisation",
+        "Operational Excellence",
+        "Continuous Improvement",
+    }
+)
+
+
 def build_inference_runner(app_state, *, inference_config: dict):
     """
     Return a text_runner callable using app.state if available,
@@ -167,6 +179,17 @@ class _SpecialistHandler:
         content = str(response.get("result") or "")
         summary_content = content
         if self._agent_name == "waf":
+            missing_pillars = _missing_waf_pillars(content)
+            if missing_pillars:
+                missing_text = ", ".join(missing_pillars)
+                return ToolResult(
+                    summary=(
+                        "WAF review incomplete - missing pillars: "
+                        f"{missing_text}. Re-running with correction."
+                    ),
+                    status="blocked",
+                    data={"missing_pillars": missing_pillars},
+                )
             content = _ensure_waf_markdown_sections(content)
             response["result"] = content
 
@@ -614,6 +637,23 @@ def _save_json_doc(
         content_type="application/json",
     )
     return {"version": version, "key": version_key, "latest_key": latest_key}
+
+
+def _missing_waf_pillars(content: str) -> list[str]:
+    text = str(content or "").strip()
+    if not text.startswith("{"):
+        return []
+    try:
+        waf_data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(waf_data, dict):
+        return []
+    pillars = waf_data.get("pillars") or {}
+    if not isinstance(pillars, dict):
+        pillars = {}
+    present = {str(key) for key in pillars.keys()}
+    return sorted(REQUIRED_WAF_PILLARS - present)
 
 
 def _ensure_waf_markdown_sections(content: str) -> str:
