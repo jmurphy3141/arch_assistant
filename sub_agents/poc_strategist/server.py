@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json as _json_mod
+import re as _re
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,24 @@ def _first_present(*values: Any, default: Any = None) -> Any:
         if value is not None and value != "":
             return value
     return default
+
+
+def _extract_json(text: str) -> str:
+    text = text.strip()
+    try:
+        _json_mod.loads(text)
+        return text
+    except _json_mod.JSONDecodeError:
+        pass
+    match = _re.search(r'\{.*\}', text, _re.DOTALL)
+    if match:
+        candidate = match.group(0)
+        try:
+            _json_mod.loads(candidate)
+            return candidate
+        except _json_mod.JSONDecodeError:
+            pass
+    return text
 
 
 _agent_config = _load_yaml(_CONFIG)
@@ -79,6 +99,7 @@ async def handle(req: A2ARequest) -> A2AResponse:
             system_message=_system_message,
         )
     )
+    text = _extract_json(text)
     return A2AResponse(result=text, status="ok", trace={"agent": card.name, "trace_id": req.trace_id})
 
 
