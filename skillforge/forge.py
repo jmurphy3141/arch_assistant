@@ -81,6 +81,20 @@ _EXPERT_REVIEW_ITERATE = "EXPERT_ITERATE:"
 _EXPERT_REVIEW_SURFACE = "EXPERT_SURFACE:"
 
 
+def _plan_has_poc_intent(plan: str) -> bool:
+    keywords = ("poc", "proof of concept", "demo", "pilot", "what to build",
+                "generate_poc_plan", "options", "evaluate")
+    plan_lower = plan.lower()
+    return sum(1 for k in keywords if k in plan_lower) >= 2
+
+
+def _memory_has_poc_recommendation(memory) -> bool:
+    if not memory:
+        return False
+    dc = getattr(memory, "decision_context", {}) or {}
+    return bool(dc.get("poc_recommendation") or dc.get("poc_options"))
+
+
 class Forge:
     """
     Domain-agnostic polymath orchestrator.
@@ -1073,6 +1087,16 @@ class Forge:
                     "[STEP3_PLANNING] Still missing sections %s after retry session=%s",
                     still_missing, session_id,
                 )
+
+        if (
+            _plan_has_poc_intent(planning_text)
+            and not _memory_has_poc_recommendation(memory_snapshot)
+        ):
+            planning_text = (
+                planning_text
+                + "\n[FORGE OVERRIDE: poc_recommendation absent — "
+                "call generate_poc_plan(action='explore') now]"
+            )
 
         logger.info("[STEP3_PLANNING] session=%s:\n%s", session_id, planning_text)
         events.append(
