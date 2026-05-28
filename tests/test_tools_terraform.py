@@ -100,6 +100,86 @@ async def test_terraform_ok(monkeypatch):
     assert result.artifact_key == "tf/main.tf"
 
 
+async def test_terraform_blocks_hardcoded_ocid_in_tf_file(monkeypatch):
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        assert name == "terraform"
+        return {"status": "ok", "result": "{}"}
+
+    def fail_save_terraform_bundle(*args, **kwargs):
+        raise AssertionError("Terraform bundle with hardcoded OCID must not be saved")
+
+    install_archie_session_stub(
+        monkeypatch,
+        lambda result: {
+            "main.tf": 'resource "oci_core_vcn" "main" { compartment_id = "ocid1.compartment.oc1..aaa" }',
+            "variables.tf": 'variable "compartment_id" { type = string }',
+            "README.md": "clean",
+        },
+    )
+    monkeypatch.setattr(
+        terraform_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+    monkeypatch.setattr(
+        terraform_module.document_store,
+        "save_terraform_bundle",
+        fail_save_terraform_bundle,
+    )
+
+    result = await make_handler()(
+        {"prompt": "make terraform"},
+        memory=make_memory(),
+        context={"agents": {}},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "blocked"
+    assert result.data == {"ocid_violations": ["main.tf"]}
+    assert "main.tf" in result.summary
+
+
+async def test_terraform_allows_ocid_stubs_outside_tf_files(monkeypatch):
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        assert name == "terraform"
+        return {"status": "ok", "result": "{}"}
+
+    def fake_save_terraform_bundle(store, customer_id, files, metadata):
+        assert files["README.md"] == "example ocid1.compartment.oc1..aaa"
+        assert files["terraform.tfvars.example"] == 'compartment_id = "ocid1.compartment.oc1..example"'
+        return {
+            "version": 1,
+            "latest_key": "tf/latest.json",
+            "files": {"main.tf": "tf/main.tf"},
+        }
+
+    install_archie_session_stub(
+        monkeypatch,
+        lambda result: {
+            "main.tf": "resource \"oci_core_vcn\" \"main\" { compartment_id = var.compartment_id }",
+            "variables.tf": "variable \"compartment_id\" { type = string }",
+            "README.md": "example ocid1.compartment.oc1..aaa",
+            "terraform.tfvars.example": 'compartment_id = "ocid1.compartment.oc1..example"',
+        },
+    )
+    monkeypatch.setattr(
+        terraform_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+    monkeypatch.setattr(
+        terraform_module.document_store,
+        "save_terraform_bundle",
+        fake_save_terraform_bundle,
+    )
+
+    result = await make_handler()(
+        {"prompt": "make terraform"},
+        memory=make_memory(),
+        context={"agents": {}},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "ok"
+    assert result.artifact_key == "tf/main.tf"
+
+
 async def test_terraform_needs_input(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         return {"status": "needs_input", "result": "Please define VCN CIDR."}

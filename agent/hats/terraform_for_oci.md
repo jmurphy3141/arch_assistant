@@ -195,8 +195,8 @@ After `generate_terraform` returns, I review the result as the OCI Terraform Exp
 
 Mandatory checks:
 - Five required files present: `main.tf`, `variables.tf`, `outputs.tf`,
-  `provider.tf`, `terraform.tfvars.example`
-- `provider.tf` pins `hashicorp/oci` to `>= 5.40`
+  `terraform.tfvars.example`, `README.md`
+- Provider block in `main.tf` pins `hashicorp/oci` to `>= 5.40`
 - A `locals` block defines `name_prefix` and `freeform_tags` in `main.tf`
 - No hardcoded OCIDs anywhere in `.tf` files — all OCIDs are `var.*` references
 - `terraform.tfvars.example` includes stubs for all required variables

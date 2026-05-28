@@ -9,6 +9,7 @@ import asyncio
 import functools
 import json
 import logging
+import re
 from typing import Any
 
 import anyio
@@ -28,6 +29,9 @@ from agent.sub_agent_client import SubAgentError
 from skillforge.types import MemorySnapshot, ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+OCID_PATTERN = re.compile(r"ocid1\.")
 
 
 def _terraform_fallback_files() -> dict[str, str]:
@@ -365,6 +369,16 @@ class TerraformHandler:
         from agent.archie_session import _parse_terraform_sub_agent_result
 
         files = _parse_terraform_sub_agent_result(response.get("result"))
+        ocid_violations = _terraform_ocid_violations(files)
+        if ocid_violations:
+            return ToolResult(
+                summary=(
+                    "Terraform bundle contains hardcoded OCIDs in: "
+                    f"{', '.join(ocid_violations)}. All OCIDs must be var.* references."
+                ),
+                status="blocked",
+                data={"ocid_violations": ocid_violations},
+            )
         saved = await asyncio.to_thread(
             document_store.save_terraform_bundle,
             self._store,
@@ -383,3 +397,11 @@ class TerraformHandler:
                 "bundle": saved,
             },
         )
+
+
+def _terraform_ocid_violations(files: dict[str, Any]) -> list[str]:
+    return [
+        filename
+        for filename, content in files.items()
+        if filename.endswith(".tf") and OCID_PATTERN.search(str(content or ""))
+    ]
