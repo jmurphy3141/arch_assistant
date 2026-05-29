@@ -7,6 +7,8 @@ const clientMocks = vi.hoisted(() => ({
   apiGetChatHistory: vi.fn(),
   apiChatStream: vi.fn(),
   apiChat: vi.fn(),
+  apiChatBackground: vi.fn(),
+  apiGetChatJob: vi.fn(),
   apiClearChatHistory: vi.fn(),
   apiUploadNote: vi.fn(),
   apiGetLatestPov: vi.fn(),
@@ -18,6 +20,8 @@ vi.mock('../api/client', () => ({
   apiGetChatHistory: clientMocks.apiGetChatHistory,
   apiChatStream: clientMocks.apiChatStream,
   apiChat: clientMocks.apiChat,
+  apiChatBackground: clientMocks.apiChatBackground,
+  apiGetChatJob: clientMocks.apiGetChatJob,
   apiClearChatHistory: clientMocks.apiClearChatHistory,
   apiUploadNote: clientMocks.apiUploadNote,
   apiGetLatestPov: clientMocks.apiGetLatestPov,
@@ -33,6 +37,8 @@ describe('ChatInterface quick actions', () => {
     localStorage.clear();
     clientMocks.apiGetChatHistory.mockResolvedValue({ history: [] });
     clientMocks.apiChat.mockResolvedValue({ reply: '', tool_calls: [], artifacts: {}, artifact_manifest: { downloads: [] } });
+    clientMocks.apiChatBackground.mockResolvedValue({ status: 'pending', job_id: 'job-bg-1' });
+    clientMocks.apiGetChatJob.mockResolvedValue({ status: 'pending', job_id: 'job-bg-1' });
     clientMocks.apiClearChatHistory.mockResolvedValue({});
     clientMocks.apiUploadNote.mockResolvedValue({});
     clientMocks.apiGetLatestPov.mockResolvedValue({ content: '' });
@@ -145,6 +151,21 @@ describe('ChatInterface quick actions', () => {
       expect(screen.getByTestId('quick-action-confirm-update-all')).toBeInTheDocument();
       expect(screen.getByTestId('quick-action-cancel-update')).toBeInTheDocument();
     });
+  });
+
+  it('starts a background chat job when background mode is enabled', async () => {
+    render(<ChatInterface />);
+
+    await userEvent.type(screen.getByTestId('chat-customer-id'), 'acme');
+    await userEvent.type(screen.getByTestId('chat-input'), 'generate the POC pack');
+    await userEvent.click(screen.getByTestId('chat-background-toggle'));
+    await userEvent.click(screen.getByTestId('chat-send-button'));
+
+    await waitFor(() => {
+      expect(clientMocks.apiChatBackground).toHaveBeenCalledTimes(1);
+    });
+    expect(clientMocks.apiChatStream).not.toHaveBeenCalled();
+    expect(screen.getByTestId('chat-background-job-pill')).toHaveTextContent('job-bg-1');
   });
 
   it('keeps scrolling inside the chat pane instead of forcing the page to jump', async () => {

@@ -3,7 +3,7 @@
 **Repository:** jmurphy3141/arch_assistant
 **Branch:** claude/explore-repo-Os53i
 **Requirements:** docs/requirements-poc-workflow.md FR-4.*
-**Can be worked in parallel with:** Issue 1
+**Depends on:** p55f merged
 
 ---
 
@@ -288,6 +288,24 @@ if artifact_key.endswith(".pptx"):
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 ```
+
+---
+
+## Additional requirement from p55c
+
+`agent/tools/specialists.py` `_build_fanout_result()` currently uses
+`generate_sales_deck` as a placeholder because `generate_presentation` was not
+registered when p55c shipped. Once `generate_presentation` is registered here,
+update that one line in `_build_fanout_result()`:
+
+```python
+# Change in _build_fanout_result():
+ParallelToolCall(tool="generate_sales_deck", ...)   # before p55e
+ParallelToolCall(tool="generate_presentation", ...)  # after p55e
+```
+
+Also update `tests/test_poc_strategist.py` `test_confirmation_tool_names_correct`
+to assert `generate_presentation` instead of `generate_sales_deck`.
 
 ---
 

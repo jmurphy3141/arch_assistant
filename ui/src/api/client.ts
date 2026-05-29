@@ -91,6 +91,8 @@ export interface JobPending {
   job_id: string;
 }
 
+export type ChatJobResult = ChatResponse | JobPending;
+
 export type DiagramResult = GenerateResponse | OrchestrationResult;
 
 export interface OrchestrationResult {
@@ -912,6 +914,29 @@ export async function apiChat(
       message,
     }),
   });
+}
+
+export async function apiChatBackground(
+  customerId: string,
+  customerName: string,
+  message: string,
+  project?: { projectId?: string; projectName?: string },
+): Promise<JobPending> {
+  return apiFetch<JobPending>('/chat/background', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_id:   customerId,
+      customer_name: customerName,
+      ...(project?.projectId ? { project_id: project.projectId } : {}),
+      ...(project?.projectName ? { project_name: project.projectName } : {}),
+      message,
+    }),
+  });
+}
+
+export async function apiGetChatJob(jobId: string): Promise<ChatJobResult> {
+  return apiFetch<ChatJobResult>(`/job/${jobId}`);
 }
 
 export interface ChatStreamHandlers {

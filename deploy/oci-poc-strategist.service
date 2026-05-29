@@ -1,0 +1,14 @@
+[Unit]
+Description=Archie POC Strategist Sub-Agent
+After=network.target
+
+[Service]
+User=opc
+WorkingDirectory=/home/opc/drawing-agent
+ExecStart=/usr/bin/python3.11 -m sub_agents.poc_strategist.server
+Restart=always
+StandardOutput=append:/home/opc/drawing-agent/poc_strategist.log
+StandardError=append:/home/opc/drawing-agent/poc_strategist.log
+
+[Install]
+WantedBy=multi-user.target

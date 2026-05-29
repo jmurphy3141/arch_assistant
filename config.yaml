@@ -135,6 +135,13 @@ sub_agents:
   terraform: "http://localhost:8087"
   tech_research: "http://localhost:8088"
   sales_deck: "http://localhost:8089"
+  poc_strategist: "http://localhost:8090"
+  presentation: "http://localhost:8091"
+
+telegram:
+  enabled: false
+  bot_token_env: "TELEGRAM_BOT_TOKEN"
+  chat_id_env: "TELEGRAM_CHAT_ID"
 
 # Auth is configured entirely via environment variables (see .env.example).
 # No auth settings belong here — they contain secrets or per-deployment values.

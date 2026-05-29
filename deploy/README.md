@@ -17,6 +17,15 @@ Copy service files to systemd and enable:
 
     sudo systemctl restart oci-bom
 
+## Sub-agent services
+
+Install and start the POC strategist and presentation sub-agents:
+
+    sudo cp deploy/oci-poc-strategist.service /etc/systemd/system/
+    sudo cp deploy/oci-presentation.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now oci-poc-strategist oci-presentation
+
 ## View logs
 
     journalctl -u oci-bom -f
@@ -34,3 +43,5 @@ Copy service files to systemd and enable:
 | oci-terraform        | 8087 |
 | oci-tech-research    | 8088 |
 | oci-sales-deck       | 8089 |
+| poc_strategist sub-agent | 8090 |
+| presentation sub-agent | 8091 |

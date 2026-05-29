@@ -8,7 +8,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   apiChat,
+  apiChatBackground,
   apiChatStream,
+  apiGetChatJob,
   apiGetChatHistory,
   apiClearChatHistory,
   apiUploadNote,
@@ -778,6 +780,8 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
   const [archieWorkingMessage, setArchieWorkingMessage] = useState(ARCHIE_WORKING_MESSAGES[0]);
   const [activeHats, setActiveHats] = useState<string[]>([]);
+  const [backgroundMode, setBackgroundMode] = useState(false);
+  const [backgroundJobId, setBackgroundJobId] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const bottomRef   = useRef<HTMLDivElement>(null);
   const inputRef    = useRef<HTMLTextAreaElement>(null);
@@ -829,6 +833,47 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
     setInput(pendingPrompt.text);
     setTimeout(() => inputRef.current?.focus(), 50);
   }, [pendingPrompt]);
+
+  useEffect(() => {
+    if (!backgroundJobId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const resp = await apiGetChatJob(backgroundJobId);
+        if (cancelled) return;
+        if ((resp as { status?: string }).status === 'pending') return;
+        const complete = resp as {
+          reply?: string;
+          tool_calls?: ChatToolCall[];
+          artifacts?: Record<string, string>;
+          artifact_manifest?: ChatArtifactManifest;
+        };
+        const assistantMsg: LocalMessage = {
+          role: 'assistant',
+          content: complete.reply ?? '',
+          timestamp: new Date().toISOString(),
+          toolCalls: complete.tool_calls ?? [],
+          artifacts: complete.artifacts ?? {},
+          artifactManifest: complete.artifact_manifest,
+        };
+        setMessages(prev => [...prev, assistantMsg]);
+        setBackgroundJobId(null);
+        setBackgroundMode(false);
+      } catch (err: unknown) {
+        if (cancelled) return;
+        const e = err as { status?: number; detail?: string };
+        setError(`Background job failed: ${e.detail ?? 'unknown error'}`);
+        setBackgroundJobId(null);
+        setBackgroundMode(false);
+      }
+    };
+    const timer = window.setInterval(() => { void poll(); }, 5000);
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [backgroundJobId]);
 
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -883,6 +928,11 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
         ...(projectId ? { projectId } : {}),
         ...(projectName ? { projectName } : {}),
       };
+      if (backgroundMode) {
+        const job = await apiChatBackground(customerId, effectiveCustomerName, text, projectMeta);
+        setBackgroundJobId(job.job_id);
+        return;
+      }
       try {
         resp = await apiChatStream(customerId, effectiveCustomerName, text, {
           onEvent: event => {
@@ -896,6 +946,9 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
             } else if ((event.event_type as string) === 'thinking') {
               const label = (event as { label?: unknown }).label;
               setThinkingStatus(typeof label === 'string' && label.trim() ? label : 'Thinking...');
+            } else if ((event.event_type as string) === 'status' && (event as { status?: unknown }).status === 'tool_started') {
+              const message = (event as { message?: unknown }).message;
+              if (typeof message === 'string' && message.trim()) setThinkingStatus(message);
             } else if ((event.event_type as string) === 'completion') {
               setThinkingStatus(null);
             }
@@ -1168,6 +1221,44 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
         </div>
       )}
 
+      {/* Background job badge */}
+      {backgroundJobId && (
+        <div
+          data-testid="chat-background-job-pill"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '0.45rem',
+            background: 'rgba(97,218,251,0.08)',
+            border: '1px solid rgba(97,218,251,0.3)',
+            borderRadius: 10,
+            padding: '0.24rem 0.55rem',
+            fontSize: '0.7rem',
+            color: '#9bdff2',
+            alignSelf: 'flex-start',
+            fontFamily: "'JetBrains Mono', monospace",
+          }}
+        >
+          Working in background... {backgroundJobId}
+          <button
+            type="button"
+            onClick={() => setBackgroundJobId(null)}
+            title="Dismiss background job status"
+            style={{
+              border: 'none',
+              background: 'transparent',
+              color: '#9bdff2',
+              cursor: 'pointer',
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: '0.8rem',
+              padding: 0,
+            }}
+          >
+            x
+          </button>
+        </div>
+      )}
+
       {/* Attachment badge */}
       {attachedFile && (
         <div style={{
@@ -1250,6 +1341,21 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
               disabled={!customerId.trim() || loading}
             >
               Clear
+            </button>
+            <button
+              type="button"
+              data-testid="chat-background-toggle"
+              style={{
+                ...btnSecondary,
+                border: backgroundMode ? '1px solid rgba(97,218,251,0.45)' : btnSecondary.border,
+                color: backgroundMode ? '#9bdff2' : btnSecondary.color,
+                background: backgroundMode ? 'rgba(97,218,251,0.1)' : btnSecondary.background,
+              }}
+              onClick={() => setBackgroundMode(v => !v)}
+              title="Run the next chat request as a background job"
+              aria-pressed={backgroundMode}
+            >
+              Background
             </button>
           </div>
           <button data-testid="chat-send-button" style={btnPrimary} onClick={sendMessage} disabled={!canSend}>

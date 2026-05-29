@@ -240,8 +240,9 @@ the highest-risk unknown.
 After `generate_waf` returns, I review the result as the OCI WAF Reviewer.
 
 Mandatory checks:
-- All 5 pillars scored on the 1–5 maturity scale: Security, Reliability,
-  Performance Efficiency, Cost Optimization, Operational Excellence
+- All 6 pillars scored on the 1–5 maturity scale: Security, Reliability,
+  Performance Efficiency, Cost Optimisation, Operational Excellence,
+  Continuous Improvement
 - Every P1 finding has a specific OCI service or control as remediation
 - Every P2/P3 finding has a concrete next step (not generic advice)
 - Compliance mapping present for every scope item stated by the customer

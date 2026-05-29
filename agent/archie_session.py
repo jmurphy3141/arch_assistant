@@ -1970,14 +1970,11 @@ def _ordered_requested_tools(tools: set[str]) -> list[str]:
     return [tool for tool in order if tool in tools]
 
 _ACTION_PRODUCTION_MARKERS = (
-    "export",
     "xlsx",
     "xlxs",
     "xlsc",
-    "excel",
     "spreadsheet",
     "workbook",
-    "download",
     "generate file",
     "save file",
     "pricing export",
@@ -1995,8 +1992,6 @@ _ACTION_ACCESS_MARKERS = (
 _ACTION_VERIFY_MARKERS = (
     "in the bucket",
     "in object storage",
-    "uploaded",
-    "verify",
     "verify file",
     "verify files",
     "check file",
@@ -2117,7 +2112,7 @@ def _is_explicit_artifact_verification_request(user_message: str, target_artifac
     explicit_verify = any(marker in msg for marker in (" verify", " check ", " list "))
     explicit_location = any(marker in msg for marker in (" in the bucket", " in object storage", " object-store", " persisted"))
     file_terms = any(marker in msg for marker in (" file", " files", " artifact", " artifacts", " xlsx", " workbook", " bom", " diagram", " terraform"))
-    uploaded_state = any(marker in msg for marker in (" uploaded", " upload complete", " present"))
+    uploaded_state = any(marker in msg for marker in (" uploaded", " upload complete", " is present", " are present"))
     return bool((explicit_verify and (file_terms or target_artifact or explicit_location)) or (uploaded_state and (file_terms or target_artifact)))
 
 def _extract_turn_corrections(user_message: str) -> list[str]:

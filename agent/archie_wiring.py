@@ -15,7 +15,15 @@ from agent.persistence_objectstore import ObjectStoreBase
 from agent.tools.bom import BomHandler
 from agent.tools.diagram import DiagramHandler
 from agent.tools.notes import NotesHandlers
-from agent.tools.specialists import JepHandler, PovHandler, SalesDeckHandler, TechResearchHandler, WafHandler
+from agent.tools.presentation import PresentationHandler
+from agent.tools.specialists import (
+    JepHandler,
+    PocStrategistHandler,
+    PovHandler,
+    SalesDeckHandler,
+    TechResearchHandler,
+    WafHandler,
+)
 from agent.tools.terraform import TerraformHandler
 from skillforge import ArgSchema, Forge
 from skillforge.types import MemorySnapshot
@@ -195,10 +203,25 @@ These rules are mandatory. Follow them on every generation request.
    generate_waf -> generate_terraform -> generate_pov -> generate_sales_deck -> generate_jep
    (skip any that were not previously generated).
 
-### Tool-call discipline (mandatory)
-9. You MUST output a tool-call JSON line for every generation request. Never
-   respond with prose describing what you are about to do. Prose responses are
-   ONLY for conversational turns where no tool is needed.
+### POC workflow
+8a. For POC planning, follow the POC Planning Workflow section below — work
+    conversationally first, offer to run generate_poc_plan when ready, wait for yes.
+8b. After poc_plan is confirmed by the user, call generate_diagram +
+    generate_bom + generate_jep + generate_terraform + generate_presentation
+    together (they will fan out in parallel).
+
+### Conversational turns
+Many turns are planning, strategy, or discovery — not generation requests. Talking
+through a POC approach, discussing JEP structure, exploring architecture options,
+asking about a customer situation — these do NOT require tool calls. Respond as a
+thoughtful teammate. Only call a tool when the user is ready to produce an artifact
+or has explicitly asked for one.
+
+### Tool-call discipline (for explicit generation requests)
+9. When the user explicitly requests an artifact (diagram, BOM, JEP, etc.), output
+   a tool-call JSON line immediately. Never respond with prose describing what you
+   are about to do for an explicit generation request. Prose responses are for
+   conversational turns where no artifact is being produced.
    Correct: {"tool": "generate_bom", "args": {"prompt": "..."}}
    Wrong: "I'll generate a BOM for your web service architecture now."
 
@@ -214,6 +237,46 @@ These rules are mandatory. Follow them on every generation request.
     save_notes immediately with the message text as the notes argument.
     Do NOT call generate_bom or generate_diagram. The file is already in object
     storage — save_notes indexes it and confirms to the user.
+
+### POC Planning Workflow
+
+This is a conversational, teammate-style workflow. The SE and Archie think through
+the customer situation together — often over many turns — before committing to a
+direction. Do NOT jump straight to generate_poc_plan on the first POC mention.
+
+Phase 1 — Explore conversationally (no tool calls):
+Discuss the customer pain, platform, timeline, competitive context. Share early ideas,
+ask clarifying questions, think out loud. This may last several turns. This is normal
+and valuable — do not rush it.
+
+Phase 2 — Offer to run the deep evaluation:
+When the conversation has enough signal (pain statement, current platform, and at least
+one of: timeline / budget / audience / competitive context), offer to run the tool.
+Say something like: "I have enough to run a full POC evaluation — want me to go explore
+the options in detail? I'll score each one on relevance, build time, wow moment, and
+risks. Or we can keep talking it through — your call."
+Wait for a clear yes before calling the tool. Yes sounds like: "yes", "go for it",
+"run it", "explore", "let's see the options", "do it", "go ahead".
+
+Phase 3 — Run the evaluation:
+Call generate_poc_plan(action="explore"). Returns 3 scored options.
+Present each: name, relevance (X/10), build time (Xh), wow moment, top 2 risks.
+Give your recommendation citing ≥2 specific customer facts.
+End with: "Which option would you like to proceed with?"
+
+Phase 4 — Confirm and fan-out:
+When the user selects — by number, name, description, or affirmation ("that one",
+"go", "yes", "let's do it") — call:
+  generate_poc_plan(action="confirm", confirmed_option_name="[exact option_name]")
+This fans out all 5 artifacts simultaneously (diagram, BOM, JEP, Terraform, deck).
+Present the kit: "POC kit for [name] is ready. [Download links.]"
+
+Rules:
+- Do NOT generate formal artifacts before the user confirms an option
+- Do NOT skip Phase 2 — always offer, never assume the user is ready
+- Do NOT call generate_poc_plan(action="explore") again after confirming
+- If user changes mind: call generate_poc_plan(action="confirm", confirmed_option_name="[new]")
+- If ambiguous which option: ask once before confirming
 """
 
 
@@ -431,6 +494,31 @@ def build_forge(
         requires_hat="infra_tech_research",
     )
     forge.register_tool(
+        "generate_poc_plan",
+        PocStrategistHandler(
+            store=store,
+            customer_id=customer_id,
+            customer_name=customer_name,
+        ),
+        description=(
+            "Explores 3 parallel POC options across migration, performance/AI, "
+            "and cost angles. Returns ranked options with effort and value "
+            "scores, and a recommended POC with demo script."
+        ),
+        args={"prompt": ArgSchema(
+            description=(
+                "Customer context and POC planning request. Include pain, current "
+                "platform, timeline, budget signal, industry, and competitive context "
+                "when known."
+            ),
+            type="string",
+            required=False,
+        )},
+        memory_contract=True,
+        critique_enabled=True,
+        requires_hat="oci_poc_strategist",
+    )
+    forge.register_tool(
         "generate_waf",
         WafHandler(store=store, customer_id=customer_id, customer_name=customer_name),
         description=(
@@ -445,6 +533,25 @@ def build_forge(
         memory_contract=True,
         critique_enabled=True,
         requires_hat="oci_waf_reviewer",
+    )
+    forge.register_tool("generate_presentation",
+        PresentationHandler(
+            store=store,
+            customer_id=customer_id,
+            customer_name=customer_name,
+        ),
+        description=(
+            "Generates a 7-slide client-facing Oracle-standard PowerPoint POC "
+            "deck with OCI icon stencils."
+        ),
+        args={"poc_option": ArgSchema(
+            description="Optional confirmed POC option payload from generate_poc_plan.",
+            type="object",
+            required=False,
+        )},
+        memory_contract=True,
+        critique_enabled=True,
+        requires_hat="oci_presentation_writer",
     )
     forge.register_tool(
         "generate_sales_deck",

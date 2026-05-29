@@ -50,6 +50,14 @@ def make_memory():
     )
 
 
+def make_memory_with_raw(raw):
+    return MemorySnapshot(
+        session_id="s1",
+        decision_context={"constraints": {"region": "us-ashburn-1"}},
+        raw=raw,
+    )
+
+
 async def test_bom_ok(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "bom"
@@ -77,6 +85,114 @@ async def test_bom_ok(monkeypatch):
 
     assert result.status == "ok"
     assert result.data["bom_payload"]["totals"]["estimated_monthly_cost"] == 500
+
+
+async def test_bom_injects_confirmed_context_before_correction(monkeypatch):
+    captured = {}
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        captured["task"] = task
+        return {
+            "status": "ok",
+            "result": (
+                '{"bom_payload": {"line_items": [], '
+                '"monthly_total": 0, "totals": {"estimated_monthly_cost": 0}}}'
+            ),
+        }
+
+    monkeypatch.setattr(
+        bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+
+    result = await make_handler()(
+        {"prompt": "size it", "_forge_correction": "Use confirmed sizing."},
+        memory=make_memory_with_raw(
+            {
+                "customer_id": "cust-1",
+                "customer_name": "ACME",
+                "instance_count": 3,
+                "shapes": ["VM.Standard.E5.Flex"],
+                "storage_gb": 1024,
+            }
+        ),
+        context={},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "ok"
+    assert captured["task"].startswith("[CONFIRMED CONTEXT]\n")
+    assert "  customer_name: ACME\n" in captured["task"]
+    assert "  instance_count: 3\n" in captured["task"]
+    assert "  shapes: ['VM.Standard.E5.Flex']\n" in captured["task"]
+    assert captured["task"].index("[CONFIRMED CONTEXT]") < captured["task"].index(
+        "[CORRECTION FROM EXPERT REVIEW:"
+    )
+
+
+async def test_bom_accepts_correct_line_item_arithmetic(monkeypatch):
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        return {
+            "status": "ok",
+            "result": (
+                '{"bom_payload": {"line_items": ['
+                '{"sku":"BTEST","description":"Compute",'
+                '"qty":2,"unit_price":1.0,"billing_unit":"hour"}'
+                '], "monthly_total": 1460.0}}'
+            ),
+        }
+
+    monkeypatch.setattr(
+        bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+
+    result = await make_handler()(
+        {"prompt": "size it"}, memory=make_memory(), context={}, trace_id="trace-1"
+    )
+
+    assert result.status == "ok"
+
+
+async def test_bom_blocks_incorrect_line_item_arithmetic(monkeypatch):
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        return {
+            "status": "ok",
+            "result": (
+                '{"bom_payload": {"line_items": ['
+                '{"sku":"BTEST","description":"Compute",'
+                '"qty":2,"unit_price":1.0,"billing_unit":"hour"}'
+                '], "monthly_total": 1314.0}}'
+            ),
+        }
+
+    monkeypatch.setattr(
+        bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+
+    result = await make_handler()(
+        {"prompt": "size it"}, memory=make_memory(), context={}, trace_id="trace-1"
+    )
+
+    assert result.status == "blocked"
+    assert "BOM arithmetic mismatch" in result.summary
+    assert "arithmetic_error" in result.data
+
+
+async def test_bom_skips_arithmetic_check_for_empty_line_items(monkeypatch):
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        return {
+            "status": "ok",
+            "result": '{"bom_payload": {"line_items": [], "monthly_total": 1000.0}}',
+        }
+
+    monkeypatch.setattr(
+        bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+
+    result = await make_handler()(
+        {"prompt": "size it"}, memory=make_memory(), context={}, trace_id="trace-1"
+    )
+
+    assert result.status == "ok"
 
 
 async def test_bom_handler_enriches_prompt_requested_waf_and_database(monkeypatch):

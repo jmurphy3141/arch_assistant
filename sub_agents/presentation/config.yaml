@@ -1,0 +1,6 @@
+name: presentation
+port: 8091
+llm:
+  model_id: null
+  max_tokens: 1024
+  temperature: 0.2

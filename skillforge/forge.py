@@ -38,7 +38,7 @@ import json
 import logging
 import re
 import uuid
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from skillforge.protocols import (
     ArgSchema,
@@ -79,6 +79,20 @@ _EXPERT_REVIEW_MIN_CHARS = 1000
 _EXPERT_REVIEW_APPROVED = "EXPERT_APPROVED"
 _EXPERT_REVIEW_ITERATE = "EXPERT_ITERATE:"
 _EXPERT_REVIEW_SURFACE = "EXPERT_SURFACE:"
+
+
+def _plan_has_poc_intent(plan: str) -> bool:
+    keywords = ("poc", "proof of concept", "demo", "pilot", "what to build",
+                "generate_poc_plan", "options", "evaluate")
+    plan_lower = plan.lower()
+    return sum(1 for k in keywords if k in plan_lower) >= 2
+
+
+def _memory_has_poc_recommendation(memory) -> bool:
+    if not memory:
+        return False
+    dc = getattr(memory, "decision_context", {}) or {}
+    return bool(dc.get("poc_recommendation") or dc.get("poc_options"))
 
 
 class Forge:
@@ -878,6 +892,27 @@ class Forge:
             events=events,
         )
 
+    async def run_turn_background(
+        self,
+        message: str,
+        history: list[dict[str, Any]] | None,
+        context: dict[str, Any],
+        on_complete: Callable[[TurnResult], Awaitable[None]],
+        on_error: Callable[[Exception], Awaitable[None]],
+        *,
+        session_id: str = "background",
+    ) -> None:
+        try:
+            result = await self.run_turn(
+                session_id=session_id,
+                user_message=message,
+                context=context,
+                history=history,
+            )
+            await on_complete(result)
+        except Exception as exc:
+            await on_error(exc)
+
     async def invoke_tool(
         self,
         tool_name: str,
@@ -1052,6 +1087,16 @@ class Forge:
                     "[STEP3_PLANNING] Still missing sections %s after retry session=%s",
                     still_missing, session_id,
                 )
+
+        if (
+            _plan_has_poc_intent(planning_text)
+            and not _memory_has_poc_recommendation(memory_snapshot)
+        ):
+            planning_text = (
+                planning_text
+                + "\n[FORGE OVERRIDE: poc_recommendation absent — "
+                "call generate_poc_plan(action='explore') now]"
+            )
 
         logger.info("[STEP3_PLANNING] session=%s:\n%s", session_id, planning_text)
         events.append(

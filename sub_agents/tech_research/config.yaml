@@ -1,5 +1,5 @@
 name: tech_research
-port: 8087
+port: 8089
 llm:
   model_id: ""
   max_tokens: 6000

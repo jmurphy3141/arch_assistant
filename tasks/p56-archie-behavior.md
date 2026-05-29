@@ -360,120 +360,14 @@ p56e: add generate_poc_plan and generate_presentation to tool waiting labels —
 
 ---
 
-## p56f — poc_strategist sub-agent: extract JSON from LLM markdown response
-
-**Problem:** When `generate_poc_plan` is called, "All 3 POC exploration angles failed"
-is returned every time. Root cause confirmed via direct curl to `http://localhost:8090/a2a`:
-the OCI GenAI LLM ignores the "Return only a raw JSON object" instruction in the system
-prompt and returns a full markdown essay (e.g., "## Migration Modernization\n\n**Overview**...").
-
-`PocStrategistHandler.__call__()` in `agent/tools/specialists.py` calls
-`json.loads(str(response.get("result") or ""))` which throws `JSONDecodeError` on the
-markdown string. This is caught as a failure, all 3 angles fail, and the error message
-is returned to the user.
-
-**Root cause:** The OCI GenAI model at the sub-agent endpoint cannot be reliably forced
-into JSON-only output via system prompt instructions alone.
-
-**Fix — three parts:**
-
-**Part 1:** In `sub_agents/poc_strategist/server.py`, add a JSON extraction step after
-`run_inference()`. If the result is not valid JSON, attempt to extract the first `{...}`
-block using regex before returning:
-
-```python
-import re, json as _json
-
-def _extract_json(text: str) -> str:
-    """Return text if it's already valid JSON, else extract the first {...} block."""
-    text = text.strip()
-    try:
-        _json.loads(text)
-        return text
-    except _json.JSONDecodeError:
-        pass
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        candidate = match.group(0)
-        try:
-            _json.loads(candidate)
-            return candidate
-        except _json.JSONDecodeError:
-            pass
-    return text  # caller handles the error
-
-# In handle():
-text = await anyio.to_thread.run_sync(lambda: run_inference(...))
-text = _extract_json(text)
-return A2AResponse(result=text, status="ok", ...)
-```
-
-**Part 2:** Lower temperature in `sub_agents/poc_strategist/config.yaml` from `0.6` to
-`0.1` — lower temperature makes the model more likely to follow format instructions.
-
-**Part 3:** Strengthen the JSON instruction at the very top of
-`sub_agents/poc_strategist/system_prompt.md` (before any other text):
-
-```
-CRITICAL OUTPUT FORMAT: Return ONLY a raw JSON object. No markdown, no prose, no
-code fences. Your entire response must be parseable by json.loads(). Start with {
-and end with }. Any other format will cause a system failure.
-
-Example output format (abbreviated):
-{"option_name":"...", "relevance_score":8, "executability_hours":4, "cost_effectiveness":"...", "security_highlights":["..."], "wow_moment":"...", "demo_script_summary":"...", "oci_services":["..."]}
-```
-
-**Acceptance criteria:**
-```bash
-python3.11 -m py_compile sub_agents/poc_strategist/server.py
-
-# JSON extraction helper must work on markdown-wrapped responses
-python3.11 -c "
-import re, json
-
-text = '## Migration Modernization\n\nHere is my analysis:\n\n{\"option_name\": \"Migrate to OCI\", \"relevance_score\": 8, \"executability_hours\": 4}\n\nHope this helps!'
-
-def extract_json(t):
-    t = t.strip()
-    try: json.loads(t); return t
-    except json.JSONDecodeError: pass
-    m = re.search(r'\{.*\}', t, re.DOTALL)
-    if m:
-        try: json.loads(m.group(0)); return m.group(0)
-        except: pass
-    return t
-
-result = extract_json(text)
-parsed = json.loads(result)
-assert parsed['option_name'] == 'Migrate to OCI'
-print('PASS: extracted JSON from markdown')
-"
-
-grep "0.1\|temperature" sub_agents/poc_strategist/config.yaml
-grep "CRITICAL OUTPUT FORMAT" sub_agents/poc_strategist/system_prompt.md
-
-pytest tests/ -q --tb=short -m "not live" 2>&1 | tail -5
-```
-
-**Commit message:**
-```
-p56f: poc_strategist server extracts JSON from markdown LLM responses — fixes "All 3 angles failed"
-```
-
-**Branch:** `claude/p56f` from main. Independent — run in parallel with p56a/b/d.
-
----
-
 ## Run order
 
 ```
 p56a  ──┐
 p56b  ──┼──▶  merge all three  ──▶  p56c
 p56d  ──┘                      ──▶  p56e (after p56d)
-
-p56f  (independent — parallel with p56a/b/d)
 ```
 
-p56a, p56b, p56d, and p56f are independent — run in parallel.
+p56a, p56b, and p56d are independent — run in parallel.
 p56c branches from main after p56a and p56b are merged.
 p56e branches from main after p56d is merged.

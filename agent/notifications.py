@@ -20,10 +20,16 @@ Events emitted by the system:
 """
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
 import logging
+import os
+from pathlib import Path
 from typing import Callable
+
+import httpx
+import yaml
 
 logger = logging.getLogger(__name__)
 _NOTIFICATION_SINK: ContextVar[Callable[[str, str, str], None] | None] = ContextVar(
@@ -61,8 +67,7 @@ def notify(event: str, customer_id: str, detail: str = "") -> None:
 
 def _send(event: str, customer_id: str, detail: str) -> None:
     """
-    Delivery backend — currently a structured log line.
-    Replace this function body with Telegram bot API call, webhook POST, etc.
+    Delivery backend — logs every event and schedules Telegram delivery when enabled.
     """
     logger.info(
         "NOTIFY event=%s customer_id=%s detail=%r",
@@ -70,6 +75,58 @@ def _send(event: str, customer_id: str, detail: str) -> None:
         customer_id,
         detail,
     )
-    # TODO: Telegram integration
-    # import httpx
-    # httpx.post(TELEGRAM_WEBHOOK_URL, json={"event": event, "customer_id": customer_id, "detail": detail})
+    cfg = _load_telegram_config()
+    if not cfg.get("enabled", False):
+        return
+
+    message = _format_message(event, customer_id, detail)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.debug("Skipping Telegram notification outside an active event loop")
+        return
+    loop.create_task(_send_telegram(message, cfg))
+
+
+def _format_message(event: str, customer_id: str, detail: str) -> str:
+    lines = [
+        f"*Archie*: `{event}`",
+        f"*Customer*: `{customer_id}`",
+    ]
+    if detail:
+        lines.append(detail)
+    return "\n".join(lines)
+
+
+def _load_telegram_config() -> dict:
+    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+    try:
+        with config_path.open() as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        logger.exception("Could not load notification config from %s", config_path)
+        return {}
+
+    telegram = cfg.get("telegram")
+    if isinstance(telegram, dict):
+        return telegram
+
+    legacy = cfg.get("orchestrator", {}).get("telegram")
+    return legacy if isinstance(legacy, dict) else {}
+
+
+async def _send_telegram(message: str, cfg: dict) -> None:
+    token_env = cfg.get("bot_token_env", cfg.get("telegram_bot_token_env", "TELEGRAM_BOT_TOKEN"))
+    chat_id_env = cfg.get("chat_id_env", cfg.get("telegram_chat_id_env", "TELEGRAM_CHAT_ID"))
+    token = os.environ.get(str(token_env), "")
+    chat_id = os.environ.get(str(chat_id_env), "")
+    if not token or not chat_id:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
+            )
+    except Exception:
+        logger.debug("Telegram notification failed", exc_info=True)

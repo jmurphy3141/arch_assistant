@@ -233,7 +233,7 @@ Mandatory checks:
   Achievable, Relevant, Time-bound)
 - Risk registry contains at least 3 entries (risk, likelihood, mitigation)
 - No placeholder text or undefined variables remain
-- `artifact_key` is present — JEP document was persisted
+- `doc_key` is present — JEP document was persisted
 
 Decision:
 - All checks pass → approve for critic
