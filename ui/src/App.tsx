@@ -12,6 +12,7 @@ import { BomAdvisor } from './components/BomAdvisor';
 import { ChatInterface } from './components/ChatInterface';
 import { ChatSidebar, type SidebarHistoryItem, type SidebarProjectItem } from './components/ChatSidebar';
 import { ArtifactPreviewPanel } from './components/ArtifactPreviewPanel';
+import { EngagementMemoryPanel } from './components/EngagementMemoryPanel';
 import { useClientId, getLastDiagramName, saveLastDiagramName } from './hooks/useClientId';
 import {
   apiClarify,
@@ -653,7 +654,15 @@ export function App() {
               projectName={selectedProjectName}
             />
           </div>
-          {(!isCompactChat || chatArtifacts.length > 0) && (
+          {!isCompactChat && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', minWidth: 0 }}>
+              <EngagementMemoryPanel customerId={customerId || null} refreshTrigger={chatSessionKey} />
+              {chatArtifacts.length > 0 && (
+                <ArtifactPreviewPanel artifacts={chatArtifacts} compact={isCompactChat} onQuickPrompt={handleQuickPrompt} />
+              )}
+            </div>
+          )}
+          {isCompactChat && chatArtifacts.length > 0 && (
             <ArtifactPreviewPanel artifacts={chatArtifacts} compact={isCompactChat} onQuickPrompt={handleQuickPrompt} />
           )}
         </div>

@@ -1102,3 +1102,19 @@ export async function apiGetLatestWaf(customerId: string): Promise<DocLatestResp
 export async function apiListWafVersions(customerId: string): Promise<DocVersionsResponse> {
   return apiFetch<DocVersionsResponse>(`/waf/${encodeURIComponent(customerId)}/versions`);
 }
+
+// ── Engagement context ────────────────────────────────────────────────────────
+
+export interface EngagementContextResponse {
+  status: string;
+  customer_id: string;
+  customer_name?: string;
+  customer_challenge?: string;
+  oci_services_in_scope?: unknown;
+  artifacts?: unknown;
+  context?: Record<string, unknown>;
+}
+
+export async function apiGetCustomerContext(customerId: string): Promise<EngagementContextResponse> {
+  return apiFetch<EngagementContextResponse>(`/context/${encodeURIComponent(customerId)}`);
+}
