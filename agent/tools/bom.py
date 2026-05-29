@@ -6,6 +6,7 @@ ToolHandler implementation for the generate_bom pipeline.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -13,6 +14,24 @@ from agent import archie_memory, sub_agent_client
 from agent.bom_service import BomService, DEFAULT_PRICE_TABLE
 from agent.persistence_objectstore import ObjectStoreBase
 from skillforge.types import MemorySnapshot, ToolResult
+
+
+logger = logging.getLogger(__name__)
+
+CONFIRMED_CONTEXT_FIELDS = (
+    "instance_count",
+    "shapes",
+    "storage_gb",
+    "vcpu_count",
+    "memory_gb",
+    "customer_name",
+    "oci_services_in_scope",
+    "workload_type",
+    "ha_dr_mode",
+    "region",
+    "database_type",
+    "node_count",
+)
 
 
 class BomHandler:
@@ -71,21 +90,26 @@ class BomHandler:
                 clarification=message,
             )
 
+        confirmed_context_block = _build_confirmed_context_block(
+            memory.raw if memory else {},
+            context=ctx,
+        )
+        prompt = str(args.get("prompt") or "")
+
         correction = str(args.pop("_forge_correction", "") or "").strip()
         if correction:
-            existing = str(args.get("prompt") or "")
-            args = {
-                **args,
-                "prompt": (
-                    f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
-                    f"{existing}"
-                ).strip(),
-            }
+            prompt = (
+                f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
+                f"{prompt}"
+            ).strip()
+        if confirmed_context_block:
+            prompt = f"{confirmed_context_block}{prompt}".strip()
+        args = {**args, "prompt": prompt}
 
         try:
             body = await sub_agent_client.call_sub_agent(
                 "bom",
-                str(args.get("prompt") or ""),
+                prompt,
                 engagement_context=memory.raw if memory else {},
                 trace_id=trace_id,
             )
@@ -111,6 +135,14 @@ class BomHandler:
                 status="blocked",
             )
         bom_payload = _extract_bom_payload(parsed)
+        arithmetic_error = _verify_bom_arithmetic(bom_payload)
+        if arithmetic_error:
+            logger.warning(arithmetic_error)
+            return ToolResult(
+                summary=arithmetic_error,
+                status="blocked",
+                data={"arithmetic_error": arithmetic_error},
+            )
         bom_payload = _enrich_bom_payload_for_prompt(
             bom_payload,
             prompt="\n".join(
@@ -159,12 +191,102 @@ def _extract_bom_payload(parsed: Any) -> dict[str, Any]:
     return parsed
 
 
+def _build_confirmed_context_block(
+    memory_raw: dict[str, Any],
+    *,
+    context: dict[str, Any] | None = None,
+) -> str:
+    values: dict[str, Any] = {}
+    for source in _confirmed_context_sources(memory_raw, context):
+        for field in CONFIRMED_CONTEXT_FIELDS:
+            if field not in values and _has_confirmed_value(source.get(field)):
+                values[field] = source[field]
+    if not values:
+        return ""
+    lines = ["[CONFIRMED CONTEXT]"]
+    lines.extend(
+        f"  {field}: {values[field]}"
+        for field in CONFIRMED_CONTEXT_FIELDS
+        if field in values
+    )
+    lines.append("[END CONFIRMED CONTEXT]")
+    return "\n".join(lines) + "\n\n"
+
+
+def _confirmed_context_sources(
+    memory_raw: dict[str, Any],
+    context: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    if isinstance(memory_raw, dict):
+        sources.append(memory_raw)
+    if isinstance(context, dict):
+        sources.append(context)
+        for key in ("facts", "constraints", "decision_context", "requirements"):
+            nested = context.get(key)
+            if isinstance(nested, dict):
+                sources.append(nested)
+    return sources
+
+
+def _has_confirmed_value(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, (str, bytes)) and not str(value).strip():
+        return False
+    if isinstance(value, (list, tuple, set, dict)) and not value:
+        return False
+    return True
+
+
+def _verify_bom_arithmetic(payload: dict[str, Any]) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    line_items = payload.get("line_items") or []
+    if not line_items:
+        return None
+    try:
+        stated_total = float(payload.get("monthly_total") or 0)
+    except (TypeError, ValueError):
+        return None
+    if stated_total == 0:
+        return None
+
+    computed = 0.0
+    for item in line_items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            qty = float(item.get("qty") or item.get("quantity") or 0)
+            price = float(item.get("unit_price") or item.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        billing = str(
+            item.get("billing_unit") or item.get("metric") or "monthly"
+        ).lower()
+        multiplier = 730 if "hour" in billing else 1
+        computed += qty * price * multiplier
+
+    if computed == 0:
+        return None
+    pct_diff = abs(computed - stated_total) / max(computed, 0.01)
+    if pct_diff <= 0.005:
+        return None
+    return (
+        f"BOM arithmetic mismatch: line items sum to ${computed:,.2f}/mo "
+        f"but monthly_total is ${stated_total:,.2f}/mo "
+        f"({pct_diff * 100:.1f}% off). Recompute monthly_total."
+    )
+
+
 def _enrich_bom_payload_for_prompt(payload: dict[str, Any], *, prompt: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
     text = str(prompt or "").lower()
     line_items = payload.get("line_items")
     if not isinstance(line_items, list):
+        return payload
+    if not line_items:
         return payload
     present = {
         str(row.get("sku") or "").strip().upper()
