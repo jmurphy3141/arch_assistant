@@ -1,0 +1,210 @@
+{
+  "_meta": {
+    "source": "Oracle Cloud Infrastructure Service Level Agreements",
+    "reference_docs": [
+      "https://www.oracle.com/cloud/sla/",
+      "https://www.oracle.com/contracts/docs/paas_iaas_pub_cld_srvs_pillar_4021422.pdf",
+      "https://docs.oracle.com/en-us/iaas/Content/General/Reference/slastatement.htm"
+    ],
+    "measurement": "Monthly Uptime Percentage (MUP) — measured per calendar month",
+    "credit_structure": "Standard: <99.9% = 10% credit; <99.0% = 25% credit; <95.0% = 100% credit (service-specific tiers vary)",
+    "last_reviewed": "2026-05",
+    "note": "Always verify against current Oracle Pillar Document at oracle.com/contracts. SLAs apply to data plane (service availability) unless noted. Control plane SLAs may differ."
+  },
+  "services": [
+    {
+      "service": "Compute — Virtual Machine (VM) and Bare Metal (BM)",
+      "category": "Compute",
+      "sla_pct": 99.99,
+      "slo_pct": null,
+      "notes": "Financially-backed 99.99% monthly uptime for both VM and BM instances. Applies to the ability to start, stop, and access running instances. Does not guarantee application-level availability — customer responsible for multi-AD deployment for HA.",
+      "multi_ad_note": "Single instance SLA is 99.99%; for zero-downtime, deploy across multiple ADs or use instance pools with health checks.",
+      "oci_service_key": "Compute"
+    },
+    {
+      "service": "Container Engine for Kubernetes (OKE) — Enhanced Clusters",
+      "category": "Compute / Containers",
+      "sla_pct": 99.95,
+      "slo_pct": null,
+      "notes": "Enhanced Clusters carry a financially-backed SLA covering Kubernetes API server uptime. Basic Clusters have a service-level objective (SLO) only — no financial SLA. Worker node availability follows Compute SLA.",
+      "multi_ad_note": "Enhanced Cluster control plane SLA is 99.95%. Deploy worker node pools across multiple ADs for full HA.",
+      "oci_service_key": "OKE"
+    },
+    {
+      "service": "Container Engine for Kubernetes (OKE) — Basic Clusters",
+      "category": "Compute / Containers",
+      "sla_pct": null,
+      "slo_pct": 99.95,
+      "notes": "Basic Clusters provide a service-level objective (SLO) but NOT a financially-backed SLA. Recommend Enhanced Clusters for FedRAMP/regulated workloads.",
+      "multi_ad_note": "No financial SLA; use Enhanced Clusters for compliance-sensitive workloads.",
+      "oci_service_key": "OKE-Basic"
+    },
+    {
+      "service": "Autonomous Database Serverless (ADB-S) — Standard",
+      "category": "Database",
+      "sla_pct": 99.95,
+      "slo_pct": null,
+      "notes": "99.95% availability SLA (maximum ~22 minutes downtime per month) without Autonomous Data Guard. Includes automatic patching, tuning, and failover within a single AD.",
+      "multi_ad_note": "Single-AD deployment. Enable Autonomous Data Guard for cross-AD/cross-region failover and 99.995% SLA.",
+      "oci_service_key": "ADB-S"
+    },
+    {
+      "service": "Autonomous Database Serverless (ADB-S) — with Autonomous Data Guard",
+      "category": "Database",
+      "sla_pct": 99.995,
+      "slo_pct": null,
+      "notes": "99.995% availability SLA when Autonomous Data Guard standby is enabled. Provides automatic failover to a standby in a different AD or region. This is the highest ADB SLA tier.",
+      "multi_ad_note": "Cross-AD standby required. Highly recommended for production FedRAMP workloads.",
+      "oci_service_key": "ADB-S-DataGuard"
+    },
+    {
+      "service": "Autonomous Database on Dedicated Exadata Infrastructure",
+      "category": "Database",
+      "sla_pct": 99.995,
+      "slo_pct": null,
+      "notes": "99.995% availability SLA on dedicated Exadata. Includes Data Guard protection. Exadata infrastructure itself has additional availability SLAs.",
+      "multi_ad_note": "Dedicated infrastructure with cross-AD Data Guard delivers the highest Oracle DB availability commitment.",
+      "oci_service_key": "ADB-Dedicated"
+    },
+    {
+      "service": "Base Database Service (DB System — Single Node)",
+      "category": "Database",
+      "sla_pct": 99.95,
+      "slo_pct": null,
+      "notes": "Single-node DB systems follow standard 99.95% availability SLA. Maintenance windows apply. No automatic failover — customer manages Data Guard manually.",
+      "multi_ad_note": "Deploy a 2-node RAC or manual Data Guard standby in a second AD for HA beyond the base SLA.",
+      "oci_service_key": "BaseDB-Single"
+    },
+    {
+      "service": "Base Database Service (DB System — 2-Node RAC / Data Guard)",
+      "category": "Database",
+      "sla_pct": 99.99,
+      "slo_pct": null,
+      "notes": "2-node RAC on Exadata DB Systems or manual Data Guard with a standby in another AD qualifies for higher availability SLA commitments per the Oracle Pillar Document.",
+      "multi_ad_note": "Requires deployment across two ADs. Manual configuration; not automatically managed like ADB.",
+      "oci_service_key": "BaseDB-RAC"
+    },
+    {
+      "service": "Load Balancer (Flexible Shape)",
+      "category": "Networking",
+      "sla_pct": 99.99,
+      "slo_pct": null,
+      "notes": "OCI Flexible Load Balancer provides 99.99% monthly uptime SLA. The service is regional and spans multiple ADs. Includes both Layer 7 (HTTP/HTTPS) and Layer 4 (TCP) capabilities.",
+      "multi_ad_note": "Load Balancer is a regional service — Oracle manages multi-AD redundancy transparently. No additional customer action required for SLA.",
+      "oci_service_key": "LoadBalancer"
+    },
+    {
+      "service": "Network Load Balancer (NLB)",
+      "category": "Networking",
+      "sla_pct": 99.99,
+      "slo_pct": null,
+      "notes": "Network Load Balancer (Layer 4, ultra-low latency) provides 99.99% monthly uptime SLA. Regional service with multi-AD redundancy managed by Oracle.",
+      "multi_ad_note": "Regional service; Oracle-managed HA.",
+      "oci_service_key": "NLB"
+    },
+    {
+      "service": "Object Storage",
+      "category": "Storage",
+      "sla_pct": 99.9,
+      "slo_pct": null,
+      "notes": "99.9% availability SLA. Data durability is designed at 99.999999999% (11 nines) via redundant storage across multiple storage servers and ADs within a region. SLA covers access to stored data.",
+      "multi_ad_note": "Regional service — data replicated across ADs automatically. Durability SLA separate from availability SLA.",
+      "oci_service_key": "ObjectStorage"
+    },
+    {
+      "service": "Block Volume",
+      "category": "Storage",
+      "sla_pct": 99.99,
+      "slo_pct": null,
+      "notes": "99.99% availability SLA for block volume data plane access. Annual durability designed at 99.99% (4 nines). Includes both boot volumes and data volumes. Volume backup/replication recommended for disaster recovery beyond the SLA.",
+      "multi_ad_note": "Block Volumes are AD-scoped; cross-AD replication or Volume Group Backups recommended for DR.",
+      "oci_service_key": "BlockVolume"
+    },
+    {
+      "service": "File Storage Service (FSS)",
+      "category": "Storage",
+      "sla_pct": 99.9,
+      "slo_pct": null,
+      "notes": "99.9% availability SLA for NFS file system access. AD-scoped service; cross-AD replication is manual.",
+      "multi_ad_note": "AD-scoped; implement cross-region or cross-AD replication for HA beyond the SLA.",
+      "oci_service_key": "FSS"
+    },
+    {
+      "service": "Virtual Cloud Network (VCN) and Core Networking",
+      "category": "Networking",
+      "sla_pct": 99.99,
+      "slo_pct": null,
+      "notes": "Core OCI networking components (VCN, Subnets, Security Lists, NSGs, Route Tables, Internet Gateway, NAT Gateway, Service Gateway) carry 99.99% availability SLA. VCN is a regional construct spanning all ADs.",
+      "multi_ad_note": "VCN is regional. Subnets are AD-specific; design for multi-AD subnet coverage to match workload HA requirements.",
+      "oci_service_key": "VCN"
+    },
+    {
+      "service": "FastConnect — Virtual Circuit",
+      "category": "Networking",
+      "sla_pct": 99.9,
+      "slo_pct": null,
+      "notes": "99.9% availability SLA for a single FastConnect virtual circuit. For redundant configurations (two circuits across different FastConnect locations or providers), Oracle recommends achieving 99.99% effective availability through redundant design, though the per-circuit SLA remains 99.9%.",
+      "multi_ad_note": "Implement two redundant FastConnect circuits across different providers/locations for 99.99% effective connectivity.",
+      "oci_service_key": "FastConnect"
+    },
+    {
+      "service": "OCI WAF (Web Application Firewall)",
+      "category": "Security",
+      "sla_pct": 99.9,
+      "slo_pct": null,
+      "notes": "99.9% availability SLA for OCI WAF policy enforcement. WAF is a regional service. Includes both Edge WAF (global PoPs) and regional WAF integrated with Load Balancer.",
+      "multi_ad_note": "Regional service with Oracle-managed redundancy.",
+      "oci_service_key": "WAF"
+    },
+    {
+      "service": "OCI Vault (Key Management Service)",
+      "category": "Security",
+      "sla_pct": 99.9,
+      "slo_pct": 99.99,
+      "notes": "99.9% financially-backed SLA; 99.99% service-level objective (SLO). Oracle uses a cluster of HSM nodes and replicates key material within the region. SLA credit tiers: <99.9% = 10% credit; <99.0% = 25% credit; <95.0% = 100% credit.",
+      "multi_ad_note": "Vault is regional with cross-AD replication of HSM clusters. Dedicated KMS (HSM-dedicated) available for higher isolation requirements.",
+      "oci_service_key": "Vault"
+    },
+    {
+      "service": "OCI Vault — Dedicated KMS (HSM-Dedicated)",
+      "category": "Security",
+      "sla_pct": 99.9,
+      "slo_pct": null,
+      "notes": "Dedicated HSM partition for single-tenant key management (FIPS 140-2 Level 3). Same 99.9% SLA as shared Vault. Provides exclusive HSM access for compliance requirements mandating dedicated cryptographic hardware.",
+      "multi_ad_note": "Single HSM partition per vault; plan for cross-region replication of encrypted resources for DR.",
+      "oci_service_key": "VaultDedicated"
+    },
+    {
+      "service": "OCI Bastion",
+      "category": "Security / Access",
+      "sla_pct": 99.9,
+      "slo_pct": null,
+      "notes": "Managed bastion service for secure SSH/RDP access without public IPs. 99.9% availability SLA. Sessions have a maximum TTL configurable up to 3 hours.",
+      "multi_ad_note": "Regional service; deploy per-AD if AD-level isolation is required.",
+      "oci_service_key": "Bastion"
+    },
+    {
+      "service": "OCI Kubernetes Engine (OKE) — Node Pools (Worker Nodes)",
+      "category": "Compute / Containers",
+      "sla_pct": 99.99,
+      "slo_pct": null,
+      "notes": "Worker node availability follows the OCI Compute SLA (99.99%). OKE manages node health checks and replacement within node pools.",
+      "multi_ad_note": "Spread node pool across multiple ADs for worker node HA.",
+      "oci_service_key": "OKE-Workers"
+    }
+  ],
+  "sla_tiers_summary": {
+    "99.995": ["ADB-S with Data Guard", "ADB on Dedicated Exadata"],
+    "99.99": ["Compute VM/BM", "Load Balancer", "Network Load Balancer", "VCN/Core Networking", "Block Volume", "Base DB 2-node RAC/Data Guard"],
+    "99.95": ["Autonomous DB Serverless (no Data Guard)", "OKE Enhanced Cluster control plane", "Base DB Single Node"],
+    "99.9": ["Object Storage", "File Storage", "FastConnect (per circuit)", "OCI WAF", "OCI Vault", "OCI Bastion"],
+    "SLO_only": ["OKE Basic Cluster (99.95% SLO, no SLA)"]
+  },
+  "architecture_guidance": {
+    "multi_ad_design": "Deploying across 3 ADs in a multi-AD region (e.g., us-ashburn-1, ap-tokyo-1) provides resilience beyond any single-service SLA. Many services (Load Balancer, VCN, Object Storage) are already regional.",
+    "single_ad_regions": "OCI single-AD regions (e.g., us-chicago-1) do not provide cross-AD failover. Use cross-region replication for DR in single-AD regions.",
+    "highest_db_availability": "For highest database availability: use ADB-S + Autonomous Data Guard (99.995% SLA) or ADB on Dedicated Exadata.",
+    "networking_redundancy": "For FastConnect HA: deploy 2+ circuits across different providers/locations. IPsec VPN as backup has no SLA.",
+    "encryption_compliance": "For FedRAMP: use OCI Vault with CMK for all regulated data; Dedicated KMS for FIPS 140-2 Level 3 mandate."
+  }
+}

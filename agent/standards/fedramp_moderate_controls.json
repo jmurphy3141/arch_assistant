@@ -1,0 +1,432 @@
+{
+  "_meta": {
+    "source": "NIST SP 800-53 Rev 5 / FedRAMP Moderate Baseline",
+    "baseline": "MODERATE",
+    "revision": "Rev 5 (5.1.1)",
+    "purpose": "Key controls relevant to OCI cloud architecture reviews (~50 most relevant from 328-control baseline)",
+    "families_included": ["AC", "AU", "CM", "IA", "IR", "SC", "SI"],
+    "reference": "https://github.com/usnistgov/oscal-content/tree/main/nist.gov/SP800-53/rev5"
+  },
+  "controls": [
+    {
+      "id": "AC-2",
+      "family": "AC",
+      "title": "Account Management",
+      "description": "Define and document the types of accounts allowed and prohibited within the system. Manage account lifecycle including assignment of account managers, authorization requirements, group/role membership, and access privileges. Monitor and review accounts at defined frequencies and remove/disable accounts when no longer needed.",
+      "oci_relevance": "IAM users, groups, dynamic groups, service accounts; review via identity audit reports"
+    },
+    {
+      "id": "AC-3",
+      "family": "AC",
+      "title": "Access Enforcement",
+      "description": "Enforce approved authorizations for logical access to information and system resources in accordance with applicable access control policies. Access enforcement mechanisms can be employed at the system, application, and service level.",
+      "oci_relevance": "OCI IAM policies, compartment boundaries, resource policies, VCN security lists/NSGs"
+    },
+    {
+      "id": "AC-4",
+      "family": "AC",
+      "title": "Information Flow Enforcement",
+      "description": "Enforce approved authorizations for controlling the flow of information within the system and between connected systems based on organization-defined information flow control policies.",
+      "oci_relevance": "VCN flow control, security lists, NSGs, OCI WAF, service gateways, private endpoints"
+    },
+    {
+      "id": "AC-5",
+      "family": "AC",
+      "title": "Separation of Duties",
+      "description": "Define system access authorizations to support separation of duties and separate functions that can be combined to create a conflict of interest or enable fraud. Prevent individuals from having all necessary access permissions to perform a sensitive action without collaboration.",
+      "oci_relevance": "IAM compartment separation, administrator vs. user roles, tenancy admin isolation"
+    },
+    {
+      "id": "AC-6",
+      "family": "AC",
+      "title": "Least Privilege",
+      "description": "Employ the principle of least privilege, allowing only authorized accesses for users (or processes acting on behalf of users) that are necessary to accomplish assigned organizational tasks. Restrict privileged accounts to only those requiring elevated access.",
+      "oci_relevance": "OCI IAM fine-grained policies, dynamic group policies, service principal permissions"
+    },
+    {
+      "id": "AC-7",
+      "family": "AC",
+      "title": "Unsuccessful Logon Attempts",
+      "description": "Enforce a limit on consecutive invalid access attempts by a user during a defined time period. Automatically lock or delay the account when the maximum number of unsuccessful attempts is exceeded.",
+      "oci_relevance": "OCI Identity Domain account lockout policies, MFA enforcement"
+    },
+    {
+      "id": "AC-17",
+      "family": "AC",
+      "title": "Remote Access",
+      "description": "Establish and document usage restrictions, configuration and connection requirements, and implementation guidance for each type of remote access allowed. Authorize each type of remote access to the system prior to allowing such connections.",
+      "oci_relevance": "Bastion service, VPN, FastConnect, SSH key management, jump servers"
+    },
+    {
+      "id": "AC-18",
+      "family": "AC",
+      "title": "Wireless Access",
+      "description": "Establish configuration requirements, connection requirements, and implementation guidance for wireless access. Authorize wireless access to the system prior to allowing such connections and monitor for unauthorized wireless connections.",
+      "oci_relevance": "Generally N/A for OCI IaaS; relevant for on-prem hybrid network boundary controls"
+    },
+    {
+      "id": "AC-20",
+      "family": "AC",
+      "title": "Use of External Systems",
+      "description": "Establish terms and conditions for authorized individuals to access the system from external systems. Permit authorized individuals to use an external system to access the system or to process, store, or transmit organization-controlled information only when approved agreements are in place.",
+      "oci_relevance": "Third-party connectivity, FastConnect partners, cross-tenancy policies, marketplace images"
+    },
+    {
+      "id": "AU-2",
+      "family": "AU",
+      "title": "Event Logging",
+      "description": "Identify the types of events that the system is capable of logging in support of the audit function. Coordinate the event logging function with other organizations requiring audit-related information to enhance mutual support and to help guide the selection of loggable events.",
+      "oci_relevance": "OCI Audit service, VCN flow logs, Object Storage access logs, Load Balancer access logs"
+    },
+    {
+      "id": "AU-3",
+      "family": "AU",
+      "title": "Content of Audit Records",
+      "description": "Ensure audit records contain sufficient information to establish what type of event occurred, when it occurred, where it occurred, the source of the event, the outcome of the event, and the identity of any individuals or subjects associated with the event.",
+      "oci_relevance": "OCI Audit log fields: eventType, eventTime, compartmentId, principalId, requestAction, responseStatus"
+    },
+    {
+      "id": "AU-6",
+      "family": "AU",
+      "title": "Audit Record Review, Analysis, and Reporting",
+      "description": "Review and analyze system audit records at a defined frequency for indications of inappropriate or unusual activity; report findings to defined personnel and take appropriate action. Adjust the level of audit review, analysis, and reporting based on risk.",
+      "oci_relevance": "OCI Logging Analytics, SIEM integration via Logging service, Connector Hub to Object Storage"
+    },
+    {
+      "id": "AU-7",
+      "family": "AU",
+      "title": "Audit Record Reduction and Report Generation",
+      "description": "Provide an audit record reduction and report generation capability that supports on-demand analysis and reporting of audit records and does not alter the original content or time ordering of audit records.",
+      "oci_relevance": "OCI Logging Analytics queries, Logging search, SIEM tool integration"
+    },
+    {
+      "id": "AU-8",
+      "family": "AU",
+      "title": "Time Stamps",
+      "description": "Use internal system clocks to generate time stamps for audit records. Record time stamps using Coordinated Universal Time (UTC) or Greenwich Mean Time (GMT), or ensure that local time includes offset from UTC/GMT.",
+      "oci_relevance": "OCI audit logs use UTC timestamps; NTP synchronization on compute instances"
+    },
+    {
+      "id": "AU-9",
+      "family": "AU",
+      "title": "Protection of Audit Information",
+      "description": "Protect audit information and audit tools from unauthorized access, modification, and deletion. Restrict access to the management of audit logging capability to a defined subset of privileged users.",
+      "oci_relevance": "Audit log immutability; Object Storage write-once buckets; IAM policies restricting audit admin"
+    },
+    {
+      "id": "AU-11",
+      "family": "AU",
+      "title": "Audit Record Retention",
+      "description": "Retain audit records for a defined period of time to provide support for after-the-fact investigations of security incidents and to meet regulatory and organizational retention requirements.",
+      "oci_relevance": "OCI Audit retains 90 days natively; long-term retention via Object Storage lifecycle policies"
+    },
+    {
+      "id": "AU-12",
+      "family": "AU",
+      "title": "Audit Record Generation",
+      "description": "Provide audit record generation capability for the event types defined in AU-2. Allow designated personnel to select which auditable events are to be logged by the system. Generate audit records for the events defined in AU-2 that include the content defined in AU-3.",
+      "oci_relevance": "OCI Audit automatically captures management-plane API calls; VCN flow logs for data plane"
+    },
+    {
+      "id": "CM-2",
+      "family": "CM",
+      "title": "Baseline Configuration",
+      "description": "Develop, document, and maintain under configuration control a current baseline configuration of the system. Review and update the baseline configuration at defined frequencies, when system components are installed or upgraded, and when required by organization-defined circumstances.",
+      "oci_relevance": "OCI Terraform state as baseline; Cloud Guard configuration drift detection; OS Management baselines"
+    },
+    {
+      "id": "CM-3",
+      "family": "CM",
+      "title": "Configuration Change Control",
+      "description": "Determine the types of changes to the system that are configuration-controlled. Review proposed configuration-controlled changes and approve or disapprove with explicit consideration for security and privacy impact analysis. Document configuration change decisions and implement approved changes.",
+      "oci_relevance": "Terraform plan/apply approval workflows; OCI Resource Manager change sets; change management processes"
+    },
+    {
+      "id": "CM-4",
+      "family": "CM",
+      "title": "Impact Analyses",
+      "description": "Analyze changes to the system to determine potential security and privacy impacts prior to change implementation.",
+      "oci_relevance": "Pre-deployment security review; Terraform plan review; Cloud Guard policy evaluation before deployment"
+    },
+    {
+      "id": "CM-6",
+      "family": "CM",
+      "title": "Configuration Settings",
+      "description": "Establish and document configuration settings for components employed within the system that reflect the most restrictive mode consistent with operational requirements using organization-defined security configuration checklists. Identify, document, and approve deviations from established configuration settings.",
+      "oci_relevance": "CIS OCI Benchmark settings; Security Zones policies; OS Management secure configuration; Vault encryption defaults"
+    },
+    {
+      "id": "CM-7",
+      "family": "CM",
+      "title": "Least Functionality",
+      "description": "Configure the system to provide only essential capabilities and prohibit or restrict the use of functions, ports, protocols, software, and services not required. Review the system at defined frequencies to identify and disable unnecessary or nonsecure functions, ports, protocols, software, and services.",
+      "oci_relevance": "Security Lists blocking unused ports; NSG allow-lists; OCI WAF rule sets; disable unused OCI services in compartments"
+    },
+    {
+      "id": "CM-8",
+      "family": "CM",
+      "title": "System Component Inventory",
+      "description": "Develop and document an inventory of system components that accurately reflects the system, includes all components within the authorization boundary, and is maintained at a level of granularity deemed necessary for tracking. Review and update the inventory at defined frequencies.",
+      "oci_relevance": "OCI Search service; Resource Manager stack inventory; Config service; Cloud Guard asset inventory"
+    },
+    {
+      "id": "CM-9",
+      "family": "CM",
+      "title": "Configuration Management Plan",
+      "description": "Develop, document, and implement a configuration management plan that addresses roles, responsibilities, and configuration management processes and procedures. Protect the configuration management plan from unauthorized disclosure and modification.",
+      "oci_relevance": "Terraform modules and IaC governance plan; OCI Resource Manager organization"
+    },
+    {
+      "id": "CM-10",
+      "family": "CM",
+      "title": "Software Usage Restrictions",
+      "description": "Use software and the associated documentation in accordance with contract agreements and copyright laws. Track the use of software and associated documentation protected by quantity licenses. Control and document the use of peer-to-peer file sharing technology.",
+      "oci_relevance": "Marketplace image licensing; BYOL Oracle DB licensing compliance; OS Management patch licensing"
+    },
+    {
+      "id": "IA-2",
+      "family": "IA",
+      "title": "Identification and Authentication (Organizational Users)",
+      "description": "Uniquely identify and authenticate organizational users and associate that unique identification with processes acting on behalf of those users. Implement multi-factor authentication for access to privileged and non-privileged accounts.",
+      "oci_relevance": "OCI Identity Domains MFA; federated IdP (SAML/OIDC); IAM user unique identification; FIDO2 support"
+    },
+    {
+      "id": "IA-3",
+      "family": "IA",
+      "title": "Device Identification and Authentication",
+      "description": "Uniquely identify and authenticate defined devices and/or types of devices before establishing connections. Authenticate devices using bidirectional authentication mechanisms that are cryptographically based.",
+      "oci_relevance": "Instance Principal authentication; Dynamic Group + policy-based device identity; mTLS for service mesh"
+    },
+    {
+      "id": "IA-4",
+      "family": "IA",
+      "title": "Identifier Management",
+      "description": "Manage system identifiers by authorizing assignment of identifiers, selecting identifiers that identify individuals, groups, roles, services, or devices, assigning identifiers to intended subjects, preventing reuse of identifiers for a defined period, and disabling identifiers after defined inactivity.",
+      "oci_relevance": "OCI OCID-based resource identifiers; IAM user lifecycle management; identity domain user deprovisioning"
+    },
+    {
+      "id": "IA-5",
+      "family": "IA",
+      "title": "Authenticator Management",
+      "description": "Manage system authenticators including verifying identity before distributing authenticators, establishing initial authenticator content, ensuring sufficient strength, distributing authenticators securely, and protecting authenticators from unauthorized disclosure and modification.",
+      "oci_relevance": "OCI Vault for secrets/credentials; SSH key management; API key rotation policies; auth token lifecycle"
+    },
+    {
+      "id": "IA-6",
+      "family": "IA",
+      "title": "Authentication Feedback",
+      "description": "Obscure feedback of authentication information during the authentication process to protect the information from possible exploitation by unauthorized individuals.",
+      "oci_relevance": "Console login UI behavior; application-layer implementation requirement"
+    },
+    {
+      "id": "IA-7",
+      "family": "IA",
+      "title": "Cryptographic Module Authentication",
+      "description": "Implement mechanisms for authentication to a cryptographic module that meet the requirements of applicable laws, directives, policies, regulations, standards, and guidelines for such authentication.",
+      "oci_relevance": "OCI Vault HSM-backed keys (FIPS 140-2 Level 3); Dedicated KMS options"
+    },
+    {
+      "id": "IA-8",
+      "family": "IA",
+      "title": "Identification and Authentication (Non-organizational Users)",
+      "description": "Uniquely identify and authenticate non-organizational users or processes acting on behalf of non-organizational users accessing the system. Accept and verify credentials from defined external organizations using federated identity standards.",
+      "oci_relevance": "Public-facing application authentication; OIDC federation; API Gateway auth policies"
+    },
+    {
+      "id": "IA-11",
+      "family": "IA",
+      "title": "Re-authentication",
+      "description": "Require users and devices to re-authenticate when defined circumstances or situations require re-authentication, such as after a defined period of inactivity or when escalating privileges.",
+      "oci_relevance": "OCI Console session timeout; MFA re-challenge policies; Identity Domain session policies"
+    },
+    {
+      "id": "IA-12",
+      "family": "IA",
+      "title": "Identity Proofing",
+      "description": "Perform identity proofing and enrollment of individuals into the system before granting access. Resolve to a unique individual and validate that the claimed identity exists in the real world.",
+      "oci_relevance": "OCI Identity Domain user provisioning/verification; SCIM integration for HR-driven onboarding"
+    },
+    {
+      "id": "IR-3",
+      "family": "IR",
+      "title": "Incident Response Testing",
+      "description": "Test the effectiveness of the incident response capability at a defined frequency using organization-defined tests such as tabletop exercises, simulations, and parallel or full interrupt tests. Identify weaknesses and deficiencies, and document results.",
+      "oci_relevance": "Runbook validation; OCI Cloud Guard alert testing; disaster recovery drills using OCI DR service"
+    },
+    {
+      "id": "IR-4",
+      "family": "IR",
+      "title": "Incident Handling",
+      "description": "Implement an incident handling capability including preparation, detection and analysis, containment, eradication, and recovery. Coordinate incident handling with contingency planning and incorporate lessons learned into updated procedures and training.",
+      "oci_relevance": "OCI Cloud Guard findings remediation; Security Advisor; integration with ticketing/SIEM systems; OCI Notifications"
+    },
+    {
+      "id": "IR-5",
+      "family": "IR",
+      "title": "Incident Monitoring",
+      "description": "Track and document incidents through the incident handling process, including maintaining records about each incident, the status of the incident, and other pertinent information necessary for forensics and evaluating incident details and trends.",
+      "oci_relevance": "OCI Cloud Guard problem tracking; Logging Analytics dashboards; SIEM integration via Connector Hub"
+    },
+    {
+      "id": "IR-6",
+      "family": "IR",
+      "title": "Incident Reporting",
+      "description": "Require personnel to report suspected incidents to the organizational incident response capability within a defined time period. Report incident information to defined authorities and share incident information consistent with the incident response plan.",
+      "oci_relevance": "Oracle security incident notification obligations under OCI contracts; automated Cloud Guard notifications via OCI Notifications/PagerDuty"
+    },
+    {
+      "id": "IR-7",
+      "family": "IR",
+      "title": "Incident Response Assistance",
+      "description": "Provide an incident response support resource that offers advice and assistance to users on how to handle and report incidents. Coordinate incident response support activities with organizational entities that may be involved in or affected by security incidents.",
+      "oci_relevance": "Oracle Support escalation path; OCI Security Response team contacts; architecture runbooks"
+    },
+    {
+      "id": "IR-8",
+      "family": "IR",
+      "title": "Incident Response Plan",
+      "description": "Develop an incident response plan that provides a roadmap for implementing the incident response capability, describes the structure and organization of the capability, defines resources and management support needed, addresses sharing of incident information, and is reviewed and approved at defined frequencies.",
+      "oci_relevance": "Customer IRP referencing OCI Cloud Guard, Audit, Logging as detection sources; OCI DR plan integration"
+    },
+    {
+      "id": "SC-2",
+      "family": "SC",
+      "title": "Separation of System and User Functionality",
+      "description": "Separate user functionality, including user interface services, from system management functionality. Prevent users from accessing system management functionality except as authorized.",
+      "oci_relevance": "OCI Console (user) vs. CLI/API management plane separation; compartment admin vs. end-user access"
+    },
+    {
+      "id": "SC-4",
+      "family": "SC",
+      "title": "Information in Shared System Resources",
+      "description": "Prevent unauthorized and unintended information transfer via shared system resources including registers, cache memory, main memory, hard disks, and magnetic tape.",
+      "oci_relevance": "OCI bare metal isolation; dedicated VM hosts; shielded instances; Block Volume encryption preventing cross-tenant data exposure"
+    },
+    {
+      "id": "SC-5",
+      "family": "SC",
+      "title": "Denial of Service Protection",
+      "description": "Protect against or limit the effects of denial-of-service events including resource exhaustion attacks by employing organization-defined security safeguards.",
+      "oci_relevance": "OCI DDoS protection (always-on); WAF rate limiting; Load Balancer connection limits; Network Firewall"
+    },
+    {
+      "id": "SC-7",
+      "family": "SC",
+      "title": "Boundary Protection",
+      "description": "Monitor and control communications at the external boundary of the system and at key internal boundaries within the system. Implement subnetworks for publicly accessible system components that are separated from internal organizational networks.",
+      "oci_relevance": "VCN design (public/private subnets); Security Lists; NSGs; Network Firewall; Internet Gateway; NAT Gateway; OCI WAF"
+    },
+    {
+      "id": "SC-8",
+      "family": "SC",
+      "title": "Transmission Confidentiality and Integrity",
+      "description": "Implement cryptographic mechanisms to prevent unauthorized disclosure of information and detect changes to information during transmission unless otherwise protected by alternative physical safeguards.",
+      "oci_relevance": "TLS enforcement; FastConnect MACsec; VPN IPsec; in-transit encryption for Block Volume, Object Storage, DB"
+    },
+    {
+      "id": "SC-10",
+      "family": "SC",
+      "title": "Network Disconnect",
+      "description": "Terminate the network connection associated with a communications session at the end of the session or after a defined period of inactivity.",
+      "oci_relevance": "Load Balancer connection timeout settings; idle connection timeouts on Bastion sessions; NSG stateful connection tracking"
+    },
+    {
+      "id": "SC-12",
+      "family": "SC",
+      "title": "Cryptographic Key Establishment and Management",
+      "description": "Establish and manage cryptographic keys when cryptography is employed within the system in accordance with applicable laws, directives, policies, regulations, and standards for key generation, distribution, storage, access, and destruction.",
+      "oci_relevance": "OCI Vault (HSM-backed); customer-managed encryption keys (CMK); key rotation policies; key version management"
+    },
+    {
+      "id": "SC-13",
+      "family": "SC",
+      "title": "Cryptographic Protection",
+      "description": "Implement the following types of cryptography and cryptographic protection in accordance with applicable laws and standards: organization-defined cryptographic uses and the type of cryptography required for each use.",
+      "oci_relevance": "AES-256 for data at rest; TLS 1.2+ for data in transit; FIPS 140-2 Level 3 HSMs in Dedicated KMS"
+    },
+    {
+      "id": "SC-17",
+      "family": "SC",
+      "title": "Public Key Infrastructure Certificates",
+      "description": "Issue public key certificates under an organization-defined certificate policy or obtain public key certificates from an approved service provider.",
+      "oci_relevance": "OCI Certificates service; TLS certificate management for Load Balancers; API Gateway TLS; Let's Encrypt integration"
+    },
+    {
+      "id": "SC-23",
+      "family": "SC",
+      "title": "Session Authenticity",
+      "description": "Protect the authenticity of communications sessions to prevent session hijacking, man-in-the-middle attacks, and other session integrity violations.",
+      "oci_relevance": "TLS session integrity; OCI API signing; instance metadata service v2 (IMDSv2) with session tokens"
+    },
+    {
+      "id": "SC-28",
+      "family": "SC",
+      "title": "Protection of Information at Rest",
+      "description": "Implement cryptographic mechanisms to prevent unauthorized disclosure and modification of information at rest unless otherwise protected by alternative physical safeguards.",
+      "oci_relevance": "OCI default encryption at rest (AES-256); CMK via Vault for Block Volume, Object Storage, DB, Boot Volume"
+    },
+    {
+      "id": "SI-2",
+      "family": "SI",
+      "title": "Flaw Remediation",
+      "description": "Identify, report, and correct system flaws. Test software and firmware updates for effectiveness and potential side effects before installation. Install security-relevant updates within organization-defined time periods after release.",
+      "oci_relevance": "OCI OS Management service for patching; Autonomous Database auto-patching; vulnerability scanning schedules"
+    },
+    {
+      "id": "SI-3",
+      "family": "SI",
+      "title": "Malicious Code Protection",
+      "description": "Implement signature-based and non-signature-based malicious code protection mechanisms at system entry and exit points to detect and eradicate malicious code. Update mechanisms as new releases become available and configure for periodic scans.",
+      "oci_relevance": "OCI VSS (Vulnerability Scanning Service); partner security agents on compute; Cloud Guard threat intelligence"
+    },
+    {
+      "id": "SI-4",
+      "family": "SI",
+      "title": "System Monitoring",
+      "description": "Monitor the system to detect attacks and indicators of potential attacks. Identify unauthorized use of the system using defined techniques and methods, tools, and monitoring. Deploy monitoring devices strategically within the system to collect essential information.",
+      "oci_relevance": "OCI Cloud Guard; Logging Analytics; OCI Monitoring alarms; VCN flow logs; SIEM integration; Threat Intelligence"
+    },
+    {
+      "id": "SI-5",
+      "family": "SI",
+      "title": "Security Alerts, Advisories, and Directives",
+      "description": "Receive security alerts, advisories, and directives from external organizations on an ongoing basis. Generate internal security alerts and advisories as deemed necessary. Disseminate security alerts to defined personnel or roles and organizational elements.",
+      "oci_relevance": "OCI Security Advisories; Cloud Guard threat intelligence feeds; Oracle CPU (Critical Patch Updates)"
+    },
+    {
+      "id": "SI-7",
+      "family": "SI",
+      "title": "Software, Firmware, and Information Integrity",
+      "description": "Employ integrity verification tools to detect unauthorized changes to defined software, firmware, and information. Take specified actions when unauthorized changes are detected. Employ automated tools that provide notification of unauthorized changes.",
+      "oci_relevance": "OCI Shielded Instances (Secure Boot, VTPM, Measured Boot); image signature verification; OS integrity monitoring"
+    },
+    {
+      "id": "SI-10",
+      "family": "SI",
+      "title": "Information Input Validation",
+      "description": "Check the validity of the following information inputs for accuracy, completeness, correctness, and validity: organization-defined inputs validated for defined properties. Reject or quarantine invalid inputs.",
+      "oci_relevance": "OCI WAF input validation rules; API Gateway request validation; application-layer input sanitization"
+    },
+    {
+      "id": "SI-11",
+      "family": "SI",
+      "title": "Error Handling",
+      "description": "Generate error messages that provide information necessary for corrective actions without revealing information that could be exploited by adversaries. Reveal error messages only to defined personnel or roles.",
+      "oci_relevance": "Application-layer configuration; API Gateway error response sanitization; log scrubbing for sensitive data"
+    },
+    {
+      "id": "SI-12",
+      "family": "SI",
+      "title": "Information Management and Retention",
+      "description": "Manage and retain information within the system and information output from the system in accordance with applicable laws, regulations, directives, policies, and operational requirements.",
+      "oci_relevance": "Object Storage lifecycle policies; Autonomous Database data retention; audit log retention (90 days default, extendable)"
+    },
+    {
+      "id": "SI-16",
+      "family": "SI",
+      "title": "Memory Protection",
+      "description": "Implement the following controls to protect the system memory from unauthorized code execution: organization-defined controls such as data execution prevention, address space layout randomization.",
+      "oci_relevance": "OCI compute instance OS-level memory protection (ASLR, NX/DEP); Shielded Instance VTPM; OS hardening baseline"
+    }
+  ]
+}

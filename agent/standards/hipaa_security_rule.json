@@ -1,0 +1,444 @@
+{
+  "standard": "HIPAA Security Rule",
+  "regulation": "45 CFR Part 164, Subpart C",
+  "description": "Security Standards for the Protection of Electronic Protected Health Information (ePHI). Covers administrative, physical, and technical safeguards that covered entities and business associates must implement.",
+  "note_on_required_vs_addressable": "Required specifications must be implemented. Addressable specifications must be implemented if reasonable and appropriate; if not, the entity must document why and implement an equivalent alternative measure. NOTE: The 2025 HIPAA Security Rule NPRM proposes eliminating this distinction and making all specifications mandatory — not yet finalized as of May 2026.",
+  "safeguards": {
+    "administrative": {
+      "section": "164.308",
+      "title": "Administrative Safeguards",
+      "description": "Administrative actions, policies, and procedures to manage the selection, development, implementation, and maintenance of security measures to protect ePHI and to manage the conduct of the covered entity's workforce in relation to the protection of that information.",
+      "standards": [
+        {
+          "id": "164.308(a)(1)",
+          "title": "Security Management Process",
+          "type": "Standard",
+          "description": "Implement policies and procedures to prevent, detect, contain, and correct security violations.",
+          "implementation_specifications": [
+            {
+              "id": "164.308(a)(1)(ii)(A)",
+              "title": "Risk Analysis",
+              "status": "Required",
+              "description": "Conduct an accurate and thorough assessment of the potential risks and vulnerabilities to the confidentiality, integrity, and availability of ePHI held by the covered entity or business associate."
+            },
+            {
+              "id": "164.308(a)(1)(ii)(B)",
+              "title": "Risk Management",
+              "status": "Required",
+              "description": "Implement security measures sufficient to reduce risks and vulnerabilities to a reasonable and appropriate level to comply with the Security Rule."
+            },
+            {
+              "id": "164.308(a)(1)(ii)(C)",
+              "title": "Sanction Policy",
+              "status": "Required",
+              "description": "Apply appropriate sanctions against workforce members who fail to comply with the security policies and procedures of the covered entity or business associate."
+            },
+            {
+              "id": "164.308(a)(1)(ii)(D)",
+              "title": "Information System Activity Review",
+              "status": "Required",
+              "description": "Implement procedures to regularly review records of information system activity, such as audit logs, access reports, and security incident tracking reports."
+            }
+          ]
+        },
+        {
+          "id": "164.308(a)(2)",
+          "title": "Assigned Security Responsibility",
+          "type": "Standard",
+          "status": "Required",
+          "description": "Identify the security official who is responsible for the development and implementation of the policies and procedures required by this subpart for the entity.",
+          "implementation_specifications": []
+        },
+        {
+          "id": "164.308(a)(3)",
+          "title": "Workforce Security",
+          "type": "Standard",
+          "description": "Implement policies and procedures to ensure that all members of its workforce have appropriate access to ePHI, and to prevent those workforce members who do not have access from obtaining access to ePHI.",
+          "implementation_specifications": [
+            {
+              "id": "164.308(a)(3)(ii)(A)",
+              "title": "Authorization and/or Supervision",
+              "status": "Addressable",
+              "description": "Implement procedures for the authorization and/or supervision of workforce members who work with ePHI or in locations where it might be accessed."
+            },
+            {
+              "id": "164.308(a)(3)(ii)(B)",
+              "title": "Workforce Clearance Procedure",
+              "status": "Addressable",
+              "description": "Implement procedures to determine that the access of a workforce member to ePHI is appropriate."
+            },
+            {
+              "id": "164.308(a)(3)(ii)(C)",
+              "title": "Termination Procedures",
+              "status": "Addressable",
+              "description": "Implement procedures for terminating access to ePHI when the employment of, or other arrangement with, a workforce member ends or as required by determinations made as specified in 164.308(a)(3)(ii)(B)."
+            }
+          ]
+        },
+        {
+          "id": "164.308(a)(4)",
+          "title": "Information Access Management",
+          "type": "Standard",
+          "description": "Implement policies and procedures for authorizing access to ePHI that are consistent with the applicable requirements of Subpart E of this part (Privacy Rule).",
+          "implementation_specifications": [
+            {
+              "id": "164.308(a)(4)(ii)(A)",
+              "title": "Isolating Health Care Clearinghouse Functions",
+              "status": "Required",
+              "description": "If a health care clearinghouse is part of a larger organization, the clearinghouse must implement policies and procedures that protect the ePHI of the clearinghouse from unauthorized access by the larger organization."
+            },
+            {
+              "id": "164.308(a)(4)(ii)(B)",
+              "title": "Access Authorization",
+              "status": "Addressable",
+              "description": "Implement policies and procedures for granting access to ePHI, for example, through access to a workstation, transaction, program, process, or other mechanism."
+            },
+            {
+              "id": "164.308(a)(4)(ii)(C)",
+              "title": "Access Establishment and Modification",
+              "status": "Addressable",
+              "description": "Implement policies and procedures that, based upon the entity's access authorization policies, establish, document, review, and modify a user's right of access to a workstation, transaction, program, or process."
+            }
+          ]
+        },
+        {
+          "id": "164.308(a)(5)",
+          "title": "Security Awareness and Training",
+          "type": "Standard",
+          "description": "Implement a security awareness and training program for all members of its workforce (including management).",
+          "implementation_specifications": [
+            {
+              "id": "164.308(a)(5)(ii)(A)",
+              "title": "Security Reminders",
+              "status": "Addressable",
+              "description": "Periodic security updates."
+            },
+            {
+              "id": "164.308(a)(5)(ii)(B)",
+              "title": "Protection from Malicious Software",
+              "status": "Addressable",
+              "description": "Procedures for guarding against, detecting, and reporting malicious software."
+            },
+            {
+              "id": "164.308(a)(5)(ii)(C)",
+              "title": "Log-in Monitoring",
+              "status": "Addressable",
+              "description": "Procedures for monitoring log-in attempts and reporting discrepancies."
+            },
+            {
+              "id": "164.308(a)(5)(ii)(D)",
+              "title": "Password Management",
+              "status": "Addressable",
+              "description": "Procedures for creating, changing, and safeguarding passwords."
+            }
+          ]
+        },
+        {
+          "id": "164.308(a)(6)",
+          "title": "Security Incident Procedures",
+          "type": "Standard",
+          "description": "Implement policies and procedures to address security incidents.",
+          "implementation_specifications": [
+            {
+              "id": "164.308(a)(6)(ii)(A)",
+              "title": "Response and Reporting",
+              "status": "Required",
+              "description": "Identify and respond to suspected or known security incidents; mitigate, to the extent practicable, harmful effects of security incidents that are known to the covered entity or business associate; and document security incidents and their outcomes."
+            }
+          ]
+        },
+        {
+          "id": "164.308(a)(7)",
+          "title": "Contingency Plan",
+          "type": "Standard",
+          "description": "Establish (and implement as needed) policies and procedures for responding to an emergency or other occurrence (for example, fire, vandalism, system failure, and natural disaster) that damages systems that contain ePHI.",
+          "implementation_specifications": [
+            {
+              "id": "164.308(a)(7)(ii)(A)",
+              "title": "Data Backup Plan",
+              "status": "Required",
+              "description": "Establish and implement procedures to create and maintain retrievable exact copies of ePHI."
+            },
+            {
+              "id": "164.308(a)(7)(ii)(B)",
+              "title": "Disaster Recovery Plan",
+              "status": "Required",
+              "description": "Establish (and implement as needed) procedures to restore any loss of data."
+            },
+            {
+              "id": "164.308(a)(7)(ii)(C)",
+              "title": "Emergency Mode Operation Plan",
+              "status": "Required",
+              "description": "Establish (and implement as needed) procedures to enable continuation of critical business processes for protection of the security of ePHI while operating in emergency mode."
+            },
+            {
+              "id": "164.308(a)(7)(ii)(D)",
+              "title": "Testing and Revision Procedures",
+              "status": "Addressable",
+              "description": "Implement procedures for periodic testing and revision of contingency plans."
+            },
+            {
+              "id": "164.308(a)(7)(ii)(E)",
+              "title": "Applications and Data Criticality Analysis",
+              "status": "Addressable",
+              "description": "Assess the relative criticality of specific applications and data in support of other contingency plan components."
+            }
+          ]
+        },
+        {
+          "id": "164.308(a)(8)",
+          "title": "Evaluation",
+          "type": "Standard",
+          "status": "Required",
+          "description": "Perform a periodic technical and nontechnical evaluation, based initially upon the standards implemented under this rule and, subsequently, in response to environmental or operations changes affecting the security of ePHI, that establishes the extent to which an entity's security policies and procedures meet the requirements of this subpart.",
+          "implementation_specifications": []
+        },
+        {
+          "id": "164.308(b)(1)",
+          "title": "Business Associate Contracts and Other Arrangements",
+          "type": "Standard",
+          "status": "Required",
+          "description": "A covered entity, in accordance with §164.306, may permit a business associate to create, receive, maintain, or transmit ePHI on the covered entity's behalf only if the covered entity obtains satisfactory assurances, in accordance with §164.314(a), that the business associate will appropriately safeguard the information.",
+          "implementation_specifications": [
+            {
+              "id": "164.308(b)(4)",
+              "title": "Written Contract or Other Arrangement",
+              "status": "Required",
+              "description": "Document the satisfactory assurances required by paragraph (b)(1) of this section through a written contract or other arrangement with the business associate that meets the applicable requirements of §164.314(a)."
+            }
+          ]
+        }
+      ]
+    },
+    "physical": {
+      "section": "164.310",
+      "title": "Physical Safeguards",
+      "description": "Physical measures, policies, and procedures to protect a covered entity's electronic information systems and related buildings and equipment from natural and environmental hazards, and unauthorized intrusion.",
+      "standards": [
+        {
+          "id": "164.310(a)(1)",
+          "title": "Facility Access Controls",
+          "type": "Standard",
+          "description": "Implement policies and procedures to limit physical access to its electronic information systems and the facility or facilities in which they are housed, while ensuring that properly authorized access is allowed.",
+          "implementation_specifications": [
+            {
+              "id": "164.310(a)(2)(i)",
+              "title": "Contingency Operations",
+              "status": "Addressable",
+              "description": "Establish (and implement as needed) procedures that allow facility access in support of restoration of lost data under the disaster recovery plan and emergency mode operations plan in the event of an emergency."
+            },
+            {
+              "id": "164.310(a)(2)(ii)",
+              "title": "Facility Security Plan",
+              "status": "Addressable",
+              "description": "Implement policies and procedures to safeguard the facility and the equipment therein from unauthorized physical access, tampering, and theft."
+            },
+            {
+              "id": "164.310(a)(2)(iii)",
+              "title": "Access Control and Validation Procedures",
+              "status": "Addressable",
+              "description": "Implement procedures to control and validate a person's access to facilities based on their role or function, including visitor control, and control of access to software programs for testing and revision."
+            },
+            {
+              "id": "164.310(a)(2)(iv)",
+              "title": "Maintenance Records",
+              "status": "Addressable",
+              "description": "Implement policies and procedures to document repairs and modifications to the physical components of a facility which are related to security (for example, hardware, walls, doors, and locks)."
+            }
+          ]
+        },
+        {
+          "id": "164.310(b)",
+          "title": "Workstation Use",
+          "type": "Standard",
+          "status": "Required",
+          "description": "Implement policies and procedures that specify the proper functions to be performed, the manner in which those functions are to be performed, and the physical attributes of the surroundings of a specific workstation or class of workstation that can access ePHI.",
+          "implementation_specifications": []
+        },
+        {
+          "id": "164.310(c)",
+          "title": "Workstation Security",
+          "type": "Standard",
+          "status": "Required",
+          "description": "Implement physical safeguards for all workstations that access ePHI to restrict access to authorized users.",
+          "implementation_specifications": []
+        },
+        {
+          "id": "164.310(d)(1)",
+          "title": "Device and Media Controls",
+          "type": "Standard",
+          "description": "Implement policies and procedures that govern the receipt and removal of hardware and electronic media that contain ePHI into and out of a facility, and the movement of these items within the facility.",
+          "implementation_specifications": [
+            {
+              "id": "164.310(d)(2)(i)",
+              "title": "Disposal",
+              "status": "Required",
+              "description": "Implement policies and procedures to address the final disposition of ePHI, and/or the hardware or electronic media on which it is stored."
+            },
+            {
+              "id": "164.310(d)(2)(ii)",
+              "title": "Media Re-use",
+              "status": "Required",
+              "description": "Implement procedures for removal of ePHI from electronic media before the media are made available for re-use."
+            },
+            {
+              "id": "164.310(d)(2)(iii)",
+              "title": "Accountability",
+              "status": "Addressable",
+              "description": "Maintain a record of the movements of hardware and electronic media and any person responsible therefore."
+            },
+            {
+              "id": "164.310(d)(2)(iv)",
+              "title": "Data Backup and Storage",
+              "status": "Addressable",
+              "description": "Create a retrievable, exact copy of ePHI, when needed, before movement of equipment."
+            }
+          ]
+        }
+      ]
+    },
+    "technical": {
+      "section": "164.312",
+      "title": "Technical Safeguards",
+      "description": "The technology and the policy and procedures for its use that protect ePHI and control access to it.",
+      "standards": [
+        {
+          "id": "164.312(a)(1)",
+          "title": "Access Control",
+          "type": "Standard",
+          "description": "Implement technical policies and procedures for electronic information systems that maintain ePHI to allow access only to those persons or software programs that have been granted access rights as specified in §164.308(a)(4).",
+          "implementation_specifications": [
+            {
+              "id": "164.312(a)(2)(i)",
+              "title": "Unique User Identification",
+              "status": "Required",
+              "description": "Assign a unique name and/or number for identifying and tracking user identity."
+            },
+            {
+              "id": "164.312(a)(2)(ii)",
+              "title": "Emergency Access Procedure",
+              "status": "Required",
+              "description": "Establish (and implement as needed) procedures for obtaining necessary ePHI during an emergency."
+            },
+            {
+              "id": "164.312(a)(2)(iii)",
+              "title": "Automatic Logoff",
+              "status": "Addressable",
+              "description": "Implement electronic procedures that terminate an electronic session after a predetermined time of inactivity."
+            },
+            {
+              "id": "164.312(a)(2)(iv)",
+              "title": "Encryption and Decryption",
+              "status": "Addressable",
+              "description": "Implement a mechanism to encrypt and decrypt ePHI."
+            }
+          ]
+        },
+        {
+          "id": "164.312(b)",
+          "title": "Audit Controls",
+          "type": "Standard",
+          "status": "Required",
+          "description": "Implement hardware, software, and/or procedural mechanisms that record and examine activity in information systems that contain or use ePHI.",
+          "implementation_specifications": []
+        },
+        {
+          "id": "164.312(c)(1)",
+          "title": "Integrity",
+          "type": "Standard",
+          "description": "Implement policies and procedures to protect ePHI from improper alteration or destruction.",
+          "implementation_specifications": [
+            {
+              "id": "164.312(c)(2)",
+              "title": "Mechanism to Authenticate ePHI",
+              "status": "Addressable",
+              "description": "Implement electronic mechanisms to corroborate that ePHI has not been altered or destroyed in an unauthorized manner."
+            }
+          ]
+        },
+        {
+          "id": "164.312(d)",
+          "title": "Person or Entity Authentication",
+          "type": "Standard",
+          "status": "Required",
+          "description": "Implement procedures to verify that a person or entity seeking access to ePHI is the one claimed.",
+          "implementation_specifications": []
+        },
+        {
+          "id": "164.312(e)(1)",
+          "title": "Transmission Security",
+          "type": "Standard",
+          "description": "Implement technical security measures to guard against unauthorized access to ePHI that is being transmitted over an electronic communications network.",
+          "implementation_specifications": [
+            {
+              "id": "164.312(e)(2)(i)",
+              "title": "Integrity Controls",
+              "status": "Addressable",
+              "description": "Implement security measures to ensure that electronically transmitted ePHI is not improperly modified without detection until disposed of."
+            },
+            {
+              "id": "164.312(e)(2)(ii)",
+              "title": "Encryption",
+              "status": "Addressable",
+              "description": "Implement a mechanism to encrypt ePHI in transit whenever deemed appropriate."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "organizational_requirements": {
+    "section": "164.314",
+    "title": "Organizational Requirements",
+    "standards": [
+      {
+        "id": "164.314(a)(1)",
+        "title": "Business Associate Contracts or Other Arrangements",
+        "status": "Required",
+        "description": "The contract or other arrangement between the covered entity and its business associate required by §164.308(b) must meet the requirements of §164.314(a)(2)(i) or §164.314(a)(2)(ii), as applicable."
+      },
+      {
+        "id": "164.314(b)(1)",
+        "title": "Requirements for Group Health Plans",
+        "status": "Required",
+        "description": "A group health plan must ensure that its plan documents provide that the plan sponsor will reasonably and appropriately safeguard ePHI created, received, maintained, or transmitted to or by the plan sponsor on behalf of the group health plan."
+      }
+    ]
+  },
+  "policies_and_procedures": {
+    "section": "164.316",
+    "title": "Policies and Procedures and Documentation Requirements",
+    "standards": [
+      {
+        "id": "164.316(a)",
+        "title": "Policies and Procedures",
+        "status": "Required",
+        "description": "Implement reasonable and appropriate policies and procedures to comply with the standards, implementation specifications, or other requirements of this subpart. A covered entity or business associate may change its policies and procedures at any time, provided that the changes are documented and implemented in accordance with this subpart."
+      },
+      {
+        "id": "164.316(b)(1)",
+        "title": "Documentation",
+        "status": "Required",
+        "description": "Maintain the policies and procedures implemented to comply with this subpart in written (which may be electronic) form and, if an action, activity, or assessment is required to be documented, maintain a written (which may be electronic) record of the action, activity, or assessment."
+      },
+      {
+        "id": "164.316(b)(2)(i)",
+        "title": "Time Limit",
+        "status": "Required",
+        "description": "Retain the documentation required by 164.316(b)(1) for 6 years from the date of its creation or the date when it last was in effect, whichever is later."
+      },
+      {
+        "id": "164.316(b)(2)(ii)",
+        "title": "Availability",
+        "status": "Required",
+        "description": "Make documentation available to those persons responsible for implementing the procedures to which the documentation pertains."
+      },
+      {
+        "id": "164.316(b)(2)(iii)",
+        "title": "Updates",
+        "status": "Required",
+        "description": "Review documentation periodically, and update as needed, in response to environmental or operational changes affecting the security of the ePHI."
+      }
+    ]
+  }
+}

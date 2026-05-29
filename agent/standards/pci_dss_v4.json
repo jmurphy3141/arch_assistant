@@ -1,0 +1,1558 @@
+{
+  "standard": "PCI DSS v4.0",
+  "version": "4.0.1",
+  "effective_date": "2025-03-31",
+  "description": "Payment Card Industry Data Security Standard — controls for protecting cardholder data",
+  "requirements": [
+    {
+      "id": "1",
+      "title": "Install and Maintain Network Security Controls",
+      "description": "Network security controls (NSCs) — firewalls, virtual firewalls, cloud access controls, SDN, VPCs, ACLs — separate trusted from untrusted networks and restrict unnecessary traffic to reduce risk to the cardholder data environment (CDE).",
+      "sub_requirements": [
+        {
+          "id": "1.1",
+          "title": "Processes and Mechanisms for NSCs Are Defined and Understood",
+          "description": "All security policies and operational procedures for installing and maintaining network security controls are documented, kept current, in active use, and communicated to all impacted parties."
+        },
+        {
+          "id": "1.1.1",
+          "title": "Roles and Responsibilities Documented",
+          "description": "Roles and responsibilities for performing activities in Requirement 1 are documented, assigned, and understood by all responsible personnel."
+        },
+        {
+          "id": "1.2",
+          "title": "NSCs Are Configured and Maintained",
+          "description": "Network security controls are configured to restrict inbound and outbound traffic to only what is necessary for the CDE. Configuration standards cover all NSC types in use."
+        },
+        {
+          "id": "1.2.1",
+          "title": "Configuration Standards for NSCs",
+          "description": "Configuration standards for NSCs are defined, implemented, and maintained covering all types of NSCs in use, including virtual and cloud-native controls."
+        },
+        {
+          "id": "1.2.2",
+          "title": "Firewall / NSC Rules Review",
+          "description": "All allowances in firewall and NSC rule sets are documented with a business justification and reviewed at least every six months. Outdated rules are removed or updated."
+        },
+        {
+          "id": "1.2.3",
+          "title": "Network Topology Diagrams",
+          "description": "Current network diagrams accurately reflect all connections between the CDE and other networks, including any wireless networks. Diagrams are reviewed and updated when the environment changes."
+        },
+        {
+          "id": "1.2.4",
+          "title": "Data-Flow Diagrams",
+          "description": "Data-flow diagrams are maintained showing all account data flows across systems and networks. These are reviewed and updated when the environment changes."
+        },
+        {
+          "id": "1.2.5",
+          "title": "Allowed Services, Protocols, and Ports",
+          "description": "All permitted services, protocols, and ports are identified, approved, and have a documented business justification. Insecure services are prohibited unless a documented risk mitigation is in place."
+        },
+        {
+          "id": "1.2.6",
+          "title": "Security Features for Insecure Services",
+          "description": "If insecure services, protocols, or ports are in use, additional security features are documented and implemented to reduce the associated risk."
+        },
+        {
+          "id": "1.2.7",
+          "title": "NSC Configuration Review",
+          "description": "NSC configurations are reviewed at least once every six months to confirm that they remain relevant, accurate, and aligned with business justifications."
+        },
+        {
+          "id": "1.2.8",
+          "title": "NSC Configuration Files Secured",
+          "description": "Configuration files for NSCs are secured from unauthorized access and kept consistent with active network configurations."
+        },
+        {
+          "id": "1.3",
+          "title": "Network Access to and from the CDE Is Restricted",
+          "description": "Inbound and outbound traffic to and from the CDE is limited to only what is necessary. All other traffic is explicitly denied."
+        },
+        {
+          "id": "1.3.1",
+          "title": "Inbound Traffic Restriction",
+          "description": "Inbound traffic to the CDE is restricted to only that which is necessary and all other traffic is denied. NSCs must be configured to deny all by default."
+        },
+        {
+          "id": "1.3.2",
+          "title": "Outbound Traffic Restriction",
+          "description": "Outbound traffic from the CDE is restricted to only that which is necessary and all other traffic is explicitly denied."
+        },
+        {
+          "id": "1.3.3",
+          "title": "NSCs Installed Between All Wireless Networks and the CDE",
+          "description": "NSCs are installed between all wireless networks and the CDE, and configured to deny or control all traffic between the wireless environment and the CDE unless the wireless environment is within the CDE."
+        },
+        {
+          "id": "1.4",
+          "title": "Network Connections Between Trusted and Untrusted Networks Are Controlled",
+          "description": "NSCs are implemented between trusted and untrusted networks. Controls detect and block spoofed source IP addresses and restrict traffic to legitimate connections only."
+        },
+        {
+          "id": "1.4.1",
+          "title": "NSCs Between Trusted and Untrusted Networks",
+          "description": "NSCs are implemented and operational between all trusted and untrusted networks."
+        },
+        {
+          "id": "1.4.2",
+          "title": "Anti-Spoofing Controls",
+          "description": "Inbound traffic from the Internet or other untrusted networks with source IP addresses matching internal address ranges is blocked (RFC 1918, link-local, etc.)."
+        },
+        {
+          "id": "1.4.3",
+          "title": "Anti-Spoofing for DMZ",
+          "description": "DMZ systems prevent internal IP addresses from appearing as the source of traffic originating from the DMZ."
+        },
+        {
+          "id": "1.4.4",
+          "title": "System Components Storing Cardholder Data Not Directly Accessible from Untrusted Networks",
+          "description": "System components that store cardholder data are not directly accessible from untrusted networks."
+        },
+        {
+          "id": "1.4.5",
+          "title": "Internal IP Addresses Not Disclosed",
+          "description": "Disclosure of internal IP addresses and routing information is restricted to only authorized parties."
+        },
+        {
+          "id": "1.5",
+          "title": "Risks to the CDE from Computing Devices Able to Connect to Both Untrusted Networks and the CDE Are Mitigated",
+          "description": "Security controls are implemented on any device that connects to both untrusted networks (e.g., the Internet) and the CDE to prevent threats from being introduced into the CDE."
+        },
+        {
+          "id": "1.5.1",
+          "title": "Security Controls on Dual-Connected Devices",
+          "description": "Security controls are implemented on any device that connects to both untrusted networks and the CDE: specific security configurations are defined, controls are actively running, controls are not alterable by users unless explicitly authorized."
+        }
+      ]
+    },
+    {
+      "id": "2",
+      "title": "Apply Secure Configurations to All System Components",
+      "description": "Malicious individuals often use vendor default passwords and insecure default settings to compromise systems. All system components must be configured securely using hardening standards before deployment.",
+      "sub_requirements": [
+        {
+          "id": "2.1",
+          "title": "Processes and Mechanisms for Applying Secure Configurations Are Defined and Understood",
+          "description": "All security policies and operational procedures for applying secure configurations are documented, current, in active use, and known to all impacted parties."
+        },
+        {
+          "id": "2.1.1",
+          "title": "Roles and Responsibilities Documented",
+          "description": "Roles and responsibilities for performing activities in Requirement 2 are documented, assigned, and understood."
+        },
+        {
+          "id": "2.2",
+          "title": "System Components Are Configured and Managed Securely",
+          "description": "Configuration standards exist for all system components. Default settings are changed prior to deployment. Only necessary services, ports, protocols, and functions are enabled."
+        },
+        {
+          "id": "2.2.1",
+          "title": "Configuration Standards",
+          "description": "Configuration standards are developed, implemented, and maintained for all system components. Standards address all known security vulnerabilities and are consistent with industry-accepted hardening standards (CIS, NIST, vendor guides, etc.)."
+        },
+        {
+          "id": "2.2.2",
+          "title": "Vendor Default Accounts",
+          "description": "Vendor default accounts are managed: unused accounts are removed, or disabled; default passwords are changed before any system is deployed in production."
+        },
+        {
+          "id": "2.2.3",
+          "title": "Manage Primary Functions with Different Security Levels",
+          "description": "Systems with different security levels do not share the same system component. Functions requiring different security levels are separated to prevent lower-trust functions from compromising higher-trust functions."
+        },
+        {
+          "id": "2.2.4",
+          "title": "Only Necessary Services and Functions Enabled",
+          "description": "Only necessary services, protocols, daemons, and functions are enabled. All unnecessary functionality is removed or disabled."
+        },
+        {
+          "id": "2.2.5",
+          "title": "Insecure Services Are Documented",
+          "description": "If insecure services, protocols, or functions are present, the business justification is documented and additional security features are implemented to reduce the associated risk."
+        },
+        {
+          "id": "2.2.6",
+          "title": "System Security Parameters",
+          "description": "System security parameters are configured to prevent misuse."
+        },
+        {
+          "id": "2.2.7",
+          "title": "Non-Console Administrative Access Encrypted",
+          "description": "All non-console administrative access is encrypted using strong cryptography."
+        },
+        {
+          "id": "2.3",
+          "title": "Wireless Environments Are Configured and Managed Securely",
+          "description": "Wireless networks connected to the CDE use industry best practices for authentication and transmission encryption. Default wireless vendor settings are changed."
+        },
+        {
+          "id": "2.3.1",
+          "title": "Wireless Vendor Defaults Changed",
+          "description": "For wireless environments connected to the CDE or transmitting account data, all wireless vendor defaults are changed at installation, including default wireless encryption keys, passwords, and SNMP community strings."
+        },
+        {
+          "id": "2.3.2",
+          "title": "Wireless Encryption Keys Managed",
+          "description": "For wireless environments connected to the CDE or transmitting account data, wireless encryption keys are changed when personnel with knowledge of the key leave the company or role and when a key is suspected to be compromised."
+        }
+      ]
+    },
+    {
+      "id": "3",
+      "title": "Protect Stored Account Data",
+      "description": "Protection methods such as encryption, truncation, masking, and hashing are critical components of cardholder data protection. Any stored cardholder data (CHD) must be secured and sensitive authentication data (SAD) must not be retained after authorization.",
+      "sub_requirements": [
+        {
+          "id": "3.1",
+          "title": "Processes and Mechanisms for Protecting Stored Account Data Are Defined and Understood",
+          "description": "Policies and procedures for protecting stored account data are documented, current, and communicated to all impacted parties."
+        },
+        {
+          "id": "3.1.1",
+          "title": "Roles and Responsibilities Documented",
+          "description": "Roles and responsibilities for performing activities in Requirement 3 are documented, assigned, and understood."
+        },
+        {
+          "id": "3.2",
+          "title": "Storage of Account Data Is Kept to a Minimum",
+          "description": "Data retention and disposal policies, procedures, and processes are defined and enforced. Only the minimum data necessary for business and legal requirements is retained. All locations of stored account data are covered."
+        },
+        {
+          "id": "3.2.1",
+          "title": "Data Retention and Disposal Policy",
+          "description": "Data retention and disposal policies, procedures, and processes are implemented and include coverage for all storage locations, SAD stored prior to authorization completion, and all media types."
+        },
+        {
+          "id": "3.3",
+          "title": "Sensitive Authentication Data (SAD) Is Not Stored After Authorization",
+          "description": "SAD must not be retained after the authorization process is complete, even if encrypted. This includes full magnetic stripe, CVV/CVC, and PIN data."
+        },
+        {
+          "id": "3.3.1",
+          "title": "SAD Not Retained After Authorization",
+          "description": "SAD is not retained after authorization. All sensitive authentication data received is rendered unrecoverable upon completion of the authorization process."
+        },
+        {
+          "id": "3.3.2",
+          "title": "SAD Not Stored in Logs",
+          "description": "SAD is not stored in logs, diagnostic files, debug files, or other sources created during troubleshooting activities."
+        },
+        {
+          "id": "3.3.3",
+          "title": "Encryption of SAD If Stored Before Authorization",
+          "description": "SAD that must be stored prior to authorization completion is encrypted using strong cryptography."
+        },
+        {
+          "id": "3.4",
+          "title": "Access to Displays of Full PAN and Ability to Copy PAN Are Restricted",
+          "description": "PAN is masked when displayed so that only authorized personnel with a legitimate business need can see more than the first six or last four digits."
+        },
+        {
+          "id": "3.4.1",
+          "title": "PAN Masked When Displayed",
+          "description": "When displaying PAN, only authorized personnel with a business need can see more than the first six or last four digits. Exceptions must be documented."
+        },
+        {
+          "id": "3.4.2",
+          "title": "Copy/Relocation of PAN Protected",
+          "description": "When using remote access technologies, technical controls prevent the ability to copy and/or relocate PAN for all personnel, except as specifically authorized."
+        },
+        {
+          "id": "3.5",
+          "title": "PAN Is Secured Wherever It Is Stored",
+          "description": "PAN is unreadable anywhere it is stored using one or more of: one-way hashes (hashed index), truncation, index tokens with securely stored pads, or strong cryptography."
+        },
+        {
+          "id": "3.5.1",
+          "title": "PAN Rendered Unreadable",
+          "description": "PAN is rendered unreadable anywhere it is stored by any of: one-way hashes based on strong cryptography of the entire PAN, truncation (hashing cannot be used to replace the truncated PAN segment), index tokens, strong cryptography with associated key-management processes."
+        },
+        {
+          "id": "3.5.1.1",
+          "title": "Hashed and Truncated PANs Not Correlated",
+          "description": "Hashed and truncated versions of the same PAN cannot be correlated to reconstruct the original PAN."
+        },
+        {
+          "id": "3.5.1.2",
+          "title": "Disk-Level Encryption Additional Controls",
+          "description": "If disk-level or partition-level encryption is used instead of file-level or column-level database encryption, logical access is managed independently of OS authentication mechanisms and decryption keys are not tied to user accounts."
+        },
+        {
+          "id": "3.5.1.3",
+          "title": "Keystore Systems Secured",
+          "description": "If disk-level or partition-level encryption is used, the keystore is secured and independent of the OS."
+        },
+        {
+          "id": "3.6",
+          "title": "Cryptographic Keys Are Secured",
+          "description": "All cryptographic keys used to protect stored account data are secured from disclosure and misuse. Key management processes and procedures cover the full key lifecycle."
+        },
+        {
+          "id": "3.6.1",
+          "title": "Key-Protection Procedures",
+          "description": "Procedures for protecting cryptographic keys include access restricted to fewest necessary custodians, key-encrypting keys are at least as strong as the data-encrypting keys, and keys are stored securely in as few locations as possible."
+        },
+        {
+          "id": "3.6.1.1",
+          "title": "Secret and Private Key Access",
+          "description": "Secret and private keys used to encrypt/decrypt stored account data are stored in one or more: encrypted form using a key-encrypting key, within a secure cryptographic device, as at least two full-length key components or key shares."
+        },
+        {
+          "id": "3.6.1.2",
+          "title": "Cryptographic Key Access Control",
+          "description": "Access to cleartext cryptographic key-encrypting keys is restricted to the fewest number of custodians necessary."
+        },
+        {
+          "id": "3.6.1.3",
+          "title": "Cryptographic Keys Stored Securely",
+          "description": "Secret and private keys are stored in the fewest possible locations."
+        },
+        {
+          "id": "3.6.1.4",
+          "title": "Cryptographic Keys in Transit Protected",
+          "description": "Cryptographic keys are protected against unauthorized substitution when in transit."
+        },
+        {
+          "id": "3.7",
+          "title": "Cryptographic Key Management Processes Cover Full Lifecycle",
+          "description": "Key management processes and procedures for encryption keys used to protect stored account data cover all key lifecycle aspects: generation, distribution, storage, retirement, and replacement.",
+          "sub_requirements": [
+            {
+              "id": "3.7.1",
+              "title": "Strong Key Generation",
+              "description": "Key-generation procedures specify how to generate strong cryptographic keys."
+            },
+            {
+              "id": "3.7.2",
+              "title": "Secure Key Distribution",
+              "description": "Key-management procedures specify how cryptographic keys are distributed securely."
+            },
+            {
+              "id": "3.7.3",
+              "title": "Secure Key Storage",
+              "description": "Key-management procedures specify how cryptographic keys are stored securely."
+            },
+            {
+              "id": "3.7.4",
+              "title": "Cryptographic Key Changes",
+              "description": "Key-management procedures specify when and how cryptographic keys are retired or replaced, including when key integrity is weakened or suspected of being compromised."
+            },
+            {
+              "id": "3.7.5",
+              "title": "Retired Keys Retained for Decryption Only",
+              "description": "Key-management policies specify that retired or replaced cryptographic keys are not used for encryption operations and are only retained to decrypt/verify previously encrypted data."
+            },
+            {
+              "id": "3.7.6",
+              "title": "Manual Key-Management Operations Split Knowledge",
+              "description": "Manual cleartext key-management operations are performed using split knowledge and dual control."
+            },
+            {
+              "id": "3.7.7",
+              "title": "Prevention of Unauthorized Key Substitution",
+              "description": "Unauthorized substitution of cryptographic keys is prevented."
+            },
+            {
+              "id": "3.7.8",
+              "title": "Key Custodian Acknowledgement",
+              "description": "Key custodians formally acknowledge (in writing or electronically) that they understand and accept their key-custodian responsibilities."
+            },
+            {
+              "id": "3.7.9",
+              "title": "Additional Requirements for Service Providers",
+              "description": "Service providers with key-sharing arrangements with customers document procedures for key-change details."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "4",
+      "title": "Protect Cardholder Data with Strong Cryptography During Transmission over Open, Public Networks",
+      "description": "Sensitive information must be encrypted during transmission over public networks because it is easy and common for malicious individuals to intercept and/or divert data while in transit.",
+      "sub_requirements": [
+        {
+          "id": "4.1",
+          "title": "Processes and Mechanisms Are Defined and Understood",
+          "description": "Policies and procedures for protecting cardholder data in transit are documented, current, and communicated."
+        },
+        {
+          "id": "4.1.1",
+          "title": "Roles and Responsibilities Documented",
+          "description": "Roles and responsibilities for performing activities in Requirement 4 are documented, assigned, and understood."
+        },
+        {
+          "id": "4.2",
+          "title": "PAN Is Protected with Strong Cryptography During Transmission",
+          "description": "Strong cryptography and security protocols (e.g., TLS 1.2+) protect PAN during transmission over open, public networks. Only trusted keys/certificates are accepted. Proper certificate validation is enforced."
+        },
+        {
+          "id": "4.2.1",
+          "title": "Strong Cryptography for PAN Transmissions",
+          "description": "Strong cryptography is used to safeguard PAN during transmission over open, public networks. Only trusted keys and/or certificates are accepted and the protocol in use supports only secure versions/configurations."
+        },
+        {
+          "id": "4.2.1.1",
+          "title": "Certificate Inventory",
+          "description": "An inventory of trusted keys and certificates is maintained."
+        },
+        {
+          "id": "4.2.1.2",
+          "title": "Wireless Transmission Encryption",
+          "description": "Wireless networks that transmit PAN or are connected to the CDE use industry best practices for wireless authentication and transmission."
+        },
+        {
+          "id": "4.2.2",
+          "title": "PAN Not Sent by Unprotected End-User Messaging",
+          "description": "PAN is not sent via end-user messaging technologies such as email, instant messaging, SMS, or chat unless those channels are protected with strong cryptography."
+        }
+      ]
+    },
+    {
+      "id": "5",
+      "title": "Protect All Systems and Networks from Malicious Software",
+      "description": "Malicious software (malware) exploits vulnerabilities to gain unauthorized access. Anti-malware solutions must be deployed on all applicable systems and kept current.",
+      "sub_requirements": [
+        {
+          "id": "5.1",
+          "title": "Processes and Mechanisms for Protecting Against Malware Are Defined and Understood",
+          "description": "Policies and procedures for malware protection are documented, current, and communicated."
+        },
+        {
+          "id": "5.1.1",
+          "title": "Roles and Responsibilities Documented",
+          "description": "Roles and responsibilities for performing activities in Requirement 5 are documented, assigned, and understood."
+        },
+        {
+          "id": "5.2",
+          "title": "Malware Is Prevented, Detected, and Addressed",
+          "description": "Anti-malware solutions are deployed on all systems commonly affected by malicious software. Solutions detect, remove, and protect against known malware threats."
+        },
+        {
+          "id": "5.2.1",
+          "title": "Anti-Malware Deployed on All Systems",
+          "description": "An anti-malware solution is deployed on all system components, except those specifically identified as not at risk from malware based on a targeted risk analysis."
+        },
+        {
+          "id": "5.2.2",
+          "title": "Anti-Malware Capability Requirements",
+          "description": "Deployed anti-malware solutions detect all known types of malware, remove or block malware, and generate audit logs."
+        },
+        {
+          "id": "5.2.3",
+          "title": "Systems Not at Risk Evaluated Periodically",
+          "description": "Any system components deemed not at risk from malware are evaluated periodically via a targeted risk analysis, and the analysis is documented and retained."
+        },
+        {
+          "id": "5.2.3.1",
+          "title": "Frequency of Periodic Evaluation",
+          "description": "The frequency of periodic evaluations of system components not at risk for malware is defined in the entity's targeted risk analysis."
+        },
+        {
+          "id": "5.3",
+          "title": "Anti-Malware Mechanisms and Processes Are Active, Maintained, and Monitored",
+          "description": "Anti-malware solutions are kept current, perform timely scans, generate logs, and cannot be disabled or altered by users without explicit management authorization."
+        },
+        {
+          "id": "5.3.1",
+          "title": "Anti-Malware Definitions Current",
+          "description": "Anti-malware solutions are kept current via automatic updates."
+        },
+        {
+          "id": "5.3.2",
+          "title": "Periodic Scans Performed",
+          "description": "Anti-malware solutions perform periodic scans and active or real-time scans."
+        },
+        {
+          "id": "5.3.2.1",
+          "title": "Targeted Risk Analysis for Scan Frequency",
+          "description": "If periodic malware scans are performed, the frequency is defined via a targeted risk analysis."
+        },
+        {
+          "id": "5.3.3",
+          "title": "Removable Electronic Media Scanned",
+          "description": "Anti-malware solutions scan removable electronic media when inserted or connected."
+        },
+        {
+          "id": "5.3.4",
+          "title": "Audit Logs for Anti-Malware Solutions Enabled",
+          "description": "Audit logs for anti-malware solutions are enabled and retained in accordance with Requirement 10.5.1."
+        },
+        {
+          "id": "5.3.5",
+          "title": "Anti-Malware Cannot Be Disabled by Users",
+          "description": "Anti-malware mechanisms cannot be disabled or altered by users unless specifically documented and authorized by management on a case-by-case basis for a limited time."
+        },
+        {
+          "id": "5.4",
+          "title": "Anti-Phishing Mechanisms Protect Users",
+          "description": "Processes and automated mechanisms protect personnel against phishing attacks."
+        },
+        {
+          "id": "5.4.1",
+          "title": "Anti-Phishing Controls",
+          "description": "Processes and automated mechanisms are in place to detect and protect personnel against phishing attacks."
+        }
+      ]
+    },
+    {
+      "id": "6",
+      "title": "Develop and Maintain Secure Systems and Software",
+      "description": "Unscrupulous individuals use security vulnerabilities to gain privileged access to systems. Security defects must be addressed via patch management and secure development lifecycle practices.",
+      "sub_requirements": [
+        {
+          "id": "6.1",
+          "title": "Processes and Mechanisms for Secure Development Are Defined and Understood",
+          "description": "Policies and procedures for securing systems and software are documented, current, and communicated."
+        },
+        {
+          "id": "6.1.1",
+          "title": "Roles and Responsibilities Documented",
+          "description": "Roles and responsibilities for performing activities in Requirement 6 are documented, assigned, and understood."
+        },
+        {
+          "id": "6.2",
+          "title": "Bespoke and Custom Software Are Developed Securely",
+          "description": "Software development processes incorporate security throughout the SDLC. Developers are trained on secure coding. Custom code is reviewed before release."
+        },
+        {
+          "id": "6.2.1",
+          "title": "Secure Development Practices",
+          "description": "Bespoke and custom software is developed securely based on industry standards and best practices for secure development."
+        },
+        {
+          "id": "6.2.2",
+          "title": "Developer Security Training",
+          "description": "Software development personnel working on bespoke and custom software are trained at least once every 12 months on software security relevant to their job function."
+        },
+        {
+          "id": "6.2.3",
+          "title": "Custom Software Reviewed for Vulnerabilities",
+          "description": "All custom software is reviewed prior to being released to production or customers to identify and correct potential coding vulnerabilities."
+        },
+        {
+          "id": "6.2.3.1",
+          "title": "Code Review Independence",
+          "description": "If manual code reviews are performed, code changes are reviewed by personnel other than the originating code author and who are knowledgeable in code review techniques."
+        },
+        {
+          "id": "6.2.4",
+          "title": "Common Coding Vulnerabilities Prevented",
+          "description": "Software engineering techniques or other methods are used to prevent or mitigate common software attacks and related vulnerabilities including injection attacks, improper error handling, insecure cryptography, and others from OWASP Top 10."
+        },
+        {
+          "id": "6.3",
+          "title": "Security Vulnerabilities Are Identified and Addressed",
+          "description": "A vulnerability management process is maintained. New vulnerabilities are identified, risk-ranked, and addressed within defined timeframes. Security patches are applied promptly."
+        },
+        {
+          "id": "6.3.1",
+          "title": "Vulnerability Identification Process",
+          "description": "Security vulnerabilities are identified and managed via a vulnerability management process. Reliable external sources of vulnerability information are monitored."
+        },
+        {
+          "id": "6.3.2",
+          "title": "Software Inventory Maintained",
+          "description": "An inventory of bespoke and custom software, and third-party software components incorporated into bespoke and custom software is maintained to facilitate vulnerability and patch management."
+        },
+        {
+          "id": "6.3.3",
+          "title": "All System Components Protected from Known Vulnerabilities by Installing Applicable Security Patches",
+          "description": "All system components are protected from known vulnerabilities by installing applicable security patches/updates. Critical patches are installed within one month of release."
+        },
+        {
+          "id": "6.4",
+          "title": "Public-Facing Web Applications Are Protected Against Attacks",
+          "description": "Public-facing web applications face the highest risk of compromise. Additional controls including WAF and secure change-management processes are required."
+        },
+        {
+          "id": "6.4.1",
+          "title": "Web Application Security Review or WAF",
+          "description": "Public-facing web applications are protected against attacks by either: reviewing the application via manual or automated application vulnerability security assessment at least once every 12 months or after significant changes, or deploying an automated technical solution that detects and prevents web-based attacks (WAF)."
+        },
+        {
+          "id": "6.4.2",
+          "title": "Automated Technical Solution for Web Application Attacks (WAF)",
+          "description": "An automated technical solution is deployed in front of public-facing web applications to continuously detect and prevent web-based attacks."
+        },
+        {
+          "id": "6.4.3",
+          "title": "Payment Page Script Management",
+          "description": "All payment page scripts that are loaded and executed in the consumer's browser are managed as follows: method to confirm each script is authorized; method to assure integrity of each script; inventory of all scripts with written business or technical justification for each."
+        },
+        {
+          "id": "6.5",
+          "title": "Changes to All System Components Are Managed Securely",
+          "description": "Change control processes and procedures are followed for all changes to system components. Test and production environments are separated. Significant changes trigger re-validation of applicable PCI DSS requirements."
+        },
+        {
+          "id": "6.5.1",
+          "title": "Change Control Procedures",
+          "description": "Change control processes and procedures are defined and followed for all changes to system components including: documentation of change impact, management approval, testing that changes do not adversely affect system security, back-out procedures."
+        },
+        {
+          "id": "6.5.2",
+          "title": "Significant Change Re-Validation",
+          "description": "Upon completion of a significant change, all relevant PCI DSS requirements are confirmed to be in place on all new or changed systems and networks, and documentation is updated."
+        },
+        {
+          "id": "6.5.3",
+          "title": "Pre-Production and Production Environments Separated",
+          "description": "Pre-production and production environments are separated with access controls in place to enforce the separation."
+        },
+        {
+          "id": "6.5.4",
+          "title": "Roles and Functions Separated Between Environments",
+          "description": "Roles and functions are separated between production and pre-production environments to provide accountability and minimize opportunities for unauthorized or accidental changes."
+        },
+        {
+          "id": "6.5.5",
+          "title": "Live PANs Not Used in Pre-Production",
+          "description": "Live PANs are not used in pre-production environments unless those environments are included in the CDE and protected by PCI DSS controls."
+        },
+        {
+          "id": "6.5.6",
+          "title": "Test Data and Test Accounts Removed Before Production",
+          "description": "Test data and test accounts are removed from system components before the system goes live in production."
+        }
+      ]
+    },
+    {
+      "id": "7",
+      "title": "Restrict Access to System Components and Cardholder Data by Business Need to Know",
+      "description": "Ensure critical data can only be accessed by authorized personnel. Access control systems must deny all access by default and grant permissions only as needed for legitimate job functions.",
+      "sub_requirements": [
+        {
+          "id": "7.1",
+          "title": "Processes and Mechanisms for Restricting Access Are Defined and Understood",
+          "description": "Policies and procedures for restricting access to system components and cardholder data are documented, current, and communicated."
+        },
+        {
+          "id": "7.1.1",
+          "title": "Roles and Responsibilities Documented",
+          "description": "Roles and responsibilities for performing activities in Requirement 7 are documented, assigned, and understood."
+        },
+        {
+          "id": "7.1.2",
+          "title": "Access Control Model",
+          "description": "An access control model is defined and includes granting access based on: appropriate access needs per individual job classification, principle of least privilege. The model is reviewed and updated as needed."
+        },
+        {
+          "id": "7.2",
+          "title": "Access to System Components and Data Is Appropriately Defined and Assigned",
+          "description": "All user accounts and related access privileges are assigned based on the least privilege necessary to perform job functions. Privileged access is explicitly approved."
+        },
+        {
+          "id": "7.2.1",
+          "title": "Access to All System Components Defined",
+          "description": "All access to system components and cardholder data requires appropriate authorization."
+        },
+        {
+          "id": "7.2.2",
+          "title": "User Access Assignment",
+          "description": "Access is assigned to users based on job classification and function. The amount of access granted matches the minimum privileges necessary."
+        },
+        {
+          "id": "7.2.3",
+          "title": "Privileged Access Requires Approval",
+          "description": "Required privileges are approved by authorized personnel prior to assignment."
+        },
+        {
+          "id": "7.2.4",
+          "title": "User Accounts and Access Privileges Reviewed",
+          "description": "User accounts and access privileges are reviewed at least once every six months to confirm appropriateness and alignment with job functions."
+        },
+        {
+          "id": "7.2.5",
+          "title": "Application and System Accounts Assigned to Minimal Privileges",
+          "description": "All application and system accounts and related access privileges are assigned and managed based on least-privilege principles, including interactive login for application and system accounts."
+        },
+        {
+          "id": "7.2.5.1",
+          "title": "Application and System Account Privileges Reviewed",
+          "description": "All access by application and system accounts and related access privileges are reviewed periodically."
+        },
+        {
+          "id": "7.2.6",
+          "title": "Access to Query Repositories of Stored Cardholder Data Restricted",
+          "description": "User access to query repositories of stored cardholder data is restricted to only the access required for job function and is protected by access control mechanisms."
+        },
+        {
+          "id": "7.3",
+          "title": "Access to System Components and Data Is Managed via an Access Control System(s)",
+          "description": "An access control system enforces all access control policies. Default setting is deny all. Access is explicitly granted based on authorization."
+        },
+        {
+          "id": "7.3.1",
+          "title": "Access Control System Covers All System Components",
+          "description": "An access control system(s) is in place that restricts access based on a user's need to know, and is set to deny-all by default."
+        },
+        {
+          "id": "7.3.2",
+          "title": "Access Control System Has Granularity",
+          "description": "The access control system(s) has sufficient granularity to provide access control at the individual level."
+        },
+        {
+          "id": "7.3.3",
+          "title": "Access Control System Up to Date",
+          "description": "The access control system(s) is kept current and incorporates all changes to the access control model."
+        }
+      ]
+    },
+    {
+      "id": "8",
+      "title": "Identify Users and Authenticate Access to System Components",
+      "description": "Assigning a unique identification (ID) to each person with access ensures that individuals are accountable for their actions. Strong authentication including MFA and password controls must be enforced.",
+      "sub_requirements": [
+        {
+          "id": "8.1",
+          "title": "Processes and Mechanisms for User Identification and Authentication Are Defined and Understood",
+          "description": "Policies and procedures for user identification and authentication are documented, current, and communicated."
+        },
+        {
+          "id": "8.1.1",
+          "title": "Roles and Responsibilities Documented",
+          "description": "Roles and responsibilities for performing activities in Requirement 8 are documented, assigned, and understood."
+        },
+        {
+          "id": "8.2",
+          "title": "User Identification and Related Accounts Are Managed Throughout Their Lifecycle",
+          "description": "All user accounts are uniquely identifiable. Inactive accounts are removed within 90 days. Shared accounts are prohibited except where technically necessary."
+        },
+        {
+          "id": "8.2.1",
+          "title": "All User IDs and Authentication Factors Managed",
+          "description": "All users are assigned a unique ID before allowing access. Generic, shared, or group IDs are not allowed except for documented technical exceptions."
+        },
+        {
+          "id": "8.2.2",
+          "title": "Group, Shared, and Generic Accounts Controlled",
+          "description": "Group, shared, or generic accounts and authentication factors are permitted only when technically necessary, documented and shared with exceptional approval, and authentication factors changed when personnel change."
+        },
+        {
+          "id": "8.2.3",
+          "title": "Added, Deleted, and Modified User IDs and Credentials Managed",
+          "description": "User ID and authentication factor additions, deletions, and modifications are managed per defined processes."
+        },
+        {
+          "id": "8.2.4",
+          "title": "Inactive Accounts Removed Within 90 Days",
+          "description": "User IDs of individuals who are no longer employed are immediately deactivated or removed. User IDs inactive for more than 90 days are removed or disabled."
+        },
+        {
+          "id": "8.2.5",
+          "title": "Terminated User Access Removed Immediately",
+          "description": "Access for terminated users is immediately revoked and all related authentication factors are invalidated."
+        },
+        {
+          "id": "8.2.6",
+          "title": "Inactive User Accounts Managed",
+          "description": "User accounts are managed to ensure inactive accounts are removed or disabled within 90 days of inactivity."
+        },
+        {
+          "id": "8.2.7",
+          "title": "Accounts Used by Third Parties",
+          "description": "Accounts used by third parties to access, support, or maintain system components via remote access are managed per requirements: enabled only during needed time period, monitored when in use."
+        },
+        {
+          "id": "8.2.8",
+          "title": "Idle Session Timeout",
+          "description": "If a user session has been idle for more than 15 minutes, re-authentication is required to reactivate the session."
+        },
+        {
+          "id": "8.3",
+          "title": "User Authentication Is Managed Throughout Their Lifecycle",
+          "description": "Authentication factors including passwords/passphrases are managed for strength, change frequency, and uniqueness. Verification is required before changing authentication factors."
+        },
+        {
+          "id": "8.3.1",
+          "title": "Passwords/Passphrases Must Meet Complexity Requirements",
+          "description": "Passwords/passphrases must meet a minimum length of at least 12 characters (or IF the system does not support 12 characters, a minimum length of eight characters). Contain both numeric and alphabetic characters."
+        },
+        {
+          "id": "8.3.2",
+          "title": "Passwords Stored Unreadable",
+          "description": "All user passwords/passphrases are protected with strong cryptography during storage."
+        },
+        {
+          "id": "8.3.3",
+          "title": "Identity Verification Before Changing Authentication Factors",
+          "description": "User identity is verified before modifying any authentication factor."
+        },
+        {
+          "id": "8.3.4",
+          "title": "Invalid Authentication Attempt Lockout",
+          "description": "Invalid authentication attempts are limited by locking out the user ID after not more than 10 attempts."
+        },
+        {
+          "id": "8.3.5",
+          "title": "Password Reset Requirements",
+          "description": "If passwords/passphrases are used as authentication factors to meet Requirement 8.3.1, they meet length and complexity requirements and are changed at least once every 90 days OR dynamically verified at each access."
+        },
+        {
+          "id": "8.3.6",
+          "title": "No Password Reuse",
+          "description": "If passwords/passphrases are used as authentication factors, they do not allow the reuse of the last four passwords/passphrases for accounts without MFA."
+        },
+        {
+          "id": "8.3.7",
+          "title": "No Default Passwords",
+          "description": "Individuals are not allowed to submit a new password/passphrase that is the same as any of the last four passwords/passphrases used."
+        },
+        {
+          "id": "8.3.8",
+          "title": "Password Security Policy Acknowledged",
+          "description": "Authentication policies and procedures are documented and communicated to all users including guidance on selecting strong authentication factors and not sharing authentication factors."
+        },
+        {
+          "id": "8.3.9",
+          "title": "Password Change Frequency for Non-MFA Consumer Users",
+          "description": "If passwords/passphrases are used as the only authentication factor for customer/consumer user access, then passwords must be changed at least once every 90 days, OR the security posture of accounts is dynamically analyzed."
+        },
+        {
+          "id": "8.3.10",
+          "title": "Password Guidance for Users",
+          "description": "Guidance is provided to users on selecting strong passwords/passphrases and not sharing authentication factors."
+        },
+        {
+          "id": "8.3.11",
+          "title": "Physical Security Tokens and Smart Cards",
+          "description": "Where authentication factors such as physical or logical security tokens, smart cards, or certificates are used: factors are assigned to an individual user, user identity is verified before issuing factors."
+        },
+        {
+          "id": "8.4",
+          "title": "Multi-Factor Authentication (MFA) Is Implemented to Secure Access into the CDE",
+          "description": "MFA is required for all access to the CDE and for all remote network access originating from outside the entity's network. MFA must use at least two of: something you know, something you have, something you are."
+        },
+        {
+          "id": "8.4.1",
+          "title": "MFA for All Non-Consumer Users with Remote Access",
+          "description": "MFA is implemented for all non-consumer users accessing the CDE remotely."
+        },
+        {
+          "id": "8.4.2",
+          "title": "MFA for All Access into the CDE",
+          "description": "MFA is implemented for all access into the CDE. Applies to all types of users (employees, contractors, third parties) accessing any system component in the CDE."
+        },
+        {
+          "id": "8.4.3",
+          "title": "MFA for All Remote Network Access",
+          "description": "MFA is implemented for all remote network access originating from outside the entity's network that could access or impact the CDE."
+        },
+        {
+          "id": "8.5",
+          "title": "Multi-Factor Authentication Systems Are Configured to Prevent Misuse",
+          "description": "MFA systems are implemented to protect against replay attacks and cannot be bypassed. MFA implementation cannot be altered by users unless explicitly authorized."
+        },
+        {
+          "id": "8.5.1",
+          "title": "MFA Systems Cannot Be Bypassed",
+          "description": "MFA systems cannot be bypassed by any user, including administrative users unless specifically documented and authorized by management on a case-by-case basis for a limited time period, and monitored."
+        },
+        {
+          "id": "8.6",
+          "title": "Use of Application and System Accounts Is Managed Rigorously",
+          "description": "Application and system accounts and related authentication factors are managed via strict controls including strong passwords, rotation on compromise, and inventory maintenance."
+        },
+        {
+          "id": "8.6.1",
+          "title": "Interactive Login for Application and System Accounts Managed",
+          "description": "Where application and system accounts can be used for interactive login, the use is managed and controlled."
+        },
+        {
+          "id": "8.6.2",
+          "title": "Passwords for Application and System Accounts Not Hard-Coded",
+          "description": "Passwords/passphrases for application and system accounts that can be used for interactive login are not hardcoded in scripts, configuration/property files, or bespoke and custom source code."
+        },
+        {
+          "id": "8.6.3",
+          "title": "Passwords for Application and System Accounts Protected",
+          "description": "Passwords/passphrases for application and system accounts are protected against misuse by enforcing password changes periodically and upon suspicion of compromise."
+        }
+      ]
+    },
+    {
+      "id": "9",
+      "title": "Restrict Physical Access to Cardholder Data",
+      "description": "Any physical access to data or systems that house cardholder data provides the opportunity to access devices or data and remove systems or hardcopies. Physical access controls must be implemented to prevent unauthorized access.",
+      "sub_requirements": [
+        {
+          "id": "9.1",
+          "title": "Processes and Mechanisms for Restricting Physical Access Are Defined and Understood",
+          "description": "Policies and procedures for restricting physical access to cardholder data are documented, current, and communicated."
+        },
+        {
+          "id": "9.2",
+          "title": "Physical Access Controls Manage Entry into Facilities and Systems Containing Cardholder Data",
+          "description": "Physical access to facilities containing the CDE is controlled via entry controls such as badge readers, PIN pads, or biometrics."
+        },
+        {
+          "id": "9.2.1",
+          "title": "Appropriate Physical Security for Each Facility",
+          "description": "Appropriate physical entry controls are in place to restrict physical access to systems in the CDE."
+        },
+        {
+          "id": "9.2.1.1",
+          "title": "Video Cameras and/or Access Control Mechanisms",
+          "description": "Individual physical access to sensitive areas within the CDE is monitored with video cameras and/or access-control mechanisms. Data is stored for at least 90 days."
+        },
+        {
+          "id": "9.2.2",
+          "title": "Physical Access Controls for Network Jacks",
+          "description": "Physical and/or logical controls are implemented to restrict access to publicly accessible network jacks."
+        },
+        {
+          "id": "9.2.3",
+          "title": "Physical Access to Wireless Access Points, Gateways, and Networking Hardware Restricted",
+          "description": "Physical access to wireless access points, gateways, handheld devices, networking/communications hardware, and telecommunication lines is restricted."
+        },
+        {
+          "id": "9.2.4",
+          "title": "Access to Consoles in Sensitive Areas Restricted",
+          "description": "Access to consoles in sensitive areas is restricted via locking when not in use."
+        },
+        {
+          "id": "9.3",
+          "title": "Physical Access for Personnel and Visitors Is Authorized and Managed",
+          "description": "Physical access controls differentiate between on-site personnel and visitors. All visitors are authorized before entry and escorted or badged."
+        },
+        {
+          "id": "9.3.1",
+          "title": "Physical Access Controls for Personnel",
+          "description": "Procedures are implemented for authorizing and managing physical access of personnel to the CDE, including badge management and revocation upon termination."
+        },
+        {
+          "id": "9.3.2",
+          "title": "Physical Access Controls for Visitors",
+          "description": "Procedures are implemented for authorizing and managing visitor physical access to the CDE: visitors are authorized before entering, given physical tokens that expire, required to surrender tokens on departure."
+        },
+        {
+          "id": "9.3.3",
+          "title": "Visitor Badges Surrendered or Deactivated",
+          "description": "Visitor badges or physical tokens expire or become invalid upon departure from the facility."
+        },
+        {
+          "id": "9.3.4",
+          "title": "Visitor Log Maintained",
+          "description": "A visitor log is maintained that identifies the visitor name, the firm represented, the personnel authorizing physical access, and retained for at least three months."
+        },
+        {
+          "id": "9.4",
+          "title": "Media with Cardholder Data Is Securely Stored, Accessed, Distributed, and Destroyed",
+          "description": "All media containing cardholder data is physically secured, tracked, and destroyed when no longer needed."
+        },
+        {
+          "id": "9.4.1",
+          "title": "All Media with Cardholder Data Is Physically Secured",
+          "description": "All media with cardholder data is physically secured."
+        },
+        {
+          "id": "9.4.2",
+          "title": "All Media Classified",
+          "description": "All media with cardholder data is classified so the sensitivity of the data can be determined."
+        },
+        {
+          "id": "9.4.3",
+          "title": "Media Sent Outside Facility Is Secured",
+          "description": "Media with cardholder data sent outside the facility is secured as follows: media is logged by management authorization, sent by secured courier or equivalent, and delivery is confirmed."
+        },
+        {
+          "id": "9.4.4",
+          "title": "Management Approves Media Movement",
+          "description": "Management approves all media with cardholder data that is moved outside the facility."
+        },
+        {
+          "id": "9.4.5",
+          "title": "Inventory of Electronic Media with Cardholder Data",
+          "description": "Inventories of electronic media with cardholder data are maintained and inventory logs are updated at least annually."
+        },
+        {
+          "id": "9.4.6",
+          "title": "Hard-Copy Materials Destroyed When No Longer Needed",
+          "description": "Hard-copy materials with cardholder data are destroyed when no longer needed using methods that make the data unreadable."
+        },
+        {
+          "id": "9.4.7",
+          "title": "Electronic Media Destroyed When No Longer Needed",
+          "description": "Electronic media with cardholder data is destroyed when no longer needed using methods that render data unrecoverable."
+        },
+        {
+          "id": "9.5",
+          "title": "Point of Interaction (POI) Devices Are Protected from Tampering and Unauthorized Substitution",
+          "description": "POI devices used in card-present transactions are inspected for tampering and skimming devices. Processes for inspection, detection, and response to tampering are documented."
+        },
+        {
+          "id": "9.5.1",
+          "title": "POI Devices Protected and Periodically Inspected",
+          "description": "POI devices that capture payment card data via direct physical interaction with the payment card form factor are protected from tampering and unauthorized substitution."
+        },
+        {
+          "id": "9.5.1.1",
+          "title": "POI Device List Maintained",
+          "description": "A list of POI devices is maintained, including device type, location, and device serial number or other element that allows unique identification."
+        },
+        {
+          "id": "9.5.1.2",
+          "title": "POI Devices Periodically Inspected",
+          "description": "POI device surfaces are periodically inspected to detect tampering and unauthorized substitution."
+        },
+        {
+          "id": "9.5.1.2.1",
+          "title": "Frequency of POI Inspection",
+          "description": "The frequency of periodic POI device inspections is defined in the entity's targeted risk analysis."
+        },
+        {
+          "id": "9.5.1.3",
+          "title": "Personnel Trained to Recognize Tampering",
+          "description": "Training is provided for personnel in POI environments to be aware of attempted tampering or replacement of POI devices."
+        }
+      ]
+    },
+    {
+      "id": "10",
+      "title": "Log and Monitor All Access to System Components and Cardholder Data",
+      "description": "Logging mechanisms and the ability to track user activities are critical for effective forensics and vulnerability management. Audit logs enable detection of unauthorized access and suspicious activity.",
+      "sub_requirements": [
+        {
+          "id": "10.1",
+          "title": "Processes and Mechanisms for Logging and Monitoring Are Defined and Understood",
+          "description": "Policies and procedures for logging and monitoring all access to system components and cardholder data are documented, current, and communicated."
+        },
+        {
+          "id": "10.1.1",
+          "title": "Roles and Responsibilities Documented",
+          "description": "Roles and responsibilities for performing activities in Requirement 10 are documented, assigned, and understood."
+        },
+        {
+          "id": "10.1.2",
+          "title": "Policies and Procedures Current and In Use",
+          "description": "All security policies and operational procedures for Requirement 10 are documented, in use, and known to all affected parties."
+        },
+        {
+          "id": "10.2",
+          "title": "Audit Logs Are Implemented to Support Detection of Anomalies and Suspicious Activity",
+          "description": "Audit logs capture all individual user access to cardholder data, administrative actions, access to audit logs, invalid logical access attempts, use of identification and authentication mechanisms, initialization/stopping/pausing of audit logs, and creation/deletion of system-level objects."
+        },
+        {
+          "id": "10.2.1",
+          "title": "Audit Logs Capture All Individual Access to Cardholder Data",
+          "description": "Audit logs are implemented to capture the following events: all individual user access to cardholder data, all actions taken by any individual with root or administrative privileges, access to all audit trails, invalid logical access attempts, use of and changes to identification and authentication mechanisms, initialization/stopping/pausing of audit logs, creation and deletion of system-level objects."
+        },
+        {
+          "id": "10.2.1.1",
+          "title": "All Individual Access to Cardholder Data",
+          "description": "Audit logs capture all individual user access to cardholder data."
+        },
+        {
+          "id": "10.2.1.2",
+          "title": "All Administrative Actions",
+          "description": "Audit logs capture all actions taken by any individual with root or administrative privileges."
+        },
+        {
+          "id": "10.2.1.3",
+          "title": "Access to Audit Trails",
+          "description": "Audit logs capture all access to all audit trails."
+        },
+        {
+          "id": "10.2.1.4",
+          "title": "Invalid Logical Access Attempts",
+          "description": "Audit logs capture all invalid logical access attempts."
+        },
+        {
+          "id": "10.2.1.5",
+          "title": "Use of and Changes to Identification and Authentication Mechanisms",
+          "description": "Audit logs capture use of and changes to identification and authentication mechanisms."
+        },
+        {
+          "id": "10.2.1.6",
+          "title": "Initialization, Stopping, or Pausing of Audit Logs",
+          "description": "Audit logs capture all initialization, stopping, or pausing of the audit logs."
+        },
+        {
+          "id": "10.2.1.7",
+          "title": "Creation and Deletion of System-Level Objects",
+          "description": "Audit logs capture creation and deletion of system-level objects."
+        },
+        {
+          "id": "10.2.2",
+          "title": "Audit Log Data Content",
+          "description": "Audit logs capture the following data elements for each auditable event: user identification, type of event, date and time, success or failure indication, origination of event, identity or name of affected data, system component, or resource."
+        },
+        {
+          "id": "10.3",
+          "title": "Audit Logs Are Protected from Destruction and Unauthorized Modifications",
+          "description": "Audit logs are promptly backed up to a centralized log server or other media. Logs are protected from modification and unauthorized deletion. Audit log files are protected from destruction via access controls."
+        },
+        {
+          "id": "10.3.1",
+          "title": "Read Access to Audit Logs Limited",
+          "description": "Read access to audit log files is limited to those with a job-related need."
+        },
+        {
+          "id": "10.3.2",
+          "title": "Audit Log Files Protected from Modifications",
+          "description": "Audit log files are protected to prevent modifications by individuals."
+        },
+        {
+          "id": "10.3.3",
+          "title": "Audit Log Files Backed Up Promptly",
+          "description": "Audit log files are promptly backed up to a centralized log server(s) or other media that is difficult to modify."
+        },
+        {
+          "id": "10.3.4",
+          "title": "File Integrity Monitoring for Audit Logs",
+          "description": "File integrity monitoring or change-detection mechanisms are used on audit logs to ensure that existing log data cannot be changed without generating alerts."
+        },
+        {
+          "id": "10.4",
+          "title": "Audit Logs Are Reviewed to Identify Anomalies or Suspicious Activity",
+          "description": "Audit log reviews occur at least daily for critical logs. Reviews use automated tools. Exceptions and anomalies are investigated and documented."
+        },
+        {
+          "id": "10.4.1",
+          "title": "Daily Log Review",
+          "description": "The following audit logs are reviewed at least once daily: all security events, logs of all system components that store, process, or transmit CHD or SAD, logs of all critical system components, logs of all servers and system components that perform security functions."
+        },
+        {
+          "id": "10.4.1.1",
+          "title": "Automated Mechanisms for Log Reviews",
+          "description": "Automated mechanisms are used to perform audit log reviews."
+        },
+        {
+          "id": "10.4.2",
+          "title": "Periodic Reviews of Other System Logs",
+          "description": "Logs of all other system components (not covered in 10.4.1) are reviewed periodically."
+        },
+        {
+          "id": "10.4.2.1",
+          "title": "Frequency of Periodic Log Reviews",
+          "description": "The frequency of periodic log reviews for system components not covered in 10.4.1 is defined in the entity's targeted risk analysis."
+        },
+        {
+          "id": "10.4.3",
+          "title": "Exceptions and Anomalies Investigated",
+          "description": "Exceptions and anomalies identified during the review process are addressed."
+        },
+        {
+          "id": "10.5",
+          "title": "Audit Log History Is Retained and Available for Analysis",
+          "description": "Audit logs are retained for at least 12 months, with at least the most recent three months available for immediate analysis."
+        },
+        {
+          "id": "10.5.1",
+          "title": "12-Month Log Retention",
+          "description": "Retain audit log history for at least 12 months, with at least the most recent three months available for immediate analysis."
+        },
+        {
+          "id": "10.6",
+          "title": "Time-Synchronization Mechanisms Support Consistent Time Settings Across All Systems",
+          "description": "System clocks on all systems within the CDE are synchronized to a designated authoritative time source. Time data is protected from unauthorized changes."
+        },
+        {
+          "id": "10.6.1",
+          "title": "System Clocks Synchronized",
+          "description": "System clocks on all systems are synchronized using time-synchronization technology (e.g., NTP)."
+        },
+        {
+          "id": "10.6.2",
+          "title": "Systems Receive Correct and Consistent Time",
+          "description": "Systems receive time data only from designated central time server(s). External time servers are industry-accepted time sources."
+        },
+        {
+          "id": "10.6.3",
+          "title": "Time-Synchronization Settings and Data Protected",
+          "description": "Time synchronization settings and data are protected from unauthorized access and changes."
+        },
+        {
+          "id": "10.7",
+          "title": "Failures of Critical Security Controls Are Detected, Reported, and Responded to Promptly",
+          "description": "Failures of critical security systems are detected and responded to. Alerts are generated for all critical security control failures and an incident response process is triggered.",
+          "sub_requirements": [
+            {
+              "id": "10.7.1",
+              "title": "Critical Security Control Failure Detection (Service Providers)",
+              "description": "Additional requirement for service providers only: failures of critical security controls are detected, alerted, and reported promptly."
+            },
+            {
+              "id": "10.7.2",
+              "title": "Critical Security Control Failure Detection (All Entities)",
+              "description": "Failures of critical security controls are detected, alerted, and addressed promptly. Critical controls covered include NSCs, IDS/IPS, FIM, anti-malware, physical access controls, logical access controls, audit logging, and segmentation controls."
+            },
+            {
+              "id": "10.7.3",
+              "title": "Response to Critical Security Control Failures",
+              "description": "Failures of any critical security controls are responded to promptly, including restoring security functions, identifying and documenting duration of failure, performing root-cause analysis, addressing the cause, and reassessing whether additional assessment is needed."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "11",
+      "title": "Test Security of Systems and Networks Regularly",
+      "description": "Vulnerabilities are being continually discovered by malicious individuals and researchers. Processes and procedures must be in place to ensure systems are tested for vulnerabilities and attacks on a regular basis.",
+      "sub_requirements": [
+        {
+          "id": "11.1",
+          "title": "Processes and Mechanisms for Regularly Testing Security Are Defined and Understood",
+          "description": "Policies and procedures for regularly testing security of systems and networks are documented, current, and communicated."
+        },
+        {
+          "id": "11.2",
+          "title": "Wireless Access Points Are Identified and Monitored, and Unauthorized Wireless Access Points Are Addressed",
+          "description": "Authorized and unauthorized wireless access points are identified and unauthorized ones are addressed. Scans for wireless access points are performed at least quarterly."
+        },
+        {
+          "id": "11.2.1",
+          "title": "Authorized and Unauthorized Wireless APs Managed",
+          "description": "Authorized and unauthorized wireless access points are managed. Wireless scanning is performed at least every three months."
+        },
+        {
+          "id": "11.2.2",
+          "title": "Wireless AP Inventory",
+          "description": "An inventory of authorized wireless access points is maintained, including a documented business justification."
+        },
+        {
+          "id": "11.3",
+          "title": "External and Internal Vulnerabilities Are Regularly Identified, Prioritized, and Addressed",
+          "description": "Internal and external vulnerability scans are performed quarterly and after significant changes. High-risk and critical vulnerabilities are remediated. Scans are performed by qualified personnel."
+        },
+        {
+          "id": "11.3.1",
+          "title": "Internal Vulnerability Scans Performed",
+          "description": "Internal vulnerability scans are performed at least once every three months and after any significant change in the environment."
+        },
+        {
+          "id": "11.3.1.1",
+          "title": "Rescans Until Passing or Risk Acceptance",
+          "description": "All high-risk and critical vulnerabilities (as defined in the entity's targeted risk analysis) are resolved. Rescans are performed to confirm resolution."
+        },
+        {
+          "id": "11.3.1.2",
+          "title": "Scan Performed by Qualified Personnel",
+          "description": "Internal vulnerability scans are performed by a qualified party and organizational independence of the tester exists."
+        },
+        {
+          "id": "11.3.1.3",
+          "title": "Internal Vulnerability Scan via Authenticated Scanning",
+          "description": "Internal vulnerability scans are performed via authenticated scanning."
+        },
+        {
+          "id": "11.3.2",
+          "title": "External Vulnerability Scans by ASV",
+          "description": "External vulnerability scans are performed at least once every three months by a PCI SSC Approved Scanning Vendor (ASV)."
+        },
+        {
+          "id": "11.3.2.1",
+          "title": "ASV Scans Until Passing",
+          "description": "External vulnerability scans are performed per ASV program guide requirements. Scans are repeated as needed until a passing result is achieved."
+        },
+        {
+          "id": "11.4",
+          "title": "External and Internal Penetration Testing Is Regularly Performed, and Exploitable Vulnerabilities and Security Weaknesses Are Corrected",
+          "description": "Annual penetration testing is performed by a qualified penetration tester against both network layer and application layer. Findings are remediated and retested."
+        },
+        {
+          "id": "11.4.1",
+          "title": "Penetration Testing Methodology Defined",
+          "description": "A penetration testing methodology is defined, documented, and implemented by the entity, and includes an industry-accepted penetration testing approach, coverage for the entire CDE perimeter and critical systems, testing from both inside and outside the network."
+        },
+        {
+          "id": "11.4.2",
+          "title": "Internal Penetration Testing",
+          "description": "Internal penetration testing is performed at least once every 12 months and after any significant infrastructure or application upgrade or change."
+        },
+        {
+          "id": "11.4.3",
+          "title": "External Penetration Testing",
+          "description": "External penetration testing is performed at least once every 12 months and after any significant change."
+        },
+        {
+          "id": "11.4.4",
+          "title": "Penetration Testing Findings Remediated",
+          "description": "Exploitable vulnerabilities and security weaknesses found during penetration testing are corrected, and penetration testing is repeated to verify corrections."
+        },
+        {
+          "id": "11.4.5",
+          "title": "Segmentation Controls Tested",
+          "description": "If network segmentation is used to isolate the CDE, penetration testing is performed at least once every 12 months and after any changes to segmentation controls/methods to verify that the segmentation is operational."
+        },
+        {
+          "id": "11.4.6",
+          "title": "Service Provider Additional Segmentation Testing",
+          "description": "Additional requirement for service providers only: penetration testing of segmentation controls is performed at least once every six months."
+        },
+        {
+          "id": "11.4.7",
+          "title": "Multi-Tenant Service Provider Penetration Testing",
+          "description": "Additional requirement for multi-tenant service providers only: provide external penetration testing support to customers as needed."
+        },
+        {
+          "id": "11.5",
+          "title": "Network Intrusions and Unexpected File Changes Are Detected and Responded To",
+          "description": "IDS/IPS is deployed to monitor all traffic in the CDE at the perimeter and critical points. FIM is deployed to detect unauthorized file changes."
+        },
+        {
+          "id": "11.5.1",
+          "title": "Intrusion Detection/Prevention Systems Deployed",
+          "description": "Intrusion detection and/or intrusion prevention techniques are used to detect and/or prevent intrusions into the network."
+        },
+        {
+          "id": "11.5.1.1",
+          "title": "Covert Communications Channel Detection",
+          "description": "Additional requirement for service providers only: intrusion detection techniques detect, alert on/prevent covert malware communication channels."
+        },
+        {
+          "id": "11.5.2",
+          "title": "Change-Detection Mechanism (FIM) Deployed",
+          "description": "A change-detection mechanism (FIM) is deployed to: alert personnel to unauthorized modification of critical system files, configuration files, or content files; and performs comparisons of critical files at least once weekly."
+        },
+        {
+          "id": "11.6",
+          "title": "Unauthorized Changes on Payment Pages Are Detected and Responded To",
+          "description": "A change-and-tamper-detection mechanism is deployed to alert on unauthorized modifications to HTTP headers and the contents of payment pages received by consumers.",
+          "sub_requirements": [
+            {
+              "id": "11.6.1",
+              "title": "Payment Page Tamper Detection",
+              "description": "A change- and tamper-detection mechanism is deployed as follows: the entity is alerted to unauthorized modifications to HTTP headers and payment page content, is configured to evaluate the received HTTP headers and payment page, runs at least once every seven days OR per a targeted risk analysis."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "12",
+      "title": "Support Information Security with Organizational Policies and Programs",
+      "description": "A strong security policy sets the security tone for the whole entity and informs personnel what is expected of them. All personnel should be aware of the sensitivity of cardholder data and their responsibilities for protecting it.",
+      "sub_requirements": [
+        {
+          "id": "12.1",
+          "title": "A Comprehensive Information Security Policy Is Known and Current",
+          "description": "An information security policy is established, published, maintained, and disseminated to all relevant personnel and applicable vendors/business partners."
+        },
+        {
+          "id": "12.1.1",
+          "title": "Overall Information Security Policy Established",
+          "description": "An overall information security policy is established, published, maintained, and disseminated to all relevant personnel and applicable vendors/business partners."
+        },
+        {
+          "id": "12.1.2",
+          "title": "Roles and Responsibilities Defined",
+          "description": "The information security policy includes an annual review process and roles/responsibilities for all personnel."
+        },
+        {
+          "id": "12.1.3",
+          "title": "Information Security Policy Reviewed Annually",
+          "description": "The information security policy is reviewed at least once every 12 months and updated as needed to reflect changes to business objectives or risk environment."
+        },
+        {
+          "id": "12.1.4",
+          "title": "CISO or Equivalent Assigned",
+          "description": "Responsibility for information security is formally assigned to a Chief Information Security Officer or other security-knowledgeable member of executive management."
+        },
+        {
+          "id": "12.2",
+          "title": "Acceptable Use Policies for End-User Technologies Are Documented and Implemented",
+          "description": "Acceptable use policies for end-user technologies are documented, enforced, and signed by personnel."
+        },
+        {
+          "id": "12.2.1",
+          "title": "Acceptable Use Policy for End-User Technologies",
+          "description": "Acceptable use policies for end-user technologies are documented and implemented, covering use of technologies and actions allowed and prohibited."
+        },
+        {
+          "id": "12.3",
+          "title": "Risks to the Cardholder Data Environment Are Formally Identified, Evaluated, and Managed",
+          "description": "A formal risk assessment process identifies organizational assets, threats, and vulnerabilities. Targeted risk analysis is used to justify deviations from requirements where flexible implementation is allowed."
+        },
+        {
+          "id": "12.3.1",
+          "title": "Formal Risk Assessment",
+          "description": "A formal risk assessment is performed at least once every 12 months and upon significant changes to the environment, covering the threat landscape, business objectives, and risk tolerance."
+        },
+        {
+          "id": "12.3.2",
+          "title": "Targeted Risk Analysis for Customized Approach",
+          "description": "A targeted risk analysis is performed for each PCI DSS requirement that the entity meets with a customized approach."
+        },
+        {
+          "id": "12.3.3",
+          "title": "Cryptographic Cipher Suites Reviewed Annually",
+          "description": "All cryptographic cipher suites and protocols in use are documented and reviewed at least once every 12 months, including a plan to address weaknesses."
+        },
+        {
+          "id": "12.3.4",
+          "title": "Hardware and Software Technologies Reviewed Annually",
+          "description": "Hardware and software technologies in use are reviewed at least once every 12 months to confirm that they continue to receive security fixes from vendors."
+        },
+        {
+          "id": "12.4",
+          "title": "PCI DSS Compliance Is Managed",
+          "description": "Service providers acknowledge their responsibilities for protecting cardholder data and perform quarterly reviews to confirm personnel follow security policies."
+        },
+        {
+          "id": "12.4.1",
+          "title": "Service Provider Overall Accountability",
+          "description": "Additional requirement for service providers: responsibility is established by executive management for the protection of cardholder data and a PCI DSS compliance program."
+        },
+        {
+          "id": "12.4.2",
+          "title": "Reviews to Confirm Operational Effectiveness",
+          "description": "Additional requirement for service providers: reviews are performed at least once every three months to confirm that personnel are following security policies and operational procedures."
+        },
+        {
+          "id": "12.4.2.1",
+          "title": "Reviews Documented with Evidence",
+          "description": "Reviews performed per Requirement 12.4.2 are documented with reviewer name, review date, findings, and corrective actions taken."
+        },
+        {
+          "id": "12.5",
+          "title": "PCI DSS Scope Is Documented and Validated",
+          "description": "The PCI DSS scope is defined and documented including all system components in scope. Scope is confirmed at least annually and upon significant changes."
+        },
+        {
+          "id": "12.5.1",
+          "title": "Inventory of System Components Maintained",
+          "description": "An inventory of all in-scope system components is maintained including a description of function/use for each component."
+        },
+        {
+          "id": "12.5.2",
+          "title": "PCI DSS Scope Confirmed Annually",
+          "description": "PCI DSS scope is documented and confirmed by the entity at least once every 12 months and upon significant changes to the in-scope environment."
+        },
+        {
+          "id": "12.5.2.1",
+          "title": "Service Provider Scope Confirmation",
+          "description": "Additional requirement for service providers: PCI DSS scope is documented and confirmed at least once every six months and upon significant changes."
+        },
+        {
+          "id": "12.5.3",
+          "title": "Significant Changes Impact Scope",
+          "description": "Additional requirement for service providers: significant changes are documented and assessed for impact on PCI DSS scope. Corresponding controls are updated."
+        },
+        {
+          "id": "12.6",
+          "title": "Security Awareness Education Is an Ongoing Activity",
+          "description": "A formal security awareness program is implemented and personnel are educated upon hire and at least annually. Training covers the acceptable use policy and protection of cardholder data."
+        },
+        {
+          "id": "12.6.1",
+          "title": "Security Awareness Program Implemented",
+          "description": "A formal security awareness program is implemented to make all personnel aware of the entity's information security policy and procedures and their role in protecting cardholder data."
+        },
+        {
+          "id": "12.6.2",
+          "title": "Security Awareness Program Reviewed Annually",
+          "description": "The security awareness program is reviewed at least once every 12 months, and updated as necessary to address new threats and vulnerabilities."
+        },
+        {
+          "id": "12.6.3",
+          "title": "Personnel Receive Security Awareness Training",
+          "description": "Personnel receive security awareness training upon hire and at least once every 12 months. Multiple methods of communication are used."
+        },
+        {
+          "id": "12.6.3.1",
+          "title": "Phishing and Social Engineering Training",
+          "description": "Security awareness training includes awareness of threats to security including phishing and related attacks."
+        },
+        {
+          "id": "12.6.3.2",
+          "title": "Awareness of Threats and Vulnerabilities",
+          "description": "Security awareness training includes awareness that personnel should not accept sensitive authentication data even if requested."
+        },
+        {
+          "id": "12.7",
+          "title": "Personnel Are Screened to Reduce Risks from Insider Threats",
+          "description": "Background checks are performed on potential personnel before hire. Screening is performed according to applicable laws and level of access granted."
+        },
+        {
+          "id": "12.7.1",
+          "title": "Background Checks",
+          "description": "Background checks consistent with applicable laws are performed on potential personnel who will have access to the CDE prior to hiring."
+        },
+        {
+          "id": "12.8",
+          "title": "Risk to Information Assets Associated with Third-Party Service Provider (TPSP) Relationships Is Managed",
+          "description": "A list of all TPSPs and the PCI DSS requirements they are accountable for is maintained. Agreements confirm TPSPs acknowledge their responsibilities. TPSP PCI DSS compliance status is monitored at least annually."
+        },
+        {
+          "id": "12.8.1",
+          "title": "TPSP List Maintained",
+          "description": "A list of all third-party service providers (TPSPs) with which account data is shared, or that could affect security of account data, is maintained."
+        },
+        {
+          "id": "12.8.2",
+          "title": "Written Agreement with TPSPs",
+          "description": "Written agreements with all TPSPs are maintained including acknowledgements from TPSPs that they are responsible for the security of account data they possess or otherwise store, process, or transmit."
+        },
+        {
+          "id": "12.8.3",
+          "title": "Established Process for Engaging TPSPs",
+          "description": "An established process is implemented for engaging TPSPs, including proper due diligence prior to engagement."
+        },
+        {
+          "id": "12.8.4",
+          "title": "TPSP PCI DSS Compliance Status Monitored",
+          "description": "The PCI DSS compliance status of each TPSP is monitored at least once every 12 months."
+        },
+        {
+          "id": "12.8.5",
+          "title": "TPSP Responsibility Matrix",
+          "description": "Information is maintained about which PCI DSS requirements are managed by each TPSP, which are managed by the entity, and any that are shared."
+        },
+        {
+          "id": "12.9",
+          "title": "Third-Party Service Providers (TPSPs) Support Their Customers' PCI DSS Compliance",
+          "description": "TPSPs provide written acknowledgement to customers confirming the TPSP is responsible for applicable PCI DSS requirements. On request, TPSPs provide evidence of PCI DSS compliance."
+        },
+        {
+          "id": "12.10",
+          "title": "Suspected and Confirmed Security Incidents That Could Impact the CDE Are Responded to Immediately",
+          "description": "An incident response plan is developed and maintained. Personnel are trained on incident response responsibilities. The plan is tested at least annually."
+        },
+        {
+          "id": "12.10.1",
+          "title": "Incident Response Plan Exists",
+          "description": "An incident response plan exists and is ready to be activated in the event of a system breach. The plan addresses roles, responsibilities, communication, recovery, and post-incident review."
+        },
+        {
+          "id": "12.10.2",
+          "title": "Incident Response Plan Reviewed and Tested Annually",
+          "description": "At least once every 12 months, the security incident response plan is reviewed and tested, including all elements listed in Requirement 12.10.1."
+        },
+        {
+          "id": "12.10.3",
+          "title": "Personnel Designated to Respond 24/7",
+          "description": "Specific personnel are designated to be available on a 24/7 basis to respond to suspected or confirmed security incidents."
+        },
+        {
+          "id": "12.10.4",
+          "title": "Incident Response Training",
+          "description": "Personnel responsible for responding to suspected and confirmed security incidents are trained for their incident response responsibilities at least once every 12 months."
+        },
+        {
+          "id": "12.10.4.1",
+          "title": "Frequency of Incident Response Training",
+          "description": "The frequency of periodic security training for incident response personnel is defined in the entity's targeted risk analysis."
+        },
+        {
+          "id": "12.10.5",
+          "title": "Alerts from Security Monitoring Systems Included in Incident Response Plan",
+          "description": "The incident response plan includes monitoring and responding to alerts from security monitoring systems, including but not limited to IDS/IPS, FIM, anti-malware, and change-detection mechanisms."
+        },
+        {
+          "id": "12.10.6",
+          "title": "Incident Response Plan Evolved Based on Lessons Learned",
+          "description": "The security incident response plan is modified and evolved according to lessons learned and to incorporate industry developments."
+        },
+        {
+          "id": "12.10.7",
+          "title": "Incident Response Procedures for Discovered Stored PAN",
+          "description": "Incident response procedures are in place, to be initiated upon the detection of stored PAN anywhere it is not expected, including clear role assignments and response steps."
+        }
+      ]
+    }
+  ]
+}
