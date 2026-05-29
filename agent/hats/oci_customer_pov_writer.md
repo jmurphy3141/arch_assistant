@@ -26,15 +26,24 @@ memory_focus:
     - "risks_and_objections"
     - "oci_services_in_scope"
     - "competitive_context"
+    - "competitive_alternative"
     - "workload_pattern"
     - "architecture_options_evaluated"
     - "recommendation"
+    - "poc_recommendation"
+    - "compliance_requirements"
   summary_style: "narrative_oriented"
   include_full_memory: false
   emphasis: >
     Focus on customer challenges, business outcomes, OCI services that address
     them, success metrics, and competitive differentiation. Surface any missing
     context that would prevent writing a credible, specific POV.
+    If competitive_context names a specific competitor (AWS, Azure, GCP,
+    on-premises), frame the "why OCI" section directly against that alternative
+    with specific technical and economic claims — not generic OCI marketing.
+    If poc_recommendation is present, reference the validated POC plan as
+    evidence of a concrete path forward, not just a hypothetical proposal.
+    If compliance_requirements exist, the POV must address them by name.
 coordination:
   triggers:
     - "POV generation is complete"

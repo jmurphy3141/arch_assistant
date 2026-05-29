@@ -24,12 +24,21 @@ memory_focus:
     - "region"
     - "terraform_scope"
     - "provider_version"
+    - "diagram_artifact_key"
+    - "oci_services_in_scope"
+    - "vcn_cidr"
+    - "subnet_layout"
   summary_style: "iac_oriented"
   include_full_memory: false
   emphasis: >
     Focus on resource dependencies, compartment OCID, naming/tagging rules,
     state backend, module boundaries, and security constraints. Surface any
     unknown OCID or missing variable that would block a terraform apply.
+    If diagram_artifact_key is present, Terraform resource names and CIDR
+    blocks must match the diagram topology — mismatches between diagram and
+    code are the most common SE credibility gap in customer reviews.
+    If oci_services_in_scope lists services not covered by the generated
+    resources, surface them as scope gaps before delivering the bundle.
 coordination:
   triggers:
     - "Terraform bundle generation is complete"

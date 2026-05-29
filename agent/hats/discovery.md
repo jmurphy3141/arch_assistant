@@ -36,6 +36,11 @@ memory_focus:
     Every field left blank is a gap that will surface later as a bad assumption
     in a BOM, diagram, or POV. Prioritize: pain statement, current platform,
     target outcome, timeline, and budget signal.
+    As soon as customer_industry is established, surface the industry_expert
+    hat — compliance requirements, workload patterns, and competitive context
+    are all industry-specific and change every downstream artifact.
+    If competitive_context is established, deal_coach becomes relevant before
+    artifact generation — the POC scope should counter the competitor's claim.
 coordination:
   triggers:
     - "customer context is sufficiently detailed for artifact generation"

@@ -38,6 +38,11 @@ memory_focus:
     Focus on OCPU/memory quantities, shape family selection, storage volumes,
     license type (BYOL vs included), HA multiplier (×2 for active-active),
     and budget constraints. Highlight any sizing or pricing gaps.
+    If sizing_hints or target_services are present from tech research, use
+    them as the primary source for shape selection — do not ask questions
+    that tech research already answered. If budget_signal is "tight" or cost
+    is the stated pain, prioritize E5.Flex over premium shapes, raise Reserved
+    Capacity pricing, and flag BYOL if Oracle Database is in scope.
 coordination:
   triggers:
     - "BOM generation is complete"

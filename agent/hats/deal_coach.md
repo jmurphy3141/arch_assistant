@@ -34,6 +34,11 @@ memory_focus:
     Focus on competitive context, stated objections, deal stage, and who
     controls the buying decision. Every deal coaching response should connect
     to the specific customer situation, not generic competitive talking points.
+    competitive_alternative established here flows directly into the POV hat
+    — the POV's "why OCI" section must argue against the specific named
+    alternative, not generic cloud messaging. If poc_recommendation is also
+    present, the deal coaching response should connect the POC wow moment
+    to the economic buyer's stated concern.
 coordination:
   triggers:
     - "competitive positioning and objection handling complete"

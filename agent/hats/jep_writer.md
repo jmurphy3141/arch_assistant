@@ -26,12 +26,22 @@ memory_focus:
     - "customer_resources"
     - "poc_architecture"
     - "kickoff_answers"
+    - "poc_recommendation"
+    - "poc_options"
+    - "bom_artifact_key"
+    - "pain_statement"
   summary_style: "execution_plan_oriented"
   include_full_memory: false
   emphasis: >
     Focus on POC scope boundaries, workload selection, measurable success criteria,
     timeline milestones, resource commitments, and risk registry. Surface any
     scope creep, missing acceptance criteria, or unstaffed resource requirements.
+    If poc_recommendation is present from the POC Strategist, use it as the
+    primary scope anchor for Phase 2 Build — the JEP phases should match the
+    confirmed option's build_sequence exactly. If bom_artifact_key is present,
+    reference the BOM cost estimate in the project budget section rather than
+    leaving it as TBD. If pain_statement is present, the success criteria must
+    directly measure whether that pain was addressed.
 coordination:
   triggers:
     - "JEP generation is complete"

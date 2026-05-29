@@ -23,8 +23,19 @@ memory_focus:
     - budget_signal
     - customer_industry
     - competitive_context
+    - sizing_hints
+    - architecture_options_evaluated
+    - workload_pattern
   summary_style: "poc_strategy_oriented"
   include_full_memory: false
+  emphasis: >
+    If budget_signal is "tight" or cost is the stated pain, lead with the
+    cost-optimization angle — it has the highest relevance score for this
+    customer. If competitive_context names a specific competitor (AWS, Azure,
+    GCP), the recommended POC option must directly counter that competitor's
+    claimed advantage — not just demonstrate OCI features. If sizing_hints or
+    architecture_options_evaluated are present from tech research, use them
+    to scope the build time and wow moment accurately.
 coordination:
   parallel_with: ["infra_tech_research"]
   suggested_next_hat: "diagram_for_oci"

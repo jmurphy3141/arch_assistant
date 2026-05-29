@@ -31,6 +31,12 @@ memory_focus:
     Focus on public exposure, IAM/NSG controls, encryption status, compliance
     gaps, DR posture, RTO/RPO targets, and observability coverage. Highlight
     unresolved risks and missing OCI guardrails.
+    If topology or public_exposure facts are present from the diagram hat,
+    surface topology-derived findings as P1 before generic recommendations —
+    a DB node in the Public subnet established by the diagram is a confirmed
+    gap, not a hypothetical. If compliance_requirements or compliance_framework
+    are present, map every finding to the specific control it violates rather
+    than stating generic best practices.
 coordination:
   triggers:
     - "WAF review is complete"
