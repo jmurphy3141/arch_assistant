@@ -1,0 +1,360 @@
+{
+  "_metadata": {
+    "description": "Oracle OCI customer case studies with quantified outcomes for POC pattern matching",
+    "source": "oracle.com/customers, oracle.com/cloud/technical-case-studies, Oracle blog announcements",
+    "last_updated": "2026-05-29",
+    "notes": [
+      "Case studies sourced from official Oracle customer pages and verified announcements.",
+      "Metrics are as published by Oracle / the customer; use for directional SA guidance only.",
+      "Use case types map to Archie POC pattern categories."
+    ]
+  },
+  "case_studies": [
+    {
+      "id": "cs-001",
+      "company": "CNCF (Cloud Native Computing Foundation) / Linux Foundation Education",
+      "industry": "Non-profit / Open Source Foundation",
+      "region": "Multi-region",
+      "use_case_type": "Cloud migration / Kubernetes modernization",
+      "oci_services": ["OKE (Oracle Container Engine for Kubernetes)", "OCI Compute", "Object Storage", "VCN"],
+      "migration_from": "Alternative cloud provider (AWS)",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": "$1,000,000",
+        "cost_savings_percent": "50%+ on hosting costs for hands-on labs",
+        "performance": null,
+        "time_savings": null
+      },
+      "summary": "CNCF migrated cloud-native project infrastructure and Linux Foundation Education hands-on training lab environments to OCI. Achieved $1M annual savings and planned 50%+ reduction in hosting costs for the full suite of training labs and exams.",
+      "source_url": "https://www.oracle.com/cloud/technical-case-studies/cncf/"
+    },
+    {
+      "id": "cs-002",
+      "company": "MulticoreWare",
+      "industry": "AI / Video Compression Technology",
+      "region": "US",
+      "use_case_type": "AI/ML platform migration",
+      "oci_services": ["OCI Compute (GPU)", "VCN", "Object Storage", "OKE"],
+      "migration_from": "Previous cloud provider",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": "75% TCO reduction annually",
+        "performance": "Improved application performance for HuBe.ai",
+        "time_savings": "Reduced overhead with Oracle Managed Services"
+      },
+      "summary": "MulticoreWare deployed their HuBe.ai AI video compression application on OCI, saving 75% in annual TCO vs. prior cloud provider. Used GPU compute for AI inference workloads.",
+      "source_url": "https://www.oracle.com/customers/multicoreware-case-study/"
+    },
+    {
+      "id": "cs-003",
+      "company": "Tryg Insurance",
+      "industry": "Insurance / Financial Services",
+      "region": "Europe",
+      "use_case_type": "Kubernetes cost optimization",
+      "oci_services": ["OKE (Oracle Container Engine for Kubernetes)", "OCI Flex Compute Shapes", "Preemptible Instances"],
+      "migration_from": "Other cloud Kubernetes (AWS EKS / Azure AKS)",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": "50% reduction in Kubernetes cloud costs",
+        "performance": "Dynamic right-sizing eliminated over-provisioning",
+        "time_savings": null
+      },
+      "summary": "Tryg Insurance reduced Kubernetes cloud costs by 50% by implementing dynamic right-sizing on OKE with OCI Flex shapes. Eliminated over-provisioning through granular CPU/memory allocation.",
+      "source_url": "https://blogs.oracle.com/cloud-infrastructure/tryg-insurance-save-50-percent-k8-cloud-costs"
+    },
+    {
+      "id": "cs-004",
+      "company": "Zimperium",
+      "industry": "Cybersecurity / Mobile Security",
+      "region": "US",
+      "use_case_type": "Kubernetes modernization / Multi-AD HA",
+      "oci_services": ["OKE", "OCI Functions", "PostgreSQL on OCI Compute", "NGINX Load Balancer", "VCN"],
+      "migration_from": "Previous cloud provider",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": "15% cost savings",
+        "performance": "Improved business continuity via multi-AD deployment",
+        "time_savings": null
+      },
+      "summary": "Zimperium migrated mobile threat defense platform to OKE, enabling multi-AD deployment for business continuity. Flex shapes allowed customized provisioning per application, achieving 15% cost savings.",
+      "source_url": "https://www.oracle.com/cloud/technical-case-studies/zimperium/"
+    },
+    {
+      "id": "cs-005",
+      "company": "ChainSys",
+      "industry": "Enterprise Data Integration / SaaS",
+      "region": "US",
+      "use_case_type": "Data platform migration / Smart Data Platform",
+      "oci_services": ["OCI Compute (VMs)", "PostgreSQL on OCI", "Object Storage", "VCN"],
+      "migration_from": "On-premises / other cloud",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": "50% TCO reduction",
+        "performance": "30% performance improvement",
+        "time_savings": "15-20 hours per month saved"
+      },
+      "summary": "ChainSys deployed their Smart Data Platform (data migration, ETL, catalog, analytics) on OCI. Achieved 50% annual TCO savings, 30% performance improvement, and 15-20 hours/month time savings.",
+      "source_url": "https://www.oracle.com/cloud/technical-case-studies/chainsys/"
+    },
+    {
+      "id": "cs-006",
+      "company": "Impulse Logic",
+      "industry": "Retail / Predictive Inventory Optimization",
+      "region": "US",
+      "use_case_type": "Cloud-native app modernization / OKE",
+      "oci_services": ["OKE", "Autonomous Transaction Processing (ATP)", "Object Storage", "OCI Events", "OCI Functions", "WAF", "Data Safe", "Vault"],
+      "migration_from": "Monolithic on-premises application",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": null,
+        "performance": "Scalable to large demand spikes; improved resilience",
+        "time_savings": "Deployed within 75 days without disrupting inventory management systems",
+        "labor_cost_reduction": "Helps customers reduce labor costs by 40%"
+      },
+      "summary": "Impulse Logic modernized SLiQ from monolithic to cloud-native on OKE with ATP. Their predictive analytics platform helps retailers reduce labor costs by 40%. Deployment takes 75 days with zero disruption to existing systems.",
+      "source_url": "https://www.oracle.com/cloud/technical-case-studies/impulse-logic/"
+    },
+    {
+      "id": "cs-007",
+      "company": "DPA (Decimal Point Analytics)",
+      "industry": "Financial Analytics / Fintech",
+      "region": "India",
+      "use_case_type": "Database migration to Autonomous Database",
+      "oci_services": ["Oracle Autonomous Database", "Object Storage", "Load Balancer"],
+      "migration_from": "Multi-database on-premises (multiple single-purpose databases)",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": null,
+        "performance": "Eliminated complex multi-database architecture; fewer components",
+        "time_savings": null,
+        "other": "Overcame project complexity; improved performance with Autonomous Database"
+      },
+      "summary": "DPA migrated from complex multi-database on-premises architecture to Oracle Autonomous Database. Eliminated need for MongoDB + relational hybrid via ADB's document store API support, simplifying architecture significantly.",
+      "source_url": "https://www.oracle.com/customers/dpa-case-study/"
+    },
+    {
+      "id": "cs-008",
+      "company": "Broctagon",
+      "industry": "Fintech / FX Broker CRM",
+      "region": "Asia Pacific (Singapore)",
+      "use_case_type": "MySQL HeatWave migration (AWS Aurora replacement)",
+      "oci_services": ["MySQL HeatWave", "OCI Compute", "VCN"],
+      "migration_from": "AWS EC2 + RDS Aurora MySQL",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": "35% cost reduction",
+        "performance": "30% performance improvement",
+        "time_savings": null
+      },
+      "summary": "Broctagon migrated AXIS FX Broker CRM from AWS EC2 + Aurora MySQL to OCI MySQL HeatWave. Achieved 30% performance improvement and 35% cost reduction as client base and data volumes scaled.",
+      "source_url": "https://www.oracle.com/customers/broctagon/"
+    },
+    {
+      "id": "cs-009",
+      "company": "Credify",
+      "industry": "Fintech / Instant Lending",
+      "region": "Asia Pacific",
+      "use_case_type": "MySQL HeatWave / Application modernization",
+      "oci_services": ["MySQL HeatWave", "OCI Compute"],
+      "migration_from": "Previous cloud/database stack",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": "60%+ cost reduction",
+        "performance": "4x faster time-to-market for instant loan application",
+        "time_savings": "25% reduction in data preparation time for Lines of Business"
+      },
+      "summary": "Credify used MySQL HeatWave to accelerate their instant loan product 4x faster to market. Reduced costs by 60%+ and cut data preparation time for business users by 25%.",
+      "source_url": "https://www.oracle.com/customers/"
+    },
+    {
+      "id": "cs-010",
+      "company": "Noorisys Technologies",
+      "industry": "Technology Services",
+      "region": "Asia Pacific",
+      "use_case_type": "MySQL HeatWave migration (AWS replacement)",
+      "oci_services": ["MySQL HeatWave", "OCI Compute", "VCN"],
+      "migration_from": "AWS EC2",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": "~50% cost reduction vs AWS",
+        "performance": "New server configuration active within 5 minutes vs 48-hour downtime on AWS",
+        "time_savings": "Eliminated 48-hour downtime windows for IP address changes"
+      },
+      "summary": "Noorisys migrated from AWS EC2 to MySQL HeatWave. Cost dropped to approximately half of AWS pricing with predictable fixed costs. Operational agility improved dramatically — new configs active in 5 minutes vs 48-hour downtime on AWS.",
+      "source_url": "https://www.oracle.com/customers/noorisys-technologies/"
+    },
+    {
+      "id": "cs-011",
+      "company": "SoundHound AI",
+      "industry": "AI / Voice Technology",
+      "region": "US",
+      "use_case_type": "AI/ML platform migration / Hyperscale voice AI",
+      "oci_services": ["OCI Compute (GPU + CPU)", "OKE", "OCI Functions", "OCI API Gateway", "HPC"],
+      "migration_from": "Other cloud providers",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": "2x cost reduction vs previous cloud",
+        "performance": "50-60% performance boost vs previous cloud environment",
+        "throughput": "100M+ queries/month, exceeded 1B queries in 2021"
+      },
+      "summary": "SoundHound migrated voice AI platform to OCI for higher performance, built-in security, and lower cost. Achieved 50-60% performance improvement and 2x cost reduction. Platform now processes 100M+ queries/month supporting explosive growth.",
+      "source_url": "https://www.oracle.com/customers/soundhound/"
+    },
+    {
+      "id": "cs-012",
+      "company": "ETC (Electronic Transaction Consultants)",
+      "industry": "Transportation / Intelligent Transport Systems",
+      "region": "US",
+      "use_case_type": "Large-scale data platform / Analytics migration",
+      "oci_services": ["OCI Compute", "Oracle Analytics", "AI/ML services", "OCI Database"],
+      "migration_from": "On-premises / legacy infrastructure",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": null,
+        "performance": "300% performance improvement after migrating to OCI",
+        "scale": "Billions of electronic tolling transactions per year, millions of accounts"
+      },
+      "summary": "ETC, a US intelligent transport systems provider, migrated to OCI and achieved 300% performance improvement. OCI now handles billions of tolling transactions annually with Oracle Analytics and AI/ML for predictive analytics and dashboards.",
+      "source_url": "https://blogs.oracle.com/cloud-infrastructure/etc-achieves-300-performance-improvement-and-increased-efficiency-after-migrating-to-oci"
+    },
+    {
+      "id": "cs-013",
+      "company": "Takamol",
+      "industry": "Government / E-Government Services (Saudi Arabia)",
+      "region": "Middle East",
+      "use_case_type": "OKE modernization / E-government platform",
+      "oci_services": ["OKE", "OCI Compute", "Object Storage", "OCI Registry", "Prometheus", "Grafana Loki"],
+      "migration_from": "Legacy on-premises infrastructure",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": null,
+        "performance": "High-performance e-government services with dynamic scalability",
+        "availability": "Improved availability and fast disaster recovery",
+        "other": "Reduced operational overhead; faster product launch velocity"
+      },
+      "summary": "Takamol deployed four core e-government applications on OCI with OKE, improving availability, reducing operational tasks, and enabling faster disaster recovery. Used Kubernetes with Prometheus/Grafana observability stack.",
+      "source_url": "https://blogs.oracle.com/cloud-infrastructure/takamol-adopts-oci-and-oracle-kubernetes-to-boost-innovation-in-saudi-arabia-delivering-high-performance-e-government-services-with-dynamic-scalability"
+    },
+    {
+      "id": "cs-014",
+      "company": "Argonne National Laboratory",
+      "industry": "Research / National Laboratory",
+      "region": "US",
+      "use_case_type": "AI/ML GPU cluster / HPC",
+      "oci_services": ["OCI Compute (BM.GPU H100)", "HPC Cluster Networking", "RDMA"],
+      "migration_from": "On-premises HPC",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent": null,
+        "performance": "Planned 10,000-GPU deployment on OCI; test bed demonstrated performance",
+        "other": "Selected OCI for proven performance in HPC/AI workloads"
+      },
+      "summary": "Argonne National Laboratory selected OCI for GPU workloads, with an initial cluster serving as test bed for a planned 10,000-GPU deployment. OCI selected for proven HPC/AI performance and RDMA networking capabilities.",
+      "source_url": "https://blogs.oracle.com/cloud-infrastructure/"
+    },
+    {
+      "id": "cs-015",
+      "company": "Generic: Oracle Database Standard Edition to ADB",
+      "industry": "Cross-industry (benchmark/reference)",
+      "region": "Any",
+      "use_case_type": "Database migration to Autonomous Database",
+      "oci_services": ["Oracle Autonomous Database Serverless", "Autoscaling", "Elastic Pools"],
+      "migration_from": "Oracle Database Standard Edition on-premises VMs",
+      "quantified_outcomes": {
+        "cost_savings_annual_usd": null,
+        "cost_savings_percent_autoscaling": "35% annual TCO savings vs on-premises VMs",
+        "cost_savings_percent_elastic_pools": "49% annual TCO savings vs on-premises VMs",
+        "hourly_fee_reduction": "76% lower hourly fees vs Standard Edition",
+        "performance": "Automated patching, tuning, security — zero DBA overhead"
+      },
+      "summary": "Oracle published reference TCO analysis for DB Standard Edition to ADB migration. Autoscaling option yields 35% TCO savings; Elastic Pools yield 49% savings. Hourly compute fees 76% lower. Used by Oracle SAs as directional benchmark.",
+      "source_url": "https://blogs.oracle.com/database/migrate-dbse-to-atp"
+    },
+    {
+      "id": "cs-016",
+      "company": "Generic: MySQL HeatWave vs Amazon Redshift",
+      "industry": "Cross-industry (benchmark/reference)",
+      "region": "Any",
+      "use_case_type": "Data warehouse / Analytics (HeatWave vs Redshift)",
+      "oci_services": ["MySQL HeatWave"],
+      "migration_from": "Amazon Redshift",
+      "quantified_outcomes": {
+        "performance": "HeatWave outperforms Redshift on query benchmarks",
+        "cost_comparison": "Lower cost than Amazon Redshift for equivalent analytics workloads",
+        "operational": "No ETL required — analytics run in-place on OLTP data"
+      },
+      "summary": "Oracle published benchmark comparison showing MySQL HeatWave outperforms Amazon Redshift on price-performance for analytics. No ETL pipeline needed — HeatWave runs OLAP queries on same MySQL instance as OLTP.",
+      "source_url": "https://www.oracle.com/mysql/heatwave-vs-amazon-redshift/"
+    },
+    {
+      "id": "cs-017",
+      "company": "Generic: MySQL HeatWave vs Snowflake",
+      "industry": "Cross-industry (benchmark/reference)",
+      "region": "Any",
+      "use_case_type": "Data platform cost comparison",
+      "oci_services": ["MySQL HeatWave"],
+      "migration_from": "Snowflake",
+      "quantified_outcomes": {
+        "cost_comparison": "HeatWave is ~1/8 the cost of Snowflake for equivalent analytics workloads"
+      },
+      "summary": "Oracle benchmark shows MySQL HeatWave is approximately one-eighth the cost of Snowflake for comparable analytics workloads, with no data movement or separate data warehouse required.",
+      "source_url": "https://www.oracle.com/mysql/heatwave/heatwave-vs-snowflake/"
+    },
+    {
+      "id": "cs-018",
+      "company": "Generic: MySQL HeatWave vs Amazon Aurora",
+      "industry": "Cross-industry (benchmark/reference)",
+      "region": "Any",
+      "use_case_type": "MySQL database + analytics performance benchmark",
+      "oci_services": ["MySQL HeatWave"],
+      "migration_from": "Amazon Aurora MySQL",
+      "quantified_outcomes": {
+        "performance": "HeatWave is 1,400x faster than Amazon Aurora for analytics queries"
+      },
+      "summary": "Oracle published benchmark demonstrating MySQL HeatWave performs analytics queries 1,400x faster than Amazon Aurora. Enables running analytics directly on MySQL without a separate data warehouse.",
+      "source_url": "https://www.oracle.com/mysql/heatwave-vs-amazon-aurora/"
+    },
+    {
+      "id": "cs-019",
+      "company": "Generic: OCI vs AWS Networking Cost Benchmark",
+      "industry": "Cross-industry (reference)",
+      "region": "Any",
+      "use_case_type": "Cloud cost optimization / Migration from AWS",
+      "oci_services": ["OCI VCN", "OCI Compute", "Object Storage"],
+      "migration_from": "AWS",
+      "quantified_outcomes": {
+        "networking_cost_savings": "80% savings on networking costs vs AWS",
+        "performance_improvement": "20% overall performance improvement",
+        "compute_price_performance": "3x improvement in compute price-performance vs AWS (STAC-A2 benchmarks)",
+        "bandwidth_cost_reduction": "25% reduction in outbound bandwidth costs",
+        "hpc_compute_cost_reduction": "44% decrease in HPC compute costs vs AWS",
+        "storage_cost": "82% less than AWS gp3 equivalent storage"
+      },
+      "summary": "Oracle published and independently validated benchmarks showing OCI delivers 80% networking savings, 3x compute price-performance improvement, 25% bandwidth cost reduction, and 82% lower storage costs vs AWS equivalents. STAC-A2 benchmarks validated for financial services Monte Carlo simulations.",
+      "source_url": "https://www.oracle.com/cloud/economics/"
+    },
+    {
+      "id": "cs-020",
+      "company": "Generic: OCI Database Migration Service",
+      "industry": "Cross-industry (reference)",
+      "region": "Any",
+      "use_case_type": "Database migration (on-premises to ADB)",
+      "oci_services": ["OCI Database Migration Service (DMS)", "Autonomous Database", "GoldenGate"],
+      "migration_from": "On-premises Oracle Database",
+      "quantified_outcomes": {
+        "runtime_cost_reduction": "Up to 90% reduction in migration runtime costs",
+        "automation": "ML-based automations for assessment and cutover planning"
+      },
+      "summary": "OCI Database Migration Service enables up to 90% runtime cost reduction vs manual migration approaches. Includes ML-based automations for assessment, schema conversion, and data transfer with minimal downtime.",
+      "source_url": "https://www.oracle.com/cloud/database-migration/"
+    }
+  ],
+  "use_case_index": {
+    "database_migration_to_adb": ["cs-007", "cs-015", "cs-020"],
+    "mysql_heatwave": ["cs-008", "cs-009", "cs-010", "cs-016", "cs-017", "cs-018"],
+    "oke_kubernetes_modernization": ["cs-001", "cs-003", "cs-004", "cs-006", "cs-013"],
+    "ai_ml_gpu": ["cs-002", "cs-011", "cs-014"],
+    "analytics_data_platform": ["cs-005", "cs-012"],
+    "cost_optimization_vs_aws": ["cs-001", "cs-003", "cs-008", "cs-010", "cs-011", "cs-016", "cs-017", "cs-018", "cs-019"],
+    "egovernment_public_sector": ["cs-013"]
+  }
+}

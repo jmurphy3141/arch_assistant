@@ -18,6 +18,7 @@ _ROOT = _HERE.parents[1]
 _CONFIG = _HERE / "config.yaml"
 _MAIN_CONFIG = _ROOT / "config.yaml"
 _SYSTEM_PROMPT = _HERE / "system_prompt.md"
+_CASE_STUDIES = _ROOT / "agent" / "standards" / "oracle_customer_case_studies.json"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -32,6 +33,31 @@ def _first_present(*values: Any, default: Any = None) -> Any:
         if value is not None and value != "":
             return value
     return default
+
+
+def _format_case_studies(path: Path) -> str:
+    if not path.exists():
+        return ""
+    data = _json_mod.loads(path.read_text(encoding="utf-8"))
+    studies = data.get("case_studies", [])
+    lines = [
+        "\n\n## Oracle Customer Case Study Reference",
+        "Use these for relevance scoring and wow-moment evidence. Metrics are as published by Oracle.\n",
+        "| Company | Industry | Use Case | Key Outcome |",
+        "|---------|----------|----------|-------------|",
+    ]
+    for s in studies:
+        outcomes = s.get("quantified_outcomes", {})
+        key = (
+            outcomes.get("cost_savings_percent")
+            or outcomes.get("cost_savings_annual_usd")
+            or outcomes.get("performance")
+            or "—"
+        )
+        if isinstance(key, str) and len(key) > 60:
+            key = key[:57] + "..."
+        lines.append(f"| {s.get('company','?')} | {s.get('industry','?')} | {s.get('use_case_type','?')} | {key} |")
+    return "\n".join(lines)
 
 
 def _extract_json(text: str) -> str:
@@ -57,7 +83,7 @@ _main_config = _load_yaml(_MAIN_CONFIG)
 _agent_llm = _agent_config.get("llm") or {}
 _main_inference = _main_config.get("inference") or {}
 _model_id = str(_first_present(_agent_llm.get("model_id"), _main_inference.get("model_id"), default=""))
-_system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8")
+_system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8") + _format_case_studies(_CASE_STUDIES)
 
 
 card = AgentCard(
