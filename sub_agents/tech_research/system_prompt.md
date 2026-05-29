@@ -26,12 +26,15 @@ precedence over defaults.
 
 ## OCI Service Reference
 
-Compute shapes (use exactly):
-  E5.Flex (AMD, general-purpose default) — OCPU: B97384, Memory: B97385, $0.03/OCPU-hr
-  A1.Flex (Ampere/ARM)                  — OCPU: B93297, Memory: B93298, $0.01/OCPU-hr
-  X9 Standard (Intel)                   — OCPU: B94176, Memory: B94177, $0.04/OCPU-hr
-  BM.GPU4.8 / BM.GPU.A10               — GPU shapes (confirm before recommending)
-  E6.Flex (AMD, next-gen)               — OCPU: B111129, Memory: B111130, $0.03/OCPU-hr
+Compute shapes (use exactly — prices come from live API, not this file):
+  E5.Flex (AMD Genoa, default)      — OCPU: B97384, Memory: B97385  — up to 64 OCPU, 1,024 GB RAM
+  E6.Flex (AMD Turin, latest-gen)   — OCPU: B111129, Memory: B111130 — up to 126 OCPU, 1,454 GB RAM; 2× E5 perf
+  E4.Flex (AMD Milan, legacy)       — OCPU: B93113, Memory: B93114   — only when explicitly requested
+  A1.Flex (Ampere Altra)            — OCPU: B93297, Memory: B93298   — up to 80 OCPU, 512 GB RAM; ARM workloads
+  VM.Standard3.Flex (Intel)         — OCPU: B94176, Memory: B94177   — up to 32 OCPU; Intel-compat only
+  BM.GPU4.8 (8× A100 SXM4)         — 64 OCPU, 2,048 GB RAM — explicit budget confirmation required
+  BM.GPU.A10.4 (4× A10, 24 GB ea)  — GPU shapes — explicit budget confirmation required
+  BM.GPU.H100.8 (8× H100 SXM5)     — highest-cost GPU — explicit budget confirmation required
 
 OCI Kubernetes Engine (OKE): free control plane, charge only worker node compute.
 Autonomous Database: ECPU-based pricing (B99060/hr), plus storage.

@@ -1,0 +1,817 @@
+{
+  "_meta": {
+    "description": "Canonical OCI Terraform provider resource type names, required arguments, and commonly misnamed arguments. Use this to prevent LLM hallucination of incorrect resource types or argument names.",
+    "provider": "oracle/oci",
+    "registry": "https://registry.terraform.io/providers/oracle/oci/latest/docs",
+    "source": "https://github.com/oracle/terraform-provider-oci/tree/master/website/docs/r",
+    "generated": "2026-05-29",
+    "note": "All resources also accept defined_tags, freeform_tags, and display_name (optional) unless noted. compartment_id is required on almost every resource."
+  },
+
+  "networking": {
+    "vcn": {
+      "resource_type": "oci_core_vcn",
+      "required": ["compartment_id"],
+      "commonly_used_optional": ["cidr_blocks", "display_name", "dns_label", "is_ipv6enabled"],
+      "common_mistakes": [
+        "Using 'cidr_block' (singular, deprecated) instead of 'cidr_blocks' (list)",
+        "Setting both cidr_block and cidr_blocks — rejected by API",
+        "Using 'name' instead of 'display_name'",
+        "Omitting compartment_id"
+      ],
+      "notes": "cidr_block is deprecated; use cidr_blocks = [\"10.0.0.0/16\"]. dns_label must be alphanumeric starting with a letter, max 15 chars."
+    },
+    "subnet": {
+      "resource_type": "oci_core_subnet",
+      "required": ["compartment_id", "vcn_id"],
+      "commonly_used_optional": ["cidr_block", "availability_domain", "display_name", "dns_label", "route_table_id", "security_list_ids", "dhcp_options_id", "prohibit_public_ip_on_vnic"],
+      "common_mistakes": [
+        "Forgetting vcn_id",
+        "Using 'name' instead of 'display_name'",
+        "Using 'subnet_cidr' instead of 'cidr_block'",
+        "Confusing 'prohibit_public_ip_on_vnic' with a non-existent 'private_subnet' flag",
+        "Omitting availability_domain for AD-specific subnets (it is optional for regional subnets)"
+      ],
+      "notes": "Subnets are regional by default (omit availability_domain). Set prohibit_public_ip_on_vnic = true for private subnets."
+    },
+    "internet_gateway": {
+      "resource_type": "oci_core_internet_gateway",
+      "required": ["compartment_id", "vcn_id"],
+      "commonly_used_optional": ["enabled", "display_name", "route_table_id"],
+      "common_mistakes": [
+        "Using 'oci_core_igw' — does not exist, correct is oci_core_internet_gateway",
+        "Forgetting 'enabled = true' (defaults to true but sometimes explicitly set)",
+        "Using 'gateway_type' — not a valid argument"
+      ]
+    },
+    "nat_gateway": {
+      "resource_type": "oci_core_nat_gateway",
+      "required": ["compartment_id", "vcn_id"],
+      "commonly_used_optional": ["display_name", "block_traffic", "public_ip_id", "route_table_id"],
+      "common_mistakes": [
+        "Using 'oci_core_nat' — does not exist",
+        "Using 'nat_ip' instead of 'public_ip_id'",
+        "Confusing 'block_traffic' (blocks NAT, default false) with an enable flag"
+      ]
+    },
+    "service_gateway": {
+      "resource_type": "oci_core_service_gateway",
+      "required": ["compartment_id", "vcn_id", "services"],
+      "services_block": {
+        "required": ["service_id"],
+        "note": "service_id is the OCID of the OCI service (use data.oci_core_services to look up)"
+      },
+      "commonly_used_optional": ["display_name", "route_table_id"],
+      "common_mistakes": [
+        "Using 'oci_core_sgw' — does not exist",
+        "Omitting the 'services' block entirely",
+        "Using 'service_cidr_block' instead of 'service_id' inside the services block",
+        "Hardcoding service_id as a string instead of looking it up via data source"
+      ]
+    },
+    "drg": {
+      "resource_type": "oci_core_drg",
+      "required": ["compartment_id"],
+      "commonly_used_optional": ["display_name"],
+      "common_mistakes": [
+        "Trying to attach VCN directly inside the oci_core_drg resource — use oci_core_drg_attachment separately",
+        "Using 'oci_core_dynamic_routing_gateway' — does not exist"
+      ]
+    },
+    "drg_attachment": {
+      "resource_type": "oci_core_drg_attachment",
+      "required": ["drg_id"],
+      "commonly_used_optional": ["display_name", "drg_route_table_id", "network_details"],
+      "network_details_block": {
+        "required": ["type"],
+        "optional": ["id", "route_table_id", "vcn_route_type"],
+        "type_values": ["VCN", "IPSEC_TUNNEL", "VIRTUAL_CIRCUIT", "REMOTE_PEERING_CONNECTION", "LOOPBACK"]
+      },
+      "common_mistakes": [
+        "Using deprecated 'vcn_id' instead of network_details block",
+        "Using deprecated 'route_table_id' at top level instead of inside network_details",
+        "Omitting 'type' inside network_details block"
+      ]
+    },
+    "local_peering_gateway": {
+      "resource_type": "oci_core_local_peering_gateway",
+      "required": ["compartment_id", "vcn_id"],
+      "commonly_used_optional": ["display_name", "peer_id", "route_table_id"],
+      "common_mistakes": [
+        "Setting peer_id on BOTH gateways — only set it on one side",
+        "Using 'oci_core_lpg' — does not exist",
+        "Using 'peer_gateway_id' instead of 'peer_id'"
+      ]
+    },
+    "route_table": {
+      "resource_type": "oci_core_route_table",
+      "required": ["compartment_id", "vcn_id"],
+      "commonly_used_optional": ["display_name", "route_rules"],
+      "route_rules_block": {
+        "required": ["network_entity_id"],
+        "optional": ["destination", "destination_type", "description", "route_type"],
+        "destination_type_values": ["CIDR_BLOCK", "SERVICE_CIDR_BLOCK"],
+        "deprecated": ["cidr_block — use destination + destination_type instead"]
+      },
+      "common_mistakes": [
+        "Using deprecated 'cidr_block' inside route_rules instead of 'destination'",
+        "Omitting 'destination_type' when 'destination' is set",
+        "Using both 'cidr_block' and 'destination' in same rule — rejected",
+        "Using 'gateway_id' instead of 'network_entity_id'"
+      ]
+    },
+    "security_list": {
+      "resource_type": "oci_core_security_list",
+      "required": ["compartment_id", "vcn_id"],
+      "commonly_used_optional": ["display_name", "egress_security_rules", "ingress_security_rules"],
+      "egress_security_rules_block": {
+        "required": ["destination", "protocol"],
+        "optional": ["description", "destination_type", "stateless", "icmp_options", "tcp_options", "udp_options"]
+      },
+      "ingress_security_rules_block": {
+        "required": ["source", "protocol"],
+        "optional": ["description", "source_type", "stateless", "icmp_options", "tcp_options", "udp_options"]
+      },
+      "common_mistakes": [
+        "Using 'rules' instead of 'ingress_security_rules' / 'egress_security_rules'",
+        "Using 'port' instead of nested 'tcp_options' block",
+        "Missing 'protocol' (use '6' for TCP, '17' for UDP, '1' for ICMP, 'all' for all)",
+        "Using 'destination_port' instead of tcp_options.destination_port_range block"
+      ]
+    },
+    "network_security_group": {
+      "resource_type": "oci_core_network_security_group",
+      "required": ["compartment_id", "vcn_id"],
+      "commonly_used_optional": ["display_name"],
+      "common_mistakes": [
+        "Using 'oci_core_nsg' — does not exist",
+        "Trying to add rules inside the oci_core_network_security_group resource — use oci_core_network_security_group_security_rule separately"
+      ]
+    },
+    "network_security_group_security_rule": {
+      "resource_type": "oci_core_network_security_group_security_rule",
+      "required": ["network_security_group_id", "direction", "protocol"],
+      "direction_values": ["EGRESS", "INGRESS"],
+      "commonly_used_optional": ["description", "destination", "destination_type", "source", "source_type", "stateless", "tcp_options", "udp_options", "icmp_options"],
+      "common_mistakes": [
+        "Omitting 'direction'",
+        "Setting 'source' on EGRESS rule or 'destination' on INGRESS rule (use correct direction-matching field)",
+        "Using 'port' instead of nested tcp_options block",
+        "Using 'nsg_id' instead of 'network_security_group_id'",
+        "Using numeric string for destination_type instead of 'CIDR_BLOCK' / 'NETWORK_SECURITY_GROUP' / 'SERVICE_CIDR_BLOCK'"
+      ]
+    },
+    "dhcp_options": {
+      "resource_type": "oci_core_dhcp_options",
+      "required": ["compartment_id", "vcn_id", "options"],
+      "options_block": {
+        "required": ["type"],
+        "type_values": ["DomainNameServer", "SearchDomain"],
+        "conditional": "server_type required when type=DomainNameServer; search_domain_names required when type=SearchDomain"
+      },
+      "common_mistakes": [
+        "Using 'oci_core_dhcp' — does not exist",
+        "Omitting required 'options' block",
+        "Using lowercase 'domainNameServer' instead of 'DomainNameServer'"
+      ]
+    }
+  },
+
+  "compute": {
+    "instance": {
+      "resource_type": "oci_core_instance",
+      "required": ["availability_domain", "compartment_id", "shape"],
+      "commonly_used_optional": ["display_name", "source_details", "create_vnic_details", "shape_config", "metadata"],
+      "source_details_block": {
+        "required": ["source_type", "source_id"],
+        "source_type_values": ["image", "bootVolume"],
+        "optional": ["boot_volume_size_in_gbs"]
+      },
+      "create_vnic_details_block": {
+        "optional": ["subnet_id", "assign_public_ip", "private_ip", "hostname_label", "nsg_ids", "display_name"]
+      },
+      "shape_config_block": {
+        "optional": ["ocpus", "memory_in_gbs"],
+        "note": "Required for flexible shapes like VM.Standard.E4.Flex, VM.Standard3.Flex"
+      },
+      "common_mistakes": [
+        "Using 'image_id' at top level instead of inside source_details",
+        "Using 'subnet_id' at top level instead of inside create_vnic_details",
+        "Using 'public_ip' instead of create_vnic_details.assign_public_ip",
+        "Forgetting shape_config for flexible shapes (ocpus and memory_in_gbs required for flex shapes)",
+        "Using 'user_data' at top level instead of metadata.user_data",
+        "Using 'ssh_authorized_keys' at top level instead of metadata.ssh_authorized_keys",
+        "Using 'os_type' — not a valid argument"
+      ]
+    },
+    "instance_configuration": {
+      "resource_type": "oci_core_instance_configuration",
+      "required": ["compartment_id"],
+      "commonly_used_optional": ["display_name", "instance_details", "instance_id", "source"],
+      "common_mistakes": [
+        "Using 'oci_core_launch_template' — does not exist, use oci_core_instance_configuration",
+        "Omitting 'source' (valid values: NONE, INSTANCE)"
+      ]
+    },
+    "instance_pool": {
+      "resource_type": "oci_core_instance_pool",
+      "required": ["compartment_id", "instance_configuration_id", "placement_configurations", "size"],
+      "commonly_used_optional": ["display_name", "load_balancers", "state"],
+      "common_mistakes": [
+        "Omitting 'size'",
+        "Omitting 'placement_configurations' block",
+        "Using 'min_size'/'max_size' — those belong in oci_autoscaling_auto_scaling_configuration, not here"
+      ]
+    },
+    "autoscaling_configuration": {
+      "resource_type": "oci_autoscaling_auto_scaling_configuration",
+      "required": ["auto_scaling_resources", "compartment_id", "policies"],
+      "auto_scaling_resources_block": {
+        "required": ["id", "type"],
+        "note": "type = 'instancePool'"
+      },
+      "common_mistakes": [
+        "Using 'oci_core_auto_scaling' — does not exist",
+        "Using 'resource_id' instead of nested auto_scaling_resources.id"
+      ]
+    }
+  },
+
+  "database": {
+    "autonomous_database": {
+      "resource_type": "oci_database_autonomous_database",
+      "required": ["compartment_id"],
+      "commonly_used_optional": ["admin_password", "db_name", "display_name", "db_workload", "cpu_core_count", "compute_count", "compute_model", "data_storage_size_in_tbs", "license_model", "subnet_id", "nsg_ids", "is_free_tier"],
+      "db_workload_values": ["OLTP", "DW", "AJD", "APEX"],
+      "compute_model_values": ["ECPU", "OCPU"],
+      "license_model_values": ["BRING_YOUR_OWN_LICENSE", "LICENSE_INCLUDED"],
+      "common_mistakes": [
+        "Using 'oci_database_adb' — does not exist",
+        "Using 'cpu_count' instead of 'cpu_core_count'",
+        "Using 'storage_in_tbs' instead of 'data_storage_size_in_tbs'",
+        "Using 'workload_type' instead of 'db_workload'",
+        "Setting both cpu_core_count and compute_count — use compute_count with ECPU model",
+        "Using 'ocpu_count' — not valid, use cpu_core_count for OCPU model"
+      ]
+    },
+    "db_system": {
+      "resource_type": "oci_database_db_system",
+      "required": ["availability_domain", "compartment_id", "db_home", "hostname", "shape", "ssh_public_keys", "subnet_id"],
+      "conditional_required": {
+        "database_edition": "Required when source is DATABASE, DB_BACKUP, or NONE",
+        "primary_db_system_id": "Required when source is DATAGUARD",
+        "source_db_system_id": "Required when source is DB_SYSTEM"
+      },
+      "db_home_block": {
+        "required": ["database"],
+        "database_block_required": ["admin_password", "db_name"]
+      },
+      "common_mistakes": [
+        "Using 'oci_database_db_instance' — does not exist",
+        "Omitting 'db_home' block entirely",
+        "Using 'db_version' at top level instead of inside db_home",
+        "Using 'password' instead of 'admin_password' inside db_home.database",
+        "Using 'name' instead of 'hostname'",
+        "Using 'ocpus' at top level instead of 'cpu_core_count'"
+      ]
+    },
+    "mysql_db_system": {
+      "resource_type": "oci_mysql_mysql_db_system",
+      "required": ["availability_domain", "compartment_id", "shape_name", "subnet_id"],
+      "commonly_used_optional": ["admin_password", "admin_username", "display_name", "data_storage_size_in_gb", "is_highly_available", "hostname_label", "mysql_version", "nsg_ids"],
+      "common_mistakes": [
+        "Using 'oci_mysql_db_system' — the correct name is oci_mysql_mysql_db_system",
+        "Using 'shape' instead of 'shape_name'",
+        "Using 'db_size_in_gb' instead of 'data_storage_size_in_gb'",
+        "Using 'high_availability' instead of 'is_highly_available'",
+        "Using 'username' instead of 'admin_username'"
+      ]
+    }
+  },
+
+  "containers": {
+    "oke_cluster": {
+      "resource_type": "oci_containerengine_cluster",
+      "required": ["compartment_id", "kubernetes_version", "name", "vcn_id"],
+      "commonly_used_optional": ["type", "endpoint_config", "options", "kms_key_id", "cluster_pod_network_options"],
+      "type_values": ["BASIC_CLUSTER", "ENHANCED_CLUSTER"],
+      "endpoint_config_block": {
+        "optional": ["is_public_ip_enabled", "subnet_id", "nsg_ids"]
+      },
+      "options_block": {
+        "optional": ["service_lb_subnet_ids", "kubernetes_network_config", "add_ons", "admission_controller_options"]
+      },
+      "common_mistakes": [
+        "Using 'oci_oke_cluster' — does not exist, correct is oci_containerengine_cluster",
+        "Using 'cluster_name' instead of 'name'",
+        "Using 'k8s_version' instead of 'kubernetes_version'",
+        "Forgetting 'vcn_id'",
+        "Putting node pool config inside the cluster resource — use oci_containerengine_node_pool"
+      ]
+    },
+    "oke_node_pool": {
+      "resource_type": "oci_containerengine_node_pool",
+      "required": ["cluster_id", "compartment_id", "name", "node_shape"],
+      "commonly_used_optional": ["kubernetes_version", "node_config_details", "node_source_details", "ssh_public_key", "node_shape_config"],
+      "node_config_details_block": {
+        "required": ["placement_configs", "size"],
+        "placement_configs_required": ["availability_domain", "subnet_id"]
+      },
+      "node_source_details_block": {
+        "required": ["image_id", "source_type"],
+        "source_type_values": ["IMAGE"]
+      },
+      "common_mistakes": [
+        "Using 'oci_oke_node_pool' — does not exist, correct is oci_containerengine_node_pool",
+        "Using deprecated 'quantity_per_subnet' and 'subnet_ids' instead of node_config_details",
+        "Using deprecated 'node_image_name' instead of node_source_details",
+        "Using 'count' instead of 'size' inside node_config_details",
+        "Using 'node_count' at top level — not valid",
+        "Omitting placement_configs inside node_config_details"
+      ]
+    }
+  },
+
+  "load_balancer": {
+    "load_balancer": {
+      "resource_type": "oci_load_balancer_load_balancer",
+      "required": ["compartment_id", "display_name", "shape", "subnet_ids"],
+      "commonly_used_optional": ["is_private", "ip_mode", "network_security_group_ids", "shape_details", "reserved_ips"],
+      "shape_values": ["flexible", "100Mbps", "400Mbps", "8000Mbps"],
+      "shape_details_block": {
+        "note": "Required when shape = 'flexible'",
+        "required": ["maximum_bandwidth_in_mbps", "minimum_bandwidth_in_mbps"]
+      },
+      "common_mistakes": [
+        "Using 'oci_core_load_balancer' — does not exist",
+        "Using 'subnet_id' (singular) instead of 'subnet_ids' (list)",
+        "Using 'nsg_ids' instead of 'network_security_group_ids'",
+        "Using shape = 'flexible' without providing shape_details block",
+        "Using 'type' instead of 'shape'",
+        "Using 'is_public' instead of 'is_private' (logic is inverted)"
+      ]
+    },
+    "lb_backend_set": {
+      "resource_type": "oci_load_balancer_backend_set",
+      "required": ["health_checker", "load_balancer_id", "name", "policy"],
+      "health_checker_block": {
+        "required": ["protocol"],
+        "protocol_values": ["HTTP", "TCP"],
+        "optional": ["interval_ms", "port", "response_body_regex", "retries", "return_code", "timeout_in_millis", "url_path"]
+      },
+      "policy_values": ["ROUND_ROBIN", "LEAST_CONNECTIONS", "IP_HASH"],
+      "common_mistakes": [
+        "Using 'load_balancer_backend_set' — missing 'oci_' prefix",
+        "Omitting health_checker block",
+        "Using 'lb_id' instead of 'load_balancer_id'",
+        "Omitting 'policy'"
+      ]
+    },
+    "lb_backend": {
+      "resource_type": "oci_load_balancer_backend",
+      "required": ["backendset_name", "ip_address", "load_balancer_id", "port"],
+      "common_mistakes": [
+        "Using 'backend_set_name' instead of 'backendset_name' (no underscore between backend and set)"
+      ]
+    },
+    "lb_listener": {
+      "resource_type": "oci_load_balancer_listener",
+      "required": ["default_backend_set_name", "load_balancer_id", "name", "port", "protocol"],
+      "protocol_values": ["HTTP", "HTTP2", "TCP", "HTTPS"],
+      "commonly_used_optional": ["ssl_configuration", "connection_configuration", "routing_policy_name", "hostname_names"],
+      "common_mistakes": [
+        "Using 'backend_set_name' instead of 'default_backend_set_name'",
+        "Using deprecated 'path_route_set_name' instead of 'routing_policy_name'",
+        "Using 'lb_id' instead of 'load_balancer_id'"
+      ]
+    },
+    "network_load_balancer": {
+      "resource_type": "oci_network_load_balancer_network_load_balancer",
+      "required": ["compartment_id", "display_name", "subnet_id"],
+      "commonly_used_optional": ["is_private", "is_preserve_source_destination", "network_security_group_ids", "nlb_ip_version", "reserved_ips"],
+      "common_mistakes": [
+        "Using 'oci_load_balancer_network_load_balancer' — wrong, correct is oci_network_load_balancer_network_load_balancer",
+        "Using 'subnet_ids' (plural) instead of 'subnet_id' (singular) — NLB takes a single subnet",
+        "Using 'nsg_ids' instead of 'network_security_group_ids'",
+        "Confusing with oci_load_balancer_load_balancer shape/subnet_ids differences"
+      ]
+    },
+    "nlb_backend_set": {
+      "resource_type": "oci_network_load_balancer_backend_set",
+      "required": ["health_checker", "name", "network_load_balancer_id", "policy"],
+      "common_mistakes": [
+        "Using 'load_balancer_id' instead of 'network_load_balancer_id'"
+      ]
+    },
+    "nlb_listener": {
+      "resource_type": "oci_network_load_balancer_listener",
+      "required": ["default_backend_set_name", "name", "network_load_balancer_id", "port", "protocol"],
+      "common_mistakes": [
+        "Using 'load_balancer_id' instead of 'network_load_balancer_id'"
+      ]
+    }
+  },
+
+  "object_storage": {
+    "bucket": {
+      "resource_type": "oci_objectstorage_bucket",
+      "required": ["compartment_id", "name", "namespace"],
+      "commonly_used_optional": ["access_type", "storage_tier", "kms_key_id", "object_events_enabled", "versioning", "auto_tiering"],
+      "access_type_values": ["NoPublicAccess", "ObjectRead", "ObjectReadWithoutList"],
+      "storage_tier_values": ["Standard", "Archive"],
+      "versioning_values": ["Enabled", "Disabled", "Suspended"],
+      "common_mistakes": [
+        "Using 'oci_object_storage_bucket' — does not exist, correct is oci_objectstorage_bucket",
+        "Omitting 'namespace' — obtain via data.oci_objectstorage_namespace",
+        "Using 'bucket_name' instead of 'name'",
+        "Using 'region' instead of the correct namespace-based addressing"
+      ]
+    },
+    "object": {
+      "resource_type": "oci_objectstorage_object",
+      "required": ["bucket", "namespace", "object"],
+      "common_mistakes": [
+        "Using 'bucket_name' instead of 'bucket'",
+        "Using 'object_name' instead of 'object'",
+        "Using 'key' instead of 'object'"
+      ]
+    }
+  },
+
+  "block_volume": {
+    "volume": {
+      "resource_type": "oci_core_volume",
+      "required": ["compartment_id"],
+      "commonly_used_optional": ["availability_domain", "display_name", "size_in_gbs", "vpus_per_gb", "kms_key_id", "source_details"],
+      "vpus_per_gb_values": {
+        "0": "Lower Cost",
+        "10": "Balanced",
+        "20": "Higher Performance",
+        "30-120": "Ultra High Performance"
+      },
+      "common_mistakes": [
+        "Using deprecated 'size_in_mbs' instead of 'size_in_gbs'",
+        "Using 'performance_tier' instead of 'vpus_per_gb'",
+        "Using 'volume_type' — not a valid argument"
+      ]
+    },
+    "volume_attachment": {
+      "resource_type": "oci_core_volume_attachment",
+      "required": ["attachment_type", "instance_id", "volume_id"],
+      "attachment_type_values": ["iscsi", "paravirtualized"],
+      "common_mistakes": [
+        "Using 'type' instead of 'attachment_type'",
+        "Using 'paravirtual' instead of 'paravirtualized'",
+        "Using 'oci_core_attach_volume' — does not exist"
+      ]
+    },
+    "boot_volume": {
+      "resource_type": "oci_core_boot_volume",
+      "required": ["availability_domain", "compartment_id", "source_details"],
+      "source_details_block": {
+        "required": ["id", "type"],
+        "type_values": ["bootVolume"]
+      },
+      "common_mistakes": [
+        "Using 'oci_core_boot_volume_backup' instead of 'oci_core_boot_volume' to create boot volumes"
+      ]
+    }
+  },
+
+  "identity_iam": {
+    "compartment": {
+      "resource_type": "oci_identity_compartment",
+      "required": ["compartment_id", "description", "name"],
+      "commonly_used_optional": ["enable_delete"],
+      "common_mistakes": [
+        "Using 'parent_compartment_id' instead of 'compartment_id'",
+        "Omitting 'description'",
+        "Using 'enable_delete = true' without understanding it prevents Terraform destroy from leaving an orphaned compartment"
+      ]
+    },
+    "policy": {
+      "resource_type": "oci_identity_policy",
+      "required": ["compartment_id", "description", "name", "statements"],
+      "commonly_used_optional": ["version_date"],
+      "common_mistakes": [
+        "Using 'rules' instead of 'statements'",
+        "Using 'statement' (singular) instead of 'statements' (list)",
+        "Omitting 'description'"
+      ]
+    },
+    "group": {
+      "resource_type": "oci_identity_group",
+      "required": ["compartment_id", "description", "name"],
+      "notes": "compartment_id must be the tenancy OCID for groups (they are tenancy-level resources)",
+      "common_mistakes": [
+        "Using a non-tenancy compartment_id — groups are tenancy-level",
+        "Omitting 'description'"
+      ]
+    },
+    "dynamic_group": {
+      "resource_type": "oci_identity_dynamic_group",
+      "required": ["compartment_id", "description", "matching_rule", "name"],
+      "notes": "compartment_id must be the tenancy OCID",
+      "common_mistakes": [
+        "Using 'rule' instead of 'matching_rule'",
+        "Using 'match_rule' instead of 'matching_rule'",
+        "Using 'filter' instead of 'matching_rule'",
+        "Omitting 'description'"
+      ]
+    },
+    "user": {
+      "resource_type": "oci_identity_user",
+      "required": ["compartment_id", "description", "name"],
+      "commonly_used_optional": ["email"],
+      "notes": "compartment_id must be the tenancy OCID",
+      "common_mistakes": [
+        "Omitting 'description'",
+        "Using non-tenancy compartment_id"
+      ]
+    },
+    "user_group_membership": {
+      "resource_type": "oci_identity_user_group_membership",
+      "required": ["group_id", "user_id"],
+      "common_mistakes": [
+        "Using 'oci_identity_group_membership' — does not exist"
+      ]
+    }
+  },
+
+  "security": {
+    "vault": {
+      "resource_type": "oci_kms_vault",
+      "required": ["compartment_id", "display_name", "vault_type"],
+      "vault_type_values": ["DEFAULT", "VIRTUAL_PRIVATE", "EXTERNAL"],
+      "common_mistakes": [
+        "Using 'oci_vault_vault' — does not exist, correct is oci_kms_vault",
+        "Using 'type' instead of 'vault_type'",
+        "Using 'name' instead of 'display_name'"
+      ]
+    },
+    "kms_key": {
+      "resource_type": "oci_kms_key",
+      "required": ["compartment_id", "display_name", "key_shape", "management_endpoint"],
+      "key_shape_block": {
+        "required": ["algorithm", "length"],
+        "algorithm_values": ["AES", "RSA", "ECDSA"],
+        "common_lengths": {"AES": [16, 24, 32], "RSA": [256, 384, 512]},
+        "optional": ["curve_id"]
+      },
+      "protection_mode_values": ["HSM", "SOFTWARE", "EXTERNAL"],
+      "common_mistakes": [
+        "Using 'oci_vault_key' — does not exist, correct is oci_kms_key",
+        "Omitting 'management_endpoint' (obtain from oci_kms_vault.management_endpoint)",
+        "Using 'key_type' instead of 'key_shape.algorithm'",
+        "Using 'key_length' instead of 'key_shape.length'",
+        "Using 'name' instead of 'display_name'"
+      ]
+    },
+    "bastion": {
+      "resource_type": "oci_bastion_bastion",
+      "required": ["bastion_type", "compartment_id", "target_subnet_id"],
+      "bastion_type_values": ["STANDARD"],
+      "commonly_used_optional": ["name", "client_cidr_block_allow_list", "max_session_ttl_in_seconds", "dns_proxy_status"],
+      "common_mistakes": [
+        "Using 'subnet_id' instead of 'target_subnet_id'",
+        "Using 'type' instead of 'bastion_type'",
+        "Using 'oci_core_bastion' — does not exist, correct is oci_bastion_bastion"
+      ]
+    },
+    "bastion_session": {
+      "resource_type": "oci_bastion_session",
+      "required": ["bastion_id", "key_details", "target_resource_details"],
+      "common_mistakes": [
+        "Using 'oci_bastion_bastion_session' — does not exist"
+      ]
+    }
+  },
+
+  "waf": {
+    "web_app_firewall_policy": {
+      "resource_type": "oci_waf_web_app_firewall_policy",
+      "required": ["compartment_id"],
+      "commonly_used_optional": ["display_name", "actions", "request_access_control", "request_protection", "request_rate_limiting", "response_access_control", "response_protection"],
+      "common_mistakes": [
+        "Using 'oci_waas_policy' — that is the legacy WAAS service, not WAF",
+        "Using 'oci_waf_policy' — does not exist, correct is oci_waf_web_app_firewall_policy"
+      ]
+    },
+    "web_app_firewall": {
+      "resource_type": "oci_waf_web_app_firewall",
+      "required": ["backend_type", "compartment_id", "load_balancer_id", "web_app_firewall_policy_id"],
+      "backend_type_values": ["LOAD_BALANCER"],
+      "common_mistakes": [
+        "Using 'oci_waf_firewall' — does not exist",
+        "Using 'policy_id' instead of 'web_app_firewall_policy_id'",
+        "Using 'lb_id' instead of 'load_balancer_id'",
+        "Omitting 'backend_type'"
+      ]
+    }
+  },
+
+  "monitoring_logging": {
+    "alarm": {
+      "resource_type": "oci_monitoring_alarm",
+      "required": ["compartment_id", "destinations", "display_name", "is_enabled", "metric_compartment_id", "namespace", "query", "severity"],
+      "severity_values": ["CRITICAL", "ERROR", "WARNING", "INFO"],
+      "commonly_used_optional": ["body", "message_format", "pending_duration", "repeat_notification_duration", "resolution"],
+      "message_format_values": ["RAW", "PRETTY_JSON", "ONS_OPTIMIZED"],
+      "common_mistakes": [
+        "Using 'oci_monitoring_rule' — does not exist",
+        "Omitting 'severity'",
+        "Omitting 'is_enabled'",
+        "Using 'topic_id' directly instead of 'destinations' list (destinations takes ONS topic OCIDs)",
+        "Using 'mql_query' instead of 'query'",
+        "Omitting 'metric_compartment_id'"
+      ]
+    },
+    "log_group": {
+      "resource_type": "oci_logging_log_group",
+      "required": ["compartment_id", "display_name"],
+      "commonly_used_optional": ["description"],
+      "common_mistakes": [
+        "Using 'oci_log_group' — does not exist",
+        "Using 'name' instead of 'display_name'"
+      ]
+    },
+    "log": {
+      "resource_type": "oci_logging_log",
+      "required": ["display_name", "log_group_id", "log_type"],
+      "log_type_values": ["CUSTOM", "SERVICE"],
+      "commonly_used_optional": ["configuration", "is_enabled", "retention_duration"],
+      "configuration_block": {
+        "required": ["source"],
+        "source_block_required": ["category", "resource", "service", "source_type"],
+        "source_type_values": ["OCISERVICE"]
+      },
+      "common_mistakes": [
+        "Using 'name' instead of 'display_name'",
+        "Using 'log_group' instead of 'log_group_id'",
+        "Omitting the configuration.source block for SERVICE logs",
+        "Using 'type' instead of 'log_type'"
+      ]
+    }
+  },
+
+  "notifications": {
+    "notification_topic": {
+      "resource_type": "oci_ons_notification_topic",
+      "required": ["compartment_id", "name"],
+      "commonly_used_optional": ["description"],
+      "common_mistakes": [
+        "Using 'oci_ons_topic' — does not exist",
+        "Using 'display_name' instead of 'name'",
+        "Using 'topic_name' instead of 'name'"
+      ]
+    },
+    "subscription": {
+      "resource_type": "oci_ons_subscription",
+      "required": ["compartment_id", "endpoint", "protocol", "topic_id"],
+      "protocol_values": ["EMAIL", "SMS", "HTTPS", "SLACK", "PAGERDUTY", "ORACLE_FUNCTIONS", "CUSTOM_HTTPS"],
+      "common_mistakes": [
+        "Using 'oci_ons_topic_subscription' — does not exist",
+        "Using 'url' instead of 'endpoint'",
+        "Using 'email' instead of 'endpoint'",
+        "Omitting 'protocol'"
+      ]
+    }
+  },
+
+  "events": {
+    "events_rule": {
+      "resource_type": "oci_events_rule",
+      "required": ["actions", "compartment_id", "condition", "display_name", "is_enabled"],
+      "actions_block": {
+        "required": ["actions"],
+        "actions_inner_required": ["action_type", "is_enabled"],
+        "action_type_values": ["ONS", "OSS", "FAAS"],
+        "conditional": {
+          "function_id": "Required when action_type=FAAS",
+          "stream_id": "Required when action_type=OSS",
+          "topic_id": "Applicable when action_type=ONS"
+        }
+      },
+      "common_mistakes": [
+        "Using 'oci_cloud_events_rule' — does not exist",
+        "Omitting 'is_enabled'",
+        "Using 'filter' instead of 'condition'",
+        "Forgetting the outer 'actions' block wrapper around the inner action list"
+      ]
+    }
+  },
+
+  "dns": {
+    "dns_zone": {
+      "resource_type": "oci_dns_zone",
+      "required": ["compartment_id", "name", "zone_type"],
+      "zone_type_values": ["PRIMARY", "SECONDARY"],
+      "commonly_used_optional": ["scope", "view_id", "external_masters"],
+      "scope_values": ["GLOBAL", "PRIVATE"],
+      "common_mistakes": [
+        "Using 'oci_core_dns_zone' — does not exist",
+        "Omitting 'zone_type'",
+        "Using 'dns_zone_type' instead of 'zone_type'",
+        "Forgetting to set scope='PRIVATE' and view_id for private DNS zones"
+      ]
+    },
+    "dns_record": {
+      "resource_type": "oci_dns_rrset",
+      "required": ["domain", "rtype", "zone_name_or_id"],
+      "commonly_used_optional": ["items", "scope", "view_id"],
+      "items_block": {
+        "required": ["domain", "rdata", "rtype", "ttl"]
+      },
+      "common_mistakes": [
+        "Using 'oci_dns_record' — does not exist, correct is oci_dns_rrset",
+        "Using 'zone_id' instead of 'zone_name_or_id'",
+        "Using 'record_type' instead of 'rtype'",
+        "Using 'value' instead of 'rdata'"
+      ]
+    }
+  },
+
+  "api_gateway": {
+    "gateway": {
+      "resource_type": "oci_apigateway_gateway",
+      "required": ["compartment_id", "endpoint_type", "subnet_id"],
+      "endpoint_type_values": ["PUBLIC", "PRIVATE"],
+      "commonly_used_optional": ["display_name", "certificate_id", "response_cache_details", "network_security_group_ids"],
+      "common_mistakes": [
+        "Using 'oci_api_gateway' — does not exist",
+        "Using 'type' instead of 'endpoint_type'"
+      ]
+    },
+    "deployment": {
+      "resource_type": "oci_apigateway_deployment",
+      "required": ["compartment_id", "gateway_id", "path_prefix", "specification"],
+      "common_mistakes": [
+        "Using 'oci_apigateway_api_deployment' — does not exist",
+        "Using 'path' instead of 'path_prefix'"
+      ]
+    }
+  },
+
+  "functions": {
+    "application": {
+      "resource_type": "oci_functions_application",
+      "required": ["compartment_id", "display_name", "subnet_ids"],
+      "commonly_used_optional": ["config", "defined_tags", "freeform_tags", "image_policy_config", "network_security_group_ids", "shape"],
+      "common_mistakes": [
+        "Using 'oci_function_application' — does not exist",
+        "Using 'subnet_id' (singular) instead of 'subnet_ids' (list)"
+      ]
+    },
+    "function": {
+      "resource_type": "oci_functions_function",
+      "required": ["application_id", "display_name", "image", "memory_in_mbs"],
+      "commonly_used_optional": ["config", "timeout_in_seconds", "provisioned_concurrency_config", "trace_config"],
+      "common_mistakes": [
+        "Using 'oci_function_function' — does not exist",
+        "Using 'memory' instead of 'memory_in_mbs'",
+        "Using 'docker_image' instead of 'image'"
+      ]
+    }
+  },
+
+  "streaming": {
+    "stream": {
+      "resource_type": "oci_streaming_stream",
+      "required": ["compartment_id", "name", "partitions"],
+      "commonly_used_optional": ["retention_in_hours", "stream_pool_id"],
+      "common_mistakes": [
+        "Using 'oci_stream' — does not exist",
+        "Using 'partition_count' instead of 'partitions'"
+      ]
+    }
+  },
+
+  "data_sources_frequently_needed": {
+    "availability_domains": {
+      "data_type": "oci_identity_availability_domains",
+      "required": ["compartment_id"],
+      "usage": "data.oci_identity_availability_domains.ads.availability_domains[0].name"
+    },
+    "object_storage_namespace": {
+      "data_type": "oci_objectstorage_namespace",
+      "required": [],
+      "usage": "data.oci_objectstorage_namespace.ns.namespace"
+    },
+    "oci_services": {
+      "data_type": "oci_core_services",
+      "required": [],
+      "usage": "Used to look up service_id for oci_core_service_gateway. Filter by name containing 'All' for all services or 'Object Storage' for OSN."
+    },
+    "images": {
+      "data_type": "oci_core_images",
+      "required": ["compartment_id"],
+      "commonly_used_filters": ["operating_system", "operating_system_version", "shape"],
+      "usage": "data.oci_core_images.images.images[0].id"
+    },
+    "tenancy": {
+      "data_type": "oci_identity_tenancy",
+      "required": ["tenancy_id"],
+      "usage": "data.oci_identity_tenancy.tenancy.id — use var.tenancy_ocid typically"
+    }
+  }
+}

@@ -18,6 +18,7 @@ _ROOT = _HERE.parents[1]
 _CONFIG = _HERE / "config.yaml"
 _MAIN_CONFIG = _ROOT / "config.yaml"
 _SYSTEM_PROMPT = _HERE / "system_prompt.md"
+_TF_RESOURCES = _ROOT / "agent" / "standards" / "oci_terraform_resources.json"
 _FILE_KEYS = ("main_tf", "variables_tf", "outputs_tf", "readme_md")
 
 
@@ -33,6 +34,30 @@ def _first_present(*values: Any, default: Any = None) -> Any:
         if value is not None and value != "":
             return value
     return default
+
+
+def _format_tf_resource_reference(path: Path) -> str:
+    if not path.exists():
+        return ""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    lines = [
+        "\n\n## OCI Terraform Resource Reference",
+        "Use ONLY these exact resource type names. Never invent abbreviated forms.\n",
+        "| Resource | Type | Required Args | Common Mistakes |",
+        "|----------|------|---------------|-----------------|",
+    ]
+    for category, resources in data.items():
+        if category.startswith("_"):
+            continue
+        if not isinstance(resources, dict):
+            continue
+        for _name, r in resources.items():
+            if not isinstance(r, dict) or "resource_type" not in r:
+                continue
+            req = ", ".join(r.get("required", []))
+            mistakes = "; ".join(r.get("common_mistakes", [])[:2])
+            lines.append(f"| {r['resource_type']} | {category} | {req} | {mistakes} |")
+    return "\n".join(lines)
 
 
 def _strip_fences(text: str) -> str:
@@ -77,7 +102,7 @@ _main_config = _load_yaml(_MAIN_CONFIG)
 _agent_llm = _agent_config.get("llm") or {}
 _main_inference = _main_config.get("inference") or {}
 _model_id = str(_first_present(_agent_llm.get("model_id"), _main_inference.get("model_id"), default=""))
-_system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8")
+_system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8") + _format_tf_resource_reference(_TF_RESOURCES)
 
 
 card = AgentCard(
