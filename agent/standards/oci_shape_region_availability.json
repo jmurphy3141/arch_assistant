@@ -1,0 +1,303 @@
+{
+  "_metadata": {
+    "description": "OCI compute shape availability by region, with AD counts per region",
+    "source": "Oracle Cloud Infrastructure documentation and announcements",
+    "last_updated": "2026-05-29",
+    "notes": [
+      "Shape availability varies by account, tenancy, and capacity. Always verify via OCI Console or CLI before committing to a design.",
+      "GPU and HPC shapes have limited regional availability and may require capacity reservations.",
+      "E6 shapes launched March 2025; availability expanding beyond initial US/EU regions.",
+      "Use oci compute shape list --region <region> for authoritative per-tenancy availability.",
+      "Regions marked 'selective' may have availability but require service limit increases or capacity reservations."
+    ]
+  },
+  "regions": {
+    "us-ashburn-1": {
+      "display_name": "US East (Ashburn)",
+      "availability_domains": 3,
+      "tier": "core",
+      "notes": "Original OCI region, highest shape breadth"
+    },
+    "us-phoenix-1": {
+      "display_name": "US West (Phoenix)",
+      "availability_domains": 3,
+      "tier": "core",
+      "notes": "Original OCI region"
+    },
+    "us-chicago-1": {
+      "display_name": "US Midwest (Chicago)",
+      "availability_domains": 3,
+      "tier": "core",
+      "notes": "3-AD region; strong GPU and HPC availability"
+    },
+    "eu-frankfurt-1": {
+      "display_name": "Germany Central (Frankfurt)",
+      "availability_domains": 3,
+      "tier": "core",
+      "notes": "Original OCI region; GDPR compliant"
+    },
+    "uk-london-1": {
+      "display_name": "UK South (London)",
+      "availability_domains": 3,
+      "tier": "core",
+      "notes": "Original OCI region"
+    },
+    "eu-amsterdam-1": {
+      "display_name": "Netherlands Northwest (Amsterdam)",
+      "availability_domains": 1,
+      "tier": "standard",
+      "notes": "1-AD region; newer deployment"
+    },
+    "ap-tokyo-1": {
+      "display_name": "Japan East (Tokyo)",
+      "availability_domains": 1,
+      "tier": "standard",
+      "notes": "1-AD region"
+    },
+    "ap-sydney-1": {
+      "display_name": "Australia East (Sydney)",
+      "availability_domains": 1,
+      "tier": "standard",
+      "notes": "1-AD region"
+    },
+    "ap-mumbai-1": {
+      "display_name": "India West (Mumbai)",
+      "availability_domains": 1,
+      "tier": "standard",
+      "notes": "1-AD region"
+    },
+    "ca-toronto-1": {
+      "display_name": "Canada Southeast (Toronto)",
+      "availability_domains": 1,
+      "tier": "standard",
+      "notes": "1-AD region"
+    },
+    "sa-saopaulo-1": {
+      "display_name": "Brazil East (Sao Paulo)",
+      "availability_domains": 1,
+      "tier": "standard",
+      "notes": "1-AD region"
+    },
+    "me-dubai-1": {
+      "display_name": "UAE East (Dubai)",
+      "availability_domains": 1,
+      "tier": "standard",
+      "notes": "1-AD region"
+    },
+    "ap-singapore-1": {
+      "display_name": "Singapore (Singapore)",
+      "availability_domains": 1,
+      "tier": "standard",
+      "notes": "1-AD region"
+    }
+  },
+  "shapes": {
+    "VM.Standard.E4.Flex": {
+      "description": "AMD EPYC 7J13 (Milan), flex vCPU 1-64, memory 1-1024 GB",
+      "processor": "AMD EPYC 7J13",
+      "gpu": false,
+      "availability": {
+        "us-ashburn-1": "GA",
+        "us-phoenix-1": "GA",
+        "us-chicago-1": "GA",
+        "eu-frankfurt-1": "GA",
+        "uk-london-1": "GA",
+        "eu-amsterdam-1": "GA",
+        "ap-tokyo-1": "GA",
+        "ap-sydney-1": "GA",
+        "ap-mumbai-1": "GA",
+        "ca-toronto-1": "GA",
+        "sa-saopaulo-1": "GA",
+        "me-dubai-1": "GA",
+        "ap-singapore-1": "GA"
+      },
+      "notes": "Broadly available in all commercial regions; previous-generation AMD shape"
+    },
+    "VM.Standard.E5.Flex": {
+      "description": "AMD EPYC 9J14 (Genoa), flex vCPU 1-94, memory 1-1094 GB, base 2.4 GHz / boost 3.7 GHz",
+      "processor": "AMD EPYC 9J14",
+      "gpu": false,
+      "availability": {
+        "us-ashburn-1": "GA",
+        "us-phoenix-1": "GA",
+        "us-chicago-1": "GA",
+        "eu-frankfurt-1": "GA",
+        "uk-london-1": "GA",
+        "eu-amsterdam-1": "GA",
+        "ap-tokyo-1": "GA",
+        "ap-sydney-1": "GA",
+        "ap-mumbai-1": "GA",
+        "ca-toronto-1": "GA",
+        "sa-saopaulo-1": "GA",
+        "me-dubai-1": "GA",
+        "ap-singapore-1": "GA"
+      },
+      "notes": "Available across all major commercial regions; 4th-gen AMD EPYC"
+    },
+    "VM.Standard.E6.Flex": {
+      "description": "AMD EPYC 9J45 (Turin), flex vCPU 1-126, memory 1-1454 GB, base 2.7 GHz / boost 4.1 GHz; up to 2x per-core perf vs E5",
+      "processor": "AMD EPYC 9J45",
+      "gpu": false,
+      "availability": {
+        "us-ashburn-1": "GA",
+        "us-phoenix-1": "GA",
+        "us-chicago-1": "GA",
+        "eu-frankfurt-1": "GA",
+        "uk-london-1": "GA",
+        "eu-amsterdam-1": "selective",
+        "ap-tokyo-1": "selective",
+        "ap-sydney-1": "selective",
+        "ap-mumbai-1": "selective",
+        "ca-toronto-1": "selective",
+        "sa-saopaulo-1": "selective",
+        "me-dubai-1": "selective",
+        "ap-singapore-1": "selective"
+      },
+      "notes": "Launched March 2025. GA in US East/West/Midwest, EU Frankfurt, UK London. Rolling out globally; check console for current availability in other regions."
+    },
+    "VM.Standard.A1.Flex": {
+      "description": "Ampere Altra Q80-30 ARM64, flex vCPU 1-80, memory 1-512 GB, max freq 3.0 GHz. Included in OCI Always Free tier (4 OCPUs / 24 GB).",
+      "processor": "Ampere Altra Q80-30",
+      "gpu": false,
+      "availability": {
+        "us-ashburn-1": "GA",
+        "us-phoenix-1": "GA",
+        "us-chicago-1": "GA",
+        "eu-frankfurt-1": "GA",
+        "uk-london-1": "GA",
+        "eu-amsterdam-1": "GA",
+        "ap-tokyo-1": "GA",
+        "ap-sydney-1": "GA",
+        "ap-mumbai-1": "GA",
+        "ca-toronto-1": "GA",
+        "sa-saopaulo-1": "GA",
+        "me-dubai-1": "GA",
+        "ap-singapore-1": "GA"
+      },
+      "notes": "Available broadly across all commercial regions. Capacity constraints common on Always Free tier — paid instances generally available on demand. Good fit for cost-sensitive, cloud-native, and containerized workloads."
+    },
+    "VM.Standard3.Flex": {
+      "description": "Intel Xeon Platinum 8358 (Ice Lake), flex OCPU 1-32, memory 1-512 GB",
+      "processor": "Intel Xeon Platinum 8358",
+      "gpu": false,
+      "availability": {
+        "us-ashburn-1": "GA",
+        "us-phoenix-1": "GA",
+        "us-chicago-1": "GA",
+        "eu-frankfurt-1": "GA",
+        "uk-london-1": "GA",
+        "eu-amsterdam-1": "GA",
+        "ap-tokyo-1": "GA",
+        "ap-sydney-1": "GA",
+        "ap-mumbai-1": "GA",
+        "ca-toronto-1": "GA",
+        "sa-saopaulo-1": "GA",
+        "me-dubai-1": "GA",
+        "ap-singapore-1": "GA"
+      },
+      "notes": "Intel flex shape; widely available. Max OCPU lower than AMD equivalents."
+    },
+    "BM.GPU4.8": {
+      "description": "8x NVIDIA A100 (40 GB) SXM4, AMD EPYC 7542 (Rome), 128 vCPU, 2048 GB RAM, 2x 6.4 TB NVMe",
+      "processor": "AMD EPYC 7542",
+      "gpu": true,
+      "gpu_type": "NVIDIA A100 40GB",
+      "gpu_count": 8,
+      "availability": {
+        "us-ashburn-1": "GA",
+        "us-phoenix-1": "GA",
+        "us-chicago-1": "GA",
+        "eu-frankfurt-1": "GA",
+        "uk-london-1": "GA",
+        "eu-amsterdam-1": "selective",
+        "ap-tokyo-1": "selective",
+        "ap-sydney-1": "selective",
+        "ap-mumbai-1": "not-available",
+        "ca-toronto-1": "selective",
+        "sa-saopaulo-1": "not-available",
+        "me-dubai-1": "not-available",
+        "ap-singapore-1": "selective"
+      },
+      "notes": "A100 (40 GB) bare metal. Available in major US and EU regions. Capacity reservation strongly recommended. For 80 GB A100, see BM.GPU.A100.v2.8."
+    },
+    "BM.GPU.A10.4": {
+      "description": "4x NVIDIA A10 (24 GB), 128 vCPU, 1024 GB RAM, 2x 3.84 TB NVMe",
+      "processor": "Intel Xeon",
+      "gpu": true,
+      "gpu_type": "NVIDIA A10 24GB",
+      "gpu_count": 4,
+      "availability": {
+        "us-ashburn-1": "GA",
+        "us-phoenix-1": "GA",
+        "us-chicago-1": "GA",
+        "eu-frankfurt-1": "GA",
+        "uk-london-1": "GA",
+        "eu-amsterdam-1": "selective",
+        "ap-tokyo-1": "selective",
+        "ap-sydney-1": "selective",
+        "ap-mumbai-1": "selective",
+        "ca-toronto-1": "selective",
+        "sa-saopaulo-1": "selective",
+        "me-dubai-1": "not-available",
+        "ap-singapore-1": "selective"
+      },
+      "notes": "A10 is mid-range inference GPU (NVIDIA Ampere). Good fit for LLM inference, video rendering, VDI."
+    },
+    "BM.GPU.H100.8": {
+      "description": "8x NVIDIA H100 (80 GB) SXM5, Intel Sapphire Rapids 8480+ (2x56c), 224 vCPU, 2048 GB RAM, NVLink 4.0",
+      "processor": "Intel Xeon 8480+ (Sapphire Rapids)",
+      "gpu": true,
+      "gpu_type": "NVIDIA H100 80GB SXM5",
+      "gpu_count": 8,
+      "availability": {
+        "us-ashburn-1": "GA",
+        "us-phoenix-1": "GA",
+        "us-chicago-1": "GA",
+        "eu-frankfurt-1": "GA",
+        "uk-london-1": "GA",
+        "eu-amsterdam-1": "selective",
+        "ap-tokyo-1": "selective",
+        "ap-sydney-1": "not-available",
+        "ap-mumbai-1": "not-available",
+        "ca-toronto-1": "not-available",
+        "sa-saopaulo-1": "not-available",
+        "me-dubai-1": "not-available",
+        "ap-singapore-1": "selective"
+      },
+      "notes": "Flagship AI training GPU. H100 initially launched in us-ashburn, us-phoenix; expanded to Chicago and London. Capacity reservation required. eu-frankfurt has H100 but demand is high. Contact Oracle for allocation in APAC regions."
+    },
+    "BM.HPC2.36": {
+      "description": "Intel Xeon Gold 6154 (Skylake), 36 cores, 3.0 GHz base / 3.7 GHz turbo, 384 GB RAM, RDMA networking (25 Gbps RoCEv2)",
+      "processor": "Intel Xeon Gold 6154",
+      "gpu": false,
+      "gpu_type": null,
+      "gpu_count": 0,
+      "availability": {
+        "us-ashburn-1": "GA",
+        "us-phoenix-1": "GA",
+        "us-chicago-1": "GA",
+        "eu-frankfurt-1": "GA",
+        "uk-london-1": "selective",
+        "eu-amsterdam-1": "not-available",
+        "ap-tokyo-1": "selective",
+        "ap-sydney-1": "selective",
+        "ap-mumbai-1": "not-available",
+        "ca-toronto-1": "selective",
+        "sa-saopaulo-1": "not-available",
+        "me-dubai-1": "not-available",
+        "ap-singapore-1": "not-available"
+      },
+      "notes": "Legacy HPC bare metal with RDMA. Primarily available in US and EU core regions. For new HPC deployments prefer BM.Optimized3.36 or GPU cluster shapes with RDMA."
+    }
+  },
+  "availability_legend": {
+    "GA": "Generally Available — shape available in this region by default",
+    "selective": "Available but may require capacity reservation, service limit increase, or quota request",
+    "not-available": "Not available or no confirmed public availability as of mid-2025"
+  },
+  "ad_count_summary": {
+    "3_ad_regions": ["us-ashburn-1", "us-phoenix-1", "us-chicago-1", "eu-frankfurt-1", "uk-london-1"],
+    "1_ad_regions": ["eu-amsterdam-1", "ap-tokyo-1", "ap-sydney-1", "ap-mumbai-1", "ca-toronto-1", "sa-saopaulo-1", "me-dubai-1", "ap-singapore-1"],
+    "note": "The original 4 OCI regions (Ashburn, Phoenix, Frankfurt, London) plus Chicago have 3 ADs. All subsequent commercial regions have 1 AD. High-availability architectures in 1-AD regions should use fault domains for physical isolation."
+  }
+}
