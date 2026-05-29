@@ -162,6 +162,8 @@ def build_expert_block(name: str) -> str:
     version = meta.get("version", "1.0")
     lines = [f"[ACTIVE EXPERT: {display} v{version}]", ""]
     for section in (
+        "Persona",
+        "Deep Expert Reasoning Style",
         "Expert Instincts",
         "Core Principles",
         "Quality Bar",
