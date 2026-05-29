@@ -4,9 +4,15 @@ import {
   type EngagementContextResponse,
 } from '../api/client';
 
+interface ActivityState {
+  thinkingStatus: string | null;
+  activeHats: string[];
+}
+
 interface EngagementMemoryPanelProps {
   customerId: string | null;
   refreshTrigger?: number;
+  activity?: ActivityState;
 }
 
 interface MemoryView {
@@ -88,7 +94,11 @@ function fileLabel(key: string): string {
   return parts[parts.length - 1] || key;
 }
 
-export function EngagementMemoryPanel({ customerId, refreshTrigger = 0 }: EngagementMemoryPanelProps) {
+function hatDisplayName(hat: string): string {
+  return hat.replace(/^oci_/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity }: EngagementMemoryPanelProps) {
   const [data, setData] = useState<EngagementContextResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadedOnce, setLoadedOnce] = useState(false);
@@ -146,6 +156,58 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0 }: Engage
       <div style={{ fontSize: '0.62rem', color: '#5a6278', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '0.55rem' }}>
         Engagement context
       </div>
+
+      {/* Live activity — only shown when Archie is working */}
+      {(activity?.thinkingStatus || (activity?.activeHats && activity.activeHats.length > 0)) && (
+        <div
+          data-testid="live-activity"
+          style={{
+            marginBottom: '0.75rem',
+            padding: '0.6rem 0.75rem',
+            background: '#0a1020',
+            border: '1px solid #1e2d4a',
+            borderRadius: 6,
+            display: 'grid',
+            gap: '0.4rem',
+          }}
+        >
+          <div style={{ fontSize: '0.6rem', color: '#3d6ab0', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            Live
+          </div>
+          {activity.activeHats.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
+              {activity.activeHats.map(hat => (
+                <span
+                  key={hat}
+                  data-testid="live-active-hat"
+                  style={{
+                    background: 'rgba(143,180,255,0.12)',
+                    border: '1px solid rgba(143,180,255,0.3)',
+                    borderRadius: 4,
+                    padding: '0.1rem 0.4rem',
+                    fontSize: '0.68rem',
+                    color: '#8fb4ff',
+                  }}
+                >
+                  {hatDisplayName(hat)}
+                </span>
+              ))}
+            </div>
+          )}
+          {activity.thinkingStatus && (
+            <div
+              data-testid="live-thinking-status"
+              style={{
+                fontSize: '0.73rem',
+                color: activity.thinkingStatus.startsWith('Running') ? '#61dafb' : '#8b9ab8',
+                fontWeight: activity.thinkingStatus.startsWith('Running') ? 600 : 400,
+              }}
+            >
+              {activity.thinkingStatus}
+            </div>
+          )}
+        </div>
+      )}
 
       {!customerId?.trim() && (
         <div style={{ color: '#4a5168', fontSize: '0.76rem' }}>No customer selected</div>

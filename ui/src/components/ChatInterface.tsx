@@ -626,6 +626,7 @@ interface ChatInterfaceProps {
   onCustomerIdChange?: (id: string) => void;
   onCustomerNameChange?: (name: string) => void;
   onArtifactsChange?: (downloads: ChatArtifactDownload[]) => void;
+  onActivityChange?: (activity: { thinkingStatus: string | null; activeHats: string[] }) => void;
   pendingPrompt?: { text: string; seq: number } | null;
   projectId?: string;
   projectName?: string;
@@ -768,7 +769,7 @@ function isNearBottom(element: HTMLElement, threshold = 96): boolean {
   return remaining <= threshold;
 }
 
-export function ChatInterface({ customerId, customerName, onCustomerIdChange, onCustomerNameChange, onArtifactsChange, pendingPrompt, projectId, projectName }: ChatInterfaceProps) {
+export function ChatInterface({ customerId, customerName, onCustomerIdChange, onCustomerNameChange, onArtifactsChange, onActivityChange, pendingPrompt, projectId, projectName }: ChatInterfaceProps) {
   const [messages,      setMessages]      = useState<LocalMessage[]>([]);
   const [input,         setInput]         = useState('');
   const [loading,       setLoading]       = useState(false);
@@ -827,6 +828,10 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
   useEffect(() => {
     onArtifactsChange?.(latestManifestDownloads(messages));
   }, [messages, onArtifactsChange]);
+
+  useEffect(() => {
+    onActivityChange?.({ thinkingStatus, activeHats });
+  }, [thinkingStatus, activeHats, onActivityChange]);
 
   useEffect(() => {
     if (!pendingPrompt) return;

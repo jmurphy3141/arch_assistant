@@ -67,6 +67,7 @@ export function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [chatArtifacts, setChatArtifacts] = useState<ChatArtifactDownload[]>([]);
   const [documentsCollapsed, setDocumentsCollapsed] = useState(true);
+  const [chatActivity, setChatActivity] = useState<{ thinkingStatus: string | null; activeHats: string[] }>({ thinkingStatus: null, activeHats: [] });
 
   function handleDiagramNameChange(name: string) {
     setDiagramName(name);
@@ -649,6 +650,7 @@ export function App() {
               onCustomerIdChange={handleCustomerIdChange}
               onCustomerNameChange={handleCustomerNameChange}
               onArtifactsChange={setChatArtifacts}
+              onActivityChange={setChatActivity}
               pendingPrompt={pendingPrompt}
               projectId={selectedProjectId}
               projectName={selectedProjectName}
@@ -656,7 +658,7 @@ export function App() {
           </div>
           {!isCompactChat && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', minWidth: 0 }}>
-              <EngagementMemoryPanel customerId={customerId || null} refreshTrigger={chatSessionKey} />
+              <EngagementMemoryPanel customerId={customerId || null} refreshTrigger={chatSessionKey} activity={chatActivity} />
               {chatArtifacts.length > 0 && (
                 <ArtifactPreviewPanel artifacts={chatArtifacts} compact={isCompactChat} onQuickPrompt={handleQuickPrompt} />
               )}
