@@ -77,11 +77,16 @@ and audit logging (every access to financial data must be logged and retained �
 with Object Storage archival satisfies this but must be explicitly designed).
 
 PCI DSS is present in almost every financial services engagement, but SEs often treat it
-as a checkbox rather than a design constraint. PCI DSS Requirement 1 (network segmentation)
-means the architecture needs separate subnets, NSGs, and VCNs for the cardholder data
-environment. Requirement 10 (logging and monitoring) means OCI Logging, OCI Audit, and an
-SIEM integration. These are not optional add-ons — they're architectural requirements that
-change the BOM, diagram, and WAF review materially.
+as a checkbox rather than a design constraint. The specific requirements that drive OCI
+architecture decisions: Req 1 (network security controls) means separate VCNs, NSGs with
+explicit deny-all defaults, and documented rule justifications for everything in the
+cardholder data environment. Req 3 (protection of account data) means encryption at rest
+with OCI Vault CMK — not Oracle-managed keys. Req 8 (strong authentication) means MFA on
+all admin access, no shared credentials, and IAM audit logging. Req 10 (log and monitor)
+means OCI Logging, OCI Audit, and an SIEM integration with 12-month log retention. These
+are not optional add-ons — they are architectural requirements that change the BOM, diagram,
+and WAF review materially. An architecture without a separate CDE VCN fails Req 1 on day
+one of the QSA audit.
 
 Oracle's differentiator in financial services: Oracle Database on Exadata Cloud Service
 has documented PCI DSS compliance artifacts that other platforms don't provide out of the
@@ -90,12 +95,18 @@ alone can accelerate their security review by weeks.
 
 ### Healthcare
 
-Healthcare brings HIPAA and the concept of PHI (Protected Health Information) as the
-primary constraint. The key architectural implication: PHI cannot leave the approved
-region, must be encrypted at rest with customer-managed keys (OCI Vault), and access
-to PHI must be logged. If a customer mentions patient records, clinical data, or health
-insurance information, I immediately surface HIPAA BAA availability and the Oracle Cloud
-Infrastructure HIPAA-eligible services list.
+Healthcare brings HIPAA and the concept of ePHI (electronic Protected Health Information)
+as the primary constraint. The specific HIPAA specifications that drive OCI architecture
+decisions: §164.308(a)(1)(ii)(A) Risk Analysis (Required) — if the customer has no
+documented risk assessment, that is the first gap, not a technology question. §164.312(b)
+Audit Controls (Required) — OCI Logging and OCI Audit must be explicitly configured to
+capture access to all systems containing ePHI. §164.312(a)(2)(iv) Encryption at Rest
+(Addressable, effectively Required) — OCI Vault CMK on Block Volumes, Object Storage,
+and ADB; Oracle-managed keys are not sufficient for most HIPAA QSA reviews.
+§164.312(e)(2)(ii) Encryption in Transit (Addressable, effectively Required) — TLS 1.2+
+on all data paths, no unencrypted protocols. If a customer mentions patient records,
+clinical data, or health insurance information, I immediately surface HIPAA BAA
+availability and the Oracle Cloud Infrastructure HIPAA-eligible services list.
 
 HL7/FHIR integration is increasingly relevant in healthcare OCI engagements. Oracle Health
 (the former Cerner acquisition) runs on OCI infrastructure, and health systems with Oracle
@@ -154,6 +165,16 @@ Government Cloud (OC2 and OC3 regions) carries IL2, IL4, and IL5 authorizations.
 the customer is a US federal agency or defense contractor, the conversation starts with
 "which authorization level do you need and which region are you allowed to use" before
 any architecture discussion.
+
+The FedRAMP Moderate controls that most directly shape OCI architecture: AC-2 (Account
+Management) means IAM policies with documented roles, dynamic groups, and regular access
+reviews. SC-28 (Protection at Rest) means OCI Vault CMK — no exceptions for FedRAMP.
+SC-8 (Transmission Confidentiality) means TLS 1.2+ enforced at the load balancer and
+service mesh level. AU-2 and AU-9 (Audit Events and Audit Protection) mean OCI Logging
+with write-once Object Storage archival so logs cannot be deleted by the application
+team. AC-17 (Remote Access) means no direct SSH to instances — OCI Bastion Service only.
+OKE Basic Clusters have no financial SLA and are not appropriate for FedRAMP workloads;
+Enhanced Clusters are required.
 
 GDPR applies to any customer with EU personal data regardless of where they're headquartered.
 OCI's EU Sovereign Cloud is the offering for GDPR-sensitive workloads that require data

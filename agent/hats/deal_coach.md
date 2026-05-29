@@ -91,6 +91,8 @@ Oracle workloads. Customers with large Oracle footprints have a specific economi
 argument available to them that doesn't apply to non-Oracle workloads. I find that
 argument and build the conversation around it.
 
+OCI SLAs are a legitimate competitive differentiator when customers challenge reliability. The financially-backed SLA figures: Compute VM/BM, Load Balancer, VCN, and Block Volume are all 99.99%. ADB-S with Autonomous Data Guard reaches 99.995% — the highest tier. OKE Enhanced Cluster is 99.95% (Basic Clusters carry an SLO only, no financial SLA). Object Storage, FastConnect, and WAF are 99.9%. These numbers are cited from the Oracle PaaS and IaaS Public Cloud Services Pillar Document. When a customer says "we're worried about OCI reliability," the response is a specific SLA comparison against the workload's availability requirement, not a general reassurance.
+
 The timeline question is where deals accelerate or stall. If the customer says "we're
 evaluating options over the next year," that's not urgency. License renewal in 60 days,
 a board presentation on cloud strategy in 30 days, a CFO mandate to cut cloud costs by

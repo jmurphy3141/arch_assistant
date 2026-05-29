@@ -18,6 +18,9 @@ _CONFIG = _HERE / "config.yaml"
 _MAIN_CONFIG = _ROOT / "config.yaml"
 _SYSTEM_PROMPT = _HERE / "system_prompt.md"
 _CIS_CONTROLS = _HERE / "cis_controls.json"
+_PCI_DSS = _ROOT / "agent" / "standards" / "pci_dss_v4.json"
+_HIPAA = _ROOT / "agent" / "standards" / "hipaa_security_rule.json"
+_FEDRAMP = _ROOT / "agent" / "standards" / "fedramp_moderate_controls.json"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -53,12 +56,66 @@ def _format_cis_reference(path: Path) -> str:
     return "\n".join(lines)
 
 
+def _format_pci_reference(path: Path) -> str:
+    if not path.exists():
+        return ""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    lines = [
+        f"\n\n## {data['standard']} — Requirement Reference",
+        "Cite as [PCI X] in findings that map to these requirements. Apply when customer is in financial services, retail, or processes payment card data.\n",
+    ]
+    for req in data.get("requirements", []):
+        lines.append(f"- Req {req['id']}: {req['title']}")
+    return "\n".join(lines)
+
+
+def _format_hipaa_reference(path: Path) -> str:
+    if not path.exists():
+        return ""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    lines = [
+        f"\n\n## {data['standard']} — Safeguard Reference",
+        "Cite as [HIPAA §164.XXX] in findings. Apply when customer is in healthcare, life sciences, or handles ePHI.\n",
+    ]
+    for section in data.get("safeguards", {}).values():
+        lines.append(f"\n### {section['title']} ({section['section']})")
+        for std in section.get("standards", []):
+            for spec in std.get("implementation_specifications", []):
+                lines.append(f"- {spec['id']} [{spec['status']}] {spec['title']}")
+            if not std.get("implementation_specifications"):
+                lines.append(f"- {std['id']} [Required] {std['title']}")
+    return "\n".join(lines)
+
+
+def _format_fedramp_reference(path: Path) -> str:
+    if not path.exists():
+        return ""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    lines = [
+        "\n\n## FedRAMP Moderate Baseline — Control Reference",
+        "Cite as [FedRAMP AC-2] in findings. Apply when customer is US public sector or processes federal data.\n",
+    ]
+    current_family = None
+    for c in data.get("controls", []):
+        if c["family"] != current_family:
+            current_family = c["family"]
+            lines.append(f"\n### {current_family}")
+        lines.append(f"- {c['id']}: {c['title']} — {c['oci_relevance']}")
+    return "\n".join(lines)
+
+
 _agent_config = _load_yaml(_CONFIG)
 _main_config = _load_yaml(_MAIN_CONFIG)
 _agent_llm = _agent_config.get("llm") or {}
 _main_inference = _main_config.get("inference") or {}
 _model_id = str(_first_present(_agent_llm.get("model_id"), _main_inference.get("model_id"), default=""))
-_system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8") + _format_cis_reference(_CIS_CONTROLS)
+_system_message = (
+    _SYSTEM_PROMPT.read_text(encoding="utf-8")
+    + _format_cis_reference(_CIS_CONTROLS)
+    + _format_pci_reference(_PCI_DSS)
+    + _format_hipaa_reference(_HIPAA)
+    + _format_fedramp_reference(_FEDRAMP)
+)
 
 
 card = AgentCard(

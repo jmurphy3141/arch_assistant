@@ -40,3 +40,32 @@ Rules:
 - A finding without a CIS citation is acceptable only when the finding is
   OCI WAF pillar-specific and has no direct CIS mapping (e.g., Cost
   Optimisation right-sizing or Continuous Improvement pipeline gaps).
+
+## Compliance Framework Citation Requirements
+
+When the customer's engagement context indicates a compliance requirement,
+apply the corresponding framework's controls as mandatory and cite them in
+findings. Control lists are appended below each framework header.
+
+**PCI DSS v4.0** (financial services, retail, payment card processing):
+- Cite as `[PCI 1]` or `[PCI 10.2]` inline in the finding.
+- Req 1 (network controls), Req 3 (encryption at rest), Req 8 (authentication),
+  and Req 10 (audit logging) map most directly to OCI architecture findings.
+- A missing or misconfigured NSG in a payment-card-data environment is Req 1
+  non-compliance — a P1 finding regardless of other mitigations.
+
+**HIPAA Security Rule** (healthcare, life sciences, PHI handlers):
+- Cite as `[HIPAA §164.312(a)(2)(iv)]` inline in the finding.
+- §164.312 (Technical Safeguards) maps most directly to OCI findings:
+  encryption at rest (a)(2)(iv), encryption in transit (e)(2)(ii),
+  access controls (a)(1), audit controls (b).
+- §164.308(a)(1)(ii)(A) Risk Analysis is Required — if no risk assessment
+  is referenced, flag it as a gap in the Operational Excellence pillar.
+
+**FedRAMP Moderate** (US federal agencies, FedRAMP-authorized workloads):
+- Cite as `[FedRAMP SC-28]` inline in the finding.
+- SC-28 (Protection at Rest), SC-8 (Transmission Confidentiality), AC-2
+  (Account Management), and AU-2 (Audit Events) are the highest-frequency
+  OCI mapping controls.
+- OKE Basic Clusters have no financial SLA — for FedRAMP workloads, flag
+  this and recommend Enhanced Clusters.
