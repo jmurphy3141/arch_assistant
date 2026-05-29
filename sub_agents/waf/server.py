@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ _ROOT = _HERE.parents[1]
 _CONFIG = _HERE / "config.yaml"
 _MAIN_CONFIG = _ROOT / "config.yaml"
 _SYSTEM_PROMPT = _HERE / "system_prompt.md"
+_CIS_CONTROLS = _HERE / "cis_controls.json"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -32,12 +34,31 @@ def _first_present(*values: Any, default: Any = None) -> Any:
     return default
 
 
+def _format_cis_reference(path: Path) -> str:
+    if not path.exists():
+        return ""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    lines = [
+        f"\n\n## {data['benchmark']} v{data['version']} — Control Reference",
+        "Cite the control ID (e.g. CIS 2.3) in every finding that maps to one of these controls.\n",
+    ]
+    for sec_id, section in data.get("sections", {}).items():
+        lines.append(f"\n### {sec_id}. {section['title']}")
+        for c in section.get("controls", []):
+            lines.append(f"- {c['id']} ({c['level']}) {c['title']}")
+        for sub in section.get("subsections", {}).values():
+            lines.append(f"\n#### {sub['title']}")
+            for c in sub.get("controls", []):
+                lines.append(f"- {c['id']} ({c['level']}) {c['title']}")
+    return "\n".join(lines)
+
+
 _agent_config = _load_yaml(_CONFIG)
 _main_config = _load_yaml(_MAIN_CONFIG)
 _agent_llm = _agent_config.get("llm") or {}
 _main_inference = _main_config.get("inference") or {}
 _model_id = str(_first_present(_agent_llm.get("model_id"), _main_inference.get("model_id"), default=""))
-_system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8")
+_system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8") + _format_cis_reference(_CIS_CONTROLS)
 
 
 card = AgentCard(

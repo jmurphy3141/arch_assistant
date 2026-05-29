@@ -1,0 +1,106 @@
+{
+  "benchmark": "CIS Oracle Cloud Infrastructure Foundations Benchmark",
+  "version": "3.0.0",
+  "released": "2025-02-28",
+  "sections": {
+    "1": {
+      "title": "Identity and Access Management",
+      "controls": [
+        {"id": "1.1",  "title": "Ensure service level admins are created to manage resources of particular service", "level": "L1", "type": "manual"},
+        {"id": "1.2",  "title": "Ensure permissions on all resources are given only to the tenancy administrator group", "level": "L1", "type": "automated"},
+        {"id": "1.3",  "title": "Ensure IAM administrators cannot update tenancy Administrators group", "level": "L1", "type": "automated"},
+        {"id": "1.4",  "title": "Ensure IAM password policy requires minimum length of 14 or greater", "level": "L1", "type": "automated"},
+        {"id": "1.5",  "title": "Ensure IAM password policy expires passwords within 365 days", "level": "L1", "type": "manual"},
+        {"id": "1.6",  "title": "Ensure IAM password policy prevents password reuse", "level": "L1", "type": "manual"},
+        {"id": "1.7",  "title": "Ensure MFA is enabled for all users with a console password", "level": "L1", "type": "automated"},
+        {"id": "1.8",  "title": "Ensure user API keys rotate within 90 days", "level": "L1", "type": "automated"},
+        {"id": "1.9",  "title": "Ensure user customer secret keys rotate every 90 days", "level": "L1", "type": "automated"},
+        {"id": "1.10", "title": "Ensure user auth tokens rotate within 90 days or less", "level": "L1", "type": "automated"},
+        {"id": "1.11", "title": "Ensure user IAM Database Passwords rotate within 90 days", "level": "L1", "type": "manual"},
+        {"id": "1.12", "title": "Ensure API keys are not created for tenancy administrator users", "level": "L1", "type": "automated"},
+        {"id": "1.13", "title": "Ensure all OCI IAM user accounts have a valid and current email address", "level": "L1", "type": "manual"},
+        {"id": "1.14", "title": "Ensure Instance Principal authentication is used for OCI instances, OCI Cloud Databases and OCI Functions to access OCI resources", "level": "L1", "type": "manual"},
+        {"id": "1.15", "title": "Ensure storage service-level admins cannot delete resources they manage", "level": "L2", "type": "manual"},
+        {"id": "1.16", "title": "Ensure OCI IAM credentials unused for 45 days or more are disabled", "level": "L1", "type": "automated"},
+        {"id": "1.17", "title": "Ensure there is only one active API Key for any single OCI IAM user", "level": "L1", "type": "automated"}
+      ]
+    },
+    "2": {
+      "title": "Networking",
+      "controls": [
+        {"id": "2.1", "title": "Ensure no security lists allow ingress from 0.0.0.0/0 to port 22", "level": "L1", "type": "automated"},
+        {"id": "2.2", "title": "Ensure no security lists allow ingress from 0.0.0.0/0 to port 3389", "level": "L1", "type": "automated"},
+        {"id": "2.3", "title": "Ensure no network security groups allow ingress from 0.0.0.0/0 to port 22", "level": "L1", "type": "automated"},
+        {"id": "2.4", "title": "Ensure no network security groups allow ingress from 0.0.0.0/0 to port 3389", "level": "L1", "type": "automated"},
+        {"id": "2.5", "title": "Ensure the default security list of every VCN restricts all traffic except ICMP within VCN", "level": "L1", "type": "automated"},
+        {"id": "2.6", "title": "Ensure Oracle Integration Cloud (OIC) access is restricted to allowed sources", "level": "L1", "type": "manual"},
+        {"id": "2.7", "title": "Ensure Oracle Analytics Cloud (OAC) access is restricted to allowed sources or deployed within a VCN", "level": "L1", "type": "manual"},
+        {"id": "2.8", "title": "Ensure Oracle Autonomous Shared Databases (ADB) access is restricted to allowed sources or deployed within a VCN", "level": "L1", "type": "manual"}
+      ]
+    },
+    "3": {
+      "title": "Compute",
+      "controls": [
+        {"id": "3.1", "title": "Ensure Compute Instance Legacy Metadata service endpoint is disabled", "level": "L2", "type": "automated"},
+        {"id": "3.2", "title": "Ensure Secure Boot is enabled on Compute Instance", "level": "L2", "type": "automated"},
+        {"id": "3.3", "title": "Ensure In-transit Encryption is enabled on Compute Instance", "level": "L1", "type": "automated"}
+      ]
+    },
+    "4": {
+      "title": "Logging and Monitoring",
+      "controls": [
+        {"id": "4.1",  "title": "Ensure default tags are used on resources", "level": "L1", "type": "automated"},
+        {"id": "4.2",  "title": "Create at least one notification topic and subscription to receive monitoring alerts", "level": "L1", "type": "automated"},
+        {"id": "4.3",  "title": "Ensure a notification is configured for Identity Provider changes", "level": "L1", "type": "automated"},
+        {"id": "4.4",  "title": "Ensure a notification is configured for IdP group mapping changes", "level": "L1", "type": "automated"},
+        {"id": "4.5",  "title": "Ensure a notification is configured for IAM group changes", "level": "L1", "type": "automated"},
+        {"id": "4.6",  "title": "Ensure a notification is configured for IAM policy changes", "level": "L1", "type": "automated"},
+        {"id": "4.7",  "title": "Ensure a notification is configured for user changes", "level": "L1", "type": "automated"},
+        {"id": "4.8",  "title": "Ensure a notification is configured for VCN changes", "level": "L1", "type": "automated"},
+        {"id": "4.9",  "title": "Ensure a notification is configured for changes to route tables", "level": "L1", "type": "automated"},
+        {"id": "4.10", "title": "Ensure a notification is configured for security list changes", "level": "L1", "type": "automated"},
+        {"id": "4.11", "title": "Ensure a notification is configured for network security group changes", "level": "L1", "type": "automated"},
+        {"id": "4.12", "title": "Ensure a notification is configured for changes to network gateways", "level": "L1", "type": "automated"},
+        {"id": "4.13", "title": "Ensure VCN flow logging is enabled for all subnets", "level": "L2", "type": "automated"},
+        {"id": "4.14", "title": "Ensure Cloud Guard is enabled in the root compartment of the tenancy", "level": "L1", "type": "automated"},
+        {"id": "4.15", "title": "Ensure a notification is configured for Oracle Cloud Guard problems detected", "level": "L1", "type": "automated"},
+        {"id": "4.16", "title": "Ensure customer created Customer Managed Key (CMK) is rotated at least annually", "level": "L1", "type": "automated"},
+        {"id": "4.17", "title": "Ensure write level Object Storage logging is enabled for all buckets", "level": "L2", "type": "automated"},
+        {"id": "4.18", "title": "Ensure a notification is configured for Local OCI User Authentication", "level": "L1", "type": "automated"}
+      ]
+    },
+    "5": {
+      "title": "Storage",
+      "subsections": {
+        "5.1": {
+          "title": "Object Storage",
+          "controls": [
+            {"id": "5.1.1", "title": "Ensure no Object Storage buckets are publicly visible", "level": "L1", "type": "automated"},
+            {"id": "5.1.2", "title": "Ensure Object Storage Buckets are encrypted with a Customer Managed Key (CMK)", "level": "L2", "type": "automated"},
+            {"id": "5.1.3", "title": "Ensure Versioning is Enabled for Object Storage Buckets", "level": "L2", "type": "automated"}
+          ]
+        },
+        "5.2": {
+          "title": "Block Volumes",
+          "controls": [
+            {"id": "5.2.1", "title": "Ensure Block Volumes are encrypted with Customer Managed Keys (CMK)", "level": "L2", "type": "automated"},
+            {"id": "5.2.2", "title": "Ensure boot volumes are encrypted with Customer Managed Key (CMK)", "level": "L2", "type": "automated"}
+          ]
+        },
+        "5.3": {
+          "title": "File Storage Service",
+          "controls": [
+            {"id": "5.3.1", "title": "Ensure File Storage Systems are encrypted with Customer Managed Keys (CMK)", "level": "L2", "type": "automated"}
+          ]
+        }
+      }
+    },
+    "6": {
+      "title": "Asset Management",
+      "controls": [
+        {"id": "6.1", "title": "Create at least one compartment in your tenancy to store cloud resources", "level": "L1", "type": "automated"},
+        {"id": "6.2", "title": "Ensure no resources are created in the root compartment", "level": "L1", "type": "automated"}
+      ]
+    }
+  }
+}
