@@ -430,6 +430,84 @@ function ArtifactManifestLinks({ manifest }: { manifest?: ChatArtifactManifest }
   );
 }
 
+function numericValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) {
+    return Number(value);
+  }
+  return null;
+}
+
+function bomTotalFromCall(call: ChatToolCall): number | null {
+  const data = call.result_data ?? {};
+  const payload = (data.bom_payload ?? data.payload) as Record<string, unknown> | undefined;
+  const totals = payload?.totals as Record<string, unknown> | undefined;
+  return numericValue(payload?.monthly_total)
+    ?? numericValue(totals?.estimated_monthly_cost)
+    ?? numericValue(data.estimated_monthly_cost);
+}
+
+function wafScoreFromCall(call: ChatToolCall): string {
+  const data = call.result_data ?? {};
+  const pillars = data.pillars as Record<string, unknown> | undefined;
+  const overall = numericValue(data.overall_score ?? data.score);
+  if (overall !== null) return `${overall.toFixed(1)}/5`;
+  if (!pillars || typeof pillars !== 'object') return '';
+  const scores = Object.values(pillars)
+    .map(item => numericValue((item as Record<string, unknown>)?.score))
+    .filter((score): score is number => score !== null);
+  if (scores.length === 0) return '';
+  const avg = scores.reduce((sum, score) => sum + score, 0) / scores.length;
+  return `${avg.toFixed(1)}/5`;
+}
+
+function ArtifactHighlights({
+  toolCalls,
+  artifactManifest,
+}: {
+  toolCalls?: ChatToolCall[];
+  artifactManifest?: ChatArtifactManifest;
+}) {
+  const highlights: Array<{ key: string; label: string }> = [];
+  if (artifactManifest?.downloads?.some(dl => (dl.filename ?? dl.key ?? '').endsWith('.drawio'))) {
+    highlights.push({ key: 'diagram', label: 'Diagram ready' });
+  }
+  for (const call of toolCalls ?? []) {
+    const total = bomTotalFromCall(call);
+    if (total !== null) {
+      highlights.push({
+        key: `bom-${call.tool}`,
+        label: `BOM $${total.toLocaleString(undefined, { maximumFractionDigits: 0 })}/mo`,
+      });
+    }
+    const wafScore = wafScoreFromCall(call);
+    if (wafScore) {
+      highlights.push({ key: `waf-${call.tool}`, label: `WAF ${wafScore}` });
+    }
+  }
+  if (highlights.length === 0) return null;
+  return (
+    <div data-testid="artifact-highlights" style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', paddingLeft: '0.25rem', marginTop: '0.35rem' }}>
+      {highlights.map(item => (
+        <span
+          key={item.key}
+          style={{
+            color: '#d8e4ff',
+            background: '#142033',
+            border: '1px solid #2d4268',
+            borderRadius: 999,
+            padding: '0.16rem 0.5rem',
+            fontSize: '0.68rem',
+            fontFamily: "'JetBrains Mono', monospace",
+          }}
+        >
+          {item.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function extractQuickActions(content: string, toolCalls?: ChatToolCall[]): QuickAction[] {
   const dedupe = new Set<string>();
   const actions: QuickAction[] = [];
@@ -558,6 +636,7 @@ function MessageBubble({
           {toolCalls.map((tc, i) => <ToolChip key={i} call={tc} />)}
         </div>
       )}
+      <ArtifactHighlights toolCalls={toolCalls} artifactManifest={artifactManifest} />
       {artifacts && Object.keys(artifacts).length > 0 && (
         <div style={{ paddingLeft: '0.25rem' }}>
           {Object.entries(artifacts).map(([k, v]) => (
@@ -621,11 +700,12 @@ interface LocalMessage {
 }
 
 interface ChatInterfaceProps {
-  customerId: string;
-  customerName: string;
+  customerId?: string;
+  customerName?: string;
   onCustomerIdChange?: (id: string) => void;
   onCustomerNameChange?: (name: string) => void;
   onArtifactsChange?: (downloads: ChatArtifactDownload[]) => void;
+  onConversationComplete?: () => void;
   pendingPrompt?: { text: string; seq: number } | null;
   projectId?: string;
   projectName?: string;
@@ -768,7 +848,15 @@ function isNearBottom(element: HTMLElement, threshold = 96): boolean {
   return remaining <= threshold;
 }
 
-export function ChatInterface({ customerId, customerName, onCustomerIdChange, onCustomerNameChange, onArtifactsChange, pendingPrompt, projectId, projectName }: ChatInterfaceProps) {
+export function ChatInterface({
+  customerId = '',
+  customerName = '',
+  onArtifactsChange,
+  onConversationComplete,
+  pendingPrompt,
+  projectId,
+  projectName,
+}: ChatInterfaceProps) {
   const [messages,      setMessages]      = useState<LocalMessage[]>([]);
   const [input,         setInput]         = useState('');
   const [loading,       setLoading]       = useState(false);
@@ -859,6 +947,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
         setMessages(prev => [...prev, assistantMsg]);
         setBackgroundJobId(null);
         setBackgroundMode(false);
+        onConversationComplete?.();
       } catch (err: unknown) {
         if (cancelled) return;
         const e = err as { status?: number; detail?: string };
@@ -873,7 +962,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [backgroundJobId]);
+  }, [backgroundJobId, onConversationComplete]);
 
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -973,6 +1062,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
       setMessages(prev => [...prev, assistantMsg]);
       setStreamingReply('');
       setThinkingStatus(null);
+      onConversationComplete?.();
     } catch (err: unknown) {
       const e = err as { status: number; detail: string };
       setError(`Error ${e.status}: ${e.detail}`);
@@ -1318,7 +1408,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
             data-testid="chat-input"
             style={inputStyle}
             value={input}
-            placeholder="Message Archie... (Enter to send, Shift+Enter for newline)"
+            placeholder="Describe your customer or ask Archie for an artifact..."
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={loading}

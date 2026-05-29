@@ -231,6 +231,25 @@ export interface BomRefreshResponse {
   trace_id?: string;
 }
 
+export interface EngagementContextResponse {
+  status?: string;
+  customer_id?: string;
+  customer_name?: string;
+  customer_challenge?: string;
+  oci_services_in_scope?: string[];
+  artifacts?: string[] | Record<string, unknown>;
+  context?: {
+    customer_id?: string;
+    customer_name?: string;
+    customer_challenge?: string;
+    oci_services_in_scope?: string[];
+    artifacts?: string[] | Record<string, unknown>;
+    agents?: Record<string, Record<string, unknown>>;
+    archie?: Record<string, unknown>;
+  };
+  [key: string]: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // API functions
 // ---------------------------------------------------------------------------
@@ -320,6 +339,14 @@ export async function apiBomRefreshData(): Promise<BomRefreshResponse> {
   return apiFetch<BomRefreshResponse>('/bom/refresh-data', {
     method: 'POST',
   });
+}
+
+export async function apiGetCustomerContext(
+  customerId: string,
+): Promise<EngagementContextResponse> {
+  return apiFetch<EngagementContextResponse>(
+    `/context/${encodeURIComponent(customerId)}`,
+  );
 }
 
 export async function apiBomGenerateXlsx(payload: BomPayload): Promise<Blob> {

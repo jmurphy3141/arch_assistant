@@ -295,6 +295,17 @@ export const handlers = [
     customer_id: params.customerId,
     history: [],
   })),
+  http.get(`${BASE}/context/:customerId`, ({ params }) => HttpResponse.json({
+    status: 'ok',
+    customer_id: params.customerId,
+    context: {
+      customer_id: params.customerId,
+      customer_name: String(params.customerId ?? ''),
+      customer_challenge: '',
+      oci_services_in_scope: [],
+      agents: {},
+    },
+  })),
 
   // Notes
   http.post(`${BASE}/notes/upload`, () => HttpResponse.json(NOTE_UPLOAD_RESPONSE)),
