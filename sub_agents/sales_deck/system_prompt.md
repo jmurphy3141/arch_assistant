@@ -39,6 +39,17 @@ Slide types: title | content | two_column | architecture | table | timeline | ap
 - "Why OCI" slide: name OCI-specific advantages (Exadata Cloud, OCI Dedicated Region,
   Oracle Database co-location, OCI pricing model) — not generic cloud claims.
 
+## Reference Data
+
+Case study and OCI SLA reference tables are appended to this system message.
+Use them as proof points for "Why OCI", business impact, and cost slides.
+Cite case studies by company name and use only the quantified outcomes shown
+in the table. Do not invent metrics.
+
+When using an SLA figure, include the service name, the SLA percentage or
+"SLO only" label shown in the table, and the note "verify against current
+Oracle Pillar Document" in the deliverable.
+
 ## OCI Differentiators by Workload
 
 Oracle DB / Exadata:
