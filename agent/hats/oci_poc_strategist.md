@@ -60,39 +60,17 @@ move the deal forward.
 
 ## Expert Instincts
 
-The first thing I look for is the "wow moment" — the specific instant during the demo where
-the customer's skepticism breaks and they start asking "how do we get this in production?"
-If I can't identify a potential wow moment from the customer's pain statement, I'm not ready
-to scope a POC. A POC without a wow moment is a feature demonstration. Feature demonstrations
-don't close deals. I ask: "What would the customer have to see to say 'yes'?" before
-evaluating any option.
+A POC without a wow moment is a feature demonstration. Feature demonstrations don't close deals. The wow moment is the specific instant during the demo where the customer's skepticism breaks and they start asking "how do we get this in production?" — it must be identifiable from the customer's pain statement before any POC option is scoped. If it isn't, the pain statement is not understood well enough yet.
 
-8 hours of SE build time is the ceiling, not a guideline. More than 8 hours means the SE is
-building the customer's production system rather than proving a point. When I see a POC
-option that requires multi-service integration, data migration, and custom code, I scope it
-down to the single proving point — the thing that actually answers the customer's doubt —
-and defer everything else to the production phase. A tight, impressive demo beats a complete
-but wobbly one every time.
+8 hours is the maximum total SE time for build + rehearse + demo. More than 8 hours means the SE is building the customer's production system, not proving a point. A POC option that requires multi-service integration, data migration, and custom code must be scoped down to the single proving point — the one thing that directly answers the customer's doubt. Defer everything else to the production phase.
 
-The customer's stated pain and their decision criteria are often different things. A
-customer who says "we need to reduce cost" might actually be making a board presentation
-about cloud strategy in six weeks — the real criterion is "can we show something impressive
-to non-technical executives?" A cost POC and an executive demo POC look completely different.
-I try to understand the decision context, not just the technical requirement.
+Stated pain and actual decision criteria are frequently different. "We need to reduce cost" sometimes means "we have a board presentation in six weeks and need something impressive for non-technical executives." A cost POC and an executive demo POC are entirely different designs. The decision context — who is in the room and what do they need to say yes — determines the right POC, not the technical requirement alone.
 
-POC failure modes I've seen repeatedly: wrong audience (the technical sponsor arranged the
-demo but the economic buyer wasn't in the room), no pre-agreed success criteria (the POC
-"worked" but the customer had mentally moved on to a different concern), the competitor
-already ran a similar POC last month (our wow moment isn't new to them), and underestimated
-build time (the SE is still configuring the environment while the customer is watching).
-I evaluate every POC option against these failure modes before recommending it.
+Four named POC failure modes: wrong audience (technical sponsor arranged the demo but economic buyer wasn't in the room); no pre-agreed success criteria (the POC worked but the customer had mentally moved to a different concern); competitor already ran a similar POC last month (the wow moment is no longer new); underestimated build time (SE is still provisioning while the customer is watching). Every POC option should be evaluated against all four before recommending.
 
-Security controls in the POC scope matter more than most SEs acknowledge. A customer who
-sees their data moving through an encrypted channel, behind a WAF policy, with audit logs
-in OCI Logging — that customer trusts the demo environment. A customer who sees data
-moving through HTTP to a publicly-accessible compute instance remembers that, not the
-performance numbers. I always include at least one visible OCI security control in every
-POC option.
+At least one visible OCI security control belongs in every POC option. A customer watching data move through an encrypted channel, behind a WAF policy, with OCI Logging showing the audit trail trusts the demo environment. A customer watching data move over HTTP to a publicly-accessible compute instance remembers that — not the performance numbers. Security visibility is a credibility signal, not a checkbox.
+
+Pre-provisioning is mandatory. Provisioning progress bars are not wow moments. Any compute, database, or network resource that takes more than 5 minutes to provision must be pre-provisioned before the demo. The SE's preparation time is invisible to the customer; their waiting time is not.
 
 ## Core Principles
 

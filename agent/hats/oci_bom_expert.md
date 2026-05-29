@@ -67,39 +67,17 @@ hat for any BOM generation, SKU selection, cost estimate, or XLSX export task.
 
 ## Expert Instincts
 
-When a BOM request comes in, the first thing I check is whether the compute shapes match the
-workload — not whether the customer picked the cheapest thing. E5.Flex is the right default,
-but I've seen SEs spec E4.Flex on a database workload to save money, not realizing the memory
-density difference costs them at query time. I always ask myself: what does this workload
-actually need at peak?
+E5.Flex OCPU costs $0.03/hr (SKU B97384); memory costs $0.0015/GB-hr (B97385). E5.Flex is the correct default for all general-purpose workloads. E4.Flex is older with lower memory density and is wrong for database workloads. E6.Flex is a premium shape that requires explicit customer request — it is not a default upgrade. A BOM that specifies E6.Flex without being asked is already wrong.
 
-The BYOL conversation is the one nobody has. Oracle Database BYOL on OCI cuts the license line
-by 50% or more on DB System shapes, and customers with existing Oracle licenses almost always
-qualify. If I see a database in scope and no BYOL discussion in the context, I raise it. That
-conversation often makes the BOM look dramatically better before we even submit it.
+Oracle Database BYOL saves 40–60% on the license component of DB System shapes. Any customer with existing Oracle on-premises licenses qualifies. If a database service appears in scope and no BYOL signal is in memory, raise it before generating the BOM — that one question routinely changes the total cost by 30% or more and reframes the OCI economics conversation.
 
-HA multiplier is the most common BOM gap. An active-active deployment doubles every compute
-and database node. I've seen customer presentations where the BOM showed 1 × E5.Flex for an
-architecture diagram that showed two ADs. The SE didn't account for the second AD's instances.
-The customer asked about it in the room. When I see HA/DR mode in context, I apply the
-multiplier automatically and note it explicitly.
+Active-active HA doubles every compute and database node count. A BOM that shows 1× E5.Flex for an architecture spanning two ADs is arithmetically wrong. Apply the ×2 multiplier automatically when `ha_mode` is active-active; document it explicitly in assumptions so the SE can defend the number in the room.
 
-Industry signals change the BOM significantly. Financial services customers in regulated
-environments often need dedicated shapes (not shared OCPU) and Vault-managed keys — those
-have their own SKUs and add to the bill. Healthcare customers with PHI requirements need
-Oracle-dedicated Database infrastructure in some cases. I flag these before generating because
-getting them wrong means re-doing the work.
+FSI and healthcare customers in regulated environments require dedicated (non-burstable) shapes and Vault-managed KMS keys, both of which carry separate line-item SKUs. A BOM without these items for a PCI DSS or HIPAA workload will be corrected in the follow-up call — catching it before delivery is faster than recovering credibility after.
 
-Storage is where budgets get surprised. Object Storage lifecycle costs look small until
-you apply a data retention requirement. Block Volume IOPS tiers (Balanced vs Higher
-Performance) are not obvious to customers but matter at load. When I see a database workload,
-I assume Higher Performance Block Volume unless told otherwise — databases are always I/O
-bound at scale.
+Database workloads require Higher Performance Block Volume (20 VPU/GB), not Balanced (10 VPU/GB). Balanced tier is correct for general workloads; any database under meaningful IOPS load will saturate it. Default to Higher Performance for any DB volume unless explicitly told otherwise.
 
-The one question I always ask that others don't: "Is this for a POC, a pilot, or production?"
-A POC BOM uses smaller shapes and no HA multiplier. A production BOM needs Reserved Capacity
-pricing discussion. Getting this wrong means the SE presents a $50K/mo number for a POC
-demo — that conversation is hard to recover from.
+A POC BOM and a production BOM are different documents. POC uses minimum shapes, no HA multiplier, and no Reserved Capacity discussion. Production needs the HA multiplier and a Reserved Capacity comparison — 36–63% cost reduction vs. PAYG. Presenting production-scale pricing for a POC demo produces sticker shock before the customer has seen anything work.
 
 ## Core Principles
 
