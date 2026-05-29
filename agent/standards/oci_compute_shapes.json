@@ -1,0 +1,270 @@
+{
+  "_meta": {
+    "description": "OCI Compute Shape catalog for JEP/BOM/architecture reference",
+    "source": "Oracle Cloud Infrastructure documentation and official blog announcements",
+    "last_updated": "2026-05-29",
+    "notes": "Flex shapes allow independent OCPU + memory selection within stated ranges. Network bandwidth scales at ~1 Gbps per OCPU up to the stated cap unless otherwise noted."
+  },
+  "flex_vm_shapes": [
+    {
+      "shape": "VM.Standard.E6.Flex",
+      "family": "AMD EPYC (E6 / Acceleron)",
+      "processor": "AMD EPYC 9J45",
+      "processor_base_ghz": 2.7,
+      "processor_boost_ghz": 4.1,
+      "generation": "6th-gen AMD (Turin)",
+      "ocpu_min": 1,
+      "ocpu_max": 126,
+      "memory_min_gb": 1,
+      "memory_max_gb": 1454,
+      "memory_ratio_gb_per_ocpu": "1–11.54 (flexible)",
+      "network_bandwidth_gbps_max": 40,
+      "network_scaling": "1 Gbps per OCPU up to 40 Gbps cap",
+      "gpu": false,
+      "local_nvme": false,
+      "use_cases": [
+        "General-purpose workloads",
+        "Web, app, and API tiers",
+        "CI/CD build agents",
+        "Databases and analytics (medium scale)",
+        "Cost-optimised replacement for E4/E5"
+      ],
+      "notable": "2x performance vs E5 at same price point per Oracle announcement (2024). 33% larger L3 cache (512 MB), 45% higher memory bandwidth than E5. Recommended default for new general-purpose deployments."
+    },
+    {
+      "shape": "VM.Standard.E5.Flex",
+      "family": "AMD EPYC (E5)",
+      "processor": "AMD EPYC 9J14",
+      "processor_base_ghz": 2.4,
+      "processor_boost_ghz": 3.7,
+      "generation": "4th-gen AMD (Genoa)",
+      "ocpu_min": 1,
+      "ocpu_max": 64,
+      "memory_min_gb": 1,
+      "memory_max_gb": 1024,
+      "memory_ratio_gb_per_ocpu": "16 GB default per OCPU",
+      "network_bandwidth_gbps_max": 40,
+      "network_scaling": "1 Gbps per OCPU, capped at 40 Gbps (≥40 OCPUs)",
+      "gpu": false,
+      "local_nvme": false,
+      "use_cases": [
+        "General-purpose compute",
+        "Memory-intensive applications",
+        "Mid-tier databases",
+        "Dev/test environments"
+      ],
+      "notable": "Successor to E4. Supported by OCI Base Database Service. Good price/performance for most enterprise workloads."
+    },
+    {
+      "shape": "VM.Standard.E4.Flex",
+      "family": "AMD EPYC (E4)",
+      "processor": "AMD EPYC 7J13 (Milan)",
+      "processor_base_ghz": 2.55,
+      "processor_boost_ghz": 3.5,
+      "generation": "3rd-gen AMD (Milan)",
+      "ocpu_min": 1,
+      "ocpu_max": 64,
+      "memory_min_gb": 1,
+      "memory_max_gb": 1024,
+      "memory_ratio_gb_per_ocpu": "up to 64 GB per OCPU",
+      "network_bandwidth_gbps_max": 40,
+      "network_scaling": "1 Gbps per OCPU, capped at 40 Gbps",
+      "gpu": false,
+      "local_nvme": false,
+      "use_cases": [
+        "General-purpose workloads",
+        "Web and app tiers",
+        "Lift-and-shift migrations",
+        "Dev/test"
+      ],
+      "notable": "Widely available, mature shape. Being superseded by E5/E6 for new deployments. Still valid for existing workloads."
+    },
+    {
+      "shape": "VM.Standard.A1.Flex",
+      "family": "Ampere Arm (A1)",
+      "processor": "Ampere Altra Q80-30",
+      "processor_base_ghz": null,
+      "processor_boost_ghz": 3.0,
+      "generation": "Arm (Neoverse N1-class)",
+      "ocpu_min": 1,
+      "ocpu_max": 80,
+      "memory_min_gb": 1,
+      "memory_max_gb": 512,
+      "memory_ratio_gb_per_ocpu": "6 GB default per OCPU",
+      "network_bandwidth_gbps_max": 40,
+      "network_scaling": "1 Gbps per OCPU, capped at 40 Gbps",
+      "gpu": false,
+      "local_nvme": false,
+      "always_free_eligible": true,
+      "use_cases": [
+        "Cloud-native / container workloads",
+        "Arm-native microservices",
+        "Cost-sensitive general-purpose compute",
+        "Development and CI/CD on Arm"
+      ],
+      "notable": "Each OCPU = 1 physical Arm execution thread (not hyperthreaded). Always Free tier includes 4 OCPUs + 24 GB. Very competitive per-OCPU cost. OKE supports A1 worker nodes."
+    },
+    {
+      "shape": "VM.Standard3.Flex",
+      "family": "Intel X9 (Ice Lake)",
+      "processor": "Intel Xeon Platinum 8358",
+      "processor_base_ghz": 2.6,
+      "processor_boost_ghz": 3.4,
+      "generation": "Intel 3rd-gen Xeon Scalable (Ice Lake)",
+      "ocpu_min": 1,
+      "ocpu_max": 32,
+      "memory_min_gb": 1,
+      "memory_max_gb": 512,
+      "memory_ratio_gb_per_ocpu": "16 GB default per OCPU",
+      "network_bandwidth_gbps_max": 40,
+      "network_scaling": "1 Gbps per OCPU, capped at 40 Gbps",
+      "gpu": false,
+      "local_nvme": false,
+      "use_cases": [
+        "Intel-specific ISV software",
+        "Applications with Intel MKL / AVX-512 dependency",
+        "General-purpose Intel-certified workloads"
+      ],
+      "notable": "Intel-only option for customers with Intel-specific licensing or software requirements. Lower max OCPU than AMD shapes."
+    },
+    {
+      "shape": "VM.Optimized3.Flex",
+      "family": "Intel X9 High-Frequency (Ice Lake-SP)",
+      "processor": "Intel Xeon 6354",
+      "processor_base_ghz": 3.0,
+      "processor_boost_ghz": 3.6,
+      "generation": "Intel Xeon Scalable Ice Lake (high-frequency SKU)",
+      "ocpu_min": 1,
+      "ocpu_max": 18,
+      "memory_min_gb": 1,
+      "memory_max_gb": 256,
+      "memory_ratio_gb_per_ocpu": "14 GB default per OCPU",
+      "network_bandwidth_gbps_max": 40,
+      "network_scaling": "4–40 Gbps (higher floor than standard shapes)",
+      "gpu": false,
+      "local_nvme": false,
+      "use_cases": [
+        "Low-latency / high-frequency trading (HFT)",
+        "Real-time analytics",
+        "Gaming servers",
+        "Workloads benefiting from high single-thread clock speed"
+      ],
+      "notable": "Highest base clock frequency among OCI VM shapes. Relatively low max OCPU (18). Choose when single-thread performance matters more than parallel throughput."
+    }
+  ],
+  "bare_metal_gpu_shapes": [
+    {
+      "shape": "BM.GPU.H100.8",
+      "family": "NVIDIA H100 (X10 / Sapphire Rapids)",
+      "processor": "Intel Xeon Platinum 8480+ (Sapphire Rapids)",
+      "processor_cores_total": 112,
+      "processor_base_ghz": 2.0,
+      "processor_boost_ghz": 3.8,
+      "cpu_sockets": 2,
+      "ocpu_count": 112,
+      "system_memory_gb": 2048,
+      "gpu": true,
+      "gpu_type": "NVIDIA H100 SXM5",
+      "gpu_count": 8,
+      "gpu_memory_gb_each": 80,
+      "gpu_memory_total_gb": 640,
+      "gpu_interconnect": "NVLink 4.0 + NVSwitch (3.2 TB/s bisectional GPU-to-GPU)",
+      "network_bandwidth_gbps": 2400,
+      "network_type": "RDMA-capable (OCI RDMA cluster networking)",
+      "local_nvme_drives": 16,
+      "local_nvme_capacity_tb_each": 3.84,
+      "local_nvme_total_tb": 61.44,
+      "use_cases": [
+        "Large-scale LLM training (GPT-4 class and above)",
+        "Generative AI fine-tuning",
+        "HPC / scientific simulation at petaFLOP scale",
+        "Multi-node distributed training clusters"
+      ],
+      "notable": "Flagship AI training shape. Typically deployed in RDMA-connected clusters (H100 SuperCluster). High demand — may require capacity reservations. 640 GB total GPU HBM3 memory."
+    },
+    {
+      "shape": "BM.GPU4.8",
+      "family": "NVIDIA A100 (E3 / AMD EPYC)",
+      "processor": "AMD EPYC 7542 (Rome)",
+      "processor_cores_total": 128,
+      "processor_base_ghz": 2.9,
+      "processor_boost_ghz": 3.4,
+      "cpu_sockets": 2,
+      "ocpu_count": 64,
+      "system_memory_gb": 2048,
+      "gpu": true,
+      "gpu_type": "NVIDIA A100 SXM4",
+      "gpu_count": 8,
+      "gpu_memory_gb_each": 40,
+      "gpu_memory_total_gb": 320,
+      "gpu_interconnect": "NVLink 3.0 (high-speed direct GPU-to-GPU)",
+      "network_bandwidth_gbps": 1600,
+      "network_type": "RDMA-capable (OCI RDMA cluster networking)",
+      "local_nvme_capacity_tb": 25.6,
+      "use_cases": [
+        "Large model training (GPT-3 class)",
+        "AI/ML inference at scale",
+        "HPC workloads",
+        "Video encoding / rendering"
+      ],
+      "notable": "312 TFLOPS (FP16 Tensor Core). NVLink GPU-to-GPU. RDMA cluster networking for multi-node jobs. Predecessor to H100 shapes for training workflows."
+    },
+    {
+      "shape": "BM.GPU.A10.4",
+      "family": "NVIDIA A10 (X9 / Intel Ice Lake)",
+      "processor": "Intel Xeon Platinum 8358",
+      "processor_base_ghz": 2.6,
+      "processor_boost_ghz": 3.4,
+      "ocpu_count": 64,
+      "system_memory_gb": 1024,
+      "gpu": true,
+      "gpu_type": "NVIDIA A10",
+      "gpu_count": 4,
+      "gpu_memory_gb_each": 24,
+      "gpu_memory_total_gb": 96,
+      "gpu_interconnect": "PCIe (no NVLink on A10)",
+      "network_bandwidth_gbps": 100,
+      "local_nvme_drives": 2,
+      "local_nvme_capacity_tb_each": 3.84,
+      "local_nvme_total_tb": 7.68,
+      "use_cases": [
+        "Inference serving (LLM inference, CV models)",
+        "Graphics rendering / virtual workstations",
+        "Small-to-medium model training",
+        "Game streaming / VDI"
+      ],
+      "notable": "31.2 TFLOPS FP32, 250 TOPS INT8. Excellent for inference and graphics. No NVLink — GPUs communicate via PCIe. Good cost/inference-throughput ratio. shape name on OCI is BM.GPU.A10.4 (4 GPUs per node)."
+    }
+  ],
+  "bare_metal_hpc_shapes": [
+    {
+      "shape": "BM.HPC2.36",
+      "family": "HPC (Intel Skylake)",
+      "processor": "Intel Xeon Gold 6154 (Skylake-SP)",
+      "ocpu_count": 36,
+      "system_memory_gb": 384,
+      "gpu": false,
+      "network_bandwidth_gbps": 25,
+      "network_type": "RDMA RoCE v2 (25 Gbps low-latency)",
+      "local_nvme": false,
+      "use_cases": [
+        "MPI-based HPC workloads",
+        "Computational fluid dynamics (CFD)",
+        "Finite element analysis (FEA)",
+        "Molecular dynamics",
+        "Tightly-coupled parallel applications"
+      ],
+      "notable": "RDMA low-latency interconnect is the key differentiator. Used in HPC clusters with OCI HPC cluster network. Older shape — newer HPC options include BM.Optimized3.36 (higher clock speed) and GPU-accelerated shapes."
+    }
+  ],
+  "shape_selection_guide": {
+    "default_general_purpose": "VM.Standard.E6.Flex (best price/performance as of 2024)",
+    "arm_cloud_native": "VM.Standard.A1.Flex",
+    "intel_required": "VM.Standard3.Flex",
+    "low_latency_hft": "VM.Optimized3.Flex",
+    "ai_training_large": "BM.GPU.H100.8 (cluster mode with RDMA)",
+    "ai_training_medium": "BM.GPU4.8 (A100 x8)",
+    "ai_inference_graphics": "BM.GPU.A10.4",
+    "hpc_mpi": "BM.HPC2.36 or BM.Optimized3.36"
+  }
+}

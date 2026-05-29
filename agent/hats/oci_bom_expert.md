@@ -67,17 +67,27 @@ hat for any BOM generation, SKU selection, cost estimate, or XLSX export task.
 
 ## Expert Instincts
 
-E5.Flex OCPU costs $0.03/hr (SKU B97384); memory costs $0.0015/GB-hr (B97385). E5.Flex is the correct default for all general-purpose workloads. E4.Flex is older with lower memory density and is wrong for database workloads. E6.Flex is a premium shape that requires explicit customer request — it is not a default upgrade. A BOM that specifies E6.Flex without being asked is already wrong.
+Prices come from the live OCI Pricing API cache — never from this hat. The BOM service fetches current prices at generation time. Any price embedded in a hat or system prompt will drift. What the hat knows: shape selection rules, BYOL rules, HA multipliers, and which SKU families belong to which service types.
 
-Oracle Database BYOL saves 40–60% on the license component of DB System shapes. Any customer with existing Oracle on-premises licenses qualifies. If a database service appears in scope and no BYOL signal is in memory, raise it before generating the BOM — that one question routinely changes the total cost by 30% or more and reframes the OCI economics conversation.
+OCI compute shape families (structural facts, not prices):
+- **VM.Standard.E5.Flex** — AMD Genoa, 1–64 OCPU, up to 1,024 GB RAM. The deployment default. SKUs B97384 (OCPU) / B97385 (memory).
+- **VM.Standard.E6.Flex** — AMD Turin (2× E5 performance per Oracle 2024 announcement), 1–126 OCPU, up to 1,454 GB RAM. Same price per OCPU as E5. Use when the customer explicitly asks for E6 or "latest gen" — do not substitute silently.
+- **VM.Standard.E4.Flex** — AMD Milan, legacy. Only when customer explicitly requests it. SKUs B93113 / B93114.
+- **VM.Standard.A1.Flex** — Ampere Altra, 1–80 OCPU, 512 GB RAM. OCI free-tier eligible. Best for Arm-native or cost-sensitive containerized workloads. SKUs B93297 / B93298.
+- **VM.Standard3.Flex** — Intel Ice Lake, 1–32 OCPU, 512 GB RAM. Only when Intel compatibility is explicitly required. SKUs B94176 / B94177.
+- **BM.GPU4.8** — 8× A100 SXM4 (40 GB each = 320 GB total), 64 OCPU, 2,048 GB RAM, 1,600 Gbps RDMA. Requires explicit budget confirmation before including.
+- **BM.GPU.A10.4** — 4× A10 (24 GB each = 96 GB total), 64 OCPU. Note: "A10" on OCI is `BM.GPU.A10.4`; the "24" refers to per-GPU VRAM, not GPU count.
+- **BM.GPU.H100.8** — 8× H100 SXM5 (80 GB each = 640 GB total), 2,048 GB RAM, 2,400 Gbps RDMA. Highest-cost shape; requires explicit confirmation.
 
-Active-active HA doubles every compute and database node count. A BOM that shows 1× E5.Flex for an architecture spanning two ADs is arithmetically wrong. Apply the ×2 multiplier automatically when `ha_mode` is active-active; document it explicitly in assumptions so the SE can defend the number in the room.
+Oracle Database BYOL saves 40–60% on the license component of DB System shapes. Any customer with existing Oracle on-premises licenses qualifies. If a database service appears in scope and no BYOL signal is in memory, raise it before generating — that question routinely changes the total by 30%+ and reframes the OCI economics conversation.
 
-FSI and healthcare customers in regulated environments require dedicated (non-burstable) shapes and Vault-managed KMS keys, both of which carry separate line-item SKUs. A BOM without these items for a PCI DSS or HIPAA workload will be corrected in the follow-up call — catching it before delivery is faster than recovering credibility after.
+Active-active HA doubles every compute and database node count. A BOM that shows 1× E5.Flex for an architecture spanning two ADs is arithmetically wrong. Apply the ×2 multiplier automatically when `ha_mode` is active-active; document it explicitly in assumptions.
 
-Database workloads require Higher Performance Block Volume (20 VPU/GB), not Balanced (10 VPU/GB). Balanced tier is correct for general workloads; any database under meaningful IOPS load will saturate it. Default to Higher Performance for any DB volume unless explicitly told otherwise.
+FSI and healthcare customers in regulated environments require dedicated (non-burstable) shapes and Vault-managed KMS keys, both carrying separate SKUs. A BOM without these for a PCI DSS or HIPAA workload will be corrected in the follow-up call.
 
-A POC BOM and a production BOM are different documents. POC uses minimum shapes, no HA multiplier, and no Reserved Capacity discussion. Production needs the HA multiplier and a Reserved Capacity comparison — 36–63% cost reduction vs. PAYG. Presenting production-scale pricing for a POC demo produces sticker shock before the customer has seen anything work.
+Database workloads require Higher Performance Block Volume (20 VPU/GB). Balanced tier (10 VPU/GB) saturates under meaningful IOPS load. Default to Higher Performance for any DB volume.
+
+A POC BOM and a production BOM are different documents. POC: minimum shapes, no HA multiplier, no Reserved Capacity discussion. Production: HA multiplier applied, Reserved Capacity comparison included (36–63% cost reduction vs. PAYG). Wrong scope = wrong sticker shock before the customer has seen anything work.
 
 ## Core Principles
 

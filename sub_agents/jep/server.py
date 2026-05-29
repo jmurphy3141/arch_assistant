@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ _ROOT = _HERE.parents[1]
 _CONFIG = _HERE / "config.yaml"
 _MAIN_CONFIG = _ROOT / "config.yaml"
 _SYSTEM_PROMPT = _HERE / "system_prompt.md"
+_PROVISIONING_TIMES = _ROOT / "agent" / "standards" / "oci_provisioning_times.json"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -32,12 +34,52 @@ def _first_present(*values: Any, default: Any = None) -> Any:
     return default
 
 
+def _format_provisioning_reference(path: Path) -> str:
+    if not path.exists():
+        return ""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    summary = data.get("jep_phase_planning_summary", {})
+    lines = [
+        "\n\n## OCI Service Provisioning Time Reference",
+        "Use these empirical baselines for all JEP phase durations. Do not invent times.\n",
+        "| Service | Plan As |",
+        "|---------|---------|",
+    ]
+    flat = {
+        "VCN + subnets + gateways": data["networking"]["vcn_and_subnets"]["plan_as"],
+        "DRG + VCN attachment": data["networking"]["drg_and_attachment"]["plan_as"],
+        "Load Balancer (Flexible)": data["networking"]["load_balancer_flexible"]["plan_as"],
+        "FastConnect (new circuit)": data["networking"]["fastconnect_virtual_circuit_partner"]["plan_as_jep"],
+        "WAF policy (active)": data["networking"]["waf_policy"]["plan_as"],
+        "Compute instance (E5.Flex VM)": data["compute"]["compute_instance_flex_vm"]["plan_as"],
+        "Compute instance (Bare Metal GPU)": data["compute"]["compute_instance_bare_metal_gpu"]["plan_as"],
+        "Bastion service session": data["compute"]["bastion_service_session"]["plan_as"],
+        "OKE cluster (full: CP + workers)": data["containers"]["oke_cluster_total"]["plan_as"],
+        "ADB Serverless": data["database"]["autonomous_database_serverless"]["plan_as"],
+        "ADB Dedicated (Exadata stack)": data["database"]["autonomous_database_dedicated_full_stack"]["plan_as_jep"],
+        "MySQL HeatWave": data["database"]["mysql_heatwave"]["plan_as"],
+        "Base DB VM System": data["database"]["base_db_vm_dbsystem"]["plan_as"],
+        "Object Storage bucket": data["storage"]["object_storage_bucket"]["plan_as"],
+        "Block Volume (create + attach)": data["storage"]["block_volume"]["plan_as"],
+        "OCI Vault + KMS key": data["security"]["oci_vault"]["plan_as"],
+    }
+    for service, plan_as in flat.items():
+        lines.append(f"| {service} | {plan_as} |")
+    lines += [
+        "",
+        f"**Full OCI foundation stack (VCN + OKE + ADB Serverless + LB + Vault + WAF):** {summary.get('total_cloud_provisioning_excluding_fastconnect', {}).get('estimated_duration_hours', '1–2 hours')}",
+        "**FastConnect MUST be ordered in Phase 0** — physical circuit lead time is 2–4 weeks.",
+        "**ADB-D adds ~6 hours** if Exadata Dedicated is required.",
+    ]
+    return "\n".join(lines)
+
+
 _agent_config = _load_yaml(_CONFIG)
 _main_config = _load_yaml(_MAIN_CONFIG)
 _agent_llm = _agent_config.get("llm") or {}
 _main_inference = _main_config.get("inference") or {}
 _model_id = str(_first_present(_agent_llm.get("model_id"), _main_inference.get("model_id"), default=""))
-_system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8")
+_system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8") + _format_provisioning_reference(_PROVISIONING_TIMES)
 
 
 card = AgentCard(

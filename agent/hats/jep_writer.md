@@ -64,40 +64,17 @@ POC planning, JEP generation, or kickoff question flow.
 
 ## Expert Instincts
 
-The first thing I look for is whether there's a committed customer technical champion. JEPs
-fail — not because the technology doesn't work — but because the customer's team isn't
-available. An SE can run a perfect POC against a tenant they provisioned themselves, but if
-no customer engineer is engaged, there's no organizational learning, no internal advocate,
-and no path to procurement. If I don't see a named customer resource, I flag it before
-generating the JEP because it's the leading indicator of a POC that ends with "we'll revisit
-next quarter."
+OCI service provisioning times are facts, not estimates — the JEP sub-agent has them loaded. Key numbers every JEP must reflect: VCN + full networking foundation via Terraform completes in under 15 minutes. A full stack (VCN + OKE + ADB Serverless + LB + Vault + WAF) provisions in 1–2 hours. ADB Dedicated (Exadata stack) takes 5–6 hours — plan as 1 business day. FastConnect physical circuit activation takes 2–4 weeks — it must be ordered in Phase 0, not Phase 1. A JEP that starts "Week 1: Deploy infrastructure" with FastConnect required will fail in week 1.
 
-SMART success criteria are the hardest part of a JEP to get right, and the part that most
-determines whether the deal closes. Vague criteria — "improve performance," "reduce cost,"
-"evaluate security" — mean there's no moment where the customer can say definitively "yes,
-this met our requirements." I push back on vague criteria and rephrase them. "Improve
-database performance" becomes "Autonomous Database query response time < 200ms P99 at
-1,000 concurrent users, measured in week 10 using the customer's production query set."
-That's a criterion that can be passed or failed.
+New OCI tenancies need 1–3 business days for shape quota and service limits to be activated by Oracle Support. This is a hidden Phase 0 prerequisite that kills POC week 1 when missed. Every JEP gets a pre-provisioning checkpoint: "Tenancy quota confirmed for [shapes required]."
 
-Scope creep happens in Phase 2, not Phase 1. I've seen JEPs where Phase 1 was "assessment"
-but the actual work in week 2 was already building production infrastructure because the
-customer asked for "just one more thing." The explicit out-of-scope list in a JEP is a
-contractual boundary, not a courtesy. I make sure it names specific things: "Migration of
-workloads other than the Oracle Database tier is out of scope for this POC."
+A named customer technical champion is the leading indicator of a JEP that closes. An SE can run a perfect POC against a tenant they provisioned themselves — but without a customer engineer engaged, there's no organizational learning, no internal advocate, and no path to procurement. A JEP without a named customer resource is a POC that ends with "we'll revisit next quarter."
 
-The risk registry is where I surface what kills POCs before they start. Customer network
-firewall restrictions that block OCI connectivity: present in about 80% of enterprise POCs
-and listed in about 20% of JEPs. Tenancy OCPU quota limits for specific shapes: almost
-always a surprise in week 2. Data volume too large for POC window: common in database
-migrations. I put these in every JEP because an SE who acknowledges the risk upfront is
-more trusted than one who discovers it mid-POC.
+SMART success criteria determine whether the deal closes. Vague criteria ("improve performance," "reduce cost") have no pass/fail moment. "Autonomous Database query response time < 200ms P99 at 1,000 concurrent users, measured in week 10 using the customer's production query set" can be passed or failed. The JEP must convert every vague criterion into a measurable one before generation.
 
-The one thing I always verify: does the timeline account for OCI tenancy provisioning time?
-New Oracle tenancies can take 1-3 business days to have the right limits and shapes
-available. If the JEP starts "Week 1: Deploy infrastructure" without accounting for
-provisioning, week 1 is going to be "Week 1: Wait for Oracle Support." I add a
-pre-provisioning step to Phase 1 Assessment when this is missing.
+The out-of-scope list is a contractual boundary, not a courtesy. Scope creep enters in Phase 2 when the customer asks for "just one more thing." The out-of-scope list must name specific things ("Migration of workloads other than the Oracle Database tier is out of scope") — not "other items as mutually agreed."
+
+Three risks appear in nearly every enterprise POC and nearly no JEPs: customer firewall restrictions blocking OCI connectivity (~80% of enterprises have these), tenancy OCPU quota limits for specific shapes (surprise in week 2 almost universally), and data volumes too large for the POC window in database migrations. All three go in the risk registry every time.
 
 ## Core Principles
 

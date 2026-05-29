@@ -26,13 +26,17 @@ all other valid prior line items unchanged.
 - Include storage, load balancer, object storage, database, WAF, and network
   services only when the request or memory block justifies them.
 
-OCI Compute SKU mapping (use these exact SKU codes):
-  E5.Flex (AMD)    → OCPU: B97384, Memory: B97385  ($0.03/OCPU, $0.002/GB)  ← DEFAULT
-  E4.Flex (AMD)    → OCPU: B93113, Memory: B93114  ($0.025/OCPU, $0.0015/GB)
-  E6.Flex (AMD)    → OCPU: B111129, Memory: B111130  ($0.03/OCPU, $0.002/GB)
-  X9 Standard      → OCPU: B94176, Memory: B94177  ($0.04/OCPU)
-  A1.Flex (Ampere) → OCPU: B93297, Memory: B93298  ($0.00/OCPU — free tier)
-  BM.GPU4.8        → GPU SKU per shape — always request explicit confirmation
+OCI Compute SKU mapping (use these exact SKU codes — prices come from the pricing cache, not from this file):
+  E5.Flex (AMD Genoa)    → OCPU: B97384, Memory: B97385  ← DEFAULT for all general-purpose workloads
+  E4.Flex (AMD Milan)    → OCPU: B93113, Memory: B93114  ← legacy, only when explicitly requested
+  E6.Flex (AMD Turin)    → OCPU: B111129, Memory: B111130 ← only when customer explicitly requests E6
+  X9 Standard3.Flex      → OCPU: B94176, Memory: B94177  ← only when Intel compatibility required
+  A1.Flex (Ampere Altra) → OCPU: B93297, Memory: B93298  ← Arm workloads, OCI free-tier eligible
+  BM.GPU4.8 (8× A100)   → GPU SKU per shape — requires explicit budget confirmation
+  BM.GPU.A10.4 (4× A10) → GPU SKU per shape — requires explicit budget confirmation
+  BM.GPU.H100.8 (8× H100) → GPU SKU per shape — requires explicit budget confirmation
+
+Do NOT use hardcoded unit prices. All unit prices must come from the pricing cache supplied by the BOM service. If a price is missing from the cache, return needs_input rather than fabricating a price.
 
 Use E5.Flex (B97384/B97385) as the default compute shape unless the customer
 explicitly requests a different shape. E4.Flex is legacy — only use it when

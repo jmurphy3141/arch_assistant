@@ -1,0 +1,212 @@
+{
+  "_meta": {
+    "description": "Typical OCI service provisioning times for JEP phase timeline planning",
+    "purpose": "Makes JEP phase timelines defensible with empirical baselines. Values are 'typical observed' ranges, not SLAs.",
+    "last_updated": "2026-05-29",
+    "methodology": "Derived from Oracle documentation, official blog posts, community experience, and operator observations. Where Oracle docs state a range, that range is preserved. Times assume normal tenancy quota and no capacity constraints.",
+    "disclaimer": "These are planning estimates, not contractual SLAs. Actual times vary with region load, shape availability, and tenancy limits. FastConnect and ADB-D times depend on physical/third-party factors."
+  },
+  "networking": {
+    "vcn_and_subnets": {
+      "typical_seconds": 10,
+      "range": "5–30 seconds",
+      "notes": "VCN + subnets + route tables + security lists are near-instant API operations. Terraform apply for a full VCN with 3 subnets, IGW, NAT GW, and route tables typically completes in under 30 seconds.",
+      "plan_as": "< 1 minute"
+    },
+    "internet_gateway": {
+      "typical_seconds": 5,
+      "range": "3–15 seconds",
+      "notes": "Trivial API operation.",
+      "plan_as": "< 1 minute"
+    },
+    "nat_gateway": {
+      "typical_seconds": 10,
+      "range": "5–20 seconds",
+      "plan_as": "< 1 minute"
+    },
+    "service_gateway": {
+      "typical_seconds": 10,
+      "range": "5–20 seconds",
+      "plan_as": "< 1 minute"
+    },
+    "drg_and_attachment": {
+      "typical_minutes": 2,
+      "range": "1–5 minutes",
+      "notes": "DRG creation is fast; VCN attachment and route propagation add a minute or two.",
+      "plan_as": "2–5 minutes"
+    },
+    "load_balancer_flexible": {
+      "typical_minutes": 3,
+      "range": "2–5 minutes",
+      "notes": "Flexible Load Balancer (Layer 7) or Network Load Balancer reach ACTIVE state quickly. Backend health checks add a minute after instance registration.",
+      "plan_as": "3–5 minutes"
+    },
+    "fastconnect_virtual_circuit_partner": {
+      "typical_hours": 0.5,
+      "range": "Minutes to hours for OCI-side provisioning; days to weeks for physical circuit activation",
+      "breakdown": {
+        "oci_virtual_circuit_api": "Minutes (status: PENDING_PROVIDER)",
+        "partner_activation_att_megaport": "~3 business days typical",
+        "physical_cross_connect_colo": "1–4 weeks depending on facility and provider",
+        "bgp_session_establishment": "Minutes once physical layer is up"
+      },
+      "notes": "FastConnect OCI-side objects provision in minutes. The real lead time is the physical last-mile and partner activation. Plan 2–4 weeks end-to-end in JEPs for new circuits; existing partner connections can be 1–3 business days.",
+      "plan_as_jep": "2–4 weeks (new circuit) | 1–3 business days (existing partner port)"
+    },
+    "waf_policy": {
+      "typical_minutes": 15,
+      "range": "5–20 minutes",
+      "notes": "OCI WAF policy (Web Application Firewall) is documented to become active within 15 minutes of creation. DNS propagation to WAF edge may add additional time.",
+      "plan_as": "15–20 minutes"
+    }
+  },
+  "compute": {
+    "compute_instance_flex_vm": {
+      "typical_minutes": 2,
+      "range": "1–5 minutes",
+      "notes": "VM.Standard.E5.Flex and similar VM shapes launch within minutes per Oracle Compute FAQ. Larger shapes (64 OCPU) and custom images may be at the higher end.",
+      "plan_as": "2–5 minutes"
+    },
+    "compute_instance_bare_metal_gpu": {
+      "typical_minutes": 10,
+      "range": "5–20 minutes",
+      "notes": "BM.GPU4.8 and BM.GPU.H100.8 take longer than VMs due to physical host allocation and driver initialization.",
+      "plan_as": "10–20 minutes"
+    },
+    "bastion_service_session": {
+      "typical_seconds": 30,
+      "range": "20–60 seconds",
+      "notes": "OCI Bastion service itself provisions in under a minute. Individual managed SSH sessions or port-forwarding sessions activate within seconds of creation.",
+      "plan_as": "< 1 minute for session creation"
+    }
+  },
+  "containers": {
+    "oke_cluster_control_plane": {
+      "typical_minutes": 10,
+      "range": "5–15 minutes",
+      "notes": "OKE control plane (API server, etcd) provisions separately from worker nodes. Enhanced clusters with VCN-native pod networking take slightly longer.",
+      "plan_as": "10–15 minutes"
+    },
+    "oke_node_pool_worker_nodes": {
+      "typical_minutes": 15,
+      "range": "10–25 minutes",
+      "notes": "Worker nodes are compute instances plus Kubernetes bootstrap. Oracle states up to 30 minutes for full cluster (control plane + workers).",
+      "plan_as": "15–25 minutes"
+    },
+    "oke_cluster_total": {
+      "typical_minutes": 20,
+      "range": "15–30 minutes",
+      "notes": "Oracle documentation states 'up to 30 minutes to provision all resources for your cluster'.",
+      "plan_as": "20–30 minutes"
+    }
+  },
+  "database": {
+    "autonomous_database_serverless": {
+      "typical_minutes": 5,
+      "range": "3–15 minutes",
+      "notes": "ADB Serverless (ATP or ADW) typically provisions in a few minutes. Oracle documentation states it may take longer for smaller shapes, but generally < 15 minutes. Always Free tier may queue longer.",
+      "plan_as": "5–15 minutes"
+    },
+    "autonomous_database_dedicated_full_stack": {
+      "typical_hours": 5,
+      "range": "4–6 hours",
+      "breakdown": {
+        "exadata_infrastructure": "~10 minutes",
+        "autonomous_vm_cluster_avmc": "4–6 hours (longest step — physical Exadata provisioning)",
+        "autonomous_container_database_acd": "20–40 minutes",
+        "autonomous_database_instance": "5–10 minutes"
+      },
+      "notes": "ADB-D (Autonomous Database Dedicated on Exadata Cloud Service) requires provisioning the full Exadata Infrastructure → VM Cluster → Container DB → ADB stack in sequence. The VM Cluster step dominates timing. Plan for a full working day.",
+      "plan_as_jep": "5–6 hours (or 1 business day to allow for any issues)"
+    },
+    "mysql_heatwave": {
+      "typical_minutes": 10,
+      "range": "5–20 minutes",
+      "notes": "MySQL HeatWare DB system provisions in under 20 minutes for standard shapes.",
+      "plan_as": "10–20 minutes"
+    },
+    "base_db_vm_dbsystem": {
+      "typical_minutes": 30,
+      "range": "20–60 minutes",
+      "notes": "OCI Base DB (DB System on VM) takes longer than ADB Serverless due to OS + Oracle DB software provisioning.",
+      "plan_as": "30–60 minutes"
+    }
+  },
+  "storage": {
+    "object_storage_bucket": {
+      "typical_seconds": 5,
+      "range": "3–10 seconds",
+      "notes": "Object Storage bucket creation is near-instant API operation. IAM policy propagation for access may take 30–60 seconds.",
+      "plan_as": "< 1 minute"
+    },
+    "block_volume": {
+      "typical_seconds": 30,
+      "range": "15–60 seconds",
+      "notes": "Block Volume creation is fast. Attachment to a compute instance adds another 15–30 seconds. iSCSI login and OS-side formatting are additional steps post-provisioning.",
+      "plan_as": "1–2 minutes (create + attach)"
+    },
+    "file_storage_mount_target": {
+      "typical_minutes": 2,
+      "range": "1–5 minutes",
+      "notes": "OCI File Storage Service (NFS) mount target creation takes a few minutes.",
+      "plan_as": "2–5 minutes"
+    }
+  },
+  "security": {
+    "oci_vault": {
+      "typical_seconds": 30,
+      "range": "20–60 seconds",
+      "notes": "OCI Vault (software-protected) provisions in under a minute. HSM-backed (Virtual Private Vault) may take slightly longer due to dedicated HSM partition allocation.",
+      "plan_as": "< 1 minute (software) | 2–5 minutes (Virtual Private Vault / HSM)"
+    },
+    "kms_key": {
+      "typical_seconds": 5,
+      "range": "3–15 seconds",
+      "notes": "Key creation within an existing vault is near-instant. First key in a new vault requires vault to be ACTIVE first.",
+      "plan_as": "< 1 minute (including vault)"
+    },
+    "oci_certificates_ssl": {
+      "typical_minutes": 2,
+      "range": "1–5 minutes",
+      "notes": "OCI Certificates service (internal CA or imported cert) provisions quickly. Third-party CA issuance timelines are outside OCI control.",
+      "plan_as": "2–5 minutes (OCI-managed CA) | varies (third-party CA)"
+    }
+  },
+  "jep_phase_planning_summary": {
+    "description": "Rolled-up time blocks for JEP phase planning. These are wall-clock estimates assuming sequential provisioning by a single operator with pre-staged Terraform.",
+    "day_1_infrastructure_foundation": {
+      "activities": ["VCN + subnets + gateways", "Security lists + route tables", "DRG", "Bastion service"],
+      "estimated_duration_minutes": 15,
+      "notes": "Entire networking foundation via Terraform in ~15 minutes"
+    },
+    "compute_and_oke": {
+      "activities": ["Compute instances (E5.Flex)", "OKE cluster creation (control plane + workers)"],
+      "estimated_duration_minutes": 35,
+      "notes": "OKE dominates at up to 30 minutes. Compute VMs add ~5 minutes in parallel or sequence."
+    },
+    "database_adb_serverless": {
+      "activities": ["ADB Serverless provisioning"],
+      "estimated_duration_minutes": 15,
+      "notes": "Can run in parallel with OKE provisioning"
+    },
+    "database_adb_dedicated": {
+      "activities": ["Exadata Infrastructure", "AVMC", "ACD", "ADB instances"],
+      "estimated_duration_hours": 6,
+      "notes": "Must be planned as a dedicated half-day activity; book a maintenance window"
+    },
+    "security_stack": {
+      "activities": ["OCI Vault", "KMS keys", "WAF policy"],
+      "estimated_duration_minutes": 25,
+      "notes": "WAF policy activation (15 min) is the long pole; Vault + KMS is < 2 minutes"
+    },
+    "connectivity_fastconnect": {
+      "activities": ["FastConnect virtual circuit", "BGP session", "DRG route tables"],
+      "estimated_duration_weeks": "2–4 weeks",
+      "notes": "Physical circuit lead time dominates. Must be ordered in Phase 0 / pre-engagement. OCI-side configuration is done in minutes but cannot be tested until carrier activates the circuit."
+    },
+    "total_cloud_provisioning_excluding_fastconnect": {
+      "estimated_duration_hours": "1–2 hours",
+      "notes": "A full OCI foundation stack (VCN, OKE, ADB Serverless, Load Balancer, Vault, WAF) can be provisioned by Terraform in 1–2 hours. ADB-D adds ~6 hours if required."
+    }
+  }
+}
