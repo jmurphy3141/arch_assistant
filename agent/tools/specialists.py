@@ -450,7 +450,7 @@ class PocStrategistHandler:
 
         return ToolResult(
             status="ok",
-            summary=f"Generated {len(options)} POC options. Recommended: {recommended_name}",
+            summary=_format_poc_options_summary(options, recommended_name, pain),
             artifact_key=str(saved.get("key", "") or ""),
             data=payload,
         )
@@ -546,6 +546,36 @@ _CONFIRMATION_PATTERNS: tuple[tuple[str, int], ...] = (
     (r"\bconfirm\b", 0),
     (r"\blet'?s\s+do\b", 0),
 )
+
+
+def _format_poc_options_summary(
+    options: list[dict[str, Any]],
+    recommended_name: str,
+    pain: str,
+) -> str:
+    lines = [
+        f"Generated {len(options)} POC options for: {pain}\n",
+        f"RECOMMENDED: {recommended_name}\n",
+    ]
+    for i, opt in enumerate(options, 1):
+        name = str(opt.get("option_name") or f"Option {i}")
+        relevance = opt.get("relevance_score", "?")
+        hours = opt.get("executability_hours", "?")
+        cost = str(opt.get("cost_effectiveness") or "")
+        wow = str(opt.get("wow_moment") or "")
+        services = opt.get("oci_services") or []
+        services_str = ", ".join(str(s) for s in services[:6])
+        lines.append(
+            f"Option {i}: {name}\n"
+            f"  Relevance: {relevance}/10 | Build: {hours}h | Cost: {cost}\n"
+            f"  Wow moment: {wow}\n"
+            f"  OCI services: {services_str}\n"
+        )
+    lines.append(
+        "Present all options to the user with their key differentiators. "
+        "Highlight the recommended option. Ask which they want to proceed with."
+    )
+    return "\n".join(lines)
 
 
 def _poc_confirmation_index(user_message: str) -> int | None:
