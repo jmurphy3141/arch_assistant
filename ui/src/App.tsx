@@ -27,7 +27,6 @@ import {
 
 type Mode = 'chat' | 'generate' | 'bom' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
 
-const TEAM_MARK_SRC = '/favicon.jpg';
 
 function getLastCustomerId(): string {
   try { return localStorage.getItem('last_customer_id') ?? ''; } catch { return ''; }
@@ -420,150 +419,166 @@ export function App() {
     <aside
       data-testid="app-sidebar"
       style={{
-        width: isCompactChat ? '100%' : 300,
-        minWidth: isCompactChat ? '100%' : 300,
+        width: isCompactChat ? '100%' : (leftCollapsed ? 52 : 280),
+        minWidth: isCompactChat ? '100%' : (leftCollapsed ? 52 : 280),
         height: isCompactChat ? 'auto' : '100vh',
-        position: isCompactChat ? 'static' : 'sticky',
-        top: 0,
         display: 'flex',
         flexDirection: 'column',
-        gap: '0.8rem',
-        padding: '1rem',
-        borderRight: isCompactChat ? 'none' : '1px solid #202638',
-        borderBottom: isCompactChat ? '1px solid #202638' : 'none',
-        background: '#0b0d13',
+        gap: leftCollapsed ? '0.5rem' : '0.8rem',
+        padding: leftCollapsed ? '0.75rem 0' : '1rem',
+        borderRight: '1px solid #1a2035',
+        borderBottom: isCompactChat ? '1px solid #1a2035' : 'none',
+        background: '#0a0c14',
         overflow: 'hidden',
+        transition: 'width 0.2s ease, min-width 0.2s ease',
+        flexShrink: 0,
       }}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.35rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', minWidth: 0, maxWidth: '100%' }}>
-          <img
-            src={TEAM_MARK_SRC}
-            alt=""
-            aria-hidden="true"
-            onError={(event) => { event.currentTarget.style.display = 'none'; }}
-            style={{
-              width: 30,
-              height: 30,
-              borderRadius: 6,
-              objectFit: 'cover',
-              flex: '0 0 auto',
-            }}
-          />
-          <h1 style={{ margin: 0, fontFamily: "'Syne', sans-serif", fontSize: '1.35rem', fontWeight: 800, color: '#f7f9ff', lineHeight: 1 }}>
-            Archie<span style={{ color: '#8fb4ff' }}>.</span>
-          </h1>
-        </div>
-        <HealthIndicator />
-      </div>
-
-      <button
-        data-testid="sidebar-new-chat"
-        onClick={handleNewChatFromShell}
-        style={{
-          width: '100%',
-          padding: '0.7rem 0.8rem',
-          background: '#d8e4ff',
-          border: '1px solid #d8e4ff',
-          borderRadius: 7,
-          color: '#101624',
-          cursor: 'pointer',
-          fontFamily: "'JetBrains Mono', monospace",
-          fontSize: '0.82rem',
-          fontWeight: 800,
-          textAlign: 'left',
-        }}
-      >
-        New chat
-      </button>
-
-      {/* Customer session context */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-        <div style={{ fontSize: '0.62rem', color: '#5a6278', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Session</div>
-        <input
-          data-testid="chat-customer-id"
-          placeholder="Customer ID"
-          value={customerId}
-          onChange={e => handleCustomerIdChange(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') { setChatSessionKey(v => v + 1); setChatArtifacts([]); } }}
-          style={{
-            background: '#090b11',
-            border: '1px solid #252b3d',
-            borderRadius: 6,
-            color: '#cdd2e0',
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: '0.78rem',
-            padding: '0.42rem 0.55rem',
-            width: '100%',
-            boxSizing: 'border-box' as const,
-          }}
-        />
-        <input
-          data-testid="chat-customer-name"
-          placeholder="Customer Name"
-          value={customerName}
-          onChange={e => handleCustomerNameChange(e.target.value)}
-          style={{
-            background: '#090b11',
-            border: '1px solid #252b3d',
-            borderRadius: 6,
-            color: '#cdd2e0',
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: '0.78rem',
-            padding: '0.42rem 0.55rem',
-            width: '100%',
-            boxSizing: 'border-box' as const,
-          }}
-        />
-      </div>
-
-      <nav aria-label="Workspace navigation">
-        <div style={groupHeadingStyle}>Workspace</div>
-        <div style={{ display: 'grid', gap: '0.2rem' }}>
-          {mainNav.map(renderNavButton)}
-        </div>
-
-        <button
-          type="button"
-          data-testid="sidebar-documents-toggle"
-          aria-expanded={!documentsCollapsed}
-          aria-controls="sidebar-documents-nav"
-          style={documentsToggleStyle}
-          onClick={() => setDocumentsCollapsed(v => !v)}
-        >
-          <span>Documents</span>
-          <span aria-hidden="true">{documentsCollapsed ? 'Show' : 'Hide'}</span>
-        </button>
-        {!documentsCollapsed && (
-          <div id="sidebar-documents-nav" style={{ display: 'grid', gap: '0.2rem' }}>
-            {documentNav.map(renderNavButton)}
+      {/* Header row: brand + collapse toggle */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: leftCollapsed ? 'center' : 'space-between', width: '100%' }}>
+        {!leftCollapsed && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem' }}>
+            <img src="/archie-bear.jpg" alt="" aria-hidden="true"
+              style={{ width: 30, height: 30, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }}
+              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            />
+            <h1 style={{ margin: 0, fontFamily: "'Syne', sans-serif", fontSize: '1.3rem', fontWeight: 800, color: '#f7f9ff', lineHeight: 1 }}>
+              Archie<span style={{ color: '#e8571a' }}>.</span>
+            </h1>
           </div>
         )}
-      </nav>
-
-      <div style={{ minHeight: 0, display: 'flex', flexDirection: 'column', gap: '0.45rem', flex: 1, overflow: 'hidden' }}>
-        <div style={groupHeadingStyle}>Conversations</div>
-        <ChatSidebar
-          items={sidebarItems}
-          projects={projectItems}
-          loading={sidebarLoading}
-          activeCustomerId={customerId}
-          activeProjectId={selectedProjectId}
-          compact={isCompactChat}
-          showNewButton={false}
-          onSelectProject={handleSidebarProjectSelect}
-          onSelectCustomer={(nextCustomerId, nextCustomerName) => {
-            switchMode('chat');
-            handleSidebarSelect(nextCustomerId, nextCustomerName);
+        {leftCollapsed && (
+          <img src="/archie-bear.jpg" alt="Archie"
+            style={{ width: 32, height: 32, borderRadius: 7, objectFit: 'cover' }}
+            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+          />
+        )}
+        <button
+          onClick={() => setLeftCollapsed(v => !v)}
+          title={leftCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          style={{
+            width: 24, height: 24, borderRadius: 5, display: 'grid', placeItems: 'center',
+            background: 'transparent', border: '1px solid #1a2035', color: '#6b7a94',
+            cursor: 'pointer', flexShrink: 0, fontSize: '0.7rem',
           }}
-          onNewChat={handleNewChatFromShell}
-        />
+        >
+          {leftCollapsed ? '›' : '‹'}
+        </button>
       </div>
 
-      <div style={{ marginTop: 'auto', fontSize: '0.65rem', color: '#6d7688', borderTop: '1px solid #202638', paddingTop: '0.65rem' }}>
-        client_id:<br />
-        <code data-testid="client-id-display" style={{ color: '#a9c2ff', wordBreak: 'break-all' }}>{clientId}</code>
-      </div>
+      {!leftCollapsed && (
+        <>
+          <HealthIndicator />
+
+          <button
+            data-testid="sidebar-new-chat"
+            onClick={handleNewChatFromShell}
+            style={{
+              width: '100%',
+              padding: '0.7rem 0.8rem',
+              background: '#d8e4ff',
+              border: '1px solid #d8e4ff',
+              borderRadius: 7,
+              color: '#101624',
+              cursor: 'pointer',
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: '0.82rem',
+              fontWeight: 800,
+              textAlign: 'left',
+            }}
+          >
+            New chat
+          </button>
+
+          {/* Customer session context */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+            <div style={{ fontSize: '0.62rem', color: '#5a6278', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Session</div>
+            <input
+              data-testid="chat-customer-id"
+              placeholder="Customer ID"
+              value={customerId}
+              onChange={e => handleCustomerIdChange(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { setChatSessionKey(v => v + 1); setChatArtifacts([]); } }}
+              style={{
+                background: '#090b11',
+                border: '1px solid #252b3d',
+                borderRadius: 6,
+                color: '#cdd2e0',
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: '0.78rem',
+                padding: '0.42rem 0.55rem',
+                width: '100%',
+                boxSizing: 'border-box' as const,
+              }}
+            />
+            <input
+              data-testid="chat-customer-name"
+              placeholder="Customer Name"
+              value={customerName}
+              onChange={e => handleCustomerNameChange(e.target.value)}
+              style={{
+                background: '#090b11',
+                border: '1px solid #252b3d',
+                borderRadius: 6,
+                color: '#cdd2e0',
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: '0.78rem',
+                padding: '0.42rem 0.55rem',
+                width: '100%',
+                boxSizing: 'border-box' as const,
+              }}
+            />
+          </div>
+
+          <nav aria-label="Workspace navigation">
+            <div style={groupHeadingStyle}>Workspace</div>
+            <div style={{ display: 'grid', gap: '0.2rem' }}>
+              {mainNav.map(renderNavButton)}
+            </div>
+
+            <button
+              type="button"
+              data-testid="sidebar-documents-toggle"
+              aria-expanded={!documentsCollapsed}
+              aria-controls="sidebar-documents-nav"
+              style={documentsToggleStyle}
+              onClick={() => setDocumentsCollapsed(v => !v)}
+            >
+              <span>Documents</span>
+              <span aria-hidden="true">{documentsCollapsed ? 'Show' : 'Hide'}</span>
+            </button>
+            {!documentsCollapsed && (
+              <div id="sidebar-documents-nav" style={{ display: 'grid', gap: '0.2rem' }}>
+                {documentNav.map(renderNavButton)}
+              </div>
+            )}
+          </nav>
+
+          <div style={{ minHeight: 0, display: 'flex', flexDirection: 'column', gap: '0.45rem', flex: 1, overflow: 'hidden' }}>
+            <div style={groupHeadingStyle}>Conversations</div>
+            <ChatSidebar
+              items={sidebarItems}
+              projects={projectItems}
+              loading={sidebarLoading}
+              activeCustomerId={customerId}
+              activeProjectId={selectedProjectId}
+              compact={isCompactChat}
+              showNewButton={false}
+              onSelectProject={handleSidebarProjectSelect}
+              onSelectCustomer={(nextCustomerId, nextCustomerName) => {
+                switchMode('chat');
+                handleSidebarSelect(nextCustomerId, nextCustomerName);
+              }}
+              onNewChat={handleNewChatFromShell}
+            />
+          </div>
+
+          <div style={{ marginTop: 'auto', fontSize: '0.65rem', color: '#6d7688', borderTop: '1px solid #202638', paddingTop: '0.65rem' }}>
+            client_id:<br />
+            <code data-testid="client-id-display" style={{ color: '#a9c2ff', wordBreak: 'break-all' }}>{clientId}</code>
+          </div>
+        </>
+      )}
     </aside>
   );
 
@@ -579,7 +594,7 @@ export function App() {
       }}
     >
       {isCompactChat && (
-        <div style={{ background: '#0b0d13', borderBottom: '1px solid #202638', padding: '0.75rem 1rem' }}>
+        <div style={{ background: '#0a0c14', borderBottom: '1px solid #1a2035', padding: '0.75rem 1rem' }}>
           <button
             data-testid="chat-sidebar-toggle"
             aria-controls="chat-sidebar-panel"
@@ -605,137 +620,203 @@ export function App() {
 
       <main
         style={{
+          flex: 1,
           minWidth: 0,
-          padding: isCompactChat ? '1rem' : '1.4rem',
-          maxWidth: mode === 'chat' ? '1240px' : '980px',
-          width: '100%',
-          margin: mode === 'chat' ? 0 : '0 auto',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          background: '#050609',
         }}
       >
         <header
           style={{
-            borderBottom: '1px solid #202638',
-            paddingBottom: '0.8rem',
-            marginBottom: '1rem',
-            display: 'flex',
-            alignItems: 'flex-end',
-            justifyContent: 'space-between',
-            gap: '0.8rem',
-            flexWrap: 'wrap',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '11px 20px', borderBottom: '1px solid #1a2035', flexShrink: 0,
           }}
         >
-          <div>
-            <div style={{ color: '#7d879a', fontSize: '0.76rem', marginBottom: '0.1rem' }}>
-              {customerId ? `Customer context: ${customerId}` : 'No customer selected'}
-            </div>
-            <h2 style={{ margin: 0, fontSize: '1.15rem', color: '#f4f7ff', fontWeight: 800 }}>
-              {workspaceTitle[mode]}
-            </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#d8e0f0' }}>{workspaceTitle[mode]}</span>
+            {customerId && (
+              <>
+                <span style={{ color: '#1a2035' }}>/</span>
+                <span style={{ fontSize: '0.76rem', fontWeight: 600, color: '#8fb4ff' }}>{customerName || customerId}</span>
+              </>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            <span style={{ fontSize: '0.6rem', color: '#8b97b0', border: '1px solid #1a2035', borderRadius: 20, padding: '3px 10px' }}>
+              {mode === 'chat' && customerId ? `${customerId}` : 'no customer'}
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.6rem', color: '#aeb9d0', border: '1px solid #1a2035', borderRadius: 20, padding: '3px 10px' }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#46d68a', boxShadow: '0 0 6px #46d68a', display: 'inline-block' }} />
+              OCI Gen-AI
+            </span>
           </div>
         </header>
 
-        {/* Chat mode */}
+        {/* Chat mode — full-height flex row: ChatInterface + right context rail */}
         {mode === 'chat' && (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: isCompactChat ? '1fr' : 'minmax(0, 1fr) 320px',
-            gap: '0.9rem',
-            alignItems: 'start',
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <ChatInterface
-              key={chatSessionKey}
-              customerId={customerId}
-              customerName={customerName}
-              onCustomerIdChange={handleCustomerIdChange}
-              onCustomerNameChange={handleCustomerNameChange}
-              onArtifactsChange={setChatArtifacts}
-              onActivityChange={setChatActivity}
-              pendingPrompt={pendingPrompt}
-              projectId={selectedProjectId}
-              projectName={selectedProjectName}
-            />
+          <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+            {/* ChatInterface column */}
+            <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', padding: '1rem' }}>
+              <ChatInterface
+                key={chatSessionKey}
+                customerId={customerId}
+                customerName={customerName}
+                onCustomerIdChange={handleCustomerIdChange}
+                onCustomerNameChange={handleCustomerNameChange}
+                onArtifactsChange={setChatArtifacts}
+                onActivityChange={setChatActivity}
+                pendingPrompt={pendingPrompt}
+                projectId={selectedProjectId}
+                projectName={selectedProjectName}
+              />
+            </div>
+
+            {/* Right context rail — desktop only */}
+            {!isCompactChat && (
+              rightCollapsed ? (
+                <div style={{
+                  width: 44, minWidth: 44, height: '100%', background: '#0a0c14',
+                  borderLeft: '1px solid #1a2035', display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', padding: '14px 0', gap: 14, flexShrink: 0,
+                }}>
+                  <button onClick={() => setRightCollapsed(false)} title="Expand context panel"
+                    style={{ width: 28, height: 28, borderRadius: 6, display: 'grid', placeItems: 'center',
+                      background: 'transparent', border: '1px solid #1a2035', color: '#6b7a94', cursor: 'pointer', fontSize: '0.7rem' }}>
+                    ‹
+                  </button>
+                  <div style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', fontSize: '0.55rem',
+                    letterSpacing: '0.2em', color: '#6b7a94', marginTop: 4, textTransform: 'uppercase' }}>
+                    Context
+                  </div>
+                  {chatActivity.activeHats.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
+                      marginTop: 'auto', fontSize: '0.7rem', fontWeight: 700, color: '#61dafb' }}>
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#61dafb',
+                        boxShadow: '0 0 8px #61dafb', display: 'block' }} />
+                      {chatActivity.activeHats.length}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div style={{
+                  width: 280, minWidth: 280, height: '100%', background: '#0a0c14',
+                  borderLeft: '1px solid #1a2035', display: 'flex', flexDirection: 'column',
+                  gap: 0, overflowY: 'auto', flexShrink: 0,
+                }}>
+                  {/* Rail header */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '12px 14px 8px', borderBottom: '1px solid #1a2035', flexShrink: 0 }}>
+                    <span style={{ fontSize: '0.56rem', letterSpacing: '0.18em', color: '#6b7a94', textTransform: 'uppercase' }}>Context</span>
+                    <button onClick={() => setRightCollapsed(true)} title="Collapse context panel"
+                      style={{ width: 24, height: 24, borderRadius: 5, display: 'grid', placeItems: 'center',
+                        background: 'transparent', border: '1px solid #1a2035', color: '#6b7a94', cursor: 'pointer', fontSize: '0.7rem' }}>
+                      ›
+                    </button>
+                  </div>
+                  {/* Memory + artifacts */}
+                  <div style={{ flex: 1, padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto' }}>
+                    <EngagementMemoryPanel customerId={customerId || null} refreshTrigger={chatSessionKey} activity={chatActivity} />
+                    {chatArtifacts.length > 0 && (
+                      <ArtifactPreviewPanel artifacts={chatArtifacts} compact={true} onQuickPrompt={handleQuickPrompt} />
+                    )}
+                  </div>
+                  {/* Footer stats */}
+                  {(chatActivity.activeHats.length > 0 || chatArtifacts.length > 0) && (
+                    <div style={{ borderTop: '1px solid #1a2035', padding: '10px 14px', display: 'flex', gap: 8, flexShrink: 0 }}>
+                      <div style={{ flex: 1, background: '#0b0d14', border: '1px solid #1a2035', borderRadius: 6,
+                        padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <span style={{ fontSize: '0.88rem', fontWeight: 700, color: '#d8e0f0' }}>{chatActivity.activeHats.length}</span>
+                        <span style={{ fontSize: '0.56rem', color: '#6b7a94', letterSpacing: '0.08em', textTransform: 'uppercase' }}>hats engaged</span>
+                      </div>
+                      <div style={{ flex: 1, background: '#0b0d14', border: '1px solid #1a2035', borderRadius: 6,
+                        padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <span style={{ fontSize: '0.88rem', fontWeight: 700, color: '#d8e0f0' }}>{chatArtifacts.length}</span>
+                        <span style={{ fontSize: '0.56rem', color: '#6b7a94', letterSpacing: '0.08em', textTransform: 'uppercase' }}>artifacts</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            )}
+
+            {/* Compact: artifacts below chat */}
+            {isCompactChat && chatArtifacts.length > 0 && (
+              <ArtifactPreviewPanel artifacts={chatArtifacts} compact={isCompactChat} onQuickPrompt={handleQuickPrompt} />
+            )}
           </div>
-          {!isCompactChat && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', minWidth: 0 }}>
-              <EngagementMemoryPanel customerId={customerId || null} refreshTrigger={chatSessionKey} activity={chatActivity} />
-              {chatArtifacts.length > 0 && (
-                <ArtifactPreviewPanel artifacts={chatArtifacts} compact={isCompactChat} onQuickPrompt={handleQuickPrompt} />
-              )}
-            </div>
-          )}
-          {isCompactChat && chatArtifacts.length > 0 && (
-            <ArtifactPreviewPanel artifacts={chatArtifacts} compact={isCompactChat} onQuickPrompt={handleQuickPrompt} />
-          )}
-        </div>
         )}
 
-        {/* Diagram modes */}
-        {mode === 'generate' && (
-        <GenerateForm
-          clientId={clientId}
-          diagramName={diagramName}
-          onDiagramNameChange={handleDiagramNameChange}
-          onResult={handleResult}
-          onError={handleError}
-        />
-        )}
-
-        {mode === 'bom' && <BomAdvisor />}
-
-        {mode === 'generate' && (
-        <>
-          {error && (
-            <div
-              data-testid="error-display"
-              style={{
-                marginTop: '1rem', padding: '0.75rem',
-                background: 'rgba(232,65,90,0.08)',
-                border: '1px solid rgba(232,65,90,0.4)',
-                borderRadius: 4,
-                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                fontSize: '0.8rem', color: '#e8415a',
-                fontFamily: "'JetBrains Mono', monospace",
-              }}
-            >
-              <strong>Error:</strong> {error}
-            </div>
-          )}
-          {result && result.status === 'ok' && (
-            <ResponseDisplay
-              result={result}
-              orchestrationResult={orchestrationResult ?? undefined}
-              onRefine={handleRefine}
-              refineLoading={refineLoading}
+        {/* Non-chat modes — scrollable padded area */}
+        {mode !== 'chat' && (
+          <div style={{ flex: 1, overflowY: 'auto', padding: '1.4rem', maxWidth: '980px', width: '100%', margin: '0 auto' }}>
+            {/* Diagram modes */}
+            {mode === 'generate' && (
+            <GenerateForm
+              clientId={clientId}
+              diagramName={diagramName}
+              onDiagramNameChange={handleDiagramNameChange}
+              onResult={handleResult}
+              onError={handleError}
             />
-          )}
-          {result && result.status === 'need_clarification' && (
-            <ClarifyForm result={result} onSubmit={handleClarify} loading={clarifyLoading} elapsedSec={clarifyElapsed} />
-          )}
-        </>
-        )}
+            )}
 
-        {/* Document modes */}
-        {mode === 'notes' && (
-        <NoteUpload customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
-        )}
+            {mode === 'bom' && <BomAdvisor />}
 
-        {mode === 'pov' && (
-        <PovForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
-        )}
+            {mode === 'generate' && (
+            <>
+              {error && (
+                <div
+                  data-testid="error-display"
+                  style={{
+                    marginTop: '1rem', padding: '0.75rem',
+                    background: 'rgba(232,65,90,0.08)',
+                    border: '1px solid rgba(232,65,90,0.4)',
+                    borderRadius: 4,
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                    fontSize: '0.8rem', color: '#e8415a',
+                    fontFamily: "'JetBrains Mono', monospace",
+                  }}
+                >
+                  <strong>Error:</strong> {error}
+                </div>
+              )}
+              {result && result.status === 'ok' && (
+                <ResponseDisplay
+                  result={result}
+                  orchestrationResult={orchestrationResult ?? undefined}
+                  onRefine={handleRefine}
+                  refineLoading={refineLoading}
+                />
+              )}
+              {result && result.status === 'need_clarification' && (
+                <ClarifyForm result={result} onSubmit={handleClarify} loading={clarifyLoading} elapsedSec={clarifyElapsed} />
+              )}
+            </>
+            )}
 
-        {mode === 'jep' && (
-        <JepForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
-        )}
+            {/* Document modes */}
+            {mode === 'notes' && (
+            <NoteUpload customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
+            )}
 
-        {mode === 'terraform' && (
-        <TerraformForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
-        )}
+            {mode === 'pov' && (
+            <PovForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
+            )}
 
-        {mode === 'waf' && (
-        <WafForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
+            {mode === 'jep' && (
+            <JepForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
+            )}
+
+            {mode === 'terraform' && (
+            <TerraformForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
+            )}
+
+            {mode === 'waf' && (
+            <WafForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
+            )}
+          </div>
         )}
       </main>
     </div>
