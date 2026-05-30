@@ -111,25 +111,56 @@ def _build_prompt(req: A2ARequest) -> str:
         parts.append(f"Exploration angle: {angle}")
     if customer_context:
         parts.append(f"Customer context:\n{customer_context}")
+    # Hard format enforcement at end of prompt — Cohere follows end-of-prompt
+    # instructions more reliably than system-message instructions.
+    parts.append(
+        "YOU ARE AN OCI SOLUTIONS ENGINEER. Generate ONE OCI POC option for Oracle Cloud "
+        "Infrastructure. Do NOT mention AWS, Azure, GCP, or Bedrock as the solution — "
+        "this is an OCI-only POC.\n\n"
+        "OUTPUT RULE: Your ENTIRE response must be a single JSON object and nothing else. "
+        "No prose. No markdown. No code fences. No explanation before or after. "
+        "Start your response with { and end with }.\n\n"
+        'Required fields: {"option_name": "string", "relevance_score": integer 1-10, '
+        '"executability_hours": integer, "cost_effectiveness": "string", '
+        '"security_highlights": ["string"], "wow_moment": "string", '
+        '"demo_script_summary": "string", "oci_services": ["string"]}'
+    )
     return "\n\n".join(str(part).strip() for part in parts if str(part).strip())
 
 
-async def handle(req: A2ARequest) -> A2AResponse:
-    prompt = _build_prompt(req)
-    text = await anyio.to_thread.run_sync(
+async def _call_inference(prompt: str) -> str:
+    return await anyio.to_thread.run_sync(
         lambda: run_inference(
             prompt,
             endpoint=str(_main_inference.get("service_endpoint") or ""),
             model_id=_model_id,
             compartment_id=str(_main_config.get("compartment_id") or ""),
             max_tokens=int(_first_present(_agent_llm.get("max_tokens"), _main_inference.get("max_tokens"), default=2048)),
-            temperature=float(_first_present(_agent_llm.get("temperature"), _main_inference.get("temperature"), default=0.6)),
+            temperature=0.1,
             top_p=float(_first_present(_main_inference.get("top_p"), default=0.9)),
             top_k=int(_first_present(_main_inference.get("top_k"), default=0)),
             system_message=_system_message,
         )
     )
+
+
+async def handle(req: A2ARequest) -> A2AResponse:
+    prompt = _build_prompt(req)
+    text = await _call_inference(prompt)
     text = _extract_json(text)
+
+    # If response is still not JSON, retry once with a stripped-down prompt
+    try:
+        _json_mod.loads(text)
+    except _json_mod.JSONDecodeError:
+        retry_prompt = (
+            f"{prompt}\n\n"
+            "RETRY: Your previous response was not valid JSON. "
+            "Output ONLY the JSON object. Start with {{ and end with }}. No other text."
+        )
+        text = await _call_inference(retry_prompt)
+        text = _extract_json(text)
+
     return A2AResponse(result=text, status="ok", trace={"agent": card.name, "trace_id": req.trace_id})
 
 
