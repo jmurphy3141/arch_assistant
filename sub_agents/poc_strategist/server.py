@@ -62,6 +62,10 @@ def _format_case_studies(path: Path) -> str:
 
 def _extract_json(text: str) -> str:
     text = text.strip()
+    # Strip markdown code fences (```json ... ``` or ``` ... ```)
+    fence = _re.match(r'^```(?:json)?\s*([\s\S]*?)\s*```$', text, _re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
     try:
         _json_mod.loads(text)
         return text
