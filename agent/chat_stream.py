@@ -53,13 +53,22 @@ async def _chat_event_dicts(
                 loop.call_soon_threadsafe(queue.put_nowait, payload)
 
         def _thinking_sink(label: str, phase: str) -> None:
-            payload = {
-                "trace_id": trace_id,
-                "customer_id": customer_id,
-                "event_type": "thinking",
-                "label": label,
-                "reasoning_type": phase,
-            }
+            if phase == "hat_activate":
+                payload = {
+                    "trace_id": trace_id,
+                    "customer_id": customer_id,
+                    "event_type": "hat_activate",
+                    "hat": label,
+                    "display_name": label,
+                }
+            else:
+                payload = {
+                    "trace_id": trace_id,
+                    "customer_id": customer_id,
+                    "event_type": "thinking",
+                    "label": label,
+                    "reasoning_type": phase,
+                }
             loop.call_soon_threadsafe(queue.put_nowait, payload)
 
         with notification_sink(_sink):

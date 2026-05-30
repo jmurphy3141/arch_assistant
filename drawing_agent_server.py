@@ -3765,6 +3765,11 @@ async def api_chat_stream(
             project_id=req.project_id, project_name=req.project_name,
         ),
         media_type="application/x-ndjson" if mode == "chunked" else "text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

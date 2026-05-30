@@ -393,6 +393,8 @@ class Forge:
                             )
                         )
                         events.append(self._hat_activate_event(rec))
+                        if reasoning_sink:
+                            reasoning_sink(rec, "hat_activate")
                     except ValueError:
                         pass
 
@@ -416,6 +418,8 @@ class Forge:
                             )
                         )
                         events.append(self._hat_activate_event(par))
+                        if reasoning_sink:
+                            reasoning_sink(par, "hat_activate")
                     except ValueError:
                         pass
             else:
@@ -548,6 +552,8 @@ class Forge:
                         session_id,
                     )
                     events.append(self._hat_activate_event(hat_name))
+                    if reasoning_sink:
+                        reasoning_sink(hat_name, "hat_activate")
                 except ValueError:
                     pass   # unknown hat — ignore silently
                 result = ToolResult(
@@ -640,6 +646,8 @@ class Forge:
                         "[FORGE] Auto-activated required hat '%s' for tool '%s' session=%s",
                         spec.requires_hat, tool_name, session_id,
                     )
+                    if reasoning_sink:
+                        reasoning_sink(spec.requires_hat, "hat_activate")
                     events.append(
                         TurnEvent(
                             type="hat_auto_activated",
@@ -709,12 +717,15 @@ class Forge:
                     break
 
             if reasoning_sink:
-                reasoning_sink(f"Running {tool_name.replace('_', ' ')}...", "tool_running")
+                tool_label = tool_name.replace('_', ' ')
+                if spec.requires_hat:
+                    hat_label = spec.requires_hat.replace('_', ' ').replace('oci ', '').title()
+                    reasoning_sink(f"Calling {hat_label} — {tool_label}...", "tool_running")
+                else:
+                    reasoning_sink(f"Running {tool_label}...", "tool_running")
 
             mem = memory_snapshot if spec.memory_contract else None
             try:
-                if reasoning_sink:
-                    reasoning_sink(f"Running {tool_name.replace('_', ' ')}...", "tool_running")
                 result = await spec.handler(
                     tool_args, memory=mem, context=context, trace_id=trace_id
                 )

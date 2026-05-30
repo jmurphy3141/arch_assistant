@@ -364,9 +364,11 @@ class PocStrategistHandler:
             "cost_optimization_tco",
         ]
 
-        results = await asyncio.gather(
-            *[
-                sub_agent_client.call_sub_agent(
+        async def _call_angle(angle: str, delay: float) -> tuple[str, Any]:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                response = await sub_agent_client.call_sub_agent(
                     "poc_strategist",
                     task=base_task,
                     engagement_context={
@@ -376,25 +378,38 @@ class PocStrategistHandler:
                     },
                     trace_id=trace_id,
                 )
-                for angle in angles
-            ],
-            return_exceptions=True,
+                return angle, response
+            except Exception as exc:
+                return angle, exc
+
+        results = await asyncio.gather(
+            *[_call_angle(angle, delay) for angle, delay in zip(angles, [0, 1.5, 3.0])],
         )
 
         options: list[dict[str, Any]] = []
         failures: list[str] = []
-        for angle, response in zip(angles, results):
+        for angle, response in results:
             if isinstance(response, Exception):
                 failures.append(f"{angle}: {response}")
                 continue
             if str(response.get("status") or "").lower() != "ok":
                 failures.append(f"{angle}: status={response.get('status')}")
                 continue
+            raw = str(response.get("result") or "")
             try:
-                option = json.loads(str(response.get("result") or ""))
-            except json.JSONDecodeError as exc:
-                failures.append(f"{angle}: invalid_json={exc}")
-                continue
+                option = json.loads(raw)
+            except json.JSONDecodeError:
+                # Fallback: extract first {...} block in case the LLM added preamble
+                m = re.search(r'\{.*\}', raw, re.DOTALL)
+                if m:
+                    try:
+                        option = json.loads(m.group(0))
+                    except json.JSONDecodeError as exc2:
+                        failures.append(f"{angle}: invalid_json={exc2}")
+                        continue
+                else:
+                    failures.append(f"{angle}: no_json_found in result")
+                    continue
             if isinstance(option, dict):
                 option.setdefault("angle", angle)
                 options.append(option)
