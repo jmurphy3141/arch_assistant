@@ -68,6 +68,8 @@ export function App() {
   const [chatArtifacts, setChatArtifacts] = useState<ChatArtifactDownload[]>([]);
   const [documentsCollapsed, setDocumentsCollapsed] = useState(true);
   const [chatActivity, setChatActivity] = useState<{ thinkingStatus: string | null; activeHats: string[] }>({ thinkingStatus: null, activeHats: [] });
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
 
   function handleDiagramNameChange(name: string) {
     setDiagramName(name);
@@ -568,12 +570,12 @@ export function App() {
   return (
     <div
       style={{
-        display: 'grid',
-        gridTemplateColumns: isCompactChat ? '1fr' : '300px minmax(0, 1fr)',
+        display: 'flex',
+        height: '100vh',
+        overflow: 'hidden',
         fontFamily: "'JetBrains Mono', monospace",
-        background: '#08090d',
-        minHeight: '100vh',
-        color: '#cdd2e0',
+        background: '#04050a',
+        color: '#d8e0f0',
       }}
     >
       {isCompactChat && (
