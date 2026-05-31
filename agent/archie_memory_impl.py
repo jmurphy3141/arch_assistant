@@ -91,6 +91,10 @@ class ArchieMemory:
         if isinstance(resolved_questions, list) and resolved_questions:
             facts["resolved_questions"] = list(resolved_questions)
 
+        enrichment = archie_state.get("_enrichment")
+        if isinstance(enrichment, dict) and enrichment:
+            facts["_enrichment"] = enrichment
+
         return MemorySnapshot(
             session_id=session_id,
             facts=facts,

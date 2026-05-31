@@ -606,6 +606,12 @@ async def run_turn(
             "Reply `confirm update all` to execute, or `cancel update`."
         )
 
+    from agent.context_enricher import enrich_turn_context
+
+    enrichment = await enrich_turn_context(user_message, context, decision_context)
+    if enrichment:
+        context.setdefault("archie", {})["_enrichment"] = enrichment
+
     forge_result = await forge.run_turn(
         session_id=customer_id,
         user_message=user_message,

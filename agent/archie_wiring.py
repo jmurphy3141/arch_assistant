@@ -345,11 +345,14 @@ class ArchiePromptEnricher:
     prompt assembly out of Forge core.
 
     Injects:
-      - decision_context summary (constraints, approved region, sizing)
       - facts_summary (accumulated SA-provided facts)
+      - constraints (region, availability, cost, security)
+      - enrichment blocks from context_enricher (ref arch, case studies, preflight risks)
     """
 
     def __call__(self, prompt: str, memory: MemorySnapshot) -> str:
+        import json
+
         parts: list[str] = []
 
         facts_summary = str((memory.facts or {}).get("facts_summary") or "").strip()
@@ -357,11 +360,29 @@ class ArchiePromptEnricher:
             parts.append(f"[Archie Facts]\n{facts_summary}\n[/Archie Facts]")
 
         if memory.constraints:
-            import json
-
             constraints_text = json.dumps(memory.constraints, ensure_ascii=False)
             parts.append(
                 f"[Archie Constraints]\n{constraints_text}\n[/Archie Constraints]"
+            )
+
+        enrichment = (memory.facts or {}).get("_enrichment") or {}
+
+        ref_arch = enrichment.get("ref_arch") or {}
+        if ref_arch.get("text"):
+            parts.append(
+                f"[Reference Architecture Guidance]\n{ref_arch['text']}\n[/Reference Architecture Guidance]"
+            )
+
+        case_studies = enrichment.get("case_studies") or {}
+        if case_studies.get("text"):
+            parts.append(
+                f"[Customer Evidence]\n{case_studies['text']}\n[/Customer Evidence]"
+            )
+
+        preflight = enrichment.get("preflight_risks") or {}
+        if preflight.get("text"):
+            parts.append(
+                f"[Pre-Flight Risks]\n{preflight['text']}\n[/Pre-Flight Risks]"
             )
 
         if not parts:
