@@ -169,6 +169,21 @@ class BomHandler:
             if service_names else
             f"BOM generated ({service_count} services, ${monthly:,.2f}/mo)."
         )
+
+        from agent import context_store as _cs
+        assumptions_text = " ".join(str(a) for a in (bom_payload.get("assumptions") or []))
+        first_compute = next(
+            (item for item in line_items if "ocpu" in str(item.get("description", "")).lower()),
+            {},
+        )
+        _cs.set_resolved_decisions(ctx, sizing={
+            "shape_family": str(args.get("compute_shape") or first_compute.get("sku") or "E5.Flex"),
+            "ha_multiplier_applied": "active-active" in str(args.get("ha_dr_mode", "")).lower(),
+            "byol_confirmed": "byol" in assumptions_text.lower(),
+            "monthly_total": monthly,
+            "region": str(bom_payload.get("region") or "us-chicago-1"),
+        })
+
         return ToolResult(
             summary=bom_summary,
             status="ok",

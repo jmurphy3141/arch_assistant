@@ -256,6 +256,35 @@ class _SpecialistHandler:
             except Exception:
                 pass
 
+        if self._agent_name == "waf":
+            try:
+                from agent import context_store as _cs
+                import json as _json2
+                _waf_data = (
+                    _json2.loads(summary_content)
+                    if summary_content.strip().startswith("{")
+                    else {}
+                )
+                _pillars = _waf_data.get("pillars") or {}
+                _sec = (_pillars.get("Security") or {})
+                _p1s = [
+                    f for p in _pillars.values()
+                    if isinstance(p, dict)
+                    for f in (p.get("findings") or [])
+                    if f.get("severity") == "P1"
+                ]
+                _cs.set_resolved_decisions(context, waf={
+                    "security_score": _sec.get("maturity_score"),
+                    "p1_count": len(_p1s),
+                    "compliance_framework": list((_waf_data.get("compliance_mapping") or {}).keys()),
+                    "waf_key": key,
+                })
+            except Exception:
+                pass
+
+        if self._agent_name == "poc_strategist":
+            pass  # POC write-back is in PocStrategistHandler
+
         return ToolResult(
             summary=(
                 f"{self._agent_name.upper()} v{saved.get('version')} saved."
@@ -432,6 +461,14 @@ class PocStrategistHandler:
             json.dumps(payload, indent=2),
             {"trace_id": trace_id, "failures": failures},
         )
+
+        from agent import context_store as _cs
+        _cs.set_resolved_decisions(context, poc={
+            "recommended_option": recommended_name,
+            "success_criteria": str(recommendation.get("wow_moment") or ""),
+            "build_hours": hours,
+            "relevance_score": relevance,
+        })
 
         return ToolResult(
             status="ok",

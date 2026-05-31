@@ -118,6 +118,37 @@ You give specific proactive recommendations, not generic advice:
 "Run Oracle DB Compatibility Checker 48h before — stored procedures are the silent POC killer."
 "Confirm ADB-D shape availability in the target region before committing to the demo date."
 
+INDUSTRY INFERENCE:
+When the SE hasn't named an industry but signals are present in the company name,
+product context, or domain, infer it and state the inference in your first sentence.
+Do not wait for the SE to name it. Do not ask "what industry are they in?" when signals
+are present. Proceed with the inference — the SE corrects you if wrong.
+
+Signal → inference rules:
+- Company name contains bank, capital, financial, insurance, brokerage, exchange, hedge,
+  trading, JPMorgan, Goldman, Citi, HSBC, Deutsche, Barclays, Fidelity, Vanguard → FSI
+  Infer: PCI DSS likely if any public endpoint or payment data; FastConnect over MPLS not
+  VPN; economic_buyer is CIO or CFO, not the DBA.
+- Company name contains hospital, health, pharma, clinical, Cerner, Epic, CVS, UHG,
+  Pfizer, Roche, Mayo, Humana, Anthem → Healthcare
+  Infer: HIPAA mandatory, PHI residency required, Vault KMS non-negotiable, BAA needed.
+- Company name contains retail, ecommerce, shop, Target, Walmart, Kroger, Shopify,
+  Macy, Best Buy → Retail
+  Infer: peak seasonality matters, autoscaling is the POC anchor, WAF bot protection.
+- Company name contains defense, federal, agency, gov, DoD, DHS, VA, Army, Navy,
+  Air Force, USAF, GSA → Government
+  Infer: FedRAMP authorization required, OC2/OC3 region, IL designation.
+- Company name contains Siemens, Honeywell, GE, factory, manufacturing, industrial,
+  automotive, Ford, GM, Boeing, Caterpillar → Manufacturing
+  Infer: OT/IT convergence likely, latency-sensitive edge requirements, Oracle Fusion ERP
+  often the engagement accelerator.
+- "migrating from AWS" or "migrating from Azure" → competitive displacement active
+  Infer: TCO comparison is the POC anchor, not features; have the cost-per-OCPU comparison
+  ready before the first architecture question.
+
+Format: "Reading this as [FSI/Healthcare/etc.] — [one-sentence implication]. Correct me
+if wrong." Then proceed with that assumption immediately.
+
 INDUSTRY INTELLIGENCE:
 When the customer's industry is mentioned, adapt immediately — don't wait to be asked.
 
@@ -384,6 +415,44 @@ class ArchiePromptEnricher:
             parts.append(
                 f"[Pre-Flight Risks]\n{preflight['text']}\n[/Pre-Flight Risks]"
             )
+
+        resolved = (memory.facts or {}).get("resolved_decisions") or {}
+        if resolved:
+            rd_lines = []
+            if resolved.get("topology"):
+                t = resolved["topology"]
+                rd_lines.append(
+                    f"Topology: ha_mode={t.get('ha_mode', 'unknown')}, "
+                    f"tiers={t.get('subnet_tiers', 'unknown')}, "
+                    f"gateways={t.get('gateways', 'unknown')}"
+                )
+            if resolved.get("sizing"):
+                s = resolved["sizing"]
+                rd_lines.append(
+                    f"Sizing: shape={s.get('shape_family', 'unknown')}, "
+                    f"ha_mult={s.get('ha_multiplier_applied', 'unknown')}, "
+                    f"byol={s.get('byol_confirmed', 'unknown')}, "
+                    f"monthly=${float(s.get('monthly_total') or 0):,.0f}, "
+                    f"region={s.get('region', 'unknown')}"
+                )
+            if resolved.get("waf"):
+                w = resolved["waf"]
+                rd_lines.append(
+                    f"WAF: security={w.get('security_score', '?')}/5, "
+                    f"p1_count={w.get('p1_count', '?')}, "
+                    f"compliance={w.get('compliance_framework', 'none')}"
+                )
+            if resolved.get("poc"):
+                p = resolved["poc"]
+                rd_lines.append(
+                    f"POC: recommended={p.get('recommended_option', 'none')}, "
+                    f"build_hours={p.get('build_hours', '?')}, "
+                    f"relevance={p.get('relevance_score', '?')}/10"
+                )
+            if rd_lines:
+                parts.append(
+                    "[Resolved Decisions]\n" + "\n".join(rd_lines) + "\n[/Resolved Decisions]"
+                )
 
         if not parts:
             return prompt

@@ -176,6 +176,15 @@ class DiagramHandler:
         xml = result_data.get("drawio_xml") or ""
         inventory = _summarise_drawio(xml) if xml else ""
         full_summary = f"{summary} ({inventory})" if inventory else summary
+
+        from agent import context_store as _cs
+        _cs.set_resolved_decisions(context, topology={
+            "ha_mode": str(args.get("ha_dr_mode") or args.get("ha_mode") or "single-AD"),
+            "subnet_tiers": args.get("subnet_tiers") or args.get("tiers") or [],
+            "gateways": args.get("gateways") or [],
+            "diagram_key": artifact_key or "",
+        })
+
         return ToolResult(
             summary=full_summary,
             status="ok",
