@@ -803,10 +803,9 @@ If `artifact_key` absent: surface to user.
   pre-action output machine-readable and allows the sub-agent to extract the scope without
   LLM inference. Other hats use `[ASSUMPTION REVIEW]` and `[DECK BRIEF]`; these should
   be harmonised to a consistent format.
-- The tech_research sub-agent shares port 8087 with the terraform sub-agent (confirmed bug
-  in `sub_agents/tech_research/config.yaml`). They cannot both run. The hat is not
-  responsible for this, but it is a blocker for this skill functioning in production
-  alongside Terraform.
+- The tech_research sub-agent is configured on port 8088; Terraform remains on
+  8087. Keep root `config.yaml`, the sub-agent config, README, and deploy docs
+  aligned when changing ports.
 - Research output feeds BOM via `sizing_hints` and diagram via `oci_services_required`.
   This pipeline dependency is well-documented in the hat but is not enforced — the BOM
   hat does not verify that `sizing_hints` came from a research report.

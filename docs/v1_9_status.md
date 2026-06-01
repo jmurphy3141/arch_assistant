@@ -1,6 +1,6 @@
 # v1.9 Completion Status
 
-Last updated: 2026-04-29 for Archie OCI Architecture Assistant v1.9.1.
+Last updated: 2026-06-01 for Archie OCI Architecture Assistant v1.9.x.
 
 This is the canonical repo evidence page for answering whether v1.9 is complete.
 Fast paths are valid deterministic orchestration paths: they bypass ReAct prompt
@@ -10,13 +10,13 @@ construction by design, so they do not count as ReAct self-guidance failures.
 
 | Requirement | Status | Evidence |
 |---|---|---|
-| Orchestrator Self-Guidance | Complete | `agent/orchestrator_agent.py` prefixes ReAct prompts with internal orchestrator self-guidance in `_build_prompt`; `_append_tool_result` preserves that prefix for follow-up iterations. Covered by `test_react_prompt_includes_internal_orchestrator_self_guidance` and `test_react_followup_prompt_preserves_internal_orchestrator_self_guidance`. |
-| Decision Context | Complete | `agent/decision_context.py` builds and summarizes per-turn Decision Context. `agent/orchestrator_agent.py` persists it through `context_store.set_latest_decision_context`, injects it into skills, passes it to governor evaluation and deterministic synthesis, records it in trace metadata, and appends it to the Decision Log. Covered by `tests/test_orchestrator_decision_flow.py` and `tests/test_decision_context.py`. |
-| Governor Enforcement | Complete | `agent/governor_agent.py` applies deterministic security, cost, high-risk assumption, and contradiction rules after governor normalization. Covered by explicit rule tests in `tests/test_governor_agent.py`. |
-| Management Summary | Complete | `_render_management_summary` renders from `_synthesize_management_metadata` and includes applied skills, refinement count, governor/critic summary, key decisions, assumptions/tradeoffs, artifact refs, and checkpoint status. Clarification, recall, pending checkpoint, and answer-only paths suppress the summary. Covered by `tests/test_orchestrator_parallel_reply.py` and `tests/test_orchestrator_decision_flow.py`. |
-| Synthesis | Complete | `_synthesize_management_metadata` deterministically consolidates applied skills, refinements, governor status, tradeoffs, artifact refs, and critic/governor summaries without an extra LLM call. Covered by `test_synthesize_management_metadata_is_stable_and_complete`. |
-| Fast Paths | Complete | Fast-path orchestration routes execute deterministic tool sequences without LLM freewrite and without ReAct prompt assembly. Covered by fast-path tests in `tests/test_orchestrator_parallel_reply.py`; explicitly exempt from ReAct self-guidance checks because there is no ReAct prompt. |
-| Archie Expert Review | Complete | `agent/orchestrator_agent.py` records Archie lens, sanitized specialist input, skill guidance metadata, context source, and review verdict in tool traces. Deterministic BOM sizing review blocks or retries hard mismatches before XLSX export. Covered by `test_execute_tool_bom_expert_review_blocks_undersized_retry`, `test_execute_tool_bom_expert_review_passes_matching_sizing`, and `test_artifact_manifest_hides_failed_review_bom_xlsx`. |
+| Orchestrator Self-Guidance | Complete | `skillforge/forge.py` owns the structured ReAct loop, Step 3 planning, expert pre-action, post-review, and critic pass. `agent/archie_session.py` preserves compatibility fast paths and routes chat turns through Forge. Covered by `test_react_prompt_includes_internal_orchestrator_self_guidance`, `test_react_followup_prompt_preserves_internal_orchestrator_self_guidance`, and Forge loop tests. |
+| Decision Context | Complete | `agent/decision_context.py` builds per-turn Decision Context. `agent/archie_session.py` persists it through `context_store.set_latest_decision_context`, refreshes Archie memory, records decision state, and passes context into tool traces. Covered by `tests/test_orchestrator_decision_flow.py` and `tests/test_decision_context.py`. |
+| Governor / Safety Enforcement | Complete | LLM governor guidance lives in `agent/hats/governor.md`; deterministic hard blocks live in `agent/safety_rules.py` and compatibility review logic in `agent/archie_session.py`. `safety_rules.py` remains a thin no-LLM guard. Covered by specialist routing, safety, and artifact-manifest tests. |
+| Management Summary | Complete | `agent/archie_session.py` renders management summaries from deterministic synthesis metadata, including applied skills, refinement count, review status, assumptions/tradeoffs, artifact refs, and checkpoint status. Clarification, recall, pending checkpoint, and answer-only paths suppress the summary. Covered by `tests/test_orchestrator_parallel_reply.py` and `tests/test_orchestrator_decision_flow.py`. |
+| Synthesis | Complete | `agent/archie_session.py` deterministically consolidates applied skills, refinements, review status, tradeoffs, artifact refs, and critic/governor summaries without an extra LLM call. Covered by `test_synthesize_management_metadata_is_stable_and_complete`. |
+| Fast Paths | Complete | Compatibility fast paths in `agent/archie_session.py` execute deterministic tool sequences without LLM freewrite and without full ReAct prompt assembly. Covered by fast-path tests in `tests/test_orchestrator_parallel_reply.py`; explicitly exempt from ReAct self-guidance checks because there is no ReAct prompt. |
+| Archie Expert Review | Complete | `agent/archie_session.py` records Archie lens, sanitized specialist input, expert metadata, context source, and review verdict in tool traces. Deterministic BOM sizing review blocks hard mismatches before XLSX exposure. Covered by `test_execute_tool_bom_expert_review_blocks_undersized_retry`, `test_execute_tool_bom_expert_review_passes_matching_sizing`, and `test_artifact_manifest_hides_failed_review_bom_xlsx`. |
 | Evidence Document | Complete | This file is the v1.9 completion evidence reference. |
 
 ## Deterministic Governor Rules
@@ -51,16 +51,11 @@ General:
 
 ## Implementation Pointers
 
-- ReAct prompt and follow-up preservation: `agent/orchestrator_agent.py`
-  `_build_prompt`, `_build_orchestrator_self_guidance`, `_append_tool_result`.
-- Decision Context propagation: `agent/orchestrator_agent.py` `_execute_tool`,
-  `_inject_skill_into_tool_args`, `_build_tool_trace`,
-  `_record_tool_decision_state`.
-- Expert review: `agent/orchestrator_agent.py`
-  `_archie_expert_review_if_needed`, `_review_bom_sizing_consistency`,
-  `_build_pre_execution_tool_trace`.
-- Governor hardening: `agent/governor_agent.py`
-  `_apply_deterministic_overrides`.
-- Deterministic synthesis and Management Summary:
-  `agent/orchestrator_agent.py` `_synthesize_management_metadata`,
-  `_render_management_summary`, `_append_management_summary`.
+- ReAct loop and expert review prompts: `skillforge/forge.py`.
+- Archie tool wiring and required hats: `agent/archie_wiring.py`.
+- Decision Context propagation, compatibility fast paths, deterministic
+  synthesis, management summary, and expert artifact review:
+  `agent/archie_session.py`.
+- Deterministic no-LLM safety blocks: `agent/safety_rules.py`.
+- Expert lenses: `agent/hats/*.md`.
+- A2A sub-agent dispatch: `agent/sub_agent_client.py` and `sub_agents/*/server.py`.

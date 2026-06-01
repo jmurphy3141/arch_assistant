@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Last updated: 2026-05-24 for Archie OCI Architecture Assistant v1.9.x.
+Last updated: 2026-06-01 for Archie OCI Architecture Assistant v1.9.x.
 
 Read this file first, then read `PLAN.md` before touching any code.
 `PLAN.md` is the locked architecture plan. It defines the target state,
@@ -21,6 +21,8 @@ with `PLAN.md`, stop and flag it — do not improvise.
   injected into BOM, Diagram, WAF, Terraform, POV, and JEP prompts.
 - v1.9 completion evidence and guardrail status live in
   `docs/v1_9_status.md`.
+- Backend route ownership and compatibility status live in
+  `docs/backend-api-surface.md`.
 - Expert hats live under `agent/hats/`; specialist services live under
   `sub_agents/`.
 - Production service runs uvicorn on internal port `8080`.
@@ -46,12 +48,16 @@ with `PLAN.md`, stop and flag it — do not improvise.
 
 ## Primary Entrypoints
 
-- `drawing_agent_server.py`: FastAPI app, API routes, static UI serving, server
-  orchestration glue.
+- `drawing_agent_server.py`: FastAPI composition root, config, middleware,
+  auth/session setup, static UI serving, startup, and legacy diagram routes.
+- `server/models.py`: FastAPI/Pydantic request and response models.
+- `server/routes/`: APIRouter modules for chat, BOM, documents, and A2A.
+- `server/services/`: server-only job and BOM artifact/download helpers.
 - `agent/orchestrator_agent.py`: thin compatibility shim for existing Agent 0
   imports.
-- `agent/archie_session.py`: thin session wrapper — loads history and context,
-  calls `forge.run_turn()`, saves results. Contains no routing or LLM logic.
+- `agent/archie_session.py`: session wrapper and compatibility layer — loads
+  history/context, calls `forge.run_turn()`, saves results, and still contains
+  deterministic fast paths plus legacy tool-dispatch compatibility.
 - `agent/archie_wiring.py`: `build_forge()` — constructs the Forge instance
   with the Archie system prompt and registers all OCI tool handlers.
 - `agent/archie_memory.py`: context assembly, memory enforcement, BOM
@@ -73,13 +79,16 @@ with `PLAN.md`, stop and flag it — do not improvise.
 
 ## Architecture Map
 
-- Backend API: `drawing_agent_server.py` exposes health, artifact, chat,
-  generate, clarify, upload, BOM, POV, JEP, WAF, and Terraform endpoints.
+- Backend API: `drawing_agent_server.py` composes the FastAPI app and registers
+  route modules from `server/routes/`; direct upload, generate, clarify,
+  refine, download, health, config, and refresh routes remain in the composition
+  root.
 - Static UI: the backend serves the Vite build from `ui/dist/` in production.
 - Orchestrator: `skillforge/forge.py` owns the ReAct loop — planning, hat
   activation, expert pre-action, tool dispatch, expert post-review, and
-  correction. `agent/archie_session.py` is a thin wrapper that loads state,
-  calls `forge.run_turn()`, and saves results.
+  correction. `agent/archie_session.py` loads state, calls `forge.run_turn()`,
+  saves results, and preserves compatibility fast paths while migration work
+  continues.
 - ReAct prompts include internal orchestrator self-guidance; deterministic fast
   paths skip ReAct by design and are not self-guidance failures.
 - Decision Context is generated per turn, persisted to context, included in
@@ -109,7 +118,8 @@ with `PLAN.md`, stop and flag it — do not improvise.
   persistence modules.
 - Hats: markdown files in `agent/hats/` encode Archie's expert lenses.
 - Sub-agents: `sub_agents/` contains independent A2A services for BOM,
-  diagram, POV, JEP, WAF, and Terraform.
+  diagram, POV, JEP, WAF, Terraform, tech research, sales deck, POC strategy,
+  and presentation.
 - React UI: `App.tsx` coordinates tabs; form components call typed helpers in
   `ui/src/api/client.ts`; chat lives in `ChatInterface.tsx`.
 - Tests: Python tests use `pytest.ini` markers; UI tests use Vitest,
@@ -139,6 +149,7 @@ pytest tests/test_orchestrator_parallel_reply.py tests/test_decision_context.py 
 pytest tests/test_bom_service.py tests/test_bom_api.py -v
 pytest tests/test_terraform_api.py -v
 pytest tests/test_jep_lifecycle.py -v
+pytest tests/test_sub_agent_port_config.py -v
 
 # Repo gates
 ./scripts/test_pr_gate.sh -v

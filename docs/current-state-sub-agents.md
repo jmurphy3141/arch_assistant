@@ -323,7 +323,7 @@ deliverable that makes the architecture deployable.
 
 | Field | Value |
 |---|---|
-| Port | 8087 ⚠️ PORT CONFLICT with tech_research |
+| Port | 8087 |
 | Temperature | 0.2 (low — code quality) |
 | Max Tokens | 6000 |
 | Handler | `agent/tools/terraform.py` — `TerraformHandler` |
@@ -369,7 +369,6 @@ Key rules:
 
 ### Current State Notes
 
-- **Port 8087 conflicts with tech_research** — only one can run at a time; needs resolution
 - Config comment says "set to code-optimised model OCID when available" — no OCI code
   model is currently configured; falls back to the default general-purpose model
 - No explicit Terraform validation or `terraform validate` step — correctness depends
@@ -386,7 +385,7 @@ register. It is the pre-BOM research step for ambiguous or complex engagements.
 
 | Field | Value |
 |---|---|
-| Port | 8087 ⚠️ PORT CONFLICT with terraform |
+| Port | 8088 |
 | Temperature | 0.5 (research balance) |
 | Max Tokens | 6000 |
 | Handler | `agent/tools/specialists.py` — `TechResearchHandler` |
@@ -439,7 +438,6 @@ Evaluate OCI infrastructure options for the described workload. Key rules:
 
 ### Current State Notes
 
-- **Port 8087 conflicts with terraform** — this is a blocking deployment issue
 - The `infra_tech_research` hat has 10 activation triggers (more than any other hat)
   but the sub-agent system prompt has limited guidance on what qualifies as sufficient
   research depth
@@ -458,7 +456,7 @@ content. It is the pre-POC commercial narrative tool.
 
 | Field | Value |
 |---|---|
-| Port | 8088 |
+| Port | 8089 |
 | Temperature | 0.6 (moderate creative) |
 | Max Tokens | 8000 |
 | Handler | `agent/tools/specialists.py` — `SalesDeckHandler` |
