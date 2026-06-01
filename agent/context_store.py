@@ -294,6 +294,28 @@ def set_archie_decision_state(
     return context
 
 
+def set_resolved_decisions(
+    context: dict[str, Any],
+    *,
+    topology: dict[str, Any] | None = None,
+    sizing: dict[str, Any] | None = None,
+    waf: dict[str, Any] | None = None,
+    poc: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Record resolved decisions from each hat for downstream hat consumption.
+
+    Values are merged (not replaced) so multiple tool calls accumulate context.
+    All parameters are optional — pass only what was resolved.
+    """
+    archie = get_archie_state(context)
+    resolved = archie.setdefault("resolved_decisions", {})
+    for key, val in (("topology", topology), ("sizing", sizing), ("waf", waf), ("poc", poc)):
+        if isinstance(val, dict) and val:
+            resolved.setdefault(key, {}).update(val)
+    return context
+
+
 def merge_archie_infrastructure_profile(
     context: dict[str, Any],
     profile: dict[str, Any] | None,

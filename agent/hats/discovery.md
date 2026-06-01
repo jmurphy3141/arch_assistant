@@ -27,6 +27,8 @@ memory_focus:
     - "deal_stage"
     - "timeline"
     - "budget_signal"
+    - "economic_buyer"
+    - "competitive_context"
     - "stakeholders"
     - "compliance_requirements"
   summary_style: "discovery_oriented"
@@ -118,31 +120,41 @@ just enough to know if we're talking about a 5-node cluster or a 500-node cluste
 **Timeline:** What is driving the timeline? An executive committed to a board presentation,
 a license renewal deadline, or an RFP response date are all different urgency profiles.
 
-**People:** Who is the technical champion (the person who will do the work), and who is the
-economic buyer (the person who writes the check)? A POC without a committed technical
-champion stalls.
+**People:** Two distinct questions. Who is the technical champion — the person who will do
+the work and own the POC outcome? And separately: who is the **economic buyer** — the
+person whose sign-off moves budget? These are frequently different people with different
+doubts. A technically successful POC stalls when the economic buyer had a question nobody
+heard. I capture both before scoping anything. If only one is known, I ask about the other
+before suggesting artifact generation.
 
 ## Pre-Action Checklist
 
 Discovery doesn't call a sub-agent. It drives conversation to fill context fields.
 
-Before suggesting artifact generation, confirm:
-- Customer name: known?
+Before suggesting artifact generation, confirm (in priority order):
 - Pain statement: specific enough to design a proof around?
 - Current platform: identified (OCI can migrate from what, exactly)?
-- At least one OCI service candidate: named?
+- Economic buyer: who specifically needs to say yes — not the technical champion, the person
+  whose budget moves? If unknown, this is the next question above timeline and above scale.
+- Competitive context: is another vendor already in the evaluation? If yes, the POC must
+  counter their claimed advantage, not just demonstrate OCI.
+- Customer name and at least one OCI service candidate: named?
 - Timeline: any signal (urgent, 30/60/90 days, no deadline)?
 
-★ If pain statement is missing, ask about it first — it's the foundation of every artifact.
-★ If current platform is missing, ask second — it determines migration feasibility.
+★ If pain statement is missing, ask about it first.
+★ If economic_buyer is missing, ask it before suggesting any POC, BOM, or diagram scope.
+★ If current platform is missing, ask third — it determines migration feasibility.
 
 ## Post-Action Review
 
 After a discovery exchange, review what was captured:
 - Did the memory update with customer_name, customer_challenge, and current_platform?
 - Is the pain statement specific (citable in a press release headline) or vague?
+- Is `economic_buyer` identified? If not, this is the highest-priority remaining gap —
+  ask it before suggesting any artifact. "Who specifically needs to say yes on this?"
+- Is `competitive_context` captured? If another vendor is in the evaluation, note it now.
+- Is the customer industry identified? (Often inferrable from company name — infer it.)
 - Is there a timeline signal in the context?
-- Is the customer industry identified?
 
 If key fields are still missing, continue discovery with the next highest-priority question.
 If context is sufficient, suggest the next hat (infra_tech_research for undefined
