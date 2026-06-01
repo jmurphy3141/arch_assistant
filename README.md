@@ -274,6 +274,7 @@ drawing_agent_server.py      FastAPI, port 8080
   │  /api/job/{id}            job status polling
   │  /download                artifact download (diagram, BOM, PPTX, Terraform)
   │  /health
+  │  (route inventory: docs/backend-api-surface.md)
   │
   ├─ archie_session.py        thin session wrapper: load context → forge.run_turn() → save
   ├─ agent/archie_wiring.py   build_forge(): Archie system prompt + 10 tools + hat engine

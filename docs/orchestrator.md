@@ -1,10 +1,10 @@
 # Agent 0 — OCI SA Orchestrator: Design & Implementation Spec
 
 > **HISTORICAL — Pre-Forge era (p1–p3).** This document describes the original
-> `archie_loop.py` direct-dispatch architecture. As of p44, all orchestration
-> runs through `skillforge/forge.py`. See `CLAUDE.md` for the current
-> architecture and `docs/skillforge-archie-migration-requirements.md` for the
-> migration rationale.
+> `archie_loop.py` direct-dispatch architecture. Current orchestration runs
+> through `skillforge/forge.py`, with `agent/archie_session.py` as the session
+> wrapper and compatibility layer. See `README.md`, `AGENTS.md`, and
+> `docs/backend-api-surface.md` for the current architecture.
 
 ## Purpose
 
@@ -113,7 +113,7 @@ Served at `/.well-known/agent.json` and `/.well-known/agent-card.json`:
 }
 ```
 
-The legacy v0.1 card is kept at `/.well-known/agent-card-legacy.json` for backward compatibility.
+The discovery alias `/.well-known/agent-card.json` is kept for backward compatibility.
 
 ---
 
@@ -261,7 +261,7 @@ Tool call `result_data` includes v1.6 trace metadata:
 |--------|------|-------------|
 | `GET` | `/.well-known/agent.json` | Oracle Agent Spec v26.1.0 card (schemaVersion 1.0) |
 | `GET` | `/.well-known/agent-card.json` | Same as above (alias) |
-| `GET` | `/.well-known/agent-card-legacy.json` | Legacy schema_version 0.1 card |
+| `GET` | `/.well-known/agent-card.json` | Discovery alias kept for compatibility |
 
 ---
 
@@ -269,9 +269,11 @@ Tool call `result_data` includes v1.6 trace metadata:
 
 | File | Role |
 |------|------|
-| `agent/orchestrator_agent.py` | ReAct loop, tool dispatch, A2A self-call for diagram |
+| `skillforge/forge.py` | ReAct loop, hat dispatch, tool dispatch, expert review |
+| `agent/archie_session.py` | Session wrapper, context/history persistence, compatibility fast paths |
+| `agent/orchestrator_agent.py` | Thin import shim for older Agent 0 imports |
 | `agent/document_store.py` | Conversation history CRUD + versioned doc storage |
-| `agent/notifications.py` | Event notification stub (Telegram-ready) |
+| `agent/notifications.py` | Event notification integration |
 | `drawing_agent_server.py` | FastAPI server: `/message:send`, `/api/chat`, updated agent card |
 | `config.yaml` `orchestrator:` block | `max_tool_iterations`, `history_max_turns`, Telegram stub |
 | `ui/src/components/ChatInterface.tsx` | Chat UI component |
@@ -282,7 +284,7 @@ Tool call `result_data` includes v1.6 trace metadata:
 ## Verification Checklist
 
 1. `GET /.well-known/agent.json` → `schemaVersion: "1.0"`, `orchestrate_engagement` skill present
-2. `GET /.well-known/agent-card-legacy.json` → `schema_version: "0.1"` format still served
+2. `GET /.well-known/agent-card.json` → same card as `/.well-known/agent.json`
 3. `POST /message:send` with notes, `contextId: "acme001"` → Task `COMPLETED`, `tool_calls=[save_notes]`
 4. Same `contextId`, message `"draft POV"` → artifacts include `generate_pov` key
 5. `GET /api/chat/acme001/history` → turns persisted across server restart

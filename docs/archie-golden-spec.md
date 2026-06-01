@@ -895,7 +895,7 @@ The `sections_present` field must contain exactly 3 section names. The `content`
 
 ---
 
-### Sub-Agent: `tech_research` (`sub_agents/tech_research/`, port 8086, temperature 0.5)
+### Sub-Agent: `tech_research` (`sub_agents/tech_research/`, port 8088, temperature 0.5)
 
 **Input contract:**
 ```json
@@ -1024,7 +1024,7 @@ The `sections_present` field must contain exactly 3 section names. The `content`
 
 ---
 
-### Sub-Agent: `sales_deck` (`sub_agents/sales_deck/`, port 8088, temperature 0.6)
+### Sub-Agent: `sales_deck` (`sub_agents/sales_deck/`, port 8089, temperature 0.6)
 
 **Input contract:**
 ```json
@@ -1336,9 +1336,9 @@ This appendix is a quick reference for implementation teams. It does not add to 
 | pov | 8084 | 0.7 |
 | jep | 8085 | 0.7 |
 | waf | 8086 | 0.5 |
-| tech_research | 8086 | 0.5 |
+| tech_research | 8088 | 0.5 |
 | terraform | 8087 | 0.2 |
-| sales_deck | 8088 | 0.6 |
+| sales_deck | 8089 | 0.6 |
 | poc_strategist | 8090 | 0.1 per call |
 | presentation | 8091 | N/A (deterministic renderer) |
 
