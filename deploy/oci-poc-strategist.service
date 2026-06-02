@@ -1,14 +1,17 @@
 [Unit]
-Description=Archie POC Strategist Sub-Agent
-After=network.target
+Description=OCI Drawing Agent — POC Strategist Sub-Agent
+After=network.target oci-agent.service
+Wants=oci-agent.service
 
 [Service]
 User=opc
 WorkingDirectory=/home/opc/drawing-agent
-ExecStart=/usr/bin/python3.11 -m sub_agents.poc_strategist.server
+EnvironmentFile=-/home/opc/.drawing-agent.env
+ExecStart=/bin/bash -lc 'set -a; [ -f /home/opc/.drawing-agent.env ] && . /home/opc/.drawing-agent.env; exec /usr/bin/python3.11 -m uvicorn sub_agents.poc_strategist.server:app --host 0.0.0.0 --port 8090'
 Restart=always
-StandardOutput=append:/home/opc/drawing-agent/poc_strategist.log
-StandardError=append:/home/opc/drawing-agent/poc_strategist.log
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

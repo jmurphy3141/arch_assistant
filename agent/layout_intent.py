@@ -27,6 +27,7 @@ VALID_LAYERS = frozenset(["external", "ingress", "compute", "async", "data"])
 VALID_GROUPS = frozenset(["pub_sub_box", "app_sub_box", "db_sub_box"])
 
 VALID_CONNECTIVITY = frozenset(["fastconnect", "vpn", "none", "unknown"])
+VALID_SUBNET_TIERS = frozenset(["Public", "Private", "Data", "Management"])
 VALID_QUESTION_IDS = frozenset(
     ["regions.count", "regions.mode", "ha.ads", "connectivity.onprem", "dr.rpo_rto"]
 )
@@ -140,7 +141,32 @@ class LayoutIntentError(ValueError):
     """Raised when a raw dict cannot be validated as a LayoutIntent."""
 
 
+class LayoutIntentValidationError(LayoutIntentError):
+    """Raised when a parsed LayoutIntent violates deterministic diagram rules."""
+
+
 # ── Validator ─────────────────────────────────────────────────────────────────
+
+def validate_subnet_tiers(layout_intent: dict) -> None:
+    """Validate optional LLM-emitted subnet_tier values against canonical tiers."""
+    placements = layout_intent.get("placements", [])
+    if not isinstance(placements, list):
+        return
+
+    for node in placements:
+        if not isinstance(node, dict):
+            continue
+        tier = node.get("subnet_tier")
+        if tier is None:
+            continue
+        if tier not in VALID_SUBNET_TIERS:
+            label = node.get("label") or node.get("id") or node.get("oci_type") or "unknown"
+            raise LayoutIntentValidationError(
+                f"Node '{label}' has subnet_tier='{tier}'. "
+                f"Valid values: {sorted(VALID_SUBNET_TIERS)}. "
+                "Correction: reassign to Public, Private, Data, or Management."
+            )
+
 
 def validate_layout_intent(data: dict, items: list | None = None) -> LayoutIntent:
     """
@@ -153,6 +179,8 @@ def validate_layout_intent(data: dict, items: list | None = None) -> LayoutInten
     """
     if not isinstance(data, dict):
         raise LayoutIntentError("LayoutIntent must be a JSON object")
+
+    validate_subnet_tiers(data)
 
     schema_version = str(data.get("schema_version", "1.0"))
 

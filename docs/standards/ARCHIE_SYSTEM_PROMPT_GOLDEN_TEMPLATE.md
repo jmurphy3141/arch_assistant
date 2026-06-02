@@ -1,6 +1,6 @@
 # Archie System Prompt Golden Template
 
-Use this template for `ORCHESTRATOR_SYSTEM_MSG` updates in `agent/orchestrator_agent.py`.
+Use this template for `ORCHESTRATOR_SYSTEM_MSG` updates in `agent/archie_session.py`.
 
 ## Canonical Template
 
@@ -52,4 +52,4 @@ Tool contracts:
 - Additive changes only; avoid breaking behavioral guarantees.
 
 ## Golden Example (Current Archie Prompt)
-See: [agent/orchestrator_agent.py](/home/opc/drawing-agent/agent/orchestrator_agent.py:47)
+See: [agent/archie_session.py](/home/opc/drawing-agent/agent/archie_session.py:50)

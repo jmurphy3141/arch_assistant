@@ -393,9 +393,11 @@ class PocStrategistHandler:
             "cost_optimization_tco",
         ]
 
-        results = await asyncio.gather(
-            *[
-                sub_agent_client.call_sub_agent(
+        async def _call_angle(angle: str, delay: float) -> tuple[str, Any]:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                response = await sub_agent_client.call_sub_agent(
                     "poc_strategist",
                     task=base_task,
                     engagement_context={
@@ -405,25 +407,38 @@ class PocStrategistHandler:
                     },
                     trace_id=trace_id,
                 )
-                for angle in angles
-            ],
-            return_exceptions=True,
+                return angle, response
+            except Exception as exc:
+                return angle, exc
+
+        results = await asyncio.gather(
+            *[_call_angle(angle, delay) for angle, delay in zip(angles, [0, 1.5, 3.0])],
         )
 
         options: list[dict[str, Any]] = []
         failures: list[str] = []
-        for angle, response in zip(angles, results):
+        for angle, response in results:
             if isinstance(response, Exception):
                 failures.append(f"{angle}: {response}")
                 continue
             if str(response.get("status") or "").lower() != "ok":
                 failures.append(f"{angle}: status={response.get('status')}")
                 continue
+            raw = str(response.get("result") or "")
             try:
-                option = json.loads(str(response.get("result") or ""))
-            except json.JSONDecodeError as exc:
-                failures.append(f"{angle}: invalid_json={exc}")
-                continue
+                option = json.loads(raw)
+            except json.JSONDecodeError:
+                # Fallback: extract first {...} block in case the LLM added preamble
+                m = re.search(r'\{.*\}', raw, re.DOTALL)
+                if m:
+                    try:
+                        option = json.loads(m.group(0))
+                    except json.JSONDecodeError as exc2:
+                        failures.append(f"{angle}: invalid_json={exc2}")
+                        continue
+                else:
+                    failures.append(f"{angle}: no_json_found in result")
+                    continue
             if isinstance(option, dict):
                 option.setdefault("angle", angle)
                 options.append(option)
@@ -472,7 +487,7 @@ class PocStrategistHandler:
 
         return ToolResult(
             status="ok",
-            summary=f"Generated {len(options)} POC options. Recommended: {recommended_name}",
+            summary=_format_poc_options_summary(options, recommended_name, pain),
             artifact_key=str(saved.get("key", "") or ""),
             data=payload,
         )
@@ -568,6 +583,36 @@ _CONFIRMATION_PATTERNS: tuple[tuple[str, int], ...] = (
     (r"\bconfirm\b", 0),
     (r"\blet'?s\s+do\b", 0),
 )
+
+
+def _format_poc_options_summary(
+    options: list[dict[str, Any]],
+    recommended_name: str,
+    pain: str,
+) -> str:
+    lines = [
+        f"Generated {len(options)} POC options for: {pain}\n",
+        f"RECOMMENDED: {recommended_name}\n",
+    ]
+    for i, opt in enumerate(options, 1):
+        name = str(opt.get("option_name") or f"Option {i}")
+        relevance = opt.get("relevance_score", "?")
+        hours = opt.get("executability_hours", "?")
+        cost = str(opt.get("cost_effectiveness") or "")
+        wow = str(opt.get("wow_moment") or "")
+        services = opt.get("oci_services") or []
+        services_str = ", ".join(str(s) for s in services[:6])
+        lines.append(
+            f"Option {i}: {name}\n"
+            f"  Relevance: {relevance}/10 | Build: {hours}h | Cost: {cost}\n"
+            f"  Wow moment: {wow}\n"
+            f"  OCI services: {services_str}\n"
+        )
+    lines.append(
+        "Present all options to the user with their key differentiators. "
+        "Highlight the recommended option. Ask which they want to proceed with."
+    )
+    return "\n".join(lines)
 
 
 def _poc_confirmation_index(user_message: str) -> int | None:

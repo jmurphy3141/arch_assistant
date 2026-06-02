@@ -463,6 +463,7 @@ function extractQuickActions(content: string, toolCalls?: ChatToolCall[]): Quick
 
 function MessageBubble({
   msg,
+  hat,
   toolCalls,
   artifacts,
   artifactManifest,
@@ -471,6 +472,7 @@ function MessageBubble({
   busy,
 }: {
   msg: { role: string; content?: string; timestamp: string };
+  hat?: string;
   toolCalls?: ChatToolCall[];
   artifacts?: Record<string, string>;
   artifactManifest?: ChatArtifactManifest;
@@ -502,6 +504,24 @@ function MessageBubble({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignSelf: isUser ? 'flex-end' : 'flex-start', maxWidth: '88%' }}>
+      {!isUser && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '0.45rem' }}>
+          <img src="/archie-bear.jpg" alt="Archie"
+            style={{ width: 26, height: 26, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }}
+            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+          />
+          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#d8e0f0' }}>archie</span>
+          {hat && (
+            <span style={{
+              fontSize: '0.62rem', color: '#8fb4ff',
+              background: 'rgba(143,180,255,0.1)', border: '1px solid rgba(143,180,255,0.25)',
+              borderRadius: 4, padding: '0.05rem 0.4rem',
+            }}>
+              {hat.replace(/_/g, ' ')}
+            </span>
+          )}
+        </div>
+      )}
       <div style={bubbleStyle}>
         {isUser ? (
           <span data-testid="chat-user-message">{content}</span>
@@ -615,6 +635,7 @@ interface LocalMessage {
   role:      'user' | 'assistant';
   content:   string;
   timestamp: string;
+  hat?: string;
   toolCalls?: ChatToolCall[];
   artifacts?: Record<string, string>;
   artifactManifest?: ChatArtifactManifest;
@@ -781,6 +802,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
   const [archieWorkingMessage, setArchieWorkingMessage] = useState(ARCHIE_WORKING_MESSAGES[0]);
   const [activeHats, setActiveHats] = useState<string[]>([]);
+  const [lastHat, setLastHat] = useState<string | null>(null);
   const [backgroundMode, setBackgroundMode] = useState(false);
   const [backgroundJobId, setBackgroundJobId] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
@@ -924,6 +946,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
     setStreamingReply('');
     setThinkingStatus(null);
     setActiveHats([]);
+    setLastHat(null);
 
     try {
       let streamed = '';
@@ -945,6 +968,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
             if ((event.event_type as string) === 'hat_activate' && typeof eventHat === 'string' && eventHat.trim()) {
               const hat = eventHat.trim();
               setActiveHats(prev => prev.includes(hat) ? prev : [...prev, hat]);
+              setLastHat(hat);
             } else if ((event.event_type as string) === 'hat_drop' && typeof eventHat === 'string' && eventHat.trim()) {
               const hat = eventHat.trim();
               setActiveHats(prev => prev.filter(h => h !== hat));
@@ -971,6 +995,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
         role:      'assistant',
         content:   resp.reply || streamed,
         timestamp: new Date().toISOString(),
+        hat:       lastHat ?? undefined,
         toolCalls: resp.tool_calls,
         artifacts: resp.artifacts,
         artifactManifest: resp.artifact_manifest,
@@ -1041,19 +1066,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
     boxSizing:    'border-box',
   };
 
-  const btnPrimary: React.CSSProperties = {
-    background:    'linear-gradient(180deg, #ff6a2f 0%, #e8571a 100%)',
-    border:        'none',
-    borderRadius:  10,
-    color:         '#fff',
-    fontFamily:    "'JetBrains Mono', monospace",
-    fontSize:      '0.86rem',
-    fontWeight:    700,
-    padding:       '0.7rem 1.35rem',
-    cursor:        loading ? 'not-allowed' : 'pointer',
-    opacity:       loading ? 0.6 : 1,
-    letterSpacing: '0.04em',
-  };
+  // btnPrimary defined after canSend below
 
   const btnSecondary: React.CSSProperties = {
     background:    '#111626',
@@ -1068,17 +1081,34 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
   };
 
   const canSend = Boolean(customerId.trim() && input.trim()) && !loading;
+
+  const btnPrimary: React.CSSProperties = {
+    background:    canSend ? '#e8571a' : '#1a2438',
+    border:        'none',
+    borderRadius:  10,
+    color:         canSend ? '#fff' : '#6b7a94',
+    fontFamily:    "'JetBrains Mono', monospace",
+    fontSize:      '0.86rem',
+    fontWeight:    700,
+    padding:       '0.7rem 1.35rem',
+    cursor:        loading ? 'not-allowed' : (canSend ? 'pointer' : 'default'),
+    opacity:       loading ? 0.6 : 1,
+    letterSpacing: '0.04em',
+    transition:    'background 0.15s, color 0.15s',
+  };
+
   const archieHelloMessage = pickArchieMessage(
     ARCHIE_HELLO_MESSAGES,
     `${customerId}:${customerName || customerId}`
   );
 
   return (
-    <div style={{ display: 'grid', gridTemplateRows: '1fr auto auto auto', gap: '0.75rem', minHeight: '72vh' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', height: '100%' }}>
       {/* Message thread */}
       <div style={{
-        minHeight:     '50vh',
-        maxHeight:     '64vh',
+        minHeight:     0,
+        flex:          1,
+        maxHeight:     'none',
         overflowY:     'auto',
         background:    'radial-gradient(circle at 50% -20%, rgba(232,87,26,0.07), transparent 55%), #08090d',
         border:        '1px solid #273149',
@@ -1112,6 +1142,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
           <MessageBubble
             key={i}
             msg={msg}
+            hat={msg.hat}
             toolCalls={msg.toolCalls}
             artifacts={msg.artifacts}
             artifactManifest={msg.artifactManifest}
@@ -1120,28 +1151,94 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
             busy={loading}
           />
         ))}
-        {activeHats.length > 0 && (
+        {/* Activity bar — shown while loading, merges hat badges + thinking status */}
+        {loading && (
+          <div
+            data-testid="archie-activity-bar"
+            style={{
+              alignSelf: 'flex-start',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.5rem',
+              background: '#0d1425',
+              border: '1px solid #1e2d4a',
+              borderLeft: '3px solid #e8571a',
+              borderRadius: 10,
+              padding: '0.65rem 1rem',
+              minWidth: 240,
+              maxWidth: '88%',
+              fontFamily: "'JetBrains Mono', monospace",
+            }}
+          >
+            {/* Pulsing dot + primary status label */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span className="archie-status-dot" style={{ flexShrink: 0 }} />
+              <span
+                data-testid={thinkingStatus ? 'chat-thinking-status' : 'archie-working-message'}
+                style={{
+                  fontSize: '0.82rem',
+                  fontWeight: 600,
+                  color: thinkingStatus ? '#e8a57a' : '#8b93a8',
+                  fontStyle: thinkingStatus ? 'normal' : 'italic',
+                }}
+              >
+                {thinkingStatus || archieWorkingMessage}
+              </span>
+            </div>
+            {/* Hat badges — shown as soon as hats activate */}
+            {activeHats.length > 0 && (
+              <div
+                data-testid="active-hat-badges"
+                style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}
+              >
+                <span style={{ fontSize: '0.62rem', color: '#576070', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                  hat
+                </span>
+                {activeHats.map(hat => (
+                  <span
+                    key={hat}
+                    style={{
+                      background: 'rgba(232,87,26,0.15)',
+                      color: '#e8a57a',
+                      border: '1px solid rgba(232,87,26,0.35)',
+                      padding: '0.1rem 0.5rem',
+                      borderRadius: 999,
+                      fontSize: '0.68rem',
+                      fontWeight: 700,
+                      letterSpacing: '0.02em',
+                    }}
+                  >
+                    {hat.replace(/_/g, ' ')}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {/* Hat badges shown when NOT loading (persist after turn) */}
+        {!loading && activeHats.length > 0 && (
           <div
             data-testid="active-hat-badges"
             style={{
               display: 'flex',
-              gap: '0.5rem',
+              gap: '0.4rem',
               alignItems: 'center',
               flexWrap: 'wrap',
-              padding: '0.25rem 0.4rem',
-              fontSize: '0.72rem',
-              color: '#8b93a8',
+              padding: '0.2rem 0.3rem',
+              fontSize: '0.68rem',
+              color: '#576070',
               fontFamily: "'JetBrains Mono', monospace",
             }}
           >
-            <span>Active:</span>
+            <span style={{ textTransform: 'uppercase', letterSpacing: '0.1em' }}>hat</span>
             {activeHats.map(hat => (
               <span
                 key={hat}
                 style={{
-                  background: '#dbeafe',
-                  color: '#1d4ed8',
-                  padding: '0.12rem 0.55rem',
+                  background: 'rgba(232,87,26,0.1)',
+                  color: '#e8a57a',
+                  border: '1px solid rgba(232,87,26,0.25)',
+                  padding: '0.1rem 0.5rem',
                   borderRadius: 999,
                   fontWeight: 700,
                 }}
@@ -1149,20 +1246,6 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
                 {hat.replace(/_/g, ' ')}
               </span>
             ))}
-          </div>
-        )}
-        {thinkingStatus && (
-          <div
-            data-testid="chat-thinking-status"
-            style={{
-              color: thinkingStatus.startsWith('Running') ? '#61dafb' : '#a8b4cc',
-              fontWeight: thinkingStatus.startsWith('Running') ? 600 : 400,
-              fontSize: '0.78rem',
-              alignSelf: 'flex-start',
-              fontFamily: "'JetBrains Mono', monospace",
-            }}
-          >
-            {thinkingStatus}
           </div>
         )}
         {streamingReply && (
@@ -1187,23 +1270,6 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
               }}
               dangerouslySetInnerHTML={{ __html: mdToHtml(streamingReply) }}
             />
-          </div>
-        )}
-        {loading && (
-          <div
-            data-testid={thinkingStatus ? 'chat-thinking-status' : 'archie-working-message'}
-            style={{
-              color: thinkingStatus ? '#c8b8f0' : '#8b93a8',
-              fontSize: '0.78rem',
-              alignSelf: 'flex-start',
-              fontFamily: "'JetBrains Mono', monospace",
-              fontStyle: thinkingStatus ? 'normal' : 'italic',
-              display: 'flex',
-              alignItems: 'center',
-            }}
-          >
-            <span className="archie-status-dot" />
-            {thinkingStatus || archieWorkingMessage}
           </div>
         )}
         <div ref={bottomRef} />

@@ -16,9 +16,9 @@ try:
 except ImportError:
     from agent.intent_compiler import compile_intent_to_flat_spec as compile_intent
 from agent.layout_engine import spec_to_draw_dict
-from agent.drawio_generator import generate_drawio
+from agent.drawio_generator import DrawioValidationError, generate_drawio
 from agent.llm_inference_client import run_inference
-from agent.layout_intent import validate_layout_intent
+from agent.layout_intent import LayoutIntentError, validate_layout_intent
 from sub_agents.base import make_agent_app
 from sub_agents.models import A2ARequest, A2AResponse, AgentCard
 
@@ -123,8 +123,20 @@ async def handle(req: A2ARequest) -> A2AResponse:
         )
 
     if "placements" in spec:
-        intent = validate_layout_intent(spec, items)
-        spec = compile_intent(intent, items)
+        try:
+            intent = validate_layout_intent(spec, items)
+            spec = compile_intent(intent, items)
+        except LayoutIntentError as exc:
+            return A2AResponse(
+                result=str(exc),
+                status="blocked",
+                trace={
+                    "agent": card.name,
+                    "trace_id": req.trace_id,
+                    "error_type": exc.__class__.__name__,
+                    "stage": "layout_intent_validation",
+                },
+            )
 
     items_by_id = {item.id: item for item in items}
     draw_dict = await asyncio.to_thread(spec_to_draw_dict, spec, items_by_id)
@@ -143,7 +155,19 @@ async def handle(req: A2ARequest) -> A2AResponse:
 
     with tempfile.TemporaryDirectory(prefix="diagram-sub-agent-") as tmpdir:
         drawio_path = Path(tmpdir) / f"{diagram_name}.drawio"
-        await asyncio.to_thread(generate_drawio, draw_dict, drawio_path)
+        try:
+            await asyncio.to_thread(generate_drawio, draw_dict, drawio_path)
+        except DrawioValidationError as exc:
+            return A2AResponse(
+                result=str(exc),
+                status="blocked",
+                trace={
+                    "agent": card.name,
+                    "trace_id": req.trace_id,
+                    "error_type": exc.__class__.__name__,
+                    "stage": "drawio_validation",
+                },
+            )
         drawio_xml = await asyncio.to_thread(drawio_path.read_text, encoding="utf-8")
 
     return A2AResponse(

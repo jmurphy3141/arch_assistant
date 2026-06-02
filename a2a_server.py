@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 a2a_server.py
 --------------
@@ -23,7 +24,6 @@ warnings.warn(
     DeprecationWarning,
     stacklevel=1,
 )
-from __future__ import annotations
 
 import os
 import json

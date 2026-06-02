@@ -344,6 +344,7 @@ class Forge:
         artifacts: dict[str, str] = {}
         reply = ""
         _pending_correction: dict | None = None   # tool name + concern for next re-call
+        _approved_tool_redirects: dict[str, int] = {}  # guard against infinite redirect loop
 
         system_msg = self._build_active_system_msg(active_hats)
         prompt = self._build_initial_prompt(user_message, history or [])
@@ -393,6 +394,8 @@ class Forge:
                             )
                         )
                         events.append(self._hat_activate_event(rec))
+                        if reasoning_sink:
+                            reasoning_sink(rec, "hat_activate")
                     except ValueError:
                         pass
 
@@ -416,6 +419,8 @@ class Forge:
                             )
                         )
                         events.append(self._hat_activate_event(par))
+                        if reasoning_sink:
+                            reasoning_sink(par, "hat_activate")
                     except ValueError:
                         pass
             else:
@@ -528,9 +533,22 @@ class Forge:
             if reasoning_sink and tool_name:
                 reasoning_sink(f"→ {tool_name.replace('_', ' ')}", "tool_selected")
             if tool_name in _approved_tools:
-                # This tool was already called and approved this turn.
-                # The orchestrator has no more actions to take — return the result.
-                break
+                # Tool already ran this turn. Inject a directive so the LLM generates
+                # its final reply rather than looping. Guard: break if still looping
+                # after 2 redirects for the same tool (prevents infinite loops).
+                _approved_tool_redirects[tool_name] = (
+                    _approved_tool_redirects.get(tool_name, 0) + 1
+                )
+                if _approved_tool_redirects[tool_name] > 2:
+                    break
+                prompt = (
+                    f"{prompt}\n\n"
+                    f"FORGE NOTE: '{tool_name}' already ran and completed this turn — "
+                    "do NOT call it again. Based on all TOOL_RESULT entries above, "
+                    "write your final reply to the user now. "
+                    "Output plain text only — no tool call JSON."
+                )
+                continue
             tool_args: dict[str, Any] = dict(parsed.get("args") or {})
 
             if reasoning_sink and tool_name:
@@ -548,6 +566,8 @@ class Forge:
                         session_id,
                     )
                     events.append(self._hat_activate_event(hat_name))
+                    if reasoning_sink:
+                        reasoning_sink(hat_name, "hat_activate")
                 except ValueError:
                     pass   # unknown hat — ignore silently
                 result = ToolResult(
@@ -640,6 +660,8 @@ class Forge:
                         "[FORGE] Auto-activated required hat '%s' for tool '%s' session=%s",
                         spec.requires_hat, tool_name, session_id,
                     )
+                    if reasoning_sink:
+                        reasoning_sink(spec.requires_hat, "hat_activate")
                     events.append(
                         TurnEvent(
                             type="hat_auto_activated",
@@ -709,12 +731,15 @@ class Forge:
                     break
 
             if reasoning_sink:
-                reasoning_sink(f"Running {tool_name.replace('_', ' ')}...", "tool_running")
+                tool_label = tool_name.replace('_', ' ')
+                if spec.requires_hat:
+                    hat_label = spec.requires_hat.replace('_', ' ').replace('oci ', '').title()
+                    reasoning_sink(f"Calling {hat_label} — {tool_label}...", "tool_running")
+                else:
+                    reasoning_sink(f"Running {tool_label}...", "tool_running")
 
             mem = memory_snapshot if spec.memory_contract else None
             try:
-                if reasoning_sink:
-                    reasoning_sink(f"Running {tool_name.replace('_', ' ')}...", "tool_running")
                 result = await spec.handler(
                     tool_args, memory=mem, context=context, trace_id=trace_id
                 )

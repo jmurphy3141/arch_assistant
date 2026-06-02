@@ -101,6 +101,20 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
         fontSize: '0.73rem',
       }}
     >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+        <span style={{ fontSize: '0.56rem', letterSpacing: '0.15em', color: '#6b7a94', textTransform: 'uppercase' }}>
+          Engagement Memory
+        </span>
+        {isLive && (
+          <span style={{
+            fontSize: '0.55rem', fontWeight: 700, color: '#46d68a', letterSpacing: '0.08em',
+            background: 'rgba(70,214,138,0.1)', border: '1px solid rgba(70,214,138,0.3)',
+            borderRadius: 20, padding: '2px 7px', textTransform: 'uppercase',
+          }}>
+            LIVE
+          </span>
+        )}
+      </div>
       {/* Live activity */}
       {isLive && (
         <div
@@ -122,13 +136,11 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
               {activity!.activeHats!.map(hat => (
                 <span key={hat} data-testid="live-active-hat" style={{
-                  background: 'rgba(143,180,255,0.1)',
-                  border: '1px solid rgba(143,180,255,0.25)',
-                  borderRadius: 3,
-                  padding: '0.05rem 0.35rem',
-                  fontSize: '0.65rem',
-                  color: '#8fb4ff',
+                  background: 'rgba(70,214,138,0.1)', border: '1px solid rgba(70,214,138,0.3)',
+                  borderRadius: 4, padding: '0.05rem 0.45rem', fontSize: '0.66rem', color: '#46d68a',
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
                 }}>
+                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#46d68a', display: 'inline-block' }} />
                   {hatDisplayName(hat)}
                 </span>
               ))}
