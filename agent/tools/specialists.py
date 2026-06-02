@@ -149,17 +149,25 @@ class _SpecialistHandler:
                 f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
                 f"{raw_request}"
             ).strip()
+        engagement_context = {
+            "customer_id": self._customer_id,
+            "customer_name": self._customer_name,
+            "feedback": feedback,
+            "architect_brief": dict(args.get("_architect_brief", {}) or {}),
+        }
+        if self._agent_name == "waf":
+            raw_request = _hydrate_waf_task(
+                raw_request,
+                args=args,
+                context=ctx,
+                memory_raw=memory.raw if memory else {},
+            )
 
         try:
             response = await sub_agent_client.call_sub_agent(
                 self._agent_name,
                 task=raw_request,
-                engagement_context={
-                    "customer_id": self._customer_id,
-                    "customer_name": self._customer_name,
-                    "feedback": feedback,
-                    "architect_brief": dict(args.get("_architect_brief", {}) or {}),
-                },
+                engagement_context=engagement_context,
                 trace_id=trace_id,
             )
         except SubAgentError as exc:
@@ -319,7 +327,6 @@ class TechResearchHandler(_SpecialistHandler):
 class SalesDeckHandler(_SpecialistHandler):
     def __init__(self, store, customer_id, customer_name):
         super().__init__("sales_deck", "deck", store, customer_id, customer_name)
-
 
 class PocStrategistHandler:
     def __init__(self, store, customer_id, customer_name):
@@ -563,6 +570,94 @@ class PocStrategistHandler:
                 ),
             ],
         )
+
+def _hydrate_waf_task(
+    task: str,
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> str:
+    value = lambda *keys, default="not stated": _context_value_or_default(  # noqa: E731
+        keys,
+        default=default,
+        args=args,
+        context=context,
+        memory_raw=memory_raw,
+    )
+    block = "\n".join(
+        [
+            "[CONFIRMED CONTEXT]",
+            f"Architecture: {value('architecture_description', 'architecture_summary', 'topology')}",
+            f"Public exposure: {value('public_exposure', 'internet_facing')}",
+            f"Compliance: {value('compliance_requirements', 'compliance', default='none stated')}",
+            f"Diagram: {value('existing_diagram_artifact_key', 'diagram_key', 'artifact_key', default='none')}",
+            f"Subnet tiers: {value('subnet_tiers', 'tiers')}",
+            "[/CONFIRMED CONTEXT]",
+        ]
+    )
+    return f"{block}\n\n{task}".strip()
+
+
+def _context_value_or_default(
+    keys: tuple[str, ...],
+    *,
+    default: str,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> Any:
+    value = _find_context_value(keys, args=args, context=context, memory_raw=memory_raw)
+    return default if not _has_context_value(value) else value
+
+
+def _find_context_value(
+    keys: tuple[str, ...],
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> Any:
+    for source in _context_sources(args=args, context=context, memory_raw=memory_raw):
+        for key in keys:
+            if key in source and _has_context_value(source.get(key)):
+                return source[key]
+    return None
+
+
+def _context_sources(
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for source in (args, context, memory_raw):
+        if isinstance(source, dict):
+            sources.append(source)
+            for key in ("facts", "requirements", "topology", "agents", "diagram", "waf"):
+                nested = source.get(key)
+                if isinstance(nested, dict):
+                    sources.append(nested)
+    return sources
+
+
+def _has_context_value(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    if isinstance(value, (list, tuple, set, dict)) and not value:
+        return False
+    return True
+
+
+def _validation_blocked(tool: str, error: str) -> ToolResult:
+    return ToolResult(
+        summary=f"{tool.upper()} validation failed: {error}",
+        status="blocked",
+        data={"validation_error": error, "validation_stage": "python_contract"},
+    )
 
 
 def _default_request(agent_name: str) -> str:

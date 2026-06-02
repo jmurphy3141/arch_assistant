@@ -1,12 +1,13 @@
 import json
 import sys
 import types
+import json
 
 import pytest
 
 from agent import sub_agent_client
 from agent.tools import specialists as specialists_module
-from agent.tools.specialists import JepHandler, PovHandler, WafHandler
+from agent.tools.specialists import REQUIRED_WAF_PILLARS, JepHandler, PovHandler, WafHandler
 from skillforge.types import MemorySnapshot
 
 
@@ -56,11 +57,15 @@ def install_jep_lifecycle_stub(
     policy_block=None,
     generated_state=None,
 ):
+    existing = sys.modules.get("agent.jep_lifecycle")
     module = types.ModuleType("agent.jep_lifecycle")
     module.generate_policy_block_payload = lambda store, customer_id: policy_block
     module.mark_generated = lambda store, customer_id: (
         generated_state or {"jep_state": "generated"}
     )
+    if existing is not None:
+        monkeypatch.setattr(existing, "generate_policy_block_payload", module.generate_policy_block_payload)
+        monkeypatch.setattr(existing, "mark_generated", module.mark_generated)
     monkeypatch.setitem(sys.modules, "agent.jep_lifecycle", module)
 
 
@@ -173,6 +178,7 @@ async def test_jep_locked(monkeypatch):
 async def test_waf_ok(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "waf"
+        assert "[CONFIRMED CONTEXT]" in task
         return {"status": "ok", "result": "WAF review text."}
 
     monkeypatch.setattr(

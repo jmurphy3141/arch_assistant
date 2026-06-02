@@ -340,34 +340,56 @@ class TerraformHandler:
             args.get("_user_request_text", "")
             or "Generate Terraform for the current architecture."
         )
+        task = _hydrate_terraform_task(
+            task,
+            args=args,
+            context=ctx,
+            memory_raw=memory.raw if memory else {},
+        )
 
-        try:
-            response = await sub_agent_client.call_sub_agent(
-                "terraform",
-                task=task,
-                engagement_context={
-                    "customer_id": self._customer_id,
-                    "customer_name": self._customer_name,
-                    "architect_brief": dict(args.get("_architect_brief", {}) or {}),
-                },
-                trace_id=trace_id,
-            )
-        except SubAgentError as exc:
-            return ToolResult(
-                summary=f"Terraform sub-agent error: {exc}",
-                status="blocked",
-            )
+        response: dict[str, Any] = {}
+        validation_error = ""
+        for attempt in range(2):
+            try:
+                response = await sub_agent_client.call_sub_agent(
+                    "terraform",
+                    task=task,
+                    engagement_context={
+                        "customer_id": self._customer_id,
+                        "customer_name": self._customer_name,
+                        "architect_brief": dict(args.get("_architect_brief", {}) or {}),
+                    },
+                    trace_id=trace_id,
+                )
+            except SubAgentError as exc:
+                return ToolResult(
+                    summary=f"Terraform sub-agent error: {exc}",
+                    status="blocked",
+                )
 
-        if str(response.get("status") or "").lower() == "needs_input":
-            clarification = str(response.get("result") or "")
-            return ToolResult(
-                summary=clarification or "Terraform needs more input.",
-                status="needs_input",
-                clarification=clarification,
+            if str(response.get("status") or "").lower() == "needs_input":
+                clarification = str(response.get("result") or "")
+                return ToolResult(
+                    summary=clarification or "Terraform needs more input.",
+                    status="needs_input",
+                    clarification=clarification,
+                )
+            validation_error = _validate_terraform_result(response.get("result"))
+            if not validation_error:
+                break
+            if "Hardcoded OCID found" not in validation_error or attempt == 1:
+                return _validation_blocked("terraform", validation_error)
+            task = (
+                "[CORRECTION FROM PYTHON VALIDATION]\n"
+                f"{validation_error} Replace every hardcoded OCID with a variable reference.\n\n"
+                f"{task}"
             )
+        if validation_error:
+            return _validation_blocked("terraform", validation_error)
 
         from agent.archie_session import _parse_terraform_sub_agent_result
 
+        response["result"] = _normalise_terraform_result_for_parser(response.get("result"))
         files = _parse_terraform_sub_agent_result(response.get("result"))
         ocid_violations = _terraform_ocid_violations(files)
         if ocid_violations:
@@ -405,3 +427,142 @@ def _terraform_ocid_violations(files: dict[str, Any]) -> list[str]:
         for filename, content in files.items()
         if filename.endswith(".tf") and OCID_PATTERN.search(str(content or ""))
     ]
+
+
+def _hydrate_terraform_task(
+    task: str,
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> str:
+    value = lambda *keys, default="not stated": _context_value_or_default(  # noqa: E731
+        keys,
+        default=default,
+        args=args,
+        context=context,
+        memory_raw=memory_raw,
+    )
+    existing = value("existing_artifact_key", "terraform_key", "artifact_key", default="none")
+    compartment = value("compartment_ocid", "compartment_id")
+    if str(compartment).lower().startswith("ocid1."):
+        compartment = "var.compartment_id"
+    block = "\n".join(
+        [
+            "[CONFIRMED CONTEXT]",
+            f"Compartment OCID variable: {compartment}",
+            f"Region: {value('region', default='us-chicago-1')}",
+            f"Existing artifact: {existing}",
+            f"VCN CIDR: {value('vpc_cidr', 'vcn_cidr')}",
+            f"HA mode: {value('ha_mode', 'ha_dr_mode')}",
+            "[/CONFIRMED CONTEXT]",
+        ]
+    )
+    revision = ""
+    if existing != "none":
+        revision = "[UPDATE REQUEST - PRESERVE ALL EXISTING RESOURCES EXCEPT: changes explicitly requested by the user]"
+    return "\n\n".join(part for part in (block, revision, task) if part).strip()
+
+
+def _validate_terraform_result(raw_result: Any) -> str:
+    if isinstance(raw_result, str):
+        try:
+            result = json.loads(raw_result)
+        except json.JSONDecodeError as exc:
+            return f"terraform result invalid JSON: {exc}"
+    elif isinstance(raw_result, dict):
+        result = raw_result
+    else:
+        return "terraform result is not an object"
+    files = result.get("files")
+    if not isinstance(files, dict):
+        return "missing files dict"
+    if "provider_tf" in files:
+        return "provider_tf must not exist - provider block goes in main.tf"
+    required_files = {"main_tf", "variables_tf", "outputs_tf", "readme_md"}
+    got = set(files.keys())
+    if not required_files.issubset(got):
+        missing = sorted(required_files - got)
+        return f"Missing required files: {missing}"
+    ocid_pattern = re.compile(r"ocid1\.")
+    for fname in ("main_tf", "variables_tf", "outputs_tf"):
+        content = str(files.get(fname, "") or "")
+        if ocid_pattern.search(content):
+            return f"Hardcoded OCID found in {fname}. Replace with a variable reference."
+    if not result.get("artifact_key"):
+        return "missing artifact_key"
+    return ""
+
+
+def _normalise_terraform_result_for_parser(raw_result: Any) -> str:
+    result = json.loads(raw_result) if isinstance(raw_result, str) else dict(raw_result)
+    files = dict(result.get("files") or {})
+    return json.dumps(
+        {
+            "main_tf": files.get("main_tf", ""),
+            "variables_tf": files.get("variables_tf", ""),
+            "outputs_tf": files.get("outputs_tf", ""),
+            "readme_md": files.get("readme_md", ""),
+        }
+    )
+
+
+def _context_value_or_default(
+    keys: tuple[str, ...],
+    *,
+    default: str,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> Any:
+    value = _find_context_value(keys, args=args, context=context, memory_raw=memory_raw)
+    return default if not _has_context_value(value) else value
+
+
+def _find_context_value(
+    keys: tuple[str, ...],
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> Any:
+    for source in _context_sources(args=args, context=context, memory_raw=memory_raw):
+        for key in keys:
+            if key in source and _has_context_value(source.get(key)):
+                return source[key]
+    return None
+
+
+def _context_sources(
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for source in (args, context, memory_raw):
+        if isinstance(source, dict):
+            sources.append(source)
+            for key in ("facts", "requirements", "network", "terraform", "agents"):
+                nested = source.get(key)
+                if isinstance(nested, dict):
+                    sources.append(nested)
+    return sources
+
+
+def _has_context_value(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    if isinstance(value, (list, tuple, set, dict)) and not value:
+        return False
+    return True
+
+
+def _validation_blocked(tool: str, error: str) -> ToolResult:
+    return ToolResult(
+        summary=f"{tool.upper()} validation failed: {error}",
+        status="blocked",
+        data={"validation_error": error, "validation_stage": "python_contract"},
+    )

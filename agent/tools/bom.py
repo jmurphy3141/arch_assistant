@@ -5,6 +5,7 @@ ToolHandler implementation for the generate_bom pipeline.
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -90,10 +91,6 @@ class BomHandler:
                 clarification=message,
             )
 
-        confirmed_context_block = _build_confirmed_context_block(
-            memory.raw if memory else {},
-            context=ctx,
-        )
         prompt = str(args.get("prompt") or "")
 
         correction = str(args.pop("_forge_correction", "") or "").strip()
@@ -102,58 +99,82 @@ class BomHandler:
                 f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
                 f"{prompt}"
             ).strip()
-        if confirmed_context_block:
-            prompt = f"{confirmed_context_block}{prompt}".strip()
         args = {**args, "prompt": prompt}
 
-        try:
-            body = await sub_agent_client.call_sub_agent(
-                "bom",
-                prompt,
-                engagement_context=memory.raw if memory else {},
-                trace_id=trace_id,
-            )
-        except sub_agent_client.SubAgentError as exc:
-            return ToolResult(
-                summary=f"BOM sub-agent failed: {exc}",
-                status="blocked",
-            )
+        engagement_context = memory.raw if memory else {}
+        prompt = _hydrate_bom_task(
+            str(args.get("prompt") or ""),
+            args=args,
+            context=ctx,
+            memory_raw=engagement_context,
+        )
+        parsed: dict[str, Any] = {}
+        bom_payload: dict[str, Any] = {}
+        validation_error = ""
+        for attempt in range(2):
+            try:
+                body = await sub_agent_client.call_sub_agent(
+                    "bom",
+                    prompt,
+                    engagement_context=engagement_context,
+                    trace_id=trace_id,
+                )
+            except sub_agent_client.SubAgentError as exc:
+                return ToolResult(
+                    summary=f"BOM sub-agent failed: {exc}",
+                    status="blocked",
+                )
 
-        if body.get("status") == "needs_input":
-            clarification = str(body.get("result") or "")
-            return ToolResult(
-                summary=clarification or "BOM needs more input.",
-                status="needs_input",
-                clarification=clarification,
-            )
+            if body.get("status") == "needs_input":
+                clarification = str(body.get("result") or "")
+                return ToolResult(
+                    summary=clarification or "BOM needs more input.",
+                    status="needs_input",
+                    clarification=clarification,
+                )
 
-        try:
-            parsed = json.loads(body.get("result") or "{}")
-        except json.JSONDecodeError as exc:
-            return ToolResult(
-                summary=f"BOM sub-agent returned invalid JSON: {exc}",
-                status="blocked",
+            try:
+                raw_result = body.get("result") or "{}"
+                parsed = (
+                    json.loads(raw_result)
+                    if isinstance(raw_result, str)
+                    else dict(raw_result)
+                    if isinstance(raw_result, dict)
+                    else {}
+                )
+            except (TypeError, json.JSONDecodeError) as exc:
+                return ToolResult(
+                    summary=f"BOM sub-agent returned invalid JSON: {exc}",
+                    status="blocked",
+                )
+            bom_payload = _flag_unverified_skus(_extract_bom_payload(parsed))
+            validation_error = _validate_bom_result(parsed, bom_payload)
+            if not validation_error:
+                break
+            if "monthly_total arithmetic error" not in validation_error or attempt == 1:
+                return _validation_blocked("bom", validation_error)
+            prompt = (
+                "[CORRECTION FROM PYTHON VALIDATION]\n"
+                f"{validation_error}. Recalculate monthly_total: hourly SKUs use quantity * unit_price * 730, "
+                "monthly SKUs use quantity * unit_price.\n\n"
+                f"{prompt}"
             )
-        bom_payload = _extract_bom_payload(parsed)
-        arithmetic_error = _verify_bom_arithmetic(bom_payload)
-        if arithmetic_error:
-            logger.warning(arithmetic_error)
-            return ToolResult(
-                summary=arithmetic_error,
-                status="blocked",
-                data={"arithmetic_error": arithmetic_error},
-            )
+        if validation_error:
+            return _validation_blocked("bom", validation_error)
         bom_payload = _enrich_bom_payload_for_prompt(
             bom_payload,
             prompt="\n".join(
                 part
                 for part in (
-                    str(args.get("prompt") or ""),
+                    prompt,
                     user_message,
                 )
                 if part
             ),
         )
+        bom_payload = _flag_unverified_skus(bom_payload)
+        prices_from = str(parsed.get("prices_from") or bom_payload.get("prices_from") or "fallback_cache")
+        bom_payload["prices_from"] = prices_from
         line_items = bom_payload.get("line_items") or []
         service_count = len(line_items)
         service_names = ", ".join(
@@ -189,11 +210,12 @@ class BomHandler:
             status="ok",
             data={
                 "bom_payload": bom_payload,
+                "prices_from": prices_from,
                 "bom_context_source": str(
                     args.get("_bom_context_source") or "direct_request"
                 ),
             },
-            artifact_key=str(bom_payload.get("xlsx_key") or ""),
+            artifact_key=str(parsed.get("artifact_key") or bom_payload.get("artifact_key") or bom_payload.get("xlsx_key") or ""),
         )
 
 
@@ -206,91 +228,167 @@ def _extract_bom_payload(parsed: Any) -> dict[str, Any]:
     return parsed
 
 
-def _build_confirmed_context_block(
-    memory_raw: dict[str, Any],
+def _hydrate_bom_task(
+    task: str,
     *,
-    context: dict[str, Any] | None = None,
-) -> str:
-    values: dict[str, Any] = {}
-    for source in _confirmed_context_sources(memory_raw, context):
-        for field in CONFIRMED_CONTEXT_FIELDS:
-            if field not in values and _has_confirmed_value(source.get(field)):
-                values[field] = source[field]
-    if not values:
-        return ""
-    lines = ["[CONFIRMED CONTEXT]"]
-    lines.extend(
-        f"  {field}: {values[field]}"
-        for field in CONFIRMED_CONTEXT_FIELDS
-        if field in values
-    )
-    lines.append("[END CONFIRMED CONTEXT]")
-    return "\n".join(lines) + "\n\n"
-
-
-def _confirmed_context_sources(
+    args: dict[str, Any],
+    context: dict[str, Any],
     memory_raw: dict[str, Any],
-    context: dict[str, Any] | None,
+) -> str:
+    block = _build_bom_confirmed_context(args=args, context=context, memory_raw=memory_raw)
+    previous = _find_context_value(
+        ("previous_bom_payload", "bom_payload", "bom"),
+        args=args,
+        context=context,
+        memory_raw=memory_raw,
+    )
+    parts = [block]
+    if previous not in (None, "", [], {}):
+        parts.append(
+            "[PREVIOUS BOM - PRESERVE UNLESS CHANGING: "
+            f"{json.dumps(previous, sort_keys=True, default=str)}]"
+        )
+    parts.append(str(task or ""))
+    return "\n\n".join(part for part in parts if str(part).strip()).strip()
+
+
+def _build_bom_confirmed_context(
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> str:
+    value = lambda *keys, default="not stated": _context_value_or_default(  # noqa: E731
+        keys,
+        default=default,
+        args=args,
+        context=context,
+        memory_raw=memory_raw,
+    )
+    return "\n".join(
+        [
+            "[CONFIRMED CONTEXT]",
+            f"Shape: {value('compute_shape', 'shape', 'shapes')}",
+            f"OCPU: {value('ocpu_count', 'ocpus', 'cpu_count')}",
+            f"Memory: {value('memory_gb')}",
+            f"Region: {value('region', default='us-chicago-1')}",
+            f"HA mode: {value('ha_mode', 'ha_dr_mode')}",
+            f"Budget: {value('budget')}",
+            f"Storage: {value('storage_requirements', 'storage_gb')}",
+            f"Workloads: {value('workloads', 'workload_type')}",
+            f"License: {value('license_type')}",
+            "[/CONFIRMED CONTEXT]",
+        ]
+    )
+
+
+def _flag_unverified_skus(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    payload = copy.deepcopy(payload)
+    for item in payload.get("line_items") or []:
+        if not isinstance(item, dict):
+            continue
+        sku = str(item.get("sku") or "")
+        if sku and not re.match(r"^B\d{4,6}$", sku):
+            item["sku_unverified"] = True
+    return payload
+
+
+def _validate_bom_result(result: dict[str, Any], bom_payload: dict[str, Any]) -> str:
+    if "bom_payload" not in result and not bom_payload:
+        return "missing bom_payload"
+    line_items = bom_payload.get("line_items")
+    if not isinstance(line_items, list) or not line_items:
+        return "bom_payload.line_items is empty"
+    for item in line_items:
+        if not isinstance(item, dict):
+            return f"line item is not an object: {item!r}"
+        sku = str(item.get("sku") or "")
+        if not sku:
+            return f"line item missing sku: {item}"
+        qty = float(item.get("quantity") or item.get("qty") or 0)
+        price = float(item.get("unit_price") or item.get("price") or 0)
+        if qty <= 0:
+            return f"quantity <= 0 for {item.get('sku')}"
+        if price <= 0:
+            return f"unit_price <= 0 for {item.get('sku')}"
+    if not (result.get("artifact_key") or bom_payload.get("artifact_key") or bom_payload.get("xlsx_key")):
+        return "missing artifact_key"
+    def _monthly_multiplier(item: dict[str, Any]) -> float:
+        billing = str(item.get("billing_unit") or item.get("metric") or "hour").lower()
+        return 730.0 if "hour" in billing else 1.0
+
+    computed = sum(
+        float(i.get("quantity") or i.get("qty") or 0)
+        * float(i.get("unit_price") or i.get("price") or 0)
+        * _monthly_multiplier(i)
+        for i in line_items
+    )
+    stated = float(bom_payload.get("monthly_total") or 0)
+    if abs(computed - stated) / max(computed, 1) >= 0.005:
+        return f"monthly_total arithmetic error: computed={computed:.2f}, stated={stated:.2f}"
+    return ""
+
+
+def _context_value_or_default(
+    keys: tuple[str, ...],
+    *,
+    default: str,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> Any:
+    value = _find_context_value(keys, args=args, context=context, memory_raw=memory_raw)
+    return default if not _has_context_value(value) else value
+
+
+def _find_context_value(
+    keys: tuple[str, ...],
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> Any:
+    for source in _context_sources(args=args, context=context, memory_raw=memory_raw):
+        for key in keys:
+            if key in source and _has_context_value(source.get(key)):
+                return source[key]
+    return None
+
+
+def _context_sources(
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
 ) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
-    if isinstance(memory_raw, dict):
-        sources.append(memory_raw)
-    if isinstance(context, dict):
-        sources.append(context)
-        for key in ("facts", "constraints", "decision_context", "requirements"):
-            nested = context.get(key)
-            if isinstance(nested, dict):
-                sources.append(nested)
+    for source in (memory_raw, context, args):
+        if isinstance(source, dict):
+            sources.append(source)
+            for key in ("facts", "constraints", "decision_context", "requirements", "agents", "bom", "sizing"):
+                nested = source.get(key)
+                if isinstance(nested, dict):
+                    sources.append(nested)
     return sources
 
 
-def _has_confirmed_value(value: Any) -> bool:
+def _has_context_value(value: Any) -> bool:
     if value is None or value is False:
         return False
-    if isinstance(value, (str, bytes)) and not str(value).strip():
+    if isinstance(value, str) and not value.strip():
         return False
     if isinstance(value, (list, tuple, set, dict)) and not value:
         return False
     return True
 
 
-def _verify_bom_arithmetic(payload: dict[str, Any]) -> str | None:
-    if not isinstance(payload, dict):
-        return None
-    line_items = payload.get("line_items") or []
-    if not line_items:
-        return None
-    try:
-        stated_total = float(payload.get("monthly_total") or 0)
-    except (TypeError, ValueError):
-        return None
-    if stated_total == 0:
-        return None
-
-    computed = 0.0
-    for item in line_items:
-        if not isinstance(item, dict):
-            continue
-        try:
-            qty = float(item.get("qty") or item.get("quantity") or 0)
-            price = float(item.get("unit_price") or item.get("price") or 0)
-        except (TypeError, ValueError):
-            continue
-        billing = str(
-            item.get("billing_unit") or item.get("metric") or "monthly"
-        ).lower()
-        multiplier = 730 if "hour" in billing else 1
-        computed += qty * price * multiplier
-
-    if computed == 0:
-        return None
-    pct_diff = abs(computed - stated_total) / max(computed, 0.01)
-    if pct_diff <= 0.005:
-        return None
-    return (
-        f"BOM arithmetic mismatch: line items sum to ${computed:,.2f}/mo "
-        f"but monthly_total is ${stated_total:,.2f}/mo "
-        f"({pct_diff * 100:.1f}% off). Recompute monthly_total."
+def _validation_blocked(tool: str, error: str) -> ToolResult:
+    return ToolResult(
+        summary=f"{tool.upper()} validation failed: {error}",
+        status="blocked",
+        data={"validation_error": error, "validation_stage": "python_contract"},
     )
 
 

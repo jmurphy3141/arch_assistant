@@ -1,5 +1,6 @@
 import sys
 import types
+import json
 
 import pytest
 
@@ -67,11 +68,26 @@ def install_archie_session_stub(monkeypatch, parse_result):
 async def test_terraform_ok(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "terraform"
-        assert task == "make terraform"
+        assert "[CONFIRMED CONTEXT]" in task
+        assert task.endswith("make terraform")
         assert engagement_context["customer_id"] == "cust-1"
         assert engagement_context["customer_name"] == "ACME"
         assert trace_id == "trace-1"
-        return {"status": "ok", "result": "resource 'oci_core_vcn' 'main' {}"}
+        return {
+            "status": "ok",
+            "result": json.dumps(
+                {
+                    "artifact_key": "tf/main.tf",
+                    "files": {
+                        "main_tf": 'resource "oci_core_vcn" "main" {}',
+                        "variables_tf": 'variable "compartment_id" {}',
+                        "outputs_tf": 'output "vcn_id" { value = oci_core_vcn.main.id }',
+                        "tfvars_example": 'compartment_id = "var.compartment_id"',
+                        "readme_md": "# Terraform",
+                    },
+                }
+            ),
+        }
 
     def fake_save_terraform_bundle(store, customer_id, files, metadata):
         assert customer_id == "cust-1"
@@ -103,7 +119,21 @@ async def test_terraform_ok(monkeypatch):
 async def test_terraform_blocks_hardcoded_ocid_in_tf_file(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "terraform"
-        return {"status": "ok", "result": "{}"}
+        return {
+            "status": "ok",
+            "result": json.dumps(
+                {
+                    "artifact_key": "tf/main.tf",
+                    "files": {
+                        "main_tf": 'resource "oci_core_vcn" "main" { compartment_id = "ocid1.compartment.oc1..aaa" }',
+                        "variables_tf": 'variable "compartment_id" { type = string }',
+                        "outputs_tf": 'output "vcn_id" { value = "x" }',
+                        "tfvars_example": 'compartment_id = "var.compartment_id"',
+                        "readme_md": "clean",
+                    },
+                }
+            ),
+        }
 
     def fail_save_terraform_bundle(*args, **kwargs):
         raise AssertionError("Terraform bundle with hardcoded OCID must not be saved")
@@ -133,14 +163,28 @@ async def test_terraform_blocks_hardcoded_ocid_in_tf_file(monkeypatch):
     )
 
     assert result.status == "blocked"
-    assert result.data == {"ocid_violations": ["main.tf"]}
-    assert "main.tf" in result.summary
+    assert "Hardcoded OCID found in main_tf" in result.data["validation_error"]
+    assert "main_tf" in result.summary
 
 
 async def test_terraform_allows_ocid_stubs_outside_tf_files(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "terraform"
-        return {"status": "ok", "result": "{}"}
+        return {
+            "status": "ok",
+            "result": json.dumps(
+                {
+                    "artifact_key": "tf/main.tf",
+                    "files": {
+                        "main_tf": 'resource "oci_core_vcn" "main" { compartment_id = var.compartment_id }',
+                        "variables_tf": 'variable "compartment_id" { type = string }',
+                        "outputs_tf": 'output "vcn_id" { value = oci_core_vcn.main.id }',
+                        "tfvars_example": 'compartment_id = "ocid1.compartment.oc1..example"',
+                        "readme_md": "example ocid1.compartment.oc1..aaa",
+                    },
+                }
+            ),
+        }
 
     def fake_save_terraform_bundle(store, customer_id, files, metadata):
         assert files["README.md"] == "example ocid1.compartment.oc1..aaa"
