@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from agent import sub_agent_client
@@ -61,14 +63,28 @@ def make_memory_with_raw(raw):
 async def test_bom_ok(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "bom"
-        assert task == "size it"
+        assert "[CONFIRMED CONTEXT]" in task
+        assert task.endswith("size it")
         assert engagement_context == {"customer_id": "cust-1"}
         assert trace_id == "trace-1"
         return {
             "status": "ok",
-            "result": (
-                '{"bom_payload": {"line_items": [], '
-                '"totals": {"estimated_monthly_cost": 500}}}'
+            "result": json.dumps(
+                {
+                    "artifact_key": "bom.xlsx",
+                    "bom_payload": {
+                        "monthly_total": 730,
+                        "totals": {"estimated_monthly_cost": 730},
+                        "line_items": [
+                            {
+                                "sku": "B12345",
+                                "description": "Compute",
+                                "quantity": 1,
+                                "unit_price": 1,
+                            }
+                        ],
+                    },
+                }
             ),
         }
 
@@ -84,7 +100,7 @@ async def test_bom_ok(monkeypatch):
     )
 
     assert result.status == "ok"
-    assert result.data["bom_payload"]["totals"]["estimated_monthly_cost"] == 500
+    assert result.data["bom_payload"]["line_items"][0]["sku"] == "B12345"
 
 
 async def test_bom_injects_confirmed_context_before_correction(monkeypatch):
@@ -94,9 +110,22 @@ async def test_bom_injects_confirmed_context_before_correction(monkeypatch):
         captured["task"] = task
         return {
             "status": "ok",
-            "result": (
-                '{"bom_payload": {"line_items": [], '
-                '"monthly_total": 0, "totals": {"estimated_monthly_cost": 0}}}'
+            "result": json.dumps(
+                {
+                    "artifact_key": "bom.xlsx",
+                    "bom_payload": {
+                        "line_items": [
+                            {
+                                "sku": "B12345",
+                                "description": "Compute",
+                                "quantity": 1,
+                                "unit_price": 1,
+                            }
+                        ],
+                        "monthly_total": 730,
+                        "totals": {"estimated_monthly_cost": 730},
+                    },
+                }
             ),
         }
 
@@ -121,9 +150,8 @@ async def test_bom_injects_confirmed_context_before_correction(monkeypatch):
 
     assert result.status == "ok"
     assert captured["task"].startswith("[CONFIRMED CONTEXT]\n")
-    assert "  customer_name: ACME\n" in captured["task"]
-    assert "  instance_count: 3\n" in captured["task"]
-    assert "  shapes: ['VM.Standard.E5.Flex']\n" in captured["task"]
+    assert "Shape: ['VM.Standard.E5.Flex']\n" in captured["task"]
+    assert "Instance" not in captured["task"]
     assert captured["task"].index("[CONFIRMED CONTEXT]") < captured["task"].index(
         "[CORRECTION FROM EXPERT REVIEW:"
     )
@@ -133,11 +161,21 @@ async def test_bom_accepts_correct_line_item_arithmetic(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         return {
             "status": "ok",
-            "result": (
-                '{"bom_payload": {"line_items": ['
-                '{"sku":"BTEST","description":"Compute",'
-                '"qty":2,"unit_price":1.0,"billing_unit":"hour"}'
-                '], "monthly_total": 1460.0}}'
+            "result": json.dumps(
+                {
+                    "artifact_key": "bom.xlsx",
+                    "bom_payload": {
+                        "line_items": [
+                            {
+                                "sku": "B12345",
+                                "description": "Compute",
+                                "quantity": 2,
+                                "unit_price": 1.0,
+                            }
+                        ],
+                        "monthly_total": 1460.0,
+                    },
+                }
             ),
         }
 
@@ -156,11 +194,21 @@ async def test_bom_blocks_incorrect_line_item_arithmetic(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         return {
             "status": "ok",
-            "result": (
-                '{"bom_payload": {"line_items": ['
-                '{"sku":"BTEST","description":"Compute",'
-                '"qty":2,"unit_price":1.0,"billing_unit":"hour"}'
-                '], "monthly_total": 1314.0}}'
+            "result": json.dumps(
+                {
+                    "artifact_key": "bom.xlsx",
+                    "bom_payload": {
+                        "line_items": [
+                            {
+                                "sku": "B12345",
+                                "description": "Compute",
+                                "quantity": 2,
+                                "unit_price": 1.0,
+                            }
+                        ],
+                        "monthly_total": 1314.0,
+                    },
+                }
             ),
         }
 
@@ -173,15 +221,20 @@ async def test_bom_blocks_incorrect_line_item_arithmetic(monkeypatch):
     )
 
     assert result.status == "blocked"
-    assert "BOM arithmetic mismatch" in result.summary
-    assert "arithmetic_error" in result.data
+    assert "monthly_total arithmetic error" in result.summary
+    assert "validation_error" in result.data
 
 
 async def test_bom_skips_arithmetic_check_for_empty_line_items(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         return {
             "status": "ok",
-            "result": '{"bom_payload": {"line_items": [], "monthly_total": 1000.0}}',
+            "result": json.dumps(
+                {
+                    "artifact_key": "bom.xlsx",
+                    "bom_payload": {"line_items": [], "monthly_total": 1000.0},
+                }
+            ),
         }
 
     monkeypatch.setattr(
@@ -192,18 +245,39 @@ async def test_bom_skips_arithmetic_check_for_empty_line_items(monkeypatch):
         {"prompt": "size it"}, memory=make_memory(), context={}, trace_id="trace-1"
     )
 
-    assert result.status == "ok"
+    assert result.status == "blocked"
+    assert "line_items is empty" in result.summary
 
 
 async def test_bom_handler_enriches_prompt_requested_waf_and_database(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         return {
             "status": "ok",
-            "result": (
-                '{"bom_payload": {"line_items": ['
-                '{"sku":"B94176","description":"Compute","category":"compute","metric":"OCPU Per Hour","quantity":2,"unit_price":0.05},'
-                '{"sku":"B94177","description":"Memory","category":"compute","metric":"Gigabytes Per Hour","quantity":32,"unit_price":0.002}'
-                ']}}'
+            "result": json.dumps(
+                {
+                    "artifact_key": "bom.xlsx",
+                    "bom_payload": {
+                        "monthly_total": 119.72,
+                        "line_items": [
+                            {
+                                "sku": "B94176",
+                                "description": "Compute",
+                                "category": "compute",
+                                "metric": "OCPU Per Hour",
+                                "quantity": 2,
+                                "unit_price": 0.05,
+                            },
+                            {
+                                "sku": "B94177",
+                                "description": "Memory",
+                                "category": "compute",
+                                "metric": "Gigabytes Per Hour",
+                                "quantity": 32,
+                                "unit_price": 0.002,
+                            },
+                        ],
+                    },
+                }
             ),
         }
 

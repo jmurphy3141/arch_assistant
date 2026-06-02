@@ -6,6 +6,7 @@ ToolHandler implementation for the generate_diagram pipeline.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from typing import Any
 
@@ -127,18 +128,39 @@ class DiagramHandler:
                     f"{existing_prompt}"
                 ).strip(),
             }
+        args = _hydrate_diagram_args(
+            args,
+            context=ctx,
+            memory_raw=memory.raw if memory else {},
+            customer_id=self._customer_id,
+            prior_diagram_key=prior_diagram_key,
+            trace_id=trace_id,
+        )
 
-        try:
-            summary, artifact_key, result_data = await _call_generate_diagram(
-                args=args,
-                customer_id=self._customer_id,
-                a2a_base_url=self._a2a_base_url,
-            )
-        except Exception as exc:
-            return ToolResult(
-                summary=f"Diagram generation failed: {exc}",
-                status="blocked",
-            )
+        summary = ""
+        artifact_key = ""
+        result_data: dict[str, Any] = {}
+        for attempt in range(2):
+            try:
+                summary, artifact_key, result_data = await _call_generate_diagram(
+                    args=args,
+                    customer_id=self._customer_id,
+                    a2a_base_url=self._a2a_base_url,
+                )
+            except Exception as exc:
+                return ToolResult(
+                    summary=f"Diagram generation failed: {exc}",
+                    status="blocked",
+                )
+            validation_error = _validate_diagram_result(result_data)
+            if validation_error:
+                return _validation_blocked("diagram", validation_error)
+            node_error = _diagram_node_count_error(args, result_data)
+            if not node_error:
+                break
+            if attempt == 1:
+                return _validation_blocked("diagram", node_error)
+            args = _prepend_diagram_correction(args, node_error)
 
         if result_data.get("diagram_recovery_status") == "needs_clarification":
             clarify = summary
@@ -212,3 +234,224 @@ def _prior_diagram_key(
         return ""
     value = diagram_ctx.get("diagram_key", "")
     return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+def _hydrate_diagram_args(
+    args: dict[str, Any],
+    *,
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+    customer_id: str,
+    prior_diagram_key: str,
+    trace_id: str,
+) -> dict[str, Any]:
+    hydrated = dict(args)
+    diagram_name = str(
+        hydrated.get("diagram_name")
+        or _find_context_value(("diagram_name", "name"), args=args, context=context, memory_raw=memory_raw)
+        or trace_id
+        or "diagram"
+    )
+    hydrated["diagram_name"] = _safe_diagram_name(diagram_name, "diagram")
+    hydrated["customer_id"] = customer_id
+    task = str(hydrated.get("prompt") or hydrated.get("bom_text") or "")
+    block = _build_diagram_confirmed_context(
+        args=args,
+        context=context,
+        memory_raw=memory_raw,
+        artifact_key=prior_diagram_key,
+    )
+    revision = ""
+    if prior_diagram_key and not _requests_full_redraw(task):
+        revision = "[UPDATE REQUEST - PRESERVE ALL EXISTING NODES EXCEPT: changes explicitly requested by the user]"
+    hydrated_task = "\n\n".join(part for part in (block, revision, task) if part).strip()
+    hydrated["prompt"] = hydrated_task
+    hydrated["bom_text"] = hydrated_task
+    brief = dict(hydrated.get("_architect_brief", {}) or {})
+    brief["user_notes"] = hydrated_task
+    hydrated["_architect_brief"] = brief
+    return hydrated
+
+
+def _build_diagram_confirmed_context(
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+    artifact_key: str,
+) -> str:
+    value = lambda *keys, default="not stated": _context_value_or_default(  # noqa: E731
+        keys,
+        default=default,
+        args=args,
+        context=context,
+        memory_raw=memory_raw,
+    )
+    return "\n".join(
+        [
+            "[CONFIRMED CONTEXT]",
+            f"Existing artifact: {artifact_key or 'none'}",
+            f"Components: {value('components', 'oci_services_in_scope')}",
+            f"Topology: {value('topology')}",
+            f"Subnet tiers: {value('subnet_tiers', 'tiers')}",
+            f"Instance counts: {value('instance_counts', 'instance_count', 'node_count')}",
+            "[/CONFIRMED CONTEXT]",
+        ]
+    )
+
+
+def _requests_full_redraw(task: str) -> bool:
+    text = str(task or "").lower()
+    return any(phrase in text for phrase in ("full redraw", "full regeneration", "regenerate from scratch"))
+
+
+def _validate_diagram_result(result_data: dict[str, Any]) -> str:
+    layout_intent = result_data.get("layout_intent") or result_data.get("LayoutIntent")
+    if layout_intent is None:
+        return ""
+    if isinstance(layout_intent, str):
+        try:
+            layout_intent = json.loads(layout_intent)
+        except json.JSONDecodeError as exc:
+            return f"layout_intent invalid JSON: {exc}"
+    if not isinstance(layout_intent, dict):
+        return "layout_intent is not an object"
+    nodes = layout_intent.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return "nodes is empty"
+    for node in nodes:
+        if not isinstance(node, dict):
+            return f"node is not an object: {node}"
+        if "oci_type" not in node:
+            return f"node missing oci_type: {node}"
+        if "label" not in node:
+            return f"node missing label: {node}"
+        if "subnet_tier" not in node:
+            return f"node missing subnet_tier: {node}"
+    tiers = layout_intent.get("subnet_tiers")
+    if not isinstance(tiers, list) or not tiers:
+        return "subnet_tiers is empty"
+    return ""
+
+
+def _diagram_node_count_error(args: dict[str, Any], result_data: dict[str, Any]) -> str:
+    expected = _requested_service_type_count(args)
+    actual = _actual_diagram_node_count(result_data)
+    if expected > 0 and actual > 0 and actual < expected:
+        return f"node_count too low: expected at least {expected}, got {actual}"
+    return ""
+
+
+def _requested_service_type_count(args: dict[str, Any]) -> int:
+    found: set[str] = set()
+    known = {
+        "compute",
+        "database",
+        "load balancer",
+        "waf",
+        "object storage",
+        "file storage",
+        "bastion",
+        "nat gateway",
+        "service gateway",
+        "internet gateway",
+        "oke",
+    }
+    for value in (args.get("components"), args.get("oci_services_in_scope"), args.get("prompt"), args.get("bom_text")):
+        if isinstance(value, (list, tuple, set)):
+            found.update(str(item).strip().lower() for item in value if str(item).strip())
+        else:
+            text = str(value or "").lower()
+            for service in known:
+                if service in text:
+                    found.add(service)
+    return len(found)
+
+
+def _actual_diagram_node_count(result_data: dict[str, Any]) -> int:
+    for path in (("node_count",), ("render_manifest", "node_count"), ("trace", "render_manifest", "node_count")):
+        value: Any = result_data
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        try:
+            if int(value or 0) > 0:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
+def _prepend_diagram_correction(args: dict[str, Any], correction: str) -> dict[str, Any]:
+    hydrated = dict(args)
+    prompt = (
+        "[CORRECTION FROM PYTHON VALIDATION]\n"
+        f"{correction}. Add all distinct requested OCI service types and return the diagram again.\n\n"
+        f"{hydrated.get('prompt') or ''}"
+    ).strip()
+    hydrated["prompt"] = prompt
+    hydrated["bom_text"] = prompt
+    brief = dict(hydrated.get("_architect_brief", {}) or {})
+    brief["user_notes"] = prompt
+    hydrated["_architect_brief"] = brief
+    return hydrated
+
+
+def _context_value_or_default(
+    keys: tuple[str, ...],
+    *,
+    default: str,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> Any:
+    value = _find_context_value(keys, args=args, context=context, memory_raw=memory_raw)
+    return default if not _has_context_value(value) else value
+
+
+def _find_context_value(
+    keys: tuple[str, ...],
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> Any:
+    for source in _context_sources(args=args, context=context, memory_raw=memory_raw):
+        for key in keys:
+            if key in source and _has_context_value(source.get(key)):
+                return source[key]
+    return None
+
+
+def _context_sources(
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for source in (args, context, memory_raw):
+        if isinstance(source, dict):
+            sources.append(source)
+            for key in ("facts", "requirements", "topology", "agents", "diagram"):
+                nested = source.get(key)
+                if isinstance(nested, dict):
+                    sources.append(nested)
+    return sources
+
+
+def _has_context_value(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    if isinstance(value, (list, tuple, set, dict)) and not value:
+        return False
+    return True
+
+
+def _validation_blocked(tool: str, error: str) -> ToolResult:
+    return ToolResult(
+        summary=f"{tool.upper()} validation failed: {error}",
+        status="blocked",
+        data={"validation_error": error, "validation_stage": "python_contract"},
+    )
