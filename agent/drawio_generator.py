@@ -79,6 +79,10 @@ EDGE_STYLE = (
 BOX_TYPE_ORDER = ["_region_box", "_region_stub", "_compartment_box", "_vcn_box", "_ad_box", "_fd_box", "_subnet_box"]
 
 
+class DrawioValidationError(ValueError):
+    """Raised when generated draw.io XML violates deterministic constraints."""
+
+
 def _uid() -> str:
     return str(uuid.uuid4())
 
@@ -97,6 +101,28 @@ def _subnet_style(tier: str) -> str:
         return GROUP_STYLES["_subnet_ingress"]
     key = f"_subnet_{tier}" if tier else "_subnet_app"
     return GROUP_STYLES.get(key, GROUP_STYLES["_subnet_app"])
+
+
+def validate_parent_model(xml_string: str) -> None:
+    """
+    Every draw.io cell must use the flat parent model.
+
+    The root cell id=0 has no parent. The layer cell id=1 has parent=0. All
+    rendered cells must have parent=1 so icons remain draggable independently.
+    """
+    root = ET.fromstring(xml_string)
+    for cell in root.iter("mxCell"):
+        cell_id = cell.get("id")
+        parent = cell.get("parent")
+        if cell_id == "0" and parent is None:
+            continue
+        if parent in ("0", "1"):
+            continue
+        raise DrawioValidationError(
+            f"Cell id={cell_id} has parent={parent}. "
+            "All cells must have parent='1'. "
+            "Fix: set parent='1' on this cell."
+        )
 
 
 def generate_drawio(draw_dict: dict | str, output_path) -> Path:
@@ -234,8 +260,9 @@ def _build(draw_dict: dict) -> str:
             ch = float(geo.get("height", oh)) * scale
             cells.append(
                 f'<mxCell id="{nid}_s{i}" value="" style="{style}" '
-                f'vertex="1" connectable="0" parent="{group_id}">'
-                f'<mxGeometry x="{cx:.2f}" y="{cy:.2f}" width="{cw:.2f}" height="{ch:.2f}" as="geometry"/></mxCell>'
+                f'vertex="1" connectable="0" parent="1">'
+                f'<mxGeometry x="{gx + cx:.2f}" y="{gy + cy:.2f}" '
+                f'width="{cw:.2f}" height="{ch:.2f}" as="geometry"/></mxCell>'
             )
 
     # ── 4. Emit edges ─────────────────────────────────────────────────────────
@@ -282,9 +309,11 @@ def _build(draw_dict: dict) -> str:
         )
 
     xml_body = "\n  ".join(cells)
-    return (
+    xml = (
         f'<mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" '
         f'tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" '
         f'pageWidth="{PAGE_W}" pageHeight="{PAGE_H}" math="0" shadow="0">\n'
         f'  <root>\n  {xml_body}\n  </root>\n</mxGraphModel>'
     )
+    validate_parent_model(xml)
+    return xml

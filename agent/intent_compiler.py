@@ -56,7 +56,13 @@ Data-flow edges:
 """
 from __future__ import annotations
 
-from agent.layout_intent import LayoutIntent, Placement, GROUP_LABELS
+from agent.layout_intent import (
+    GROUP_LABELS,
+    LayoutIntent,
+    LayoutIntentValidationError,
+    Placement,
+    VALID_SUBNET_TIERS,
+)
 
 # Notes values that are NOT environment names (injected by bom_parser for infra/baseline)
 _RESERVED_NOTES = frozenset(["best practice", "injected_baseline", ""])
@@ -109,6 +115,30 @@ class IntentCompileError(ValueError):
     """Raised when the LayoutIntent cannot be compiled into a valid spec."""
 
 
+def validate_subnet_tiers(layout_intent: LayoutIntent | dict) -> None:
+    """Validate optional subnet_tier fields before compiling a LayoutIntent."""
+    placements = (
+        layout_intent.get("placements", [])
+        if isinstance(layout_intent, dict)
+        else layout_intent.placements
+    )
+    for node in placements:
+        tier = node.get("subnet_tier") if isinstance(node, dict) else getattr(node, "subnet_tier", None)
+        if tier is None:
+            continue
+        if tier not in VALID_SUBNET_TIERS:
+            label = (
+                node.get("label") or node.get("id") or node.get("oci_type")
+                if isinstance(node, dict)
+                else getattr(node, "id", None) or getattr(node, "oci_type", None)
+            )
+            raise LayoutIntentValidationError(
+                f"Node '{label or 'unknown'}' has subnet_tier='{tier}'. "
+                f"Valid values: {sorted(VALID_SUBNET_TIERS)}. "
+                "Correction: reassign to Public, Private, Data, or Management."
+            )
+
+
 def _service_item_label(item, fallback: str) -> str:
     if not item:
         return fallback
@@ -126,6 +156,8 @@ def compile_intent_to_flat_spec(
 
     Returns {"deployment_type": ..., "regions": [...], "external": [...], "edges": [...]}.
     """
+    validate_subnet_tiers(intent)
+
     items_by_id = {i.id: i for i in (items or [])}
     hints       = intent.deployment_hints
 

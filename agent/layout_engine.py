@@ -538,41 +538,34 @@ def _layout_region(
         h=region_h,
     )
 
-    # 3. Gateway nodes — placed by their natural OCI edge:
-    #   DRG          → straddles VCN LEFT edge  (on-prem/FastConnect from left)
-    #   IGW, NAT     → straddle VCN TOP edge    (internet traffic from above)
-    #   SGW          → straddles VCN RIGHT edge (OCI services to the right)
+    # 3. Gateway nodes — placed by deterministic edge formulas:
+    #   IGW, NAT, DRG → straddle VCN LEFT edge
+    #   SGW, LPG      → straddle VCN RIGHT edge
     _GW_EDGE = {
         "drg": "left", "dynamic routing gateway": "left",
-        "internet gateway": "top",
-        "nat gateway": "top",
+        "internet gateway": "left",
+        "nat gateway": "left",
         "service gateway": "right",
+        "lpg": "right", "local peering gateway": "right",
     }
-    _TOP_ORDER  = {"internet gateway": 0, "nat gateway": 1}
+    _LEFT_ORDER = {"internet gateway": 0, "nat gateway": 1, "drg": 2, "dynamic routing gateway": 2}
+    _RIGHT_ORDER = {"service gateway": 0, "lpg": 1, "local peering gateway": 1}
     gateway_nodes: list[PositionedNode] = []
 
-    top_gws   = [g for g in gateways if _GW_EDGE.get(g.get("type","").lower(),"top") == "top"]
-    left_gws  = [g for g in gateways if _GW_EDGE.get(g.get("type","").lower(),"top") == "left"]
-    right_gws = [g for g in gateways if _GW_EDGE.get(g.get("type","").lower(),"top") == "right"]
-    top_gws   = sorted(top_gws, key=lambda g: _TOP_ORDER.get(g.get("type","").lower(), 99))
-
-    # Top gateways: spread across VCN top edge
-    n_top = len(top_gws)
-    if n_top > 0:
-        top_gap = (vcn_w - n_top * ICON_W) / max(n_top - 1, 1) if n_top > 1 else 0
-        top_gy  = vcn_y - ICON_H // 2
-        for i, gw in enumerate(top_gws):
-            gateway_nodes.append(PositionedNode(
-                id=gw["id"], label=gw.get("label", gw["id"]),
-                oci_type=gw.get("type", "").lower(),
-                x=vcn_x + i * (ICON_W + top_gap), y=top_gy, w=ICON_W, h=ICON_SLOT,
-            ))
+    left_gws = sorted(
+        [g for g in gateways if _GW_EDGE.get(_normalise_oci_type(g.get("type", ""))) == "left"],
+        key=lambda g: _LEFT_ORDER.get(_normalise_oci_type(g.get("type", "")), 99),
+    )
+    right_gws = sorted(
+        [g for g in gateways if _GW_EDGE.get(_normalise_oci_type(g.get("type", ""))) == "right"],
+        key=lambda g: _RIGHT_ORDER.get(_normalise_oci_type(g.get("type", "")), 99),
+    )
 
     # Left gateways: straddle VCN left edge, stacked vertically near top
     for i, gw in enumerate(left_gws):
         gateway_nodes.append(PositionedNode(
             id=gw["id"], label=gw.get("label", gw["id"]),
-            oci_type=gw.get("type", "").lower(),
+            oci_type=_normalise_oci_type(gw.get("type", "")),
             x=vcn_x - ICON_W // 2,
             y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
             w=ICON_W, h=ICON_SLOT,
@@ -582,7 +575,7 @@ def _layout_region(
     for i, gw in enumerate(right_gws):
         gateway_nodes.append(PositionedNode(
             id=gw["id"], label=gw.get("label", gw["id"]),
-            oci_type=gw.get("type", "").lower(),
+            oci_type=_normalise_oci_type(gw.get("type", "")),
             x=vcn_x + vcn_w - ICON_W // 2,
             y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
             w=ICON_W, h=ICON_SLOT,
@@ -608,11 +601,17 @@ def _layout_region(
 
 _GW_EDGE_MAP = {
     "drg": "left", "dynamic routing gateway": "left",
-    "internet gateway": "top",
-    "nat gateway": "top",
+    "internet gateway": "left",
+    "nat gateway": "left",
     "service gateway": "right",
+    "lpg": "right", "local peering gateway": "right",
 }
-_TOP_GW_ORDER = {"internet gateway": 0, "nat gateway": 1}
+_LEFT_GW_ORDER = {"internet gateway": 0, "nat gateway": 1, "drg": 2, "dynamic routing gateway": 2}
+_RIGHT_GW_ORDER = {"service gateway": 0, "lpg": 1, "local peering gateway": 1}
+
+
+def _normalise_oci_type(oci_type: str) -> str:
+    return str(oci_type or "").strip().lower().replace("_", " ")
 
 
 def _place_gateways(
@@ -622,30 +621,21 @@ def _place_gateways(
     vcn_w: float,
 ) -> list[PositionedNode]:
     """Place gateway icons straddling the VCN box edges."""
-    top_gws   = sorted(
-        [g for g in gateways if _GW_EDGE_MAP.get(g.get("type", "").lower(), "top") == "top"],
-        key=lambda g: _TOP_GW_ORDER.get(g.get("type", "").lower(), 99),
+    left_gws = sorted(
+        [g for g in gateways if _GW_EDGE_MAP.get(_normalise_oci_type(g.get("type", ""))) == "left"],
+        key=lambda g: _LEFT_GW_ORDER.get(_normalise_oci_type(g.get("type", "")), 99),
     )
-    left_gws  = [g for g in gateways if _GW_EDGE_MAP.get(g.get("type", "").lower(), "top") == "left"]
-    right_gws = [g for g in gateways if _GW_EDGE_MAP.get(g.get("type", "").lower(), "top") == "right"]
+    right_gws = sorted(
+        [g for g in gateways if _GW_EDGE_MAP.get(_normalise_oci_type(g.get("type", ""))) == "right"],
+        key=lambda g: _RIGHT_GW_ORDER.get(_normalise_oci_type(g.get("type", "")), 99),
+    )
 
     result: list[PositionedNode] = []
-
-    n_top = len(top_gws)
-    if n_top > 0:
-        top_gap = (vcn_w - n_top * ICON_W) / max(n_top - 1, 1) if n_top > 1 else 0
-        for i, gw in enumerate(top_gws):
-            result.append(PositionedNode(
-                id=gw["id"], label=gw.get("label", gw["id"]),
-                oci_type=gw.get("type", "").lower(),
-                x=vcn_x + i * (ICON_W + top_gap), y=vcn_y - ICON_H // 2,
-                w=ICON_W, h=ICON_SLOT,
-            ))
 
     for i, gw in enumerate(left_gws):
         result.append(PositionedNode(
             id=gw["id"], label=gw.get("label", gw["id"]),
-            oci_type=gw.get("type", "").lower(),
+            oci_type=_normalise_oci_type(gw.get("type", "")),
             x=vcn_x - ICON_W // 2,
             y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
             w=ICON_W, h=ICON_SLOT,
@@ -654,13 +644,45 @@ def _place_gateways(
     for i, gw in enumerate(right_gws):
         result.append(PositionedNode(
             id=gw["id"], label=gw.get("label", gw["id"]),
-            oci_type=gw.get("type", "").lower(),
+            oci_type=_normalise_oci_type(gw.get("type", "")),
             x=vcn_x + vcn_w - ICON_W // 2,
             y=vcn_y + VCN_PAD_TOP + i * (ICON_SLOT + NODE_GAP_X),
             w=ICON_W, h=ICON_SLOT,
         ))
 
     return result
+
+
+def enforce_gateway_placement(
+    nodes: list[PositionedNode],
+    boxes: list[PositionedBox],
+) -> None:
+    """
+    Override gateway x-coordinates after layout computation.
+
+    IGW, NAT, and DRG straddle the VCN left edge:
+      x = vcn_left - icon_w / 2
+    Service Gateway and LPG straddle the VCN right edge:
+      x = vcn_right - icon_w / 2
+    """
+    vcn_boxes = [b for b in boxes if b.box_type == "_vcn_box" or b.id == "vcn_box"]
+    if not vcn_boxes:
+        return
+
+    def _nearest_vcn(node: PositionedNode) -> PositionedBox:
+        node_mid_y = node.y + node.h / 2
+        return min(
+            vcn_boxes,
+            key=lambda box: abs(node_mid_y - (box.y + box.h / 2)),
+        )
+
+    for node in nodes:
+        oci_type = _normalise_oci_type(node.oci_type)
+        vcn = _nearest_vcn(node)
+        if oci_type in ("internetgateway", "internet gateway", "natgateway", "nat gateway", "drg", "dynamic routing gateway"):
+            node.x = vcn.x - node.w / 2
+        elif oci_type in ("servicegateway", "service gateway", "lpg", "local peering gateway"):
+            node.x = vcn.x + vcn.w - node.w / 2
 
 
 def _layout_compartment(
@@ -910,6 +932,8 @@ def compute_positions(layout_spec: dict | str) -> tuple[list[PositionedNode], li
             all_boxes.extend(sub_boxes)
             all_nodes.extend(icon_nodes)
             all_nodes.extend(gw_nodes)
+
+    enforce_gateway_placement(all_nodes, all_boxes)
 
     # ── Place external elements ────────────────────────────────────────────────
     left_ext = [e for e in external if e.get("type", "").lower() in LEFT_EXTERNAL_TYPES]
@@ -1165,6 +1189,8 @@ def _compute_positions_legacy(layout_spec: dict) -> tuple[list[PositionedNode], 
         ))
         rem_x += ICON_W + NODE_GAP_X
         placed_ids.add(n["id"])
+
+    enforce_gateway_placement(positioned, group_boxes)
 
     return positioned, group_boxes
 
