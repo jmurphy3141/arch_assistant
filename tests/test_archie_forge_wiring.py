@@ -11,7 +11,7 @@ import pytest
 from agent.archie_wiring import build_forge
 from agent.persistence_objectstore import InMemoryObjectStore
 from skillforge.protocols import ArgSchema
-from skillforge.types import ToolResult, TurnResult
+from skillforge.types import TurnResult
 
 
 GENERATION_TOOLS = {
@@ -21,6 +21,10 @@ GENERATION_TOOLS = {
     "generate_waf",
     "generate_pov",
     "generate_jep",
+    "generate_tech_report",
+    "generate_poc_plan",
+    "generate_presentation",
+    "generate_sales_deck",
 }
 
 GENERATION_HATS = [
@@ -30,6 +34,10 @@ GENERATION_HATS = [
     "oci_waf_reviewer",
     "oci_customer_pov_writer",
     "jep_writer",
+    "infra_tech_research",
+    "oci_poc_strategist",
+    "oci_presentation_writer",
+    "oci_sales_deck",
 ]
 
 INTERNAL_TOOLS = {"save_notes", "get_summary", "get_document"}
@@ -58,22 +66,28 @@ def _build_test_forge():
     )
 
 
-@pytest.mark.parametrize("message", [
-    "I need a BOM for a web app with 2 servers",
-    "Generate a diagram for a 3-tier OCI architecture",
-    "Run a WAF review on my current architecture",
-    "Generate a Terraform plan for my diagram",
-    "Write a POV document",
-])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "I need a BOM for a web app with 2 servers",
+        "Generate a diagram for a 3-tier OCI architecture",
+        "Run a WAF review on my current architecture",
+        "Generate a Terraform plan for my diagram",
+        "Write a POV document",
+        "Draft a JEP for this migration",
+        "Generate a tech research report comparing OCI options",
+        "Create a POC plan for this customer",
+        "Generate the POC presentation",
+        "Build a sales deck for the executive briefing",
+    ],
+)
 def test_forge_run_turn_called_for_generation_requests(message):
     """forge.run_turn() must be called for all generation messages."""
     from agent import archie_session
 
     mock_forge = MagicMock()
     mock_forge.run_turn = AsyncMock(return_value=_mock_turn_result())
-    mock_forge.invoke_tool = AsyncMock(
-        return_value=ToolResult(summary="done", status="ok")
-    )
+    mock_forge.invoke_tool = AsyncMock(side_effect=AssertionError("direct invoke_tool bypass"))
 
     mock_store = MagicMock()
     mock_text_runner = MagicMock()
@@ -106,6 +120,7 @@ def test_forge_run_turn_called_for_generation_requests(message):
         "This means a bypass block in archie_session.py is routing "
         "this request directly to a tool, skipping Forge's reasoning loop."
     )
+    mock_forge.invoke_tool.assert_not_called()
 
 
 def test_generation_tools_have_descriptions():

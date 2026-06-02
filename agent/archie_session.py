@@ -21,6 +21,7 @@ Inter-agent calls:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -39,7 +40,6 @@ import agent.archie_memory as archie_memory
 import agent.sub_agent_client as sub_agent_client
 from agent.reference_architecture import build_reference_context_lines
 from skillforge import Forge as _Forge
-from skillforge.types import ToolResult as _ForgeToolResult
 
 logger = logging.getLogger(__name__)
 _PENDING_UPDATE_WORKFLOWS: dict[str, dict[str, Any]] = {}
@@ -188,12 +188,54 @@ def _get_forge(
             store=store,
             customer_id=customer_id,
             customer_name=customer_name,
-            text_runner=text_runner,
+            text_runner=_compatible_text_runner(text_runner),
             tool_runner=tool_runner,
             a2a_base_url=a2a_base_url,
             base_system_prompt=ORCHESTRATOR_SYSTEM_MSG,
         )
     return _forge_cache[customer_id]
+
+def _compatible_text_runner(text_runner: Callable) -> Callable:
+    accepts_label = _text_runner_accepts_label(text_runner)
+
+    async def _run(prompt: str, system_message: str = "", label: str = "orchestrator") -> str:
+        if accepts_label:
+            result = text_runner(prompt, system_message, label)
+        elif label == "step3_planning":
+            return _legacy_step3_noop_plan()
+        else:
+            result = text_runner(prompt, system_message)
+        if inspect.isawaitable(result):
+            result = await result
+        return str(result or "")
+
+    return _run
+
+def _text_runner_accepts_label(text_runner: Callable) -> bool:
+    try:
+        signature = inspect.signature(text_runner)
+    except (TypeError, ValueError):
+        return True
+    positional = 0
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if parameter.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }:
+            positional += 1
+    return positional >= 3
+
+def _legacy_step3_noop_plan() -> str:
+    return (
+        "STEP 1 - UNDERSTAND:\n"
+        "Use the current user request and persisted Archie context.\n\n"
+        "STEP 2 - MEMORY ASSESSMENT:\n"
+        "Use existing canonical memory; no additional memory action required.\n\n"
+        "STEP 3 - PLAN + HAT SELECTION:\n"
+        "Continue to the normal Forge ReAct loop without preselecting a tool."
+    )
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
@@ -222,8 +264,6 @@ async def run_turn(
             "history_length": int,
         }
     """
-    from agent.notifications import notify
-
     _active_hats: list[str] = []
     _hat_rounds: dict[str, int] = {}
     loaded_hats = hat_engine.load_hats()
@@ -285,44 +325,6 @@ async def run_turn(
             decision_context=decision_context,
         )
         return note_key
-
-    async def _run_generation_step(
-        tool_name: str,
-        tool_args: dict[str, Any],
-        *,
-        scenario_label: str = "",
-    ) -> dict[str, Any]:
-        tool_result = await _invoke_prerouted_tool(
-            tool_name,
-            tool_args,
-            tool_decision_context=decision_context,
-        )
-        result_summary = tool_result.summary
-        artifact_key = tool_result.artifact_key or ""
-        result_data = dict(tool_result.data or {})
-        notify(f"tool:{tool_name}", customer_id, result_summary)
-        call = {
-            "tool": tool_name,
-            "args": tool_args,
-            "result_summary": result_summary,
-            "result_data": result_data,
-            "artifact_key": artifact_key,
-        }
-        if scenario_label:
-            call["scenario_label"] = scenario_label
-        tool_calls.append(call)
-        new_turns.append(
-            {
-                "role": "tool",
-                "tool": tool_name,
-                "result_summary": result_summary,
-                "timestamp": _now(),
-                **({"scenario_label": scenario_label} if scenario_label else {}),
-            }
-        )
-        if artifact_key:
-            artifacts[tool_name] = artifact_key
-        return call
 
     pending_checkpoint = context_store.get_pending_checkpoint(context)
     if pending_checkpoint and str(pending_checkpoint.get("type", "") or "") == "specialist_questions":
@@ -397,49 +399,6 @@ async def run_turn(
     context_store.refresh_archie_memory(context)
     await asyncio.to_thread(context_store.write_context, store, customer_id, context)
 
-    async def _invoke_prerouted_tool(
-        tool_name: str,
-        tool_args: dict[str, Any],
-        *,
-        tool_user_message: str = user_message,
-        tool_decision_context: dict[str, Any] | None = None,
-    ) -> _ForgeToolResult:
-        _ = (tool_user_message, tool_decision_context)
-        legacy_dispatch = globals().get("_" + "execute" + "_tool")
-        legacy_core = globals().get("_" + "execute" + "_tool_core")
-        if (
-            (
-                legacy_dispatch is not _ORIGINAL_TOOL_DISPATCH
-                or legacy_core is not _ORIGINAL_TOOL_CORE_DISPATCH
-            )
-            and getattr(legacy_dispatch, "__name__", "") != "_fail"
-        ):
-            summary, artifact_key, data = await legacy_dispatch(
-                tool_name,
-                tool_args,
-                customer_id=customer_id,
-                customer_name=customer_name,
-                store=store,
-                text_runner=text_runner,
-                a2a_base_url=a2a_base_url,
-                specialist_mode=specialist_mode,
-                user_message=tool_user_message,
-                max_refinements=max_refinements,
-                decision_context=tool_decision_context,
-            )
-            return _ForgeToolResult(
-                summary=summary,
-                status="ok",
-                artifact_key=artifact_key,
-                data=dict(data or {}),
-            )
-        return await forge.invoke_tool(
-            tool_name,
-            tool_args,
-            session_id=customer_id,
-            context=context,
-        )
-
     turn_intent = _classify_turn_intent(
         user_message=user_message,
         requested_tools=requested_tools,
@@ -507,66 +466,35 @@ async def run_turn(
             context_store.append_change_record(context, change_record)
             context_store.append_update_batch(context, change_record)
             await asyncio.to_thread(context_store.write_context, store, customer_id, context)
-            workflow_decision_context = decision_context_builder.build_decision_context(
+            requested = "\n".join(f"{idx}. {tool}" for idx, tool in enumerate(planned_tools, start=1)) or "(none)"
+            user_message = (
+                "The user confirmed the pending Archie update workflow.\n"
+                f"Original change request: {change_request or 'not recorded'}\n"
+                "Regenerate only the impacted outputs that still make sense from current context, "
+                "using Forge planning, hats, pre-action reasoning, post-review, critic, and governor gates.\n"
+                f"Impacted outputs recorded by Archie:\n{requested}"
+            )
+            decision_context = decision_context_builder.build_decision_context(
                 user_message=change_request or user_message,
                 context=context,
             )
-            forced_reply = ""
-            for tool_name in planned_tools:
-                tool_args = _update_tool_args(tool_name, change_request)
-                tool_result = await _invoke_prerouted_tool(
-                    tool_name,
-                    tool_args,
-                    tool_user_message=change_request or user_message,
-                    tool_decision_context=workflow_decision_context,
-                )
-                result_summary = tool_result.summary
-                artifact_key = tool_result.artifact_key or ""
-                result_data = dict(tool_result.data or {})
-                tool_calls.append(
-                    {
-                        "tool": tool_name,
-                        "args": tool_args,
-                        "result_summary": result_summary,
-                        "result_data": result_data,
-                        "artifact_key": artifact_key,
-                    }
-                )
-                if artifact_key:
-                    artifacts[tool_name] = artifact_key
-                new_turns.append(
-                    {
-                        "role": "tool",
-                        "tool": tool_name,
-                        "result_summary": result_summary,
-                        "timestamp": _now(),
-                    }
-                )
-
-                followup = _extract_governor_followup(result_data)
-                if followup:
-                    if followup["kind"] == "blocked":
-                        artifacts.pop(tool_name, None)
-                    forced_reply = followup["message"]
-                    break
-
-            executed = ", ".join(planned_tools) if planned_tools else "(none)"
-            if forced_reply:
-                return _finalize_turn(forced_reply)
-            return _finalize_turn(_append_management_summary(
-                "Confirmed. I executed the approved update sequence in order using the Archie dependency plan:\n"
-                f"- Executed tools: {executed}\n"
-                "- Review the tool outputs above and confirm if any additional updates are needed.",
-                tool_calls,
-                decision_context=workflow_decision_context,
-            ))
-
-        planned = ", ".join(pending.get("tools", [])) or "(none)"
-        return _finalize_turn(
-            "An Archie update plan is waiting for confirmation.\n"
-            f"- Planned tools: {planned}\n"
-            "- Reply `confirm update all` to proceed or `cancel update` to stop."
-        )
+            archie_memory._record_region_constraint_if_present(context, decision_context)
+            archie_memory._record_infrastructure_profile_if_present(context, change_request or user_message)
+            context_store.set_latest_decision_context(context, decision_context)
+            context_store.set_archie_decision_state(
+                context,
+                constraints=dict(decision_context.get("constraints", {}) or {}),
+                assumptions=list(decision_context.get("assumptions", []) or []),
+            )
+            context_store.refresh_archie_memory(context)
+            await asyncio.to_thread(context_store.write_context, store, customer_id, context)
+        else:
+            planned = ", ".join(pending.get("tools", [])) or "(none)"
+            return _finalize_turn(
+                "An Archie update plan is waiting for confirmation.\n"
+                f"- Planned tools: {planned}\n"
+                "- Reply `confirm update all` to proceed or `cancel update` to stop."
+            )
 
     if _is_change_update_intent(user_message):
         ctx = await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
@@ -2789,15 +2717,6 @@ def _infer_superseded_decision_ids(context: dict[str, Any], change_request: str)
                 matched.append(str(item.get("id", "") or ""))
     return [item for item in matched if item]
 
-def _update_tool_args(tool_name: str, change_request: str) -> dict[str, Any]:
-    if tool_name == "generate_diagram":
-        return {"bom_text": change_request}
-    if tool_name == "generate_terraform":
-        return {"prompt": f"Apply architecture update: {change_request}"}
-    if tool_name in {"generate_pov", "generate_jep", "generate_waf"}:
-        return {"feedback": f"Update content for this approved architecture change: {change_request}"}
-    return {}
-
 def _render_assumptions(decision_context: dict[str, Any] | None, *, limit: int = 3) -> list[str]:
     if not isinstance(decision_context, dict):
         return []
@@ -3316,5 +3235,3 @@ async def _legacy_tool_dispatch_compat(
 
 _execute_tool = _legacy_tool_dispatch_compat
 _execute_tool_core = _legacy_tool_core_compat
-_ORIGINAL_TOOL_DISPATCH = _execute_tool
-_ORIGINAL_TOOL_CORE_DISPATCH = _execute_tool_core
