@@ -6,6 +6,8 @@ Versioned document and notes storage helpers for writing agents.
 Primary bucket layout (all paths are relative to the root bucket):
 
   customers/{customer_id}/notes/{note_name}            — individual meeting notes
+  customers/{customer_id}/notes/{note_name}.extracted.txt
+                                                       — extracted readable text
   customers/{customer_id}/notes/MANIFEST.json          — list of all notes with timestamps
 
   customers/{customer_id}/pov/v{n}.md                  — POV versions
@@ -41,6 +43,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from agent.persistence_objectstore import ObjectStoreBase
+from agent.note_extractor import extract_text
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,10 @@ def _notes_key(customer_id: str, note_name: str, *, customer_first: bool) -> str
     if customer_first:
         return f"{_customer_prefix(customer_id)}/notes/{note_name}"
     return f"notes/{customer_id}/{note_name}"
+
+
+def _notes_text_key(customer_id: str, note_name: str, *, customer_first: bool) -> str:
+    return f"{_notes_key(customer_id, note_name, customer_first=customer_first)}.extracted.txt"
 
 
 def _notes_manifest_key(customer_id: str, *, customer_first: bool) -> str:
@@ -154,6 +161,7 @@ def save_note(
     manifest["notes"].append({
         "key": legacy_key,  # keep legacy shape for backward compatibility
         "name": note_name,
+        "content_type": content_type,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
     manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
@@ -165,6 +173,26 @@ def save_note(
         content_type="application/json",
     )
     logger.info("Note saved: key=%s customer_key=%s", legacy_key, customer_key)
+    return legacy_key
+
+
+def save_note_text(
+    store: ObjectStoreBase,
+    customer_id: str,
+    note_name: str,
+    text: str,
+) -> str:
+    """Save extracted readable note text under a parallel key."""
+    legacy_key = _notes_text_key(customer_id, note_name, customer_first=False)
+    customer_key = _notes_text_key(customer_id, note_name, customer_first=True)
+    _put_dual(
+        store,
+        customer_key=customer_key,
+        legacy_key=legacy_key,
+        content=text.encode("utf-8"),
+        content_type="text/plain; charset=utf-8",
+    )
+    logger.info("Extracted note text saved: key=%s customer_key=%s", legacy_key, customer_key)
     return legacy_key
 
 
@@ -208,6 +236,36 @@ def get_note(store: ObjectStoreBase, customer_id: str, note_name: str) -> Option
         return None
 
 
+def _get_stored_note_text(store: ObjectStoreBase, customer_id: str, note_name: str) -> str | None:
+    try:
+        return _get_first_bytes(
+            store,
+            [
+                _notes_text_key(customer_id, note_name, customer_first=True),
+                _notes_text_key(customer_id, note_name, customer_first=False),
+            ],
+        ).decode("utf-8", errors="replace")
+    except KeyError:
+        return None
+
+
+def _extract_legacy_note_text(store: ObjectStoreBase, customer_id: str, note: dict) -> str:
+    raw = _get_first_bytes(
+        store,
+        [
+            note["key"],
+            _notes_key(customer_id, note["name"], customer_first=True),
+        ],
+    )
+    extraction = extract_text(
+        raw,
+        str(note.get("content_type") or ""),
+        str(note.get("name") or ""),
+    )
+    text = extraction.get("text")
+    return text if isinstance(text, str) else ""
+
+
 def get_all_notes_text(store: ObjectStoreBase, customer_id: str) -> str:
     """
     Read and concatenate all notes for a customer into a single string.
@@ -221,14 +279,11 @@ def get_all_notes_text(store: ObjectStoreBase, customer_id: str) -> str:
     parts: list[str] = []
     for note in notes:
         try:
-            content = _get_first_bytes(
-                store,
-                [
-                    note["key"],
-                    _notes_key(customer_id, note["name"], customer_first=True),
-                ],
-            ).decode("utf-8", errors="replace")
-            parts.append(f"=== {note['name']} ===\n{content}\n")
+            content = _get_stored_note_text(store, customer_id, note["name"])
+            if content is None:
+                content = _extract_legacy_note_text(store, customer_id, note)
+            if content:
+                parts.append(f"=== {note['name']} ===\n{content}\n")
         except KeyError:
             logger.warning("Note key not found: %s", note["key"])
 

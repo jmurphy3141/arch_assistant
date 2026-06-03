@@ -430,6 +430,117 @@ function ArtifactManifestLinks({ manifest }: { manifest?: ChatArtifactManifest }
   );
 }
 
+function formatCurrency(value: unknown, currency = 'USD'): string {
+  const amount = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(amount)) return '';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+function ArtifactHighlights({
+  toolCalls,
+  artifactManifest,
+}: {
+  toolCalls?: ChatToolCall[];
+  artifactManifest?: ChatArtifactManifest;
+}) {
+  const cards: React.ReactNode[] = [];
+  const drawio = artifactManifest?.downloads?.find(dl => (dl.filename ?? dl.key ?? '').endsWith('.drawio'));
+  if (drawio) {
+    cards.push(
+      <a
+        key="diagram"
+        href={drawio.download_url}
+        target="_blank"
+        rel="noreferrer"
+        data-testid="artifact-highlight-diagram"
+        style={{
+          width: 96,
+          height: 64,
+          display: 'grid',
+          placeItems: 'center',
+          border: '1px solid rgba(143,180,255,0.35)',
+          background: 'linear-gradient(135deg, rgba(143,180,255,0.16), rgba(97,218,251,0.08))',
+          borderRadius: 6,
+          color: '#a9c2ff',
+          textDecoration: 'none',
+          fontSize: '0.66rem',
+          fontWeight: 800,
+        }}
+      >
+        DRAWIO
+      </a>,
+    );
+  }
+
+  for (const call of toolCalls ?? []) {
+    const data = call.result_data ?? {};
+    const bomPayload = data.bom_payload as { currency?: string; totals?: { estimated_monthly_cost?: unknown } } | undefined;
+    const total = bomPayload?.totals?.estimated_monthly_cost;
+    const totalLabel = formatCurrency(total, bomPayload?.currency || 'USD');
+    if (totalLabel) {
+      cards.push(
+        <div
+          key={`bom-${cards.length}`}
+          data-testid="artifact-highlight-bom"
+          style={{
+            border: '1px solid rgba(70,214,138,0.32)',
+            background: 'rgba(70,214,138,0.08)',
+            borderRadius: 6,
+            padding: '0.45rem 0.6rem',
+            color: '#9ee8ba',
+            minWidth: 130,
+          }}
+        >
+          <div style={{ fontSize: '0.58rem', color: '#66b986', textTransform: 'uppercase', letterSpacing: '0.08em' }}>BOM total</div>
+          <div style={{ fontSize: '0.86rem', fontWeight: 800 }}>{totalLabel}/mo</div>
+        </div>,
+      );
+    }
+
+    const pillars = data.pillars;
+    if (pillars && typeof pillars === 'object') {
+      const scores = Object.values(pillars as Record<string, unknown>)
+        .map(value => {
+          if (typeof value === 'number') return value;
+          if (value && typeof value === 'object' && 'score' in value) return Number((value as { score?: unknown }).score);
+          return Number.NaN;
+        })
+        .filter(value => Number.isFinite(value));
+      const score = scores.length > 0
+        ? Math.round(scores.reduce((sum, value) => sum + value, 0) / scores.length)
+        : undefined;
+      cards.push(
+        <div
+          key={`waf-${cards.length}`}
+          data-testid="artifact-highlight-waf"
+          style={{
+            border: '1px solid rgba(240,179,90,0.35)',
+            background: 'rgba(240,179,90,0.1)',
+            borderRadius: 999,
+            padding: '0.32rem 0.65rem',
+            color: '#f0c36f',
+            fontSize: '0.72rem',
+            fontWeight: 800,
+          }}
+        >
+          WAF {score !== undefined ? `${score}/100` : 'review'}
+        </div>,
+      );
+    }
+  }
+
+  if (cards.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap', marginTop: '0.45rem', paddingLeft: '0.25rem' }}>
+      {cards}
+    </div>
+  );
+}
+
 function extractQuickActions(content: string, toolCalls?: ChatToolCall[]): QuickAction[] {
   const dedupe = new Set<string>();
   const actions: QuickAction[] = [];
@@ -578,6 +689,9 @@ function MessageBubble({
           {toolCalls.map((tc, i) => <ToolChip key={i} call={tc} />)}
         </div>
       )}
+      {!isUser && (
+        <ArtifactHighlights toolCalls={toolCalls} artifactManifest={artifactManifest} />
+      )}
       {artifacts && Object.keys(artifacts).length > 0 && (
         <div style={{ paddingLeft: '0.25rem' }}>
           {Object.entries(artifacts).map(([k, v]) => (
@@ -648,6 +762,7 @@ interface ChatInterfaceProps {
   onCustomerNameChange?: (name: string) => void;
   onArtifactsChange?: (downloads: ChatArtifactDownload[]) => void;
   onActivityChange?: (activity: { thinkingStatus: string | null; activeHats: string[] }) => void;
+  onTurnComplete?: () => void;
   pendingPrompt?: { text: string; seq: number } | null;
   projectId?: string;
   projectName?: string;
@@ -790,7 +905,18 @@ function isNearBottom(element: HTMLElement, threshold = 96): boolean {
   return remaining <= threshold;
 }
 
-export function ChatInterface({ customerId, customerName, onCustomerIdChange, onCustomerNameChange, onArtifactsChange, onActivityChange, pendingPrompt, projectId, projectName }: ChatInterfaceProps) {
+export function ChatInterface({
+  customerId = '',
+  customerName = '',
+  onCustomerIdChange,
+  onCustomerNameChange,
+  onArtifactsChange,
+  onActivityChange,
+  onTurnComplete,
+  pendingPrompt,
+  projectId,
+  projectName,
+}: ChatInterfaceProps) {
   const [messages,      setMessages]      = useState<LocalMessage[]>([]);
   const [input,         setInput]         = useState('');
   const [loading,       setLoading]       = useState(false);
@@ -884,6 +1010,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
           artifactManifest: complete.artifact_manifest,
         };
         setMessages(prev => [...prev, assistantMsg]);
+        onTurnComplete?.();
         setBackgroundJobId(null);
         setBackgroundMode(false);
       } catch (err: unknown) {
@@ -1003,6 +1130,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
       setMessages(prev => [...prev, assistantMsg]);
       setStreamingReply('');
       setThinkingStatus(null);
+      onTurnComplete?.();
     } catch (err: unknown) {
       const e = err as { status: number; detail: string };
       setError(`Error ${e.status}: ${e.detail}`);
@@ -1389,7 +1517,7 @@ export function ChatInterface({ customerId, customerName, onCustomerIdChange, on
             data-testid="chat-input"
             style={inputStyle}
             value={input}
-            placeholder="Message Archie... (Enter to send, Shift+Enter for newline)"
+            placeholder="Describe your customer or ask Archie for an artifact..."
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={loading}
