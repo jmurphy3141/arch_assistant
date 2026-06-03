@@ -270,6 +270,18 @@ export const CHAT_PROJECTS_RESPONSE = {
   pagination: { page: 1, page_size: 100, total: 2, has_next: false },
 };
 
+export const CONTEXT_RESPONSE = {
+  status: 'ok',
+  customer_id: 'acme-discovery',
+  context: {
+    customer_id: 'acme-discovery',
+    customer_name: 'ACME Financial Services',
+    customer_challenge: 'High Oracle RAC licensing cost and a need to modernize the customer platform.',
+    oci_services_in_scope: ['Autonomous Database', 'OKE'],
+    artifacts: ['diagram/acme/v2.drawio', 'waf/acme/v1.md'],
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Handler registry
 // ---------------------------------------------------------------------------
@@ -294,6 +306,10 @@ export const handlers = [
     status: 'ok',
     customer_id: params.customerId,
     history: [],
+  })),
+  http.get(`${BASE}/context/:customerId`, ({ params }) => HttpResponse.json({
+    ...CONTEXT_RESPONSE,
+    customer_id: String(params.customerId ?? ''),
   })),
 
   // Notes

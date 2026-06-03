@@ -1,32 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { HealthIndicator } from './components/HealthIndicator';
-import { GenerateForm } from './components/GenerateForm';
-import { ResponseDisplay } from './components/ResponseDisplay';
-import { ClarifyForm } from './components/ClarifyForm';
-import { NoteUpload } from './components/NoteUpload';
-import { PovForm } from './components/PovForm';
-import { JepForm } from './components/JepForm';
-import { TerraformForm } from './components/TerraformForm';
-import { WafForm } from './components/WafForm';
 import { BomAdvisor } from './components/BomAdvisor';
 import { ChatInterface } from './components/ChatInterface';
 import { ChatSidebar, type SidebarHistoryItem, type SidebarProjectItem } from './components/ChatSidebar';
 import { ArtifactPreviewPanel } from './components/ArtifactPreviewPanel';
 import { EngagementMemoryPanel } from './components/EngagementMemoryPanel';
-import { useClientId, getLastDiagramName, saveLastDiagramName } from './hooks/useClientId';
+import { useClientId } from './hooks/useClientId';
 import {
-  apiClarify,
   apiGetChatProjects,
   apiGetChatHistoryIndex,
-  apiRefineDiagram,
-  apiWaitForJob,
   type ChatArtifactDownload,
-  type GenerateResponse,
-  type OrchestrationResult,
 } from './api/client';
-
-type Mode = 'chat' | 'generate' | 'bom' | 'notes' | 'pov' | 'jep' | 'terraform' | 'waf';
-
 
 function getLastCustomerId(): string {
   try { return localStorage.getItem('last_customer_id') ?? ''; } catch { return ''; }
@@ -43,16 +27,9 @@ function saveLastCustomerName(name: string) {
 
 export function App() {
   const clientId = useClientId();
-  const [mode, setMode] = useState<Mode>('chat');
-  const [diagramName, setDiagramName] = useState<string>(getLastDiagramName);
+  const [mode] = useState<'chat' | 'bom'>('chat');
   const [customerId, setCustomerId] = useState<string>(getLastCustomerId);
   const [customerName, setCustomerName] = useState<string>(getLastCustomerName);
-  const [result, setResult] = useState<GenerateResponse | null>(null);
-  const [orchestrationResult, setOrchestrationResult] = useState<OrchestrationResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [clarifyLoading, setClarifyLoading] = useState(false);
-  const [clarifyElapsed, setClarifyElapsed] = useState(0);
-  const [refineLoading, setRefineLoading] = useState(false);
   const [chatSessionKey, setChatSessionKey] = useState(0);
   const [sidebarLoading, setSidebarLoading] = useState(false);
   const [sidebarHistoryItems, setSidebarHistoryItems] = useState<SidebarHistoryItem[]>([]);
@@ -65,15 +42,10 @@ export function App() {
   });
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [chatArtifacts, setChatArtifacts] = useState<ChatArtifactDownload[]>([]);
-  const [documentsCollapsed, setDocumentsCollapsed] = useState(true);
   const [chatActivity, setChatActivity] = useState<{ thinkingStatus: string | null; activeHats: string[] }>({ thinkingStatus: null, activeHats: [] });
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
-
-  function handleDiagramNameChange(name: string) {
-    setDiagramName(name);
-    saveLastDiagramName(name);
-  }
+  const [memoryRefreshTrigger, setMemoryRefreshTrigger] = useState(0);
 
   function handleCustomerIdChange(id: string) {
     setCustomerId(id);
@@ -88,99 +60,6 @@ export function App() {
   const [pendingPrompt, setPendingPrompt] = useState<{ text: string; seq: number } | null>(null);
   function handleQuickPrompt(text: string) {
     setPendingPrompt(prev => ({ text, seq: (prev?.seq ?? 0) + 1 }));
-    switchMode('chat');
-  }
-
-  function handleResult(r: GenerateResponse | OrchestrationResult) {
-    if (r.status === 'orchestration_complete') {
-      const orch = r as OrchestrationResult;
-      setOrchestrationResult(orch);
-      setResult(orch.draw_result);
-    } else {
-      setOrchestrationResult(null);
-      setResult(r as GenerateResponse);
-    }
-    setError(null);
-  }
-
-  function handleError(msg: string) {
-    setError(msg);
-    setResult(null);
-  }
-
-  async function handleClarify(
-    answers: string,
-    opts?: { auto_waf?: boolean; customer_id?: string; customer_name?: string },
-  ) {
-    setClarifyLoading(true);
-    setClarifyElapsed(0);
-    try {
-      // Prefer stateless path: echo _clarify_context back so the server
-      // doesn't need PENDING_CLARIFY (survives restarts, no client_id mismatch).
-      const ctx = result?._clarify_context as {
-        items_json?: string; prompt?: string; deployment_hints_json?: string;
-      } | undefined;
-      const pending = await apiClarify({
-        answers,
-        client_id:    customerId || clientId,
-        diagram_name: diagramName,
-        ...(ctx?.items_json && ctx?.prompt ? {
-          items_json:            ctx.items_json,
-          prompt:                ctx.prompt,
-          deployment_hints_json: ctx.deployment_hints_json,
-        } : {}),
-        ...(opts?.auto_waf      ? { auto_waf:      opts.auto_waf      } : {}),
-        ...(opts?.customer_id   ? { customer_id:   opts.customer_id   } : {}),
-        ...(opts?.customer_name ? { customer_name: opts.customer_name } : {}),
-      });
-      const r = await apiWaitForJob(pending.job_id, setClarifyElapsed);
-      handleResult(r);
-    } catch (err: unknown) {
-      const e = err as { status: number; detail: string };
-      setError(`Clarify error ${e.status}: ${e.detail}`);
-    } finally {
-      setClarifyLoading(false);
-      setClarifyElapsed(0);
-    }
-  }
-
-  async function handleRefine(feedback: string) {
-    const ctx = result?._refine_context as {
-      items_json?: string; prompt?: string; prev_spec?: string; deployment_hints_json?: string;
-    } | undefined;
-    if (!ctx?.items_json || !ctx?.prompt) {
-      setError('Refine context missing — please regenerate the diagram first.');
-      return;
-    }
-    setRefineLoading(true);
-    try {
-      const r = await apiRefineDiagram({
-        feedback,
-        client_id:    customerId || clientId,
-        diagram_name: diagramName,
-        items_json:   ctx.items_json,
-        prompt:       ctx.prompt,
-        ...(ctx.prev_spec              ? { prev_spec:              ctx.prev_spec              } : {}),
-        ...(ctx.deployment_hints_json  ? { deployment_hints_json:  ctx.deployment_hints_json  } : {}),
-      });
-      setResult(r);
-      setError(null);
-    } catch (err: unknown) {
-      const e = err as { status: number; detail: string };
-      setError(`Refine error ${e.status}: ${e.detail}`);
-    } finally {
-      setRefineLoading(false);
-    }
-  }
-
-  function switchMode(m: Mode) {
-    setMode(m);
-    setMobileSidebarOpen(false);
-    if (m === 'generate') {
-      setResult(null);
-      setOrchestrationResult(null);
-      setError(null);
-    }
   }
 
   function handleSidebarSelect(nextCustomerId: string, nextCustomerName?: string) {
@@ -331,49 +210,6 @@ export function App() {
     ];
   }, [customerId, selectedProjectId, selectedProjectName, sidebarProjectItems]);
 
-  const workspaceTitle: Record<Mode, string> = {
-    chat: 'Chat',
-    generate: 'Generate Diagram',
-    bom: 'BOM Advisor',
-    notes: 'Notes',
-    pov: 'POV',
-    jep: 'JEP',
-    terraform: 'Terraform',
-    waf: 'WAF Review',
-  };
-
-  const mainNav: Array<{ mode: Mode; label: string }> = [
-    { mode: 'chat', label: 'Chat' },
-    { mode: 'generate', label: 'Generate Diagram' },
-    { mode: 'bom', label: 'BOM Advisor' },
-  ];
-
-  const documentNav: Array<{ mode: Mode; label: string }> = [
-    { mode: 'notes', label: 'Notes' },
-    { mode: 'pov', label: 'POV' },
-    { mode: 'jep', label: 'JEP' },
-    { mode: 'terraform', label: 'Terraform' },
-    { mode: 'waf', label: 'WAF Review' },
-  ];
-
-  const navButtonStyle = (active: boolean): React.CSSProperties => ({
-    width: '100%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '0.55rem 0.65rem',
-    border: active ? '1px solid rgba(143,180,255,0.5)' : '1px solid transparent',
-    background: active ? 'rgba(143,180,255,0.12)' : 'transparent',
-    color: active ? '#f4f7ff' : '#c3cad8',
-    cursor: active ? 'default' : 'pointer',
-    fontWeight: active ? 700 : 500,
-    borderRadius: 7,
-    fontSize: '0.8rem',
-    fontFamily: "'JetBrains Mono', monospace",
-    textAlign: 'left',
-    transition: 'background 0.15s, border-color 0.15s, color 0.15s',
-  });
-
   const groupHeadingStyle: React.CSSProperties = {
     margin: '1rem 0 0.35rem',
     color: '#7d879a',
@@ -381,38 +217,8 @@ export function App() {
     fontWeight: 700,
   };
 
-  const documentsToggleStyle: React.CSSProperties = {
-    ...groupHeadingStyle,
-    width: '100%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 0,
-    border: 0,
-    background: 'transparent',
-    cursor: 'pointer',
-    fontFamily: "'JetBrains Mono', monospace",
-    textAlign: 'left',
-  };
-
   function handleNewChatFromShell() {
-    switchMode('chat');
     handleSidebarNewChat();
-  }
-
-  function renderNavButton(item: { mode: Mode; label: string }) {
-    const active = mode === item.mode;
-    return (
-      <button
-        key={item.mode}
-        data-testid={`sidebar-nav-${item.mode}`}
-        aria-current={active ? 'page' : undefined}
-        style={navButtonStyle(active)}
-        onClick={() => switchMode(item.mode)}
-      >
-        <span>{item.label}</span>
-      </button>
-    );
   }
 
   const sidebar = (
@@ -530,30 +336,6 @@ export function App() {
             />
           </div>
 
-          <nav aria-label="Workspace navigation">
-            <div style={groupHeadingStyle}>Workspace</div>
-            <div style={{ display: 'grid', gap: '0.2rem' }}>
-              {mainNav.map(renderNavButton)}
-            </div>
-
-            <button
-              type="button"
-              data-testid="sidebar-documents-toggle"
-              aria-expanded={!documentsCollapsed}
-              aria-controls="sidebar-documents-nav"
-              style={documentsToggleStyle}
-              onClick={() => setDocumentsCollapsed(v => !v)}
-            >
-              <span>Documents</span>
-              <span aria-hidden="true">{documentsCollapsed ? 'Show' : 'Hide'}</span>
-            </button>
-            {!documentsCollapsed && (
-              <div id="sidebar-documents-nav" style={{ display: 'grid', gap: '0.2rem' }}>
-                {documentNav.map(renderNavButton)}
-              </div>
-            )}
-          </nav>
-
           <div style={{ minHeight: 0, display: 'flex', flexDirection: 'column', gap: '0.45rem', flex: 1, overflow: 'hidden' }}>
             <div style={groupHeadingStyle}>Conversations</div>
             <ChatSidebar
@@ -566,7 +348,6 @@ export function App() {
               showNewButton={false}
               onSelectProject={handleSidebarProjectSelect}
               onSelectCustomer={(nextCustomerId, nextCustomerName) => {
-                switchMode('chat');
                 handleSidebarSelect(nextCustomerId, nextCustomerName);
               }}
               onNewChat={handleNewChatFromShell}
@@ -635,7 +416,7 @@ export function App() {
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-            <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#d8e0f0' }}>{workspaceTitle[mode]}</span>
+            <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#d8e0f0' }}>Chat</span>
             {customerId && (
               <>
                 <span style={{ color: '#1a2035' }}>/</span>
@@ -645,7 +426,7 @@ export function App() {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
             <span style={{ fontSize: '0.6rem', color: '#8b97b0', border: '1px solid #1a2035', borderRadius: 20, padding: '3px 10px' }}>
-              {mode === 'chat' && customerId ? `${customerId}` : 'no customer'}
+              {customerId ? `${customerId}` : 'no customer'}
             </span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.6rem', color: '#aeb9d0', border: '1px solid #1a2035', borderRadius: 20, padding: '3px 10px' }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#46d68a', boxShadow: '0 0 6px #46d68a', display: 'inline-block' }} />
@@ -654,8 +435,11 @@ export function App() {
           </div>
         </header>
 
-        {/* Chat mode — full-height flex row: ChatInterface + right context rail */}
+        {/* Mode workspace */}
+        {mode === 'bom' && <BomAdvisor />}
+
         {mode === 'chat' && (
+        /* Chat workspace — full-height flex row: ChatInterface + right context rail */
           <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
             {/* ChatInterface column */}
             <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', padding: '1rem' }}>
@@ -667,6 +451,7 @@ export function App() {
                 onCustomerNameChange={handleCustomerNameChange}
                 onArtifactsChange={setChatArtifacts}
                 onActivityChange={setChatActivity}
+                onTurnComplete={() => setMemoryRefreshTrigger(v => v + 1)}
                 pendingPrompt={pendingPrompt}
                 projectId={selectedProjectId}
                 projectName={selectedProjectName}
@@ -717,7 +502,11 @@ export function App() {
                   </div>
                   {/* Memory + artifacts */}
                   <div style={{ flex: 1, padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto' }}>
-                    <EngagementMemoryPanel customerId={customerId || null} refreshTrigger={chatSessionKey} activity={chatActivity} />
+                    <EngagementMemoryPanel
+                      customerId={customerId || null}
+                      refreshTrigger={chatSessionKey + memoryRefreshTrigger}
+                      activity={chatActivity}
+                    />
                     {chatArtifacts.length > 0 && (
                       <ArtifactPreviewPanel artifacts={chatArtifacts} compact={true} onQuickPrompt={handleQuickPrompt} />
                     )}
@@ -744,77 +533,6 @@ export function App() {
             {/* Compact: artifacts below chat */}
             {isCompactChat && chatArtifacts.length > 0 && (
               <ArtifactPreviewPanel artifacts={chatArtifacts} compact={isCompactChat} onQuickPrompt={handleQuickPrompt} />
-            )}
-          </div>
-        )}
-
-        {/* Non-chat modes — scrollable padded area */}
-        {mode !== 'chat' && (
-          <div style={{ flex: 1, overflowY: 'auto', padding: '1.4rem', maxWidth: '980px', width: '100%', margin: '0 auto' }}>
-            {/* Diagram modes */}
-            {mode === 'generate' && (
-            <GenerateForm
-              clientId={clientId}
-              diagramName={diagramName}
-              onDiagramNameChange={handleDiagramNameChange}
-              onResult={handleResult}
-              onError={handleError}
-            />
-            )}
-
-            {mode === 'bom' && <BomAdvisor />}
-
-            {mode === 'generate' && (
-            <>
-              {error && (
-                <div
-                  data-testid="error-display"
-                  style={{
-                    marginTop: '1rem', padding: '0.75rem',
-                    background: 'rgba(232,65,90,0.08)',
-                    border: '1px solid rgba(232,65,90,0.4)',
-                    borderRadius: 4,
-                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                    fontSize: '0.8rem', color: '#e8415a',
-                    fontFamily: "'JetBrains Mono', monospace",
-                  }}
-                >
-                  <strong>Error:</strong> {error}
-                </div>
-              )}
-              {result && result.status === 'ok' && (
-                <ResponseDisplay
-                  result={result}
-                  orchestrationResult={orchestrationResult ?? undefined}
-                  onRefine={handleRefine}
-                  refineLoading={refineLoading}
-                />
-              )}
-              {result && result.status === 'need_clarification' && (
-                <ClarifyForm result={result} onSubmit={handleClarify} loading={clarifyLoading} elapsedSec={clarifyElapsed} />
-              )}
-            </>
-            )}
-
-            {/* Document modes */}
-            {mode === 'notes' && (
-            <NoteUpload customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
-            )}
-
-            {mode === 'pov' && (
-            <PovForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
-            )}
-
-            {mode === 'jep' && (
-            <JepForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
-            )}
-
-            {mode === 'terraform' && (
-            <TerraformForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
-            )}
-
-            {mode === 'waf' && (
-            <WafForm customerId={customerId} onCustomerIdChange={handleCustomerIdChange} />
             )}
           </div>
         )}

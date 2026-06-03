@@ -14,11 +14,20 @@ Use OCI-realistic structure:
   container boundaries.
 - Keep public ingress services, private application tiers, asynchronous services,
   and data services in their appropriate subnet or service layer.
-- Place gateways and edge services where traffic actually crosses trust
-  boundaries: WAF and load balancers before private application tiers, DRG or VPN
-  for on-premises connectivity, NAT and service gateways for private egress.
+- Place gateways by these coordinate formulas, not prose preference:
+  - IGW: subnet_tier=Public, x = VCN left edge - icon_width / 2.
+  - NAT gateway: subnet_tier=Public, x = VCN left edge - icon_width / 2, below IGW.
+  - DRG: subnet_tier=Public, x = VCN left edge - icon_width / 2, below NAT.
+  - Service Gateway: subnet_tier=Public, x = VCN right edge - icon_width / 2.
+  - LPG: subnet_tier=Public, x = VCN right edge - icon_width / 2, below Service Gateway.
+- CRITICAL: subnet_tier MUST be one of exactly: Public, Private, Data,
+  Management. No other values are valid. "Generic" and "Other" are not valid
+  tier values.
+- CRITICAL: Set parent="1" on every mxCell in the output XML. There are NO
+  exceptions. Icons that appear visually inside subnet boxes are NOT XML
+  children of those boxes. Nested parent values corrupt the diagram.
 - Keep the draw.io structure flat: nodes and edges should reference stable ids;
-  containment is represented by the generated boxes, not by nested XML cells.
+  containment is represented by generated boxes, not nested XML cells.
 
 ## OCI AI and Managed Service Placement
 

@@ -23,7 +23,17 @@ export function NoteUpload({ customerId, onCustomerIdChange }: Props) {
     setError(null);
     try {
       const resp = await apiUploadNote(customerId.trim(), noteName.trim(), file);
-      setMessage(`Uploaded: ${resp.note_name} → ${resp.key}`);
+      if (resp.extraction_status === 'failed') {
+        setMessage(
+          `Note saved. Text extraction failed for ${resp.note_name} - Archie will not be able to read its content.`
+        );
+      } else if (resp.extraction_status === 'unsupported') {
+        setMessage(
+          `Note saved. Text extraction is not supported for ${resp.note_name} - Archie will not be able to read its content.`
+        );
+      } else {
+        setMessage(`Uploaded: ${resp.note_name} → ${resp.key}`);
+      }
       setNoteName('');
       setFile(null);
       // Refresh list
