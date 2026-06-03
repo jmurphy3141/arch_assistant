@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { HealthIndicator } from './components/HealthIndicator';
+import { BomAdvisor } from './components/BomAdvisor';
 import { ChatInterface } from './components/ChatInterface';
 import { ChatSidebar, type SidebarHistoryItem, type SidebarProjectItem } from './components/ChatSidebar';
 import { ArtifactPreviewPanel } from './components/ArtifactPreviewPanel';
@@ -26,6 +27,7 @@ function saveLastCustomerName(name: string) {
 
 export function App() {
   const clientId = useClientId();
+  const [mode] = useState<'chat' | 'bom'>('chat');
   const [customerId, setCustomerId] = useState<string>(getLastCustomerId);
   const [customerName, setCustomerName] = useState<string>(getLastCustomerName);
   const [chatSessionKey, setChatSessionKey] = useState(0);
@@ -433,7 +435,11 @@ export function App() {
           </div>
         </header>
 
-        {/* Chat workspace — full-height flex row: ChatInterface + right context rail */}
+        {/* Mode workspace */}
+        {mode === 'bom' && <BomAdvisor />}
+
+        {mode === 'chat' && (
+        /* Chat workspace — full-height flex row: ChatInterface + right context rail */
           <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
             {/* ChatInterface column */}
             <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', padding: '1rem' }}>
@@ -529,6 +535,7 @@ export function App() {
               <ArtifactPreviewPanel artifacts={chatArtifacts} compact={isCompactChat} onQuickPrompt={handleQuickPrompt} />
             )}
           </div>
+        )}
       </main>
     </div>
   );
