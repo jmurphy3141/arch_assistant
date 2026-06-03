@@ -19,7 +19,9 @@ from agent.document_store import (
     save_approved_doc,
     save_jep_questions,
     save_note,
+    save_note_text,
 )
+from agent.note_extractor import extract_text
 from agent.jep_lifecycle import (
     generate_policy_block_payload as jep_generate_policy_block_payload,
     mark_approved as mark_jep_approved,
@@ -58,7 +60,35 @@ def create_documents_router(deps) -> APIRouter:
             key = await anyio.to_thread.run_sync(
                 functools.partial(save_note, store, customer_id, name, content_bytes, content_type)
             )
-            return {"status": "ok", "key": key, "customer_id": customer_id, "note_name": name}
+
+            extraction = await anyio.to_thread.run_sync(
+                functools.partial(extract_text, content_bytes, content_type, file.filename or name)
+            )
+            if extraction.get("text"):
+                try:
+                    await anyio.to_thread.run_sync(
+                        functools.partial(save_note_text, store, customer_id, name, extraction["text"])
+                    )
+                except Exception as exc:
+                    deps.logger.error("Error saving extracted note text for %s: %s", name, exc)
+                    extraction = {
+                        **extraction,
+                        "text": "",
+                        "extraction_status": "failed",
+                        "char_count": 0,
+                        "warning": f"Text extraction succeeded but extracted text could not be saved: {exc}",
+                    }
+
+            return {
+                "status": "ok",
+                "key": key,
+                "customer_id": customer_id,
+                "note_name": name,
+                "detected_type": extraction["detected_type"],
+                "extraction_status": extraction["extraction_status"],
+                "char_count": extraction["char_count"],
+                "warning": extraction["warning"],
+            }
         except Exception as exc:
             deps.logger.error("Error in /notes/upload: %s", exc)
             raise HTTPException(status_code=500, detail=str(exc))

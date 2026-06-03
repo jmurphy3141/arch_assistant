@@ -15,14 +15,25 @@ interface EngagementMemoryPanelProps {
   activity?: ActivityState;
 }
 
+interface ArtifactLink {
+  key: string;
+  label: string;
+}
+
 interface MemoryView {
   customerName: string;
   challenge: string;
   services: string[];
+  artifacts: ArtifactLink[];
 }
 
-function truncate(value: string, max = 120): string {
+function truncate(value: string, max = 80): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+function lastPathSegment(key: string): string {
+  const parts = key.split('/').filter(Boolean);
+  return parts[parts.length - 1] || key;
 }
 
 function stringList(value: unknown): string[] {
@@ -31,27 +42,108 @@ function stringList(value: unknown): string[] {
   return [];
 }
 
-function extractArchieField(context: EngagementContextResponse['context'], key: string): unknown {
-  const archie = context?.archie as Record<string, unknown> | undefined;
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function extractArchieField(context: Record<string, unknown> | undefined, key: string): unknown {
+  const archie = asRecord(context?.archie);
   if (!archie) return undefined;
-  const clientFacts = archie.client_facts as Record<string, unknown> | undefined;
-  const memory = archie.memory as Record<string, unknown> | undefined;
-  const memoryFacts = memory?.client_facts as Record<string, unknown> | undefined;
+  const clientFacts = asRecord(archie.client_facts);
+  const memory = asRecord(archie.memory);
+  const memoryFacts = asRecord(memory?.client_facts);
   return archie[key] ?? clientFacts?.[key] ?? memoryFacts?.[key];
 }
 
+function extractServices(data: EngagementContextResponse | null): string[] {
+  const context = asRecord(data?.context);
+  const direct = stringList(data?.oci_services_in_scope ?? context?.oci_services_in_scope ?? extractArchieField(context, 'oci_services_in_scope'));
+  if (direct.length > 0) return direct;
+
+  const archie = asRecord(context?.archie);
+  const memory = asRecord(archie?.memory);
+  const architecture = asRecord(memory?.architecture_state);
+  return stringList(architecture?.components);
+}
+
+function pushArtifact(artifacts: ArtifactLink[], seen: Set<string>, value: unknown) {
+  const key = typeof value === 'string' ? value.trim() : '';
+  if (!key || seen.has(key)) return;
+  seen.add(key);
+  artifacts.push({ key, label: lastPathSegment(key) });
+}
+
+function extractArtifacts(data: EngagementContextResponse | null): ArtifactLink[] {
+  const artifacts: ArtifactLink[] = [];
+  const seen = new Set<string>();
+  const context = asRecord(data?.context);
+  const candidates = data?.artifacts ?? context?.artifacts;
+
+  if (Array.isArray(candidates)) {
+    for (const item of candidates) {
+      if (typeof item === 'string') {
+        pushArtifact(artifacts, seen, item);
+      } else {
+        const record = asRecord(item);
+        pushArtifact(artifacts, seen, record?.key ?? record?.artifact_key ?? record?.url);
+      }
+    }
+  } else {
+    const record = asRecord(candidates);
+    if (record) {
+      for (const value of Object.values(record)) pushArtifact(artifacts, seen, value);
+    }
+  }
+
+  const agents = asRecord(context?.agents);
+  if (agents) {
+    for (const agentState of Object.values(agents)) {
+      const state = asRecord(agentState);
+      if (!state) continue;
+      for (const [key, value] of Object.entries(state)) {
+        if (key === 'key' || key.endsWith('_key') || key.endsWith('Key')) {
+          pushArtifact(artifacts, seen, value);
+        }
+      }
+    }
+  }
+
+  const archie = asRecord(context?.archie);
+  const memory = asRecord(archie?.memory);
+  const workProducts = asRecord(memory?.work_products);
+  if (workProducts) {
+    for (const product of Object.values(workProducts)) {
+      const state = asRecord(product);
+      if (!state) continue;
+      for (const [key, value] of Object.entries(state)) {
+        if (key === 'key' || key.endsWith('_key') || key.endsWith('Key')) {
+          pushArtifact(artifacts, seen, value);
+        }
+      }
+    }
+  }
+
+  return artifacts;
+}
+
 export function normalizeEngagementMemory(data: EngagementContextResponse | null): MemoryView {
-  const context = data?.context;
+  const context = asRecord(data?.context);
   const challenge = String(
-    data?.customer_challenge ?? context?.customer_challenge ?? extractArchieField(context, 'customer_challenge') ?? ''
+    data?.customer_challenge
+    ?? context?.customer_challenge
+    ?? extractArchieField(context, 'customer_challenge')
+    ?? extractArchieField(context, 'engagement_summary')
+    ?? extractArchieField(context, 'latest_notes_summary')
+    ?? ''
   ).trim();
-  const services = stringList(
-    data?.oci_services_in_scope ?? context?.oci_services_in_scope ?? extractArchieField(context, 'oci_services_in_scope')
-  );
+
   return {
     customerName: String(data?.customer_name ?? context?.customer_name ?? data?.customer_id ?? context?.customer_id ?? '').trim(),
     challenge,
-    services,
+    services: extractServices(data),
+    artifacts: extractArtifacts(data),
   };
 }
 
@@ -64,11 +156,16 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
   const [loadedOnce, setLoadedOnce] = useState(false);
 
   const loadContext = useCallback(async () => {
-    if (!customerId?.trim()) { setData(null); setLoadedOnce(false); return; }
+    if (!customerId?.trim()) {
+      setData(null);
+      setLoadedOnce(false);
+      return;
+    }
     try {
       setData(await apiGetCustomerContext(customerId.trim()));
-      setLoadedOnce(true);
     } catch {
+      setData(null);
+    } finally {
       setLoadedOnce(true);
     }
   }, [customerId]);
@@ -82,102 +179,134 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
   }, [customerId, loadContext]);
 
   const view = useMemo(() => normalizeEngagementMemory(data), [data]);
-  const hasContent = !!(view.customerName || view.challenge || view.services.length > 0);
+  const context = asRecord(data?.context);
+  const hasExplicitCustomerName = !!String(data?.customer_name ?? context?.customer_name ?? '').trim();
+  const hasContent = !!(hasExplicitCustomerName || view.challenge || view.services.length > 0 || view.artifacts.length > 0);
   const isLive = !!(activity?.thinkingStatus || activity?.activeHats?.length);
 
-  if (!isLive && !hasContent && !customerId?.trim()) return null;
+  if (!customerId?.trim()) return null;
 
   return (
     <aside
       data-testid="engagement-memory-panel"
       style={{
-        border: '1px solid #1a2035',
-        borderRadius: 6,
-        background: '#0b0d14',
-        color: '#cdd2e0',
-        padding: '0.6rem 0.75rem',
+        width: '100%',
+        minHeight: 220,
+        border: '1px solid #d6dbe7',
+        borderRadius: 8,
+        background: '#ffffff',
+        color: '#172033',
+        padding: '0.85rem',
         boxSizing: 'border-box' as const,
         fontFamily: "'JetBrains Mono', monospace",
-        fontSize: '0.73rem',
+        fontSize: '0.74rem',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-        <span style={{ fontSize: '0.56rem', letterSpacing: '0.15em', color: '#6b7a94', textTransform: 'uppercase' }}>
+      <div style={{ borderBottom: '1px solid #e2e6ef', paddingBottom: '0.55rem', marginBottom: '0.7rem' }}>
+        <div style={{ fontSize: '0.6rem', letterSpacing: '0.14em', color: '#66728a', textTransform: 'uppercase', marginBottom: '0.3rem' }}>
           Engagement Memory
-        </span>
-        {isLive && (
-          <span style={{
-            fontSize: '0.55rem', fontWeight: 700, color: '#46d68a', letterSpacing: '0.08em',
-            background: 'rgba(70,214,138,0.1)', border: '1px solid rgba(70,214,138,0.3)',
-            borderRadius: 20, padding: '2px 7px', textTransform: 'uppercase',
-          }}>
-            LIVE
-          </span>
-        )}
+        </div>
+        <div data-testid="memory-customer-name" style={{ color: '#101624', fontWeight: 800, fontSize: '0.88rem', lineHeight: 1.3 }}>
+          {view.customerName || customerId}
+        </div>
       </div>
-      {/* Live activity */}
+
       {isLive && (
         <div
           data-testid="live-activity"
           style={{
-            marginBottom: hasContent ? '0.55rem' : 0,
-            padding: '0.45rem 0.6rem',
-            background: '#07111f',
-            border: '1px solid #1a2d45',
-            borderRadius: 5,
+            marginBottom: '0.7rem',
+            padding: '0.45rem 0.55rem',
+            background: '#eef8f2',
+            border: '1px solid #c7ead4',
+            borderRadius: 6,
             display: 'grid',
-            gap: '0.3rem',
+            gap: '0.35rem',
           }}
         >
-          <div style={{ fontSize: '0.58rem', color: '#3d6ab0', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-            Live
-          </div>
           {activity!.activeHats!.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
               {activity!.activeHats!.map(hat => (
                 <span key={hat} data-testid="live-active-hat" style={{
-                  background: 'rgba(70,214,138,0.1)', border: '1px solid rgba(70,214,138,0.3)',
-                  borderRadius: 4, padding: '0.05rem 0.45rem', fontSize: '0.66rem', color: '#46d68a',
-                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  background: '#dcf7e6',
+                  border: '1px solid #b7e5c7',
+                  borderRadius: 4,
+                  padding: '0.05rem 0.4rem',
+                  fontSize: '0.64rem',
+                  color: '#176b3a',
+                  fontWeight: 700,
                 }}>
-                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#46d68a', display: 'inline-block' }} />
                   {hatDisplayName(hat)}
                 </span>
               ))}
             </div>
           )}
           {activity!.thinkingStatus && (
-            <div data-testid="live-thinking-status" style={{
-              fontSize: '0.7rem',
-              color: activity!.thinkingStatus.startsWith('Running') ? '#61dafb' : '#6b7a94',
-              fontWeight: activity!.thinkingStatus.startsWith('Running') ? 600 : 400,
-            }}>
+            <div data-testid="live-thinking-status" style={{ fontSize: '0.68rem', color: '#176b3a' }}>
               {activity!.thinkingStatus}
             </div>
           )}
         </div>
       )}
 
-      {/* Context — only shown once loaded and has content */}
+      {!loadedOnce && (
+        <div data-testid="memory-loading" style={{ display: 'grid', gap: '0.45rem' }}>
+          <div style={{ height: 12, width: '75%', background: '#edf0f6', borderRadius: 4 }} />
+          <div style={{ height: 12, width: '55%', background: '#edf0f6', borderRadius: 4 }} />
+          <div style={{ height: 12, width: '68%', background: '#edf0f6', borderRadius: 4 }} />
+        </div>
+      )}
+
+      {loadedOnce && !hasContent && (
+        <div data-testid="memory-empty" style={{ color: '#66728a', lineHeight: 1.45 }}>
+          No context yet - start a conversation
+        </div>
+      )}
+
       {loadedOnce && hasContent && (
-        <div style={{ display: 'grid', gap: '0.45rem' }}>
-          {view.customerName && (
-            <div style={{ color: '#e8edf8', fontWeight: 700, fontSize: '0.78rem' }}>
-              {view.customerName}
-            </div>
-          )}
+        <div style={{ display: 'grid', gap: '0.75rem' }}>
           {view.challenge && (
-            <div data-testid="memory-challenge" style={{ color: '#8b97b0', lineHeight: 1.45 }}>
-              {truncate(view.challenge)}
-            </div>
-          )}
-          {view.services.length > 0 && (
-            <div>
-              <div style={{ color: '#4a5570', fontSize: '0.62rem', marginBottom: '0.2rem' }}>in scope</div>
-              <div style={{ color: '#a9c2ff', lineHeight: 1.6 }}>
-                {view.services.join(' · ')}
+            <section>
+              <div style={{ color: '#66728a', fontSize: '0.62rem', marginBottom: '0.24rem', fontWeight: 700 }}>
+                Challenge:
               </div>
-            </div>
+              <div data-testid="memory-challenge" style={{ lineHeight: 1.45 }}>
+                {truncate(view.challenge)}
+              </div>
+            </section>
+          )}
+
+          {view.services.length > 0 && (
+            <section>
+              <div style={{ color: '#66728a', fontSize: '0.62rem', marginBottom: '0.24rem', fontWeight: 700 }}>
+                Services in scope:
+              </div>
+              <ul data-testid="memory-services" style={{ margin: 0, paddingLeft: '1rem', lineHeight: 1.55 }}>
+                {view.services.map(service => <li key={service}>{service}</li>)}
+              </ul>
+            </section>
+          )}
+
+          {view.artifacts.length > 0 && (
+            <section>
+              <div style={{ color: '#66728a', fontSize: '0.62rem', marginBottom: '0.24rem', fontWeight: 700 }}>
+                Artifacts:
+              </div>
+              <ul data-testid="memory-artifacts" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: '0.3rem' }}>
+                {view.artifacts.map(artifact => (
+                  <li key={artifact.key}>
+                    <a
+                      href={`/download?key=${encodeURIComponent(artifact.key)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: '#2356b5', textDecoration: 'none', overflowWrap: 'anywhere' }}
+                    >
+                      {artifact.label} ↗
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </section>
           )}
         </div>
       )}

@@ -507,6 +507,10 @@ export interface NoteUploadResponse {
   key: string;
   customer_id: string;
   note_name: string;
+  detected_type?: 'txt' | 'md' | 'pdf' | 'docx' | 'unsupported';
+  extraction_status?: 'ok' | 'failed' | 'unsupported';
+  char_count?: number;
+  warning?: string | null;
 }
 
 export interface NoteListResponse {

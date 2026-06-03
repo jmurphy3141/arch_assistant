@@ -31,6 +31,16 @@ vi.mock('../api/client', () => ({
 
 import { ChatInterface } from '../components/ChatInterface';
 
+function renderChat(extraProps: Partial<React.ComponentProps<typeof ChatInterface>> = {}) {
+  return render(
+    <ChatInterface
+      customerId="acme"
+      customerName="Acme"
+      {...extraProps}
+    />,
+  );
+}
+
 describe('ChatInterface quick actions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -58,9 +68,7 @@ describe('ChatInterface quick actions', () => {
       resolveStream = resolve;
     }));
 
-    render(<ChatInterface />);
-
-    await userEvent.type(screen.getByTestId('chat-customer-id'), 'acme');
+    renderChat();
 
     await waitFor(() => {
       expect(screen.getByTestId('archie-hello-message')).toHaveTextContent("Hi, I'm Archie.");
@@ -111,10 +119,7 @@ describe('ChatInterface quick actions', () => {
         artifact_manifest: { downloads: [] },
       });
 
-    render(<ChatInterface />);
-
-    await userEvent.type(screen.getByTestId('chat-customer-id'), 'acme');
-    await userEvent.type(screen.getByTestId('chat-customer-name'), 'Acme');
+    renderChat();
     await userEvent.type(screen.getByTestId('chat-input'), 'please review this');
     await userEvent.click(screen.getByTestId('chat-send-button'));
 
@@ -141,9 +146,7 @@ describe('ChatInterface quick actions', () => {
       artifact_manifest: { downloads: [] },
     });
 
-    render(<ChatInterface />);
-
-    await userEvent.type(screen.getByTestId('chat-customer-id'), 'acme');
+    renderChat();
     await userEvent.type(screen.getByTestId('chat-input'), 'update everything');
     await userEvent.click(screen.getByTestId('chat-send-button'));
 
@@ -154,9 +157,7 @@ describe('ChatInterface quick actions', () => {
   });
 
   it('starts a background chat job when background mode is enabled', async () => {
-    render(<ChatInterface />);
-
-    await userEvent.type(screen.getByTestId('chat-customer-id'), 'acme');
+    renderChat();
     await userEvent.type(screen.getByTestId('chat-input'), 'generate the POC pack');
     await userEvent.click(screen.getByTestId('chat-background-toggle'));
     await userEvent.click(screen.getByTestId('chat-send-button'));
@@ -187,11 +188,9 @@ describe('ChatInterface quick actions', () => {
       artifact_manifest: { downloads: [] },
     });
 
-    render(<ChatInterface />);
+    renderChat();
 
-    const customerId = screen.getByTestId('chat-customer-id');
     const input = screen.getByTestId('chat-input');
-    await userEvent.type(customerId, 'acme');
     await userEvent.type(input, 'generate a diagram');
 
     const thread = screen.getByText(/No messages yet/i).parentElement as HTMLDivElement;
@@ -242,7 +241,7 @@ describe('ChatInterface quick actions', () => {
     });
     const onArtifactsChange = vi.fn();
 
-    render(<ChatInterface onArtifactsChange={onArtifactsChange} />);
+    renderChat({ onArtifactsChange });
 
     await waitFor(() => {
       expect(screen.getByText('Diagram generated.')).toBeInTheDocument();
