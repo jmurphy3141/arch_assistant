@@ -113,44 +113,23 @@ Before returning, verify:
 6. Out-of-scope section names specific exclusions
 7. Resource plan lists Oracle SA and customer lead by role
 8. Provisioning times match the appended reference (no invented estimates)
-9. `doc_key` present — JEP was saved
+9. Document ends with the Approvals section including Oracle SA, Customer Technical Lead, and signature date placeholder
 
 ---
 
 ## Output Contract
 
-On success:
-```json
-{
-  "status": "ok",
-  "doc_key": "jep/customer-123/v2.md",
-  "version": 2,
-  "summary": "JEP for Acme Financial Services POC: Oracle DB 19c to Autonomous Database migration. 8-week POC, 3 SMART criteria, 4 Oracle resources committed.",
-  "phase_count": 3,
-  "success_criteria_count": 3
-}
-```
+Return the complete JEP document as markdown. Do not return JSON. Do not return
+a status object. The document IS the output — start directly with the first
+heading ("# Joint Engagement Plan — [Customer Name]").
 
-When kickoff Q&A is incomplete:
-```json
-{
-  "status": "need_kickoff",
-  "questions": "<structured kickoff question set>",
-  "message": "Please answer the kickoff questions before I generate the JEP."
-}
-```
+When kickoff Q&A is incomplete, return the seven kickoff questions as plain
+text, clearly labelled "Kickoff questions required — please provide answers
+before I generate the JEP."
 
-When revising a prior draft:
-```json
-{
-  "status": "ok",
-  "doc_key": "jep/customer-123/v3.md",
-  "version": 3,
-  "summary": "Updated JEP: added FastConnect to Phase 0, revised success criterion 2 to SMART format.",
-  "phase_count": 3,
-  "success_criteria_count": 3
-}
-```
+When revising a prior draft, preserve all approved sections and apply only the
+explicitly requested changes. State which sections changed in a brief note
+before the document.
 
 ---
 

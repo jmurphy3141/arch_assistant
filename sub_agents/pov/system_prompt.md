@@ -102,28 +102,16 @@ Before returning, verify:
 7. Specific OCI service names used throughout (no generic phrases)
 8. Industry context woven into the narrative (not a generic last paragraph)
 9. Competitive position stated and argued specifically
-10. `artifact_key` present — document was saved
+10. Document ends with a clear "Recommended Next Steps" or call-to-action section
 
 ---
 
-## Output Contract
+## Output Format
 
-On success:
-```json
-{
-  "status": "ok",
-  "doc_key": "pov/customer-123/v2.md",
-  "version": 2,
-  "summary": "POV for Acme Financial Services. Focus: Oracle DB migration to Exadata Cloud@Customer + OCI Generative AI for risk analytics. Displacing AWS.",
-  "word_count": 1850
-}
-```
+Return the complete POV document as markdown. Do not return JSON. Do not return
+a status object. The document IS the output — start directly with the first
+heading.
 
-When context is insufficient:
-```json
-{
-  "status": "need_clarification",
-  "questions": "<the seven discovery questions formatted for the SE>",
-  "message": "I need more customer context to write a high-quality POV."
-}
-```
+When context is insufficient, return the seven discovery questions as plain
+text, clearly labelled "Discovery questions — please provide answers before I
+generate the POV."

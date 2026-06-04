@@ -205,62 +205,53 @@ Before returning, verify:
 
 ---
 
-## Output Contract
+## Output Format
 
-```json
-{
-  "pillars": {
-    "Security": {
-      "maturity_score": 2,
-      "findings": [
-        {
-          "severity": "P1",
-          "title": "Public subnet lacks OCI WAF policy [CIS 2.1]",
-          "evidence": "Load Balancer in Public subnet; no OCI WAF policy attached",
-          "recommendation": "Create OCI WAF policy with OWASP Core Rule Set and attach to Load Balancer",
-          "maturity_impact": "3"
-        }
-      ]
-    },
-    "Reliability": {
-      "maturity_score": 2,
-      "findings": []
-    },
-    "Performance Efficiency": {
-      "maturity_score": 3,
-      "findings": []
-    },
-    "Cost Optimisation": {
-      "maturity_score": 2,
-      "findings": []
-    },
-    "Operational Excellence": {
-      "maturity_score": 2,
-      "findings": []
-    },
-    "Continuous Improvement": {
-      "maturity_score": 1,
-      "findings": []
-    }
-  },
-  "compliance_mapping": {
-    "PCI_DSS": ["Req 1", "Req 3", "Req 10"]
-  },
-  "summary": "Architecture is developing (average score 2.2/5). 3 P1 findings: WAF policy missing, SSH open to 0.0.0.0/0, DB in public subnet. Fix these before Terraform generation.",
-  "top_risks": [
-    "Public LB with no WAF policy — P1 [CIS 2.1]",
-    "SSH open to 0.0.0.0/0 on app subnet — P1 [CIS 2.3]",
-    "Database in public tier — P1"
-  ],
-  "artifact_key": "waf/customer-123/v2.md"
-}
+Return the complete WAF review as a markdown document. Do not return JSON.
+Do not return a status object. The document IS the output — start directly
+with an executive summary heading.
+
+Required markdown structure:
+
+```
+# OCI Well-Architected Review — [Customer Name]
+
+## Executive Summary
+[Overall risk rating, average maturity score, P1 count, one-paragraph posture]
+
+## Security — Score: 2/5
+### Findings
+**P1 — Public subnet lacks OCI WAF policy [CIS 2.1]**
+Evidence: Load Balancer in Public subnet; no OCI WAF policy attached.
+Recommendation: Create OCI WAF policy with OWASP Core Rule Set and attach to Load Balancer.
+Fix now: 5 minutes in the diagram. After Terraform: subnet rewrite + BOM revision.
+
+## Reliability — Score: 2/5
+...
+
+## Performance Efficiency — Score: 3/5
+...
+
+## Cost Optimisation — Score: 2/5
+...
+
+## Operational Excellence — Score: 2/5
+...
+
+## Continuous Improvement — Score: 1/5
+...
+
+## Compliance Mapping
+[Framework] — [Control IDs mapped to findings above]
+
+## Top Risks
+1. [P1 finding] [CIS control]
+2. ...
+
+## Recommended Next Steps
+1. [Specific action with owner and timeline]
 ```
 
-When context is insufficient:
-```json
-{
-  "status": "need_context",
-  "questions": "<structured discovery questions>",
-  "message": "Architecture context is required before scoring. Please provide the topology, exposure level, and compliance scope."
-}
-```
+When context is insufficient, return the discovery questions as plain text,
+clearly labelled "Architecture context required — please provide answers
+before I generate the WAF review."
