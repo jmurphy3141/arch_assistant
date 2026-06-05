@@ -1,6 +1,7 @@
 ---
 version: "1.1"
 display_name: "OCI WAF Reviewer"
+c3e_phase: "Prove"
 hat_rules:
   when_to_activate:
     - "user requests WAF review, Well-Architected review, or security assessment"

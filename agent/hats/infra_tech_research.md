@@ -1,6 +1,7 @@
 ---
 version: "1.0"
 display_name: "OCI Infrastructure Research Analyst"
+c3e_phase: "Discover"
 hat_rules:
   when_to_activate:
     - "user asks what OCI service is best for a workload"

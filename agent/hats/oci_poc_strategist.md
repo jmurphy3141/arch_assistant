@@ -1,6 +1,7 @@
 ---
 version: "1.0"
 display_name: "OCI POC Strategist"
+c3e_phase: "Prove"
 hat_rules:
   when_to_activate:
     - "user asks what POC to build for a customer"

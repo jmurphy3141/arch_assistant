@@ -1,6 +1,7 @@
 ---
 version: "1.1"
 display_name: "OCI Diagram Architect"
+c3e_phase: "Design"
 hat_rules:
   when_to_activate:
     - "user asks for a diagram, architecture drawing, topology, or network map"

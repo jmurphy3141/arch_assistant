@@ -1,6 +1,7 @@
 ---
 version: "1.1"
 display_name: "OCI Terraform Expert"
+c3e_phase: "Deploy"
 hat_rules:
   when_to_activate:
     - "user requests Terraform, IaC, HCL, or infrastructure-as-code generation"

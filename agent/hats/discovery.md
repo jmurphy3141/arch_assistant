@@ -1,6 +1,7 @@
 ---
 version: "1.0"
 display_name: "Discovery Conductor"
+c3e_phase: "Qualify"
 hat_rules:
   when_to_activate:
     - "customer is being described for the first time"
@@ -25,6 +26,7 @@ memory_focus:
     - "workload_type"
     - "customer_industry"
     - "deal_stage"
+    - "c3e_phase"
     - "timeline"
     - "budget_signal"
     - "economic_buyer"

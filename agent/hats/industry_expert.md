@@ -1,6 +1,7 @@
 ---
 version: "1.0"
 display_name: "Industry Expert"
+c3e_phase: "Discover"
 hat_rules:
   when_to_activate:
     - "customer industry is identified as financial services, FSI, banking, insurance, or capital markets"

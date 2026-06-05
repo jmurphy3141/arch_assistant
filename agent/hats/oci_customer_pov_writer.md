@@ -1,6 +1,7 @@
 ---
 version: "1.0"
 display_name: "OCI POV Writer"
+c3e_phase: "Develop"
 hat_rules:
   when_to_activate:
     - "user requests a POV, Point of View, or customer vision document"

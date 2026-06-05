@@ -1,6 +1,7 @@
 ---
 version: "1.0"
 display_name: "JEP Writer"
+c3e_phase: "Prove"
 hat_rules:
   when_to_activate:
     - "user requests a JEP, Joint Execution Plan, or POC plan document"

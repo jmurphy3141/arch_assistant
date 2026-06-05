@@ -1,6 +1,7 @@
 ---
 version: "1.1"
 display_name: "OCI BOM Expert"
+c3e_phase: "Design"
 hat_rules:
   when_to_activate:
     - "user asks about cost, pricing, BOM, XLSX, budget, or SKUs"

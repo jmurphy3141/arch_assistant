@@ -1,6 +1,7 @@
 ---
 version: "1.0"
 display_name: "Deal Coach"
+c3e_phase: "Qualify"
 hat_rules:
   when_to_activate:
     - "SE asks about competitive situation or why the customer would choose OCI"
