@@ -137,6 +137,8 @@ sub_agents:
   sales_deck: "http://localhost:8089"
   poc_strategist: "http://localhost:8090"
   presentation: "http://localhost:8091"
+  sta: "http://localhost:8092"
+  technical_proposal: "http://localhost:8093"
 
 telegram:
   enabled: false

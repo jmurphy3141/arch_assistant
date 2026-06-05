@@ -324,6 +324,226 @@ class TechResearchHandler(_SpecialistHandler):
         super().__init__("tech_research", "research", store, customer_id, customer_name)
 
 
+class StaHandler(_SpecialistHandler):
+    def __init__(self, store, customer_id, customer_name):
+        super().__init__("sta", "sta", store, customer_id, customer_name)
+
+    async def __call__(
+        self,
+        args: dict[str, Any],
+        *,
+        memory: MemorySnapshot | None,
+        context: dict[str, Any],
+        trace_id: str,
+    ) -> "ToolResult":
+        args = archie_memory._hydrate_tool_args_from_context(
+            tool_name="generate_sta",
+            args=args,
+            context=context,
+            decision_context=memory.decision_context if memory else {},
+            user_message=str(args.get("_user_message", "") or ""),
+        )
+        args = archie_memory._enforce_memory_contract_on_tool_args(
+            tool_name="generate_sta",
+            args=args,
+            context=context,
+        )
+        feedback = str(args.get("feedback", "") or "")
+        raw_request = feedback or "Generate the Strategic Technical Approach from current engagement context."
+        correction = str(args.pop("_forge_correction", "") or "").strip()
+        if correction:
+            raw_request = f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n{raw_request}".strip()
+        raw_request = _hydrate_sta_task(
+            raw_request,
+            args=args,
+            context=context,
+            memory_raw=memory.raw if memory else {},
+        )
+        engagement_context = {
+            "customer_name": self._customer_name,
+            "current_state": _context_value_or_default(
+                ("current_state_architecture", "architecture_description", "current_platform"),
+                default="not stated",
+                args=args,
+                context=context,
+                memory_raw=memory.raw if memory else {},
+            ),
+            "workloads": _context_value_or_default(
+                ("workload_list", "workloads", "workload_type"),
+                default="not stated",
+                args=args,
+                context=context,
+                memory_raw=memory.raw if memory else {},
+            ),
+            "risks": _context_value_or_default(
+                ("risks", "risk_register", "known_risks"),
+                default="none stated",
+                args=args,
+                context=context,
+                memory_raw=memory.raw if memory else {},
+            ),
+            "influence_map": _context_value_or_default(
+                ("influence_map", "stakeholders", "economic_buyer"),
+                default="not stated",
+                args=args,
+                context=context,
+                memory_raw=memory.raw if memory else {},
+            ),
+            "architecture_summary": _context_value_or_default(
+                ("architecture_summary", "diagram_summary"),
+                default="not stated",
+                args=args,
+                context=context,
+                memory_raw=memory.raw if memory else {},
+            ),
+            "architect_brief": dict(args.get("_architect_brief", {}) or {}),
+        }
+        try:
+            response = await sub_agent_client.call_sub_agent(
+                "sta",
+                task=raw_request,
+                engagement_context=engagement_context,
+                trace_id=trace_id,
+            )
+        except sub_agent_client.SubAgentError as exc:
+            return ToolResult(
+                summary=f"STA sub-agent error: {exc}",
+                status="blocked",
+            )
+        content = str(response.get("result") or "")
+        metadata = {"trace": response.get("trace", {}), "source": "sub_agent_client"}
+        saved = await asyncio.to_thread(
+            document_store.save_doc,
+            self._store,
+            "sta",
+            self._customer_id,
+            content,
+            metadata,
+        )
+        key = str(saved.get("key", "") or "")
+        return ToolResult(
+            summary=f"Strategic Technical Approach v{saved.get('version')} saved.",
+            status="ok",
+            artifact_key=key,
+            data=response,
+        )
+
+
+class TechnicalProposalHandler(_SpecialistHandler):
+    def __init__(self, store, customer_id, customer_name):
+        super().__init__("technical_proposal", "technical_proposal", store, customer_id, customer_name)
+
+    async def __call__(
+        self,
+        args: dict[str, Any],
+        *,
+        memory: MemorySnapshot | None,
+        context: dict[str, Any],
+        trace_id: str,
+    ) -> "ToolResult":
+        args = archie_memory._hydrate_tool_args_from_context(
+            tool_name="generate_technical_proposal",
+            args=args,
+            context=context,
+            decision_context=memory.decision_context if memory else {},
+            user_message=str(args.get("_user_message", "") or ""),
+        )
+        args = archie_memory._enforce_memory_contract_on_tool_args(
+            tool_name="generate_technical_proposal",
+            args=args,
+            context=context,
+        )
+        feedback = str(args.get("feedback", "") or "")
+        raw_request = feedback or "Generate the Technical Proposal from current engagement context."
+        correction = str(args.pop("_forge_correction", "") or "").strip()
+        if correction:
+            raw_request = f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n{raw_request}".strip()
+        resolved = (memory.facts or {}).get("resolved_decisions") or {} if memory else {}
+        sizing = resolved.get("sizing") or {}
+        waf_data = resolved.get("waf") or {}
+        poc_data = resolved.get("poc") or {}
+        bom_summary = ""
+        if sizing:
+            bom_summary = (
+                f"Shape: {sizing.get('shape_family','unknown')}, "
+                f"HA: {sizing.get('ha_multiplier_applied','unknown')}, "
+                f"BYOL: {sizing.get('byol_confirmed','unknown')}, "
+                f"Monthly total: ${float(sizing.get('monthly_total') or 0):,.0f}"
+            )
+        poc_results = ""
+        if poc_data.get("recommended_option"):
+            poc_results = (
+                f"Recommended POC: {poc_data.get('recommended_option')}, "
+                f"Success criteria: {poc_data.get('success_criteria', 'see JEP')}"
+            )
+        if waf_data.get("security_score"):
+            poc_results += (
+                f"\nWAF security score: {waf_data.get('security_score')}/5, "
+                f"P1 findings: {waf_data.get('p1_count', 0)}"
+            )
+        engagement_context = {
+            "customer_name": self._customer_name,
+            "architecture_summary": _context_value_or_default(
+                ("architecture_summary", "architecture_description", "topology"),
+                default="not stated",
+                args=args,
+                context=context,
+                memory_raw=memory.raw if memory else {},
+            ),
+            "bom_summary": bom_summary or _context_value_or_default(
+                ("bom_summary", "bom"),
+                default="not stated",
+                args=args,
+                context=context,
+                memory_raw=memory.raw if memory else {},
+            ),
+            "poc_results": poc_results or _context_value_or_default(
+                ("poc_results", "jep_results"),
+                default="not stated",
+                args=args,
+                context=context,
+                memory_raw=memory.raw if memory else {},
+            ),
+            "diagram_key": _context_value_or_default(
+                ("diagram_key", "existing_diagram_artifact_key", "artifact_key"),
+                default="none",
+                args=args,
+                context=context,
+                memory_raw=memory.raw if memory else {},
+            ),
+            "architect_brief": dict(args.get("_architect_brief", {}) or {}),
+        }
+        try:
+            response = await sub_agent_client.call_sub_agent(
+                "technical_proposal",
+                task=raw_request,
+                engagement_context=engagement_context,
+                trace_id=trace_id,
+            )
+        except sub_agent_client.SubAgentError as exc:
+            return ToolResult(
+                summary=f"Technical Proposal sub-agent error: {exc}",
+                status="blocked",
+            )
+        content = str(response.get("result") or "")
+        metadata = {"trace": response.get("trace", {}), "source": "sub_agent_client"}
+        saved = await asyncio.to_thread(
+            document_store.save_doc,
+            self._store,
+            "technical_proposal",
+            self._customer_id,
+            content,
+            metadata,
+        )
+        key = str(saved.get("key", "") or "")
+        return ToolResult(
+            summary=f"Technical Proposal v{saved.get('version')} saved.",
+            status="ok",
+            artifact_key=key,
+            data=response,
+        )
+
+
 class SalesDeckHandler(_SpecialistHandler):
     def __init__(self, store, customer_id, customer_name):
         super().__init__("sales_deck", "deck", store, customer_id, customer_name)
@@ -660,11 +880,46 @@ def _validation_blocked(tool: str, error: str) -> ToolResult:
     )
 
 
+def _hydrate_sta_task(
+    task: str,
+    *,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> str:
+    value = lambda *keys, default="not stated": _context_value_or_default(  # noqa: E731
+        keys,
+        default=default,
+        args=args,
+        context=context,
+        memory_raw=memory_raw,
+    )
+    block = "\n".join(
+        [
+            "[CONFIRMED CONTEXT]",
+            f"Customer: {value('customer_name')}",
+            f"Industry: {value('customer_industry', 'industry')}",
+            f"Current platform: {value('current_platform', 'current_state_architecture')}",
+            f"C3E phase: {value('c3e_phase', 'deal_stage')}",
+            f"Economic buyer: {value('economic_buyer')}",
+            f"Compelling event: {value('compelling_event', 'timeline')}",
+            f"Competitive context: {value('competitive_context', default='none stated')}",
+            f"Compliance: {value('compliance_requirements', 'compliance_framework', default='none stated')}",
+            "[/CONFIRMED CONTEXT]",
+        ]
+    )
+    return f"{block}\n\n{task}".strip()
+
+
 def _default_request(agent_name: str) -> str:
     if agent_name == "pov":
         return "Generate a customer POV from current engagement context."
     if agent_name == "sales_deck":
         return "Generate an OCI customer-facing sales deck from current engagement context."
+    if agent_name == "sta":
+        return "Generate the Strategic Technical Approach from current engagement context."
+    if agent_name == "technical_proposal":
+        return "Generate the Technical Proposal from current engagement context."
     return f"Generate the {agent_name.upper()} from current engagement context."
 
 

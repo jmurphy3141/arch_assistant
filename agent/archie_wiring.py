@@ -21,7 +21,9 @@ from agent.tools.specialists import (
     PocStrategistHandler,
     PovHandler,
     SalesDeckHandler,
+    StaHandler,
     TechResearchHandler,
+    TechnicalProposalHandler,
     WafHandler,
 )
 from agent.tools.terraform import TerraformHandler
@@ -285,9 +287,19 @@ These rules are mandatory. Follow them on every generation request.
 
 ### Update requests
 8. If the user says "update everything" or "regenerate all", identify which tools have existing artifacts in context and re-run them in this order:
-   generate_tech_report (if previously generated) -> generate_bom -> generate_diagram ->
-   generate_waf -> generate_terraform -> generate_pov -> generate_sales_deck -> generate_jep
+   generate_tech_report (if previously generated) -> generate_sta -> generate_bom -> generate_diagram ->
+   generate_waf -> generate_terraform -> generate_pov -> generate_sales_deck -> generate_jep ->
+   generate_technical_proposal
    (skip any that were not previously generated).
+
+### C3E artifact sequencing
+- generate_sta requires: customer context from discovery (current state, workloads, risks).
+  Call after generate_tech_report if a tech report was run. Call before generate_diagram
+  if this is a Discover-phase engagement — the STA should drive architecture decisions.
+- generate_technical_proposal requires: generate_bom + generate_diagram already run.
+  Automatically pulls BOM cost data and WAF/POC results from resolved_decisions context.
+  Best called after the POC has run (generate_jep results are available). If no POC yet,
+  it generates with "pre-POC estimates" framing.
 
 ### POC workflow
 8a. For POC planning, follow the POC Planning Workflow section below — work
@@ -767,6 +779,52 @@ def build_forge(
         memory_contract=True,
         critique_enabled=True,
         requires_hat="oci_sales_deck",
+    )
+    forge.register_tool(
+        "generate_sta",
+        StaHandler(store=store, customer_id=customer_id, customer_name=customer_name),
+        description=(
+            "Generate a Strategic Technical Approach document (C3E Discover phase). "
+            "Synthesizes discovery findings into a 10-section Oracle internal pursuit "
+            "document: current state evaluation, compelling event, influence map, "
+            "opportunity scope, transition roadmap, and economic model. "
+            "Call when the user asks for an STA, strategic technical approach, or "
+            "Discover-phase summary document."
+        ),
+        args={"feedback": ArgSchema(
+            description=(
+                "Optional additional context for the STA: specific sections to focus on, "
+                "workload details, influence map updates, or revision instructions."
+            ),
+            type="string",
+            required=False,
+        )},
+        memory_contract=True,
+        critique_enabled=True,
+        requires_hat="sta_writer",
+    )
+    forge.register_tool(
+        "generate_technical_proposal",
+        TechnicalProposalHandler(store=store, customer_id=customer_id, customer_name=customer_name),
+        description=(
+            "Generate a Technical Proposal document (C3E Design→Win phase). "
+            "Produces a 7-section customer-facing proposal: future state architecture, "
+            "economics (TCO + ramp), transition plan, onboarding streams, gaps, and "
+            "30/60/90 plan. Automatically pulls BOM, WAF, and POC results from context. "
+            "Call when the user asks for a Technical Proposal, formal proposal, "
+            "or Win-phase customer document."
+        ),
+        args={"feedback": ArgSchema(
+            description=(
+                "Optional focus areas or revision instructions for the Technical Proposal. "
+                "For revisions, describe which sections to update."
+            ),
+            type="string",
+            required=False,
+        )},
+        memory_contract=True,
+        critique_enabled=True,
+        requires_hat="technical_proposal_writer",
     )
 
     return forge

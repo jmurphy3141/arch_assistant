@@ -1,0 +1,6 @@
+name: sta
+port: 8092
+llm:
+  model_id: ""
+  max_tokens: 6000
+  temperature: 0.6
