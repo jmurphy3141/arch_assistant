@@ -252,6 +252,7 @@ async def run_turn(
     specialist_mode: str = "legacy",
     max_refinements: int = 3,
     reasoning_sink=None,
+    se_id: str = "default",
 ) -> dict:
     """
     Process one SA message and return the orchestrator response.
@@ -274,6 +275,9 @@ async def run_turn(
     history = document_store.load_conversation_history(store, customer_id)
     summary = document_store.load_conversation_summary(store, customer_id)
     context = await asyncio.to_thread(context_store.read_context, store, customer_id, customer_name)
+    # Track SE identity for future cross-engagement features
+    if se_id and se_id != "default":
+        context["se_id"] = se_id
     forge = _get_forge(
         customer_id=customer_id,
         customer_name=customer_name,
@@ -570,6 +574,20 @@ async def run_turn(
         )
     if isinstance(forge_result.artifacts, dict):
         artifacts.update(forge_result.artifacts)
+
+    # Persist turn quality log for notable turns (corrections or deep iterations)
+    if forge_result.corrections_issued > 0 or forge_result.iterations_used > 3:
+        archie = context_store.get_archie_state(context)
+        log = archie.setdefault("turn_quality_log", [])
+        log.append({
+            "ts": _now(),
+            "tool_calls": [tc.tool for tc in forge_tool_calls],
+            "corrections": forge_result.corrections_issued,
+            "surfaces": forge_result.expert_surfaces,
+            "iterations": forge_result.iterations_used,
+        })
+        archie["turn_quality_log"] = log[-20:]
+
     return _finalize_turn(reply)
 
 # ── Tool dispatch ─────────────────────────────────────────────────────────────

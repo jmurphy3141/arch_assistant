@@ -2563,6 +2563,7 @@ async def _run_orchestrator_turn(
         specialist_mode=specialist_mode,
         max_refinements=max_refinements,
         reasoning_sink=reasoning_sink,
+        se_id=getattr(req, "se_id", "default"),
     )
 
 

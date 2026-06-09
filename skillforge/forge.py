@@ -45,7 +45,9 @@ from skillforge.protocols import (
     AsyncTextRunner,
     AsyncToolRunner,
     HatEngine,
+    LessonStore,
     Memory,
+    MissionTracker,
     PromptEnricher,
     ToolSchema,
 )
@@ -127,6 +129,8 @@ class Forge:
         step3_planning: bool = False,
         pre_action_always: bool = False,
         tool_runner: AsyncToolRunner | None = None,
+        mission_tracker: "MissionTracker | None" = None,
+        lesson_store: "LessonStore | None" = None,
     ) -> None:
         self._base_system_prompt = base_system_prompt
         self._hat_engine = hat_engine
@@ -140,6 +144,8 @@ class Forge:
         self._step3_planning = step3_planning
         self._pre_action_always = pre_action_always
         self._tool_runner = tool_runner
+        self._mission_tracker = mission_tracker
+        self._lesson_store = lesson_store
         self._registry = ToolRegistry()
         self._global_skills: list[str] = []
         # System prompt is rebuilt lazily after register_tool() calls.
@@ -345,6 +351,9 @@ class Forge:
         reply = ""
         _pending_correction: dict | None = None   # tool name + concern for next re-call
         _approved_tool_redirects: dict[str, int] = {}  # guard against infinite redirect loop
+        _corrections_issued: int = 0
+        _expert_surfaces: int = 0
+        _iterations_used: int = 0
 
         system_msg = self._build_active_system_msg(active_hats)
         prompt = self._build_initial_prompt(user_message, history or [])
@@ -460,12 +469,14 @@ class Forge:
                 session_id=session_id,
                 events=events,
                 reasoning_sink=reasoning_sink,
+                context=context,
             )
 
         _tool_retry_counts: dict[str, int] = {}
         _approved_tools: set[str] = set()
 
         for iteration in range(self._max_iterations):
+            _iterations_used = iteration + 1
 
             # Stale-hat warning (no side effect — caller logs if desired)
             for h in active_hats:
@@ -678,6 +689,23 @@ class Forge:
                         tool_name, spec.requires_hat,
                     )
 
+            # Phase warning: mission_tracker checks if this hat's C3E phase is ahead
+            if self._mission_tracker and spec.requires_hat:
+                try:
+                    hat_meta = self._hat_engine.get_hat_meta(spec.requires_hat)
+                    hat_phase = (hat_meta or {}).get("c3e_phase")
+                    if hat_phase:
+                        warning = self._mission_tracker.get_phase_warning(context, hat_phase)
+                        if warning:
+                            prompt = f"{prompt}\n\n[PHASE WARNING] {warning}"
+                            events.append(TurnEvent(
+                                type="phase_warning",
+                                message=warning,
+                                data={"hat": spec.requires_hat, "hat_phase": hat_phase},
+                            ))
+                except Exception:
+                    pass  # phase warnings are advisory; never block tool execution
+
             # ── Correction injection ──────────────────────────────────────────
             if (
                 _pending_correction is not None
@@ -725,6 +753,7 @@ class Forge:
                     events=events,
                     iteration=iteration,
                     reasoning_sink=reasoning_sink,
+                    context=context,
                 )
                 if clarification_needed:
                     reply = clarification_needed
@@ -845,6 +874,15 @@ class Forge:
                     user_message=user_message,
                 )
 
+            # Record C3E milestone after successful tool dispatch
+            if result.status == "ok" and self._mission_tracker:
+                try:
+                    self._mission_tracker.record_milestone(
+                        context, tool_name, result.artifact_key
+                    )
+                except Exception:
+                    pass
+
             prompt = _append_result(prompt, tool_name, result.summary)
 
             # Step 6: expert post-review, then critic pass
@@ -862,11 +900,13 @@ class Forge:
                     events=events,
                     memory_snapshot=memory_snapshot,
                     reasoning_sink=reasoning_sink,
+                    context=context,
                 )
                 if review_decision == "surface":
                     # Expert found an unfixable gap — surface to user
                     surface_msg = prompt.rsplit("EXPERT_REVIEW (surface):", 1)[-1].strip()
                     reply = surface_msg
+                    _expert_surfaces += 1
                     break
                 if review_decision == "iterate":
                     _tool_retry_counts[tool_name] = _tool_retry_counts.get(tool_name, 0) + 1
@@ -879,6 +919,18 @@ class Forge:
                                 .splitlines()[0]
                                 .strip()
                             )
+                        # Persist lesson for this engagement before retrying
+                        if self._lesson_store and _iterate_concern:
+                            hat_label = ", ".join(
+                                h for h in active_hats if h not in _MANUAL_ONLY_HATS
+                            )
+                            try:
+                                self._lesson_store.record_lesson(
+                                    context, tool_name, hat_label, _iterate_concern
+                                )
+                            except Exception:
+                                pass
+                        _corrections_issued += 1
                         _concern_clause = (
                             f" Specifically: {_iterate_concern}" if _iterate_concern else ""
                         )
@@ -915,6 +967,9 @@ class Forge:
             artifacts=artifacts,
             history_length=len(history or []) + 1,
             events=events,
+            corrections_issued=_corrections_issued,
+            expert_surfaces=_expert_surfaces,
+            iterations_used=_iterations_used,
         )
 
     async def run_turn_background(
@@ -1021,6 +1076,7 @@ class Forge:
         session_id: str,
         events: list,
         reasoning_sink=None,
+        context: dict | None = None,
     ) -> str:
         """
         Step 3 of the manager reasoning loop: hat-selection planning.
@@ -1045,8 +1101,20 @@ class Forge:
             else "No hats are currently active."
         )
 
+        # Inject mission state into planning prompt when tracker is available
+        mission_block = ""
+        if self._mission_tracker and context is not None:
+            try:
+                mission = self._mission_tracker.get_mission(context)
+                if mission:
+                    mission_block = (
+                        f"\n[Mission]\n{json.dumps(mission, indent=2)}\n[/Mission]\n"
+                    )
+            except Exception:
+                pass
+
         planning_prompt = (
-            f"{prompt}\n\n"
+            f"{prompt}{mission_block}\n\n"
             "╔══════════════════════════════════╗\n"
             "║  STEP 3 — PLANNING               ║\n"
             "╚══════════════════════════════════╝\n"
@@ -1207,6 +1275,7 @@ class Forge:
         events: list,
         iteration: int = 0,
         reasoning_sink=None,
+        context: dict | None = None,
     ) -> tuple[str, str | None]:
         """
         Step 4 of the manager reasoning loop: expert pre-action thinking.
@@ -1240,8 +1309,22 @@ class Forge:
                 + "Your pre-action reasoning and sub-agent instructions must directly "
                 "address this failure.\n"
             )
+        # Inject lessons from prior corrections for this tool+hat
+        lessons_block = ""
+        if self._lesson_store and context is not None:
+            try:
+                lessons = self._lesson_store.get_lessons(context, tool_name, hat_label)
+                if lessons:
+                    lessons_block = (
+                        "\n\n[LESSONS FROM PRIOR CORRECTIONS]\n"
+                        + "\n".join(lessons)
+                        + "\n[/LESSONS FROM PRIOR CORRECTIONS]\n"
+                    )
+            except Exception:
+                pass
+
         pre_action_prompt = (
-            f"{prompt}{retry_context}\n\n"
+            f"{prompt}{retry_context}{lessons_block}\n\n"
             "╔══════════════════════════════════╗\n"
             "║  STEP 4 — EXPERT PRE-ACTION      ║\n"
             "╚══════════════════════════════════╝\n"
@@ -1402,6 +1485,7 @@ class Forge:
         events: list,
         memory_snapshot: MemorySnapshot | None = None,
         reasoning_sink=None,
+        context: dict | None = None,
     ) -> tuple[str, str]:
         """
         Step 6 of the manager reasoning loop: expert post-action review.

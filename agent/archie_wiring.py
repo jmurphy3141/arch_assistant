@@ -11,6 +11,8 @@ from typing import Callable
 
 import agent.hat_engine as hat_engine
 from agent.archie_memory_impl import ArchieMemory
+from agent.engagement_mission import EngagementMission
+from agent.lesson_store import EngagementLessonStore
 from agent.persistence_objectstore import ObjectStoreBase
 from agent.tools.bom import BomHandler
 from agent.tools.diagram import DiagramHandler
@@ -434,15 +436,32 @@ class ArchiePromptEnricher:
     prompt assembly out of Forge core.
 
     Injects:
+      - Engagement Briefing (first turn only, for returning engagements)
       - facts_summary (accumulated SA-provided facts)
       - constraints (region, availability, cost, security)
       - enrichment blocks from context_enricher (ref arch, case studies, preflight risks)
+      - resolved_decisions (topology, sizing, WAF, POC)
     """
+
+    def __init__(self, customer_name: str = "") -> None:
+        self._customer_name = customer_name
+        self._briefing_injected = False
+        self._mission = EngagementMission()
 
     def __call__(self, prompt: str, memory: MemorySnapshot) -> str:
         import json
 
         parts: list[str] = []
+
+        # Session-open engagement briefing (first turn only, returning customers)
+        if not self._briefing_injected and memory.raw:
+            try:
+                briefing = self._mission.get_briefing(memory.raw, self._customer_name)
+                if briefing:
+                    parts.append(briefing)
+            except Exception:
+                pass
+            self._briefing_injected = True
 
         facts_summary = str((memory.facts or {}).get("facts_summary") or "").strip()
         if facts_summary:
@@ -540,7 +559,7 @@ def build_forge(
     base_system_prompt : Archie orchestrator system prompt
     """
     memory = ArchieMemory(store=store)
-    enricher = ArchiePromptEnricher()
+    enricher = ArchiePromptEnricher(customer_name=customer_name)
     routing_guidance = ""
     if _INTENT_ROUTING_SKILL.exists():
         routing_guidance = _INTENT_ROUTING_SKILL.read_text()
@@ -558,6 +577,8 @@ def build_forge(
         max_iterations=5,
         step3_planning=step3_planning,
         tool_runner=tool_runner,
+        mission_tracker=EngagementMission(),
+        lesson_store=EngagementLessonStore(),
     )
 
     notes = NotesHandlers(

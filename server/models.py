@@ -120,6 +120,7 @@ class OrchestratorChatRequest(BaseModel):
     message: str
     project_id: Optional[str] = None
     project_name: Optional[str] = None
+    se_id: str = "default"
 
 
 class BomConversationTurn(BaseModel):

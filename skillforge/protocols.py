@@ -160,6 +160,33 @@ class PromptEnricher(Protocol):
     def __call__(self, prompt: str, memory: MemorySnapshot) -> str: ...
 
 
+@runtime_checkable
+class MissionTracker(Protocol):
+    """
+    Tracks engagement goals and C3E phase progression across turns.
+
+    Forge calls get_mission() to inject phase state into planning,
+    record_milestone() after each successful tool call, and
+    get_phase_warning() before activating a hat to detect phase jumps.
+    All methods are no-ops when the implementation is absent.
+    """
+    def get_mission(self, context: dict) -> "dict | None": ...
+    def record_milestone(self, context: dict, tool: str, artifact_key: str) -> None: ...
+    def get_phase_warning(self, context: dict, hat_c3e_phase: str) -> "str | None": ...
+
+
+@runtime_checkable
+class LessonStore(Protocol):
+    """
+    Persists per-engagement correction lessons from EXPERT_ITERATE decisions.
+
+    Forge calls record_lesson() when post-review issues a correction and
+    get_lessons() before expert pre-action so the LLM sees prior mistakes.
+    """
+    def record_lesson(self, context: dict, tool: str, hat: str, concern: str) -> None: ...
+    def get_lessons(self, context: dict, tool: str, hat: str) -> "list[str]": ...
+
+
 # The LLM call abstraction — must be async.
 # Signature: (prompt, system_message, label) -> raw_text
 AsyncTextRunner = Callable[[str, str, str], Awaitable[str]]

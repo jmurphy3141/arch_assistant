@@ -93,3 +93,6 @@ class TurnResult:
     artifacts: dict[str, str] = field(default_factory=dict)
     history_length: int = 0
     events: list[TurnEvent] = field(default_factory=list)
+    corrections_issued: int = 0   # EXPERT_ITERATE count this turn
+    expert_surfaces: int = 0      # EXPERT_SURFACE count this turn
+    iterations_used: int = 0      # loop iterations consumed
