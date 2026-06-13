@@ -32,6 +32,7 @@ from typing import Any, Callable
 
 from agent.persistence_objectstore import ObjectStoreBase
 from agent.archie_wiring import build_forge
+from agent.engagement_mission import EngagementMission
 import agent.document_store as document_store
 import agent.context_store as context_store
 import agent.decision_context as decision_context_builder
@@ -587,6 +588,33 @@ async def run_turn(
             "iterations": forge_result.iterations_used,
         })
         archie["turn_quality_log"] = log[-20:]
+
+    # Append next-step offer if no generation tool fired this turn
+    tools_called = [tc.tool for tc in forge_tool_calls]
+    _mission = EngagementMission()
+    next_step = _mission.suggest_next_step(context, tools_called)
+    if next_step:
+        reply = reply.rstrip() + "\n\n" + next_step
+
+    # Upsert SE engagement index (lightweight, fire-and-forget)
+    try:
+        _mission_data = _mission.get_mission(context)
+        if _mission_data:
+            _se = context.get("se_id", se_id) or "default"
+            document_store.save_se_engagement(
+                store,
+                _se,
+                customer_id,
+                {
+                    "customer_name": customer_name,
+                    "phase": _mission_data.get("phase", ""),
+                    "blockers": _mission_data.get("blockers", []),
+                    "next_required": _mission_data.get("next_required", []),
+                    "completed_artifacts": _mission_data.get("completed_artifacts", []),
+                },
+            )
+    except Exception:
+        pass
 
     return _finalize_turn(reply)
 

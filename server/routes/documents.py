@@ -6,7 +6,7 @@ import anyio
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 
-from agent.context_store import read_context
+from agent.context_store import read_context, write_context, merge_archie_relationship_facts
 from agent.document_store import (
     get_approved_doc,
     get_jep_questions,
@@ -64,6 +64,7 @@ def create_documents_router(deps) -> APIRouter:
             extraction = await anyio.to_thread.run_sync(
                 functools.partial(extract_text, content_bytes, content_type, file.filename or name)
             )
+            debrief: dict = {}
             if extraction.get("text"):
                 try:
                     await anyio.to_thread.run_sync(
@@ -79,6 +80,36 @@ def create_documents_router(deps) -> APIRouter:
                         "warning": f"Text extraction succeeded but extracted text could not be saved: {exc}",
                     }
 
+                if extraction.get("text"):
+                    try:
+                        from agent.archie_memory import _extract_relationship_facts, _extract_client_facts
+                        text = extraction["text"]
+                        rel_facts = _extract_relationship_facts(text)
+                        client_facts = _extract_client_facts(text)
+                        debrief = {
+                            "stakeholders": rel_facts.get("stakeholders", []),
+                            "action_items": rel_facts.get("action_items", []),
+                            "objections": rel_facts.get("objections", []),
+                            "commitments": rel_facts.get("commitments", []),
+                            "competitive": rel_facts.get("competitive", {}),
+                            "client_facts": client_facts,
+                            "fact_count": sum(
+                                len(rel_facts.get(k, [])) for k in ("stakeholders", "action_items", "objections", "commitments")
+                            ),
+                            "pending_confirmation": True,
+                        }
+                        context = await anyio.to_thread.run_sync(
+                            functools.partial(read_context, store, customer_id, "")
+                        )
+                        context.setdefault("pending_debrief", debrief)
+                        from agent.context_store import write_context as _write_ctx
+                        await anyio.to_thread.run_sync(
+                            functools.partial(_write_ctx, store, customer_id, context)
+                        )
+                    except Exception as exc:
+                        deps.logger.warning("Debrief extraction failed for %s: %s", name, exc)
+                        debrief = {}
+
             return {
                 "status": "ok",
                 "key": key,
@@ -88,6 +119,7 @@ def create_documents_router(deps) -> APIRouter:
                 "extraction_status": extraction["extraction_status"],
                 "char_count": extraction["char_count"],
                 "warning": extraction["warning"],
+                "debrief": debrief,
             }
         except Exception as exc:
             deps.logger.error("Error in /notes/upload: %s", exc)

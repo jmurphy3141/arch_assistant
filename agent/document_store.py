@@ -1266,3 +1266,48 @@ def list_project_summaries(
             "has_next": end < total,
         },
     }
+
+
+# ── SE engagement index ────────────────────────────────────────────────────────
+
+def _se_index_key(se_id: str) -> str:
+    return f"se/{se_id}/engagements.json"
+
+
+def save_se_engagement(
+    store: ObjectStoreBase,
+    se_id: str,
+    customer_id: str,
+    snapshot: dict,
+) -> None:
+    """Upsert a per-SE engagement snapshot (lightweight cache, rebuilt on read if missing)."""
+    se_id = (se_id or "default").strip()
+    customer_id = (customer_id or "").strip()
+    if not customer_id:
+        return
+    key = _se_index_key(se_id)
+    try:
+        raw = store.get(key)
+        index = json.loads(raw.decode("utf-8"))
+        if not isinstance(index, dict):
+            index = {}
+    except (KeyError, Exception):
+        index = {}
+    index[customer_id] = {
+        **snapshot,
+        "customer_id": customer_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    store.put(key, json.dumps(index, indent=2).encode("utf-8"), "application/json")
+
+
+def get_se_engagements(store: ObjectStoreBase, se_id: str) -> dict:
+    """Return the SE engagement index dict keyed by customer_id."""
+    se_id = (se_id or "default").strip()
+    key = _se_index_key(se_id)
+    try:
+        raw = store.get(key)
+        index = json.loads(raw.decode("utf-8"))
+        return index if isinstance(index, dict) else {}
+    except (KeyError, Exception):
+        return {}

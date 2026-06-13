@@ -92,6 +92,7 @@ from server.models import (
 )
 from server.routes.a2a import create_a2a_router
 from server.routes.bom import create_bom_router
+from server.routes.briefing import create_briefing_router
 from server.routes.chat import create_chat_router
 from server.routes.documents import create_documents_router
 from server.services import jobs as _jobs
@@ -3016,6 +3017,7 @@ _a2a_router = create_a2a_router(_deps)
 _build_agent_card = _a2a_router.build_agent_card
 _make_a2a_task = _a2a_router.make_a2a_task
 app.include_router(create_bom_router(_deps))
+app.include_router(create_briefing_router(_deps))
 app.include_router(create_chat_router(_deps))
 app.include_router(_a2a_router)
 app.include_router(create_documents_router(_deps))

@@ -531,6 +531,48 @@ class ArchiePromptEnricher:
                     "[Resolved Decisions]\n" + "\n".join(rd_lines) + "\n[/Resolved Decisions]"
                 )
 
+        archie_state = (memory.raw or {}).get("archie", {}) if memory.raw else {}
+        if not isinstance(archie_state, dict):
+            archie_state = {}
+        relationship = archie_state.get("relationship") or {}
+        if isinstance(relationship, dict):
+            rel_lines = []
+            stakeholders = [s for s in (relationship.get("stakeholders") or []) if isinstance(s, dict)]
+            if stakeholders:
+                rel_lines.append("Stakeholders:")
+                for s in stakeholders[:6]:
+                    rel_lines.append(
+                        f"  - {s.get('name', '?')} | {s.get('role', '?')} | {s.get('disposition', 'unknown')}"
+                        + (f" | {s.get('notes')}" if s.get("notes") else "")
+                    )
+            open_obj = [o for o in (relationship.get("objections") or []) if isinstance(o, dict) and o.get("status") != "addressed"]
+            if open_obj:
+                rel_lines.append("Open Objections:")
+                for o in open_obj[:4]:
+                    rel_lines.append(f"  - {o.get('concern', '?')} (raised by: {o.get('raised_by') or 'unknown'})")
+            open_commits = [c for c in (relationship.get("commitments") or []) if isinstance(c, dict) and c.get("status") != "done"]
+            if open_commits:
+                rel_lines.append("Open Commitments:")
+                for c in open_commits[:4]:
+                    due = f", due: {c['due']}" if c.get("due") else ""
+                    rel_lines.append(f"  - [{c.get('who', '?')}] {c.get('what', '?')}{due}")
+            competitive = relationship.get("competitive") or {}
+            if isinstance(competitive, dict) and (competitive.get("incumbent") or competitive.get("competitors")):
+                rel_lines.append(
+                    f"Competitive: incumbent={competitive.get('incumbent', 'unknown')}, "
+                    f"competing={competitive.get('competitors', [])}"
+                )
+            if rel_lines:
+                parts.append("[Relationship]\n" + "\n".join(rel_lines) + "\n[/Relationship]")
+
+            open_actions = [a for a in (relationship.get("action_items") or []) if isinstance(a, dict) and a.get("status") != "done"]
+            if open_actions:
+                action_lines = []
+                for a in open_actions[:6]:
+                    due = f" (due: {a['due']})" if a.get("due") else ""
+                    action_lines.append(f"  - [{a.get('owner', '?')}] {a.get('task', '?')}{due}")
+                parts.append("[Open Action Items]\n" + "\n".join(action_lines) + "\n[/Open Action Items]")
+
         if not parts:
             return prompt
         return "\n\n".join(parts) + "\n\n" + prompt

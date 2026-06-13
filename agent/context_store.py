@@ -58,6 +58,14 @@ def _empty_archie_state() -> dict[str, Any]:
         "change_history": [],
         "update_batches": [],
         "pending_update": None,
+        "relationship": {
+            "stakeholders": [],
+            "objections": [],
+            "commitments": [],
+            "competitive": {},
+            "action_items": [],
+            "meetings": [],
+        },
     }
 
 
@@ -348,6 +356,48 @@ def merge_archie_client_facts(
     merged = _deep_merge_dict(existing, incoming)
     archie["client_facts"] = merged
     archie["facts_summary"] = _summarize_client_facts(merged)
+    refresh_archie_memory(context)
+    return context
+
+
+def merge_archie_relationship_facts(
+    context: dict[str, Any],
+    facts: dict[str, Any] | None,
+) -> dict[str, Any]:
+    archie = get_archie_state(context)
+    incoming = facts if isinstance(facts, dict) else {}
+    if not incoming:
+        return context
+
+    rel = archie.get("relationship")
+    if not isinstance(rel, dict):
+        rel = {"stakeholders": [], "objections": [], "commitments": [], "competitive": {}, "action_items": [], "meetings": []}
+        archie["relationship"] = rel
+
+    def _dedup_append(lst: list, items: list, key: str) -> list:
+        existing_keys = {str(x.get(key, "")).lower() for x in lst if isinstance(x, dict)}
+        for item in items:
+            if isinstance(item, dict) and str(item.get(key, "")).lower() not in existing_keys:
+                lst.append(item)
+                existing_keys.add(str(item.get(key, "")).lower())
+        return lst
+
+    if incoming.get("stakeholders"):
+        _dedup_append(rel.setdefault("stakeholders", []), incoming["stakeholders"], "name")
+    if incoming.get("objections"):
+        _dedup_append(rel.setdefault("objections", []), incoming["objections"], "concern")
+    if incoming.get("commitments"):
+        _dedup_append(rel.setdefault("commitments", []), incoming["commitments"], "what")
+    if incoming.get("action_items"):
+        _dedup_append(rel.setdefault("action_items", []), incoming["action_items"], "task")
+    if incoming.get("meetings"):
+        _dedup_append(rel.setdefault("meetings", []), incoming["meetings"], "date")
+    if incoming.get("competitive") and isinstance(incoming["competitive"], dict):
+        existing_comp = rel.get("competitive") or {}
+        if not isinstance(existing_comp, dict):
+            existing_comp = {}
+        rel["competitive"] = _deep_merge_dict(existing_comp, incoming["competitive"])
+
     refresh_archie_memory(context)
     return context
 
@@ -1122,6 +1172,31 @@ def build_context_summary(context: dict) -> str:
             f"status={pending_checkpoint.get('status', '?')}, "
             f"recommended_action={pending_checkpoint.get('recommended_action', '')!r}"
         )
+
+    relationship = archie.get("relationship") or {}
+    if isinstance(relationship, dict):
+        stakeholders = [s for s in (relationship.get("stakeholders") or []) if isinstance(s, dict)]
+        if stakeholders:
+            names = ", ".join(
+                f"{s.get('name', '?')} ({s.get('role', '?')}, {s.get('disposition', 'unknown')})"
+                for s in stakeholders[:5]
+            )
+            lines.append(f"  • Stakeholders: {names}")
+        open_objections = [o for o in (relationship.get("objections") or []) if isinstance(o, dict) and o.get("status") != "addressed"]
+        if open_objections:
+            concerns = " | ".join(o.get("concern", "?") for o in open_objections[:3])
+            lines.append(f"  • Open Objections: {concerns}")
+        open_commitments = [c for c in (relationship.get("commitments") or []) if isinstance(c, dict) and c.get("status") != "done"]
+        if open_commitments:
+            commits = " | ".join(f"{c.get('who','?')}: {c.get('what','?')}" for c in open_commitments[:3])
+            lines.append(f"  • Open Commitments: {commits}")
+        competitive = relationship.get("competitive") or {}
+        if isinstance(competitive, dict) and competitive.get("incumbent"):
+            lines.append(f"  • Competitive: incumbent={competitive.get('incumbent')}, competitors={competitive.get('competitors', [])}")
+        open_actions = [a for a in (relationship.get("action_items") or []) if isinstance(a, dict) and a.get("status") != "done"]
+        if open_actions:
+            actions = " | ".join(f"[{a.get('owner','?')}] {a.get('task','?')}" for a in open_actions[:5])
+            lines.append(f"  • Open Action Items: {actions}")
 
     return "\n".join(lines)
 

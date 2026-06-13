@@ -1019,6 +1019,118 @@ def _record_infrastructure_profile_if_present(context: dict[str, Any], text: str
     facts = _extract_client_facts(text, profile=profile)
     if facts:
         context_store.merge_archie_client_facts(context, facts)
+    rel_facts = _extract_relationship_facts(text)
+    if rel_facts:
+        context_store.merge_archie_relationship_facts(context, rel_facts)
+
+
+def _extract_relationship_facts(text: str) -> dict[str, Any]:
+    raw = str(text or "")
+    lower = raw.lower()
+    facts: dict[str, Any] = {}
+
+    # Stakeholder extraction
+    stakeholders = []
+    title_patterns = [
+        (r"\b(CIO|Chief Information Officer)\b", "CIO"),
+        (r"\b(CFO|Chief Financial Officer)\b", "CFO"),
+        (r"\b(CISO|Chief Information Security Officer)\b", "CISO"),
+        (r"\b(CTO|Chief Technology Officer)\b", "CTO"),
+        (r"\bVP of (\w[\w\s]*?)(?:\s*[,\.\n]|$)", None),
+        (r"\b(economic buyer)\b", "Economic Buyer"),
+        (r"\b(champion|exec sponsor|executive sponsor)\b", None),
+    ]
+    name_before = re.compile(
+        r"([\w]+(?:\s+[\w]+)?)\s+(?:is\s+)?(?:the\s+)?"
+        r"(CIO|CFO|CISO|CTO|VP|economic buyer|champion|exec sponsor|executive sponsor|sponsor)",
+        re.IGNORECASE,
+    )
+    for match in name_before.finditer(raw):
+        name = match.group(1).strip()
+        role = match.group(2).strip()
+        if len(name.split()) <= 3 and name[0].isupper():
+            disposition = "champion" if "champion" in role.lower() else "unknown"
+            if "economic buyer" in role.lower():
+                disposition = "economic_buyer"
+            stakeholders.append({"name": name, "role": role, "disposition": disposition, "notes": ""})
+    if stakeholders:
+        facts["stakeholders"] = stakeholders
+
+    # Objection extraction
+    objections = []
+    objection_patterns = [
+        r"worried about\s+(.{10,80}?)(?:[,\.\n]|$)",
+        r"concern(?:ed)? (?:about|with|regarding)\s+(.{10,80}?)(?:[,\.\n]|$)",
+        r"pushback on\s+(.{10,80}?)(?:[,\.\n]|$)",
+        r"blocker[:\s]+(.{10,80}?)(?:[,\.\n]|$)",
+        r"hesitant (?:about|to)\s+(.{10,80}?)(?:[,\.\n]|$)",
+        r"risk[:\s]+(.{10,80}?)(?:[,\.\n]|$)",
+    ]
+    for pattern in objection_patterns:
+        for match in re.finditer(pattern, lower):
+            concern = raw[match.start(1):match.end(1)].strip()
+            if concern:
+                objections.append({"concern": concern, "status": "open", "raised_by": "", "response": ""})
+    if objections:
+        facts["objections"] = objections[:5]
+
+    # Commitment extraction
+    commitments = []
+    commitment_patterns = [
+        r"we(?:'ll| will) (.{10,80}?)(?:[,\.\n]|$)",
+        r"committed to\s+(.{10,80}?)(?:[,\.\n]|$)",
+        r"promised (?:to\s+)?(.{10,80}?)(?:[,\.\n]|$)",
+        r"by\s+(?:end of\s+)?(?:next\s+)?(?:week|month|quarter|friday|monday)\s+(.{5,60}?)(?:[,\.\n]|$)",
+    ]
+    for pattern in commitment_patterns:
+        for match in re.finditer(pattern, lower):
+            what = raw[match.start(1):match.end(1)].strip()
+            if what and len(what) > 5:
+                commitments.append({"who": "oracle", "what": what, "due": "", "status": "open"})
+    if commitments:
+        facts["commitments"] = commitments[:5]
+
+    # Competitive extraction
+    competitive: dict[str, Any] = {}
+    competitor_keywords = {
+        "aws": "AWS", "amazon web services": "AWS",
+        "azure": "Azure", "microsoft azure": "Azure",
+        "gcp": "GCP", "google cloud": "GCP",
+        "vmware": "VMware", "on-prem": "On-Premises", "on premises": "On-Premises",
+        "ibm cloud": "IBM Cloud",
+    }
+    found_competitors = []
+    for kw, label in competitor_keywords.items():
+        if kw in lower and label not in found_competitors:
+            found_competitors.append(label)
+    if found_competitors:
+        competitive["competitors"] = found_competitors
+    incumbent_match = re.search(
+        r"(?:currently (?:using|running|on)|incumbent[:\s]+|existing platform[:\s]+)\s*([\w\s]+?)(?:[,\.\n]|$)",
+        lower,
+    )
+    if incumbent_match:
+        competitive["incumbent"] = raw[incumbent_match.start(1):incumbent_match.end(1)].strip()
+    if competitive:
+        facts["competitive"] = competitive
+
+    # Action item extraction
+    action_items = []
+    action_patterns = [
+        r"(?:follow[\s-]?up|send|TODO|next step|action)[:\s]+(.{10,80}?)(?:[,\.\n]|$)",
+        r"(?:i|we|archie) (?:need to|will|should|must) (.{10,80}?)(?:[,\.\n]|$)",
+        r"action item[:\s]+(.{10,80}?)(?:[,\.\n]|$)",
+    ]
+    for pattern in action_patterns:
+        for match in re.finditer(pattern, lower, re.IGNORECASE):
+            task = raw[match.start(1):match.end(1)].strip()
+            if task and len(task) > 8:
+                owner = "se" if re.search(r"\b(i|we)\b", task[:20], re.IGNORECASE) else "archie"
+                action_items.append({"owner": owner, "task": task, "due": "", "status": "open"})
+    if action_items:
+        facts["action_items"] = action_items[:8]
+
+    return facts
 
 def _extract_client_facts(text: str, *, profile: dict[str, Any] | None = None) -> dict[str, Any]:
     raw = str(text or "")

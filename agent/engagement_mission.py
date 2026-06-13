@@ -192,3 +192,31 @@ class EngagementMission:
             f"Blockers: {blockers}\n"
             f"[/Engagement Briefing]"
         )
+
+    def suggest_next_step(
+        self,
+        context: dict[str, Any],
+        tools_called_this_turn: list[str],
+    ) -> str | None:
+        """Return a one-line next-step offer if no generation tool fired this turn."""
+        generation_tools = set(TOOL_TO_ARTIFACT.keys())
+        if any(t in generation_tools for t in tools_called_this_turn):
+            return None
+        mission = self.get_mission(context)
+        if not mission:
+            return None
+        next_required = mission.get("next_required", [])
+        if not next_required:
+            return None
+        phase = mission.get("phase", "")
+        artifact = next_required[0]
+        tool_name = next(
+            (tool for tool, (_, art) in TOOL_TO_ARTIFACT.items() if art == artifact), None
+        )
+        if not tool_name:
+            return None
+        tool_label = tool_name.replace("generate_", "").replace("_", " ")
+        return (
+            f"You're in {phase} phase — {artifact} is the next required artifact. "
+            f"Want me to generate the {tool_label}?"
+        )
