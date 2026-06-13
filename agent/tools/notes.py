@@ -55,6 +55,36 @@ class NotesHandlers:
         )
         return ToolResult(summary="Notes saved.", status="ok", artifact_key=note_key)
 
+    async def confirm_debrief(
+        self,
+        args: dict[str, Any],
+        *,
+        memory: MemorySnapshot | None,
+        context: dict[str, Any],
+        trace_id: str,
+    ) -> ToolResult:
+        pending = context.get("pending_debrief")
+        if not pending or not isinstance(pending, dict):
+            return ToolResult(
+                summary="No pending debrief to confirm.",
+                status="ok",
+                data={"confirmed": 0},
+            )
+
+        context_store.merge_archie_relationship_facts(context, pending)
+        context.pop("pending_debrief", None)
+
+        counts = {
+            "stakeholders": len(pending.get("stakeholders") or []),
+            "action_items": len(pending.get("action_items") or []),
+            "objections": len(pending.get("objections") or []),
+            "commitments": len(pending.get("commitments") or []),
+        }
+        total = sum(counts.values())
+        summary_parts = [f"{v} {k.replace('_', ' ')}" for k, v in counts.items() if v]
+        summary = f"Debrief confirmed — {', '.join(summary_parts)} saved to engagement context."
+        return ToolResult(summary=summary, status="ok", data={"confirmed": total, "counts": counts})
+
     async def get_summary(
         self,
         args: dict[str, Any],

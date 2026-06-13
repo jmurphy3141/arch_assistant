@@ -629,6 +629,16 @@ def build_forge(
     forge.register_tool("save_notes", notes.save_notes, memory_contract=True)
     forge.register_tool("get_summary", notes.get_summary)
     forge.register_tool("get_document", notes.get_document)
+    forge.register_tool(
+        "confirm_debrief",
+        notes.confirm_debrief,
+        description=(
+            "Confirm and save the pending meeting debrief into engagement context. "
+            "Call when the SE says 'confirm debrief', 'save the debrief', or asks to "
+            "commit extracted stakeholders, action items, objections, or commitments "
+            "from the most recently uploaded note."
+        ),
+    )
 
     forge.register_tool(
         "generate_bom",

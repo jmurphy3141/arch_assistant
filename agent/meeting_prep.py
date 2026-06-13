@@ -7,6 +7,15 @@ from __future__ import annotations
 from typing import Any
 from agent.context_store import get_archie_state
 
+_TOOL_LABELS: dict[str, str] = {
+    "generate_diagram": "diagram",
+    "generate_bom": "BOM",
+    "generate_waf": "WAF review",
+    "generate_pov": "POV",
+    "generate_jep": "JEP",
+    "generate_terraform": "Terraform",
+}
+
 _DISCOVERY_PRIORITY = [
     ("platform", "What is the current platform / infrastructure (on-prem, cloud, hypervisor)?"),
     ("workloads", "What are the primary workloads being moved or built on OCI?"),
@@ -84,6 +93,20 @@ def build_meeting_prep(context: dict[str, Any], customer_name: str = "") -> str:
         for s in stakeholders:
             notes = f" — {s['notes']}" if s.get("notes") else ""
             lines.append(f"- **{s.get('name', '?')}** | {s.get('role', '?')} | {s.get('disposition', 'unknown')}{notes}")
+
+    lessons: list[dict] = archie.get("lessons") or []
+    if lessons:
+        lines.append("\n## What Archie Learned on This Engagement")
+        by_tool: dict[str, list[str]] = {}
+        for lesson in lessons[-10:]:
+            tool = lesson.get("tool") or "general"
+            label = _TOOL_LABELS.get(tool, tool)
+            by_tool.setdefault(label, []).append(
+                f"  - ({lesson.get('count', 1)}x) {lesson['concern']}"
+            )
+        for label, concerns in by_tool.items():
+            lines.append(f"- **{label}**:")
+            lines.extend(concerns)
 
     if len(lines) <= 1:
         lines.append("\n_No context yet. Ask the customer about workloads, platform, and goals._")
