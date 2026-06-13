@@ -209,7 +209,7 @@ function ToolChip({ call }: { call: ChatToolCall }) {
     alignItems:     'center',
     gap:            '0.45rem',
     padding:        '0.35rem 0.6rem',
-    background:     'rgba(232,87,26,0.06)',
+    background:     'rgba(0,229,255,0.06)',
     cursor:         'pointer',
     userSelect:     'none',
     borderBottom:   open ? '1px solid #1c2030' : 'none',
@@ -354,9 +354,9 @@ function ArtifactLink({ toolName, artifactKey, customerId }: {
 
   const btnStyle: React.CSSProperties = {
     fontSize:   '0.7rem',
-    color:      '#e8571a',
-    background: 'rgba(232,87,26,0.08)',
-    border:     '1px solid rgba(232,87,26,0.25)',
+    color:      '#00e5ff',
+    background: 'rgba(0,229,255,0.08)',
+    border:     '1px solid rgba(0,229,255,0.25)',
     borderRadius: 4,
     padding:    '0.2rem 0.5rem',
     cursor:     'pointer',
@@ -391,7 +391,7 @@ function ArtifactLink({ toolName, artifactKey, customerId }: {
 
   return (
     <div style={{ fontSize: '0.7rem', color: '#8b93a8', marginTop: '0.25rem' }}>
-      📎 {toolName}: <code style={{ color: '#e8571a' }}>{artifactKey}</code>
+      📎 {toolName}: <code style={{ color: '#00e5ff' }}>{artifactKey}</code>
     </div>
   );
 }
@@ -411,10 +411,10 @@ function ArtifactManifestLinks({ manifest }: { manifest?: ChatArtifactManifest }
           rel="noreferrer"
           style={{
             fontSize: '0.7rem',
-            color: '#e8571a',
+            color: '#00e5ff',
             textDecoration: 'none',
-            border: '1px solid rgba(232,87,26,0.25)',
-            background: 'rgba(232,87,26,0.08)',
+            border: '1px solid rgba(0,229,255,0.25)',
+            background: 'rgba(0,229,255,0.08)',
             borderRadius: 4,
             padding: '0.2rem 0.5rem',
             width: 'fit-content',
@@ -599,8 +599,8 @@ function MessageBubble({
   const bubbleStyle: React.CSSProperties = {
     maxWidth:     '88%',
     alignSelf:    isUser ? 'flex-end' : 'flex-start',
-    background:   isUser ? 'linear-gradient(180deg, rgba(232,87,26,0.18), rgba(232,87,26,0.12))' : '#101421',
-    border:       `1px solid ${isUser ? 'rgba(232,87,26,0.42)' : '#273047'}`,
+    background:   isUser ? 'linear-gradient(180deg, rgba(0,229,255,0.18), rgba(0,229,255,0.12))' : '#101421',
+    border:       `1px solid ${isUser ? 'rgba(0,229,255,0.42)' : '#273047'}`,
     borderLeft:   isUser ? undefined : '3px solid #2a3a6e',
     borderRadius: 12,
     padding:      '1rem 1.25rem',
@@ -718,12 +718,12 @@ function MessageBubble({
                 fontFamily: "'JetBrains Mono', monospace",
                 cursor: busy ? 'not-allowed' : 'pointer',
                 border: action.tone === 'primary'
-                  ? '1px solid rgba(232,87,26,0.45)'
+                  ? '1px solid rgba(0,229,255,0.45)'
                   : '1px solid #2b344d',
                 background: action.tone === 'primary'
-                  ? 'rgba(232,87,26,0.14)'
+                  ? 'rgba(0,229,255,0.14)'
                   : '#111626',
-                color: action.tone === 'primary' ? '#ff9b75' : '#c9d1e4',
+                color: action.tone === 'primary' ? '#00e5ff' : '#c9d1e4',
                 opacity: busy ? 0.55 : 1,
               }}
               title={`Send: ${action.command}`}
@@ -1211,7 +1211,7 @@ export function ChatInterface({
   const canSend = Boolean(customerId.trim() && input.trim()) && !loading;
 
   const btnPrimary: React.CSSProperties = {
-    background:    canSend ? '#e8571a' : '#1a2438',
+    background:    canSend ? '#00e5ff' : '#1a2438',
     border:        'none',
     borderRadius:  10,
     color:         canSend ? '#fff' : '#6b7a94',
@@ -1238,7 +1238,7 @@ export function ChatInterface({
         flex:          1,
         maxHeight:     'none',
         overflowY:     'auto',
-        background:    'radial-gradient(circle at 50% -20%, rgba(232,87,26,0.07), transparent 55%), #08090d',
+        background:    'radial-gradient(circle at 50% -20%, rgba(0,229,255,0.07), transparent 55%), #08090d',
         border:        '1px solid #273149',
         borderRadius:  16,
         padding:       '1.25rem',
@@ -1290,7 +1290,7 @@ export function ChatInterface({
               gap: '0.5rem',
               background: '#0d1425',
               border: '1px solid #1e2d4a',
-              borderLeft: '3px solid #e8571a',
+              borderLeft: '3px solid #00e5ff',
               borderRadius: 10,
               padding: '0.65rem 1rem',
               minWidth: 240,
@@ -1326,9 +1326,9 @@ export function ChatInterface({
                   <span
                     key={hat}
                     style={{
-                      background: 'rgba(232,87,26,0.15)',
+                      background: 'rgba(0,229,255,0.15)',
                       color: '#e8a57a',
-                      border: '1px solid rgba(232,87,26,0.35)',
+                      border: '1px solid rgba(0,229,255,0.35)',
                       padding: '0.1rem 0.5rem',
                       borderRadius: 999,
                       fontSize: '0.68rem',
@@ -1363,9 +1363,9 @@ export function ChatInterface({
               <span
                 key={hat}
                 style={{
-                  background: 'rgba(232,87,26,0.1)',
+                  background: 'rgba(0,229,255,0.1)',
                   color: '#e8a57a',
-                  border: '1px solid rgba(232,87,26,0.25)',
+                  border: '1px solid rgba(0,229,255,0.25)',
                   padding: '0.1rem 0.5rem',
                   borderRadius: 999,
                   fontWeight: 700,
@@ -1464,12 +1464,12 @@ export function ChatInterface({
           display:      'inline-flex',
           alignItems:   'center',
           gap:          '0.4rem',
-          background:   'rgba(232,87,26,0.08)',
-          border:       '1px solid rgba(232,87,26,0.25)',
+          background:   'rgba(0,229,255,0.08)',
+          border:       '1px solid rgba(0,229,255,0.25)',
           borderRadius: 10,
           padding:      '0.2rem 0.5rem',
           fontSize:     '0.7rem',
-          color:        '#e8571a',
+          color:        '#00e5ff',
           alignSelf:    'flex-start',
           fontFamily:   "'JetBrains Mono', monospace",
         }}>

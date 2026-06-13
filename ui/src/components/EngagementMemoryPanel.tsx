@@ -192,21 +192,22 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
       style={{
         width: '100%',
         minHeight: 220,
-        border: '1px solid #d6dbe7',
+        border: '1px solid rgba(0, 229, 255, 0.18)',
         borderRadius: 8,
-        background: '#ffffff',
-        color: '#172033',
+        background: '#07090f',
+        color: '#a8c4d8',
         padding: '0.85rem',
         boxSizing: 'border-box' as const,
         fontFamily: "'JetBrains Mono', monospace",
         fontSize: '0.74rem',
+        boxShadow: '0 0 12px rgba(0, 229, 255, 0.06)',
       }}
     >
-      <div style={{ borderBottom: '1px solid #e2e6ef', paddingBottom: '0.55rem', marginBottom: '0.7rem' }}>
-        <div style={{ fontSize: '0.6rem', letterSpacing: '0.14em', color: '#66728a', textTransform: 'uppercase', marginBottom: '0.3rem' }}>
+      <div style={{ borderBottom: '1px solid rgba(0, 229, 255, 0.12)', paddingBottom: '0.55rem', marginBottom: '0.7rem' }}>
+        <div style={{ fontSize: '0.6rem', letterSpacing: '0.14em', color: 'rgba(0, 229, 255, 0.5)', textTransform: 'uppercase', marginBottom: '0.3rem' }}>
           Engagement Memory
         </div>
-        <div data-testid="memory-customer-name" style={{ color: '#101624', fontWeight: 800, fontSize: '0.88rem', lineHeight: 1.3 }}>
+        <div data-testid="memory-customer-name" style={{ color: '#00e5ff', fontWeight: 700, fontSize: '0.88rem', lineHeight: 1.3, textShadow: '0 0 8px rgba(0,229,255,0.4)' }}>
           {view.customerName || customerId}
         </div>
       </div>
@@ -217,23 +218,24 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
           style={{
             marginBottom: '0.7rem',
             padding: '0.45rem 0.55rem',
-            background: '#eef8f2',
-            border: '1px solid #c7ead4',
+            background: 'rgba(0, 229, 255, 0.05)',
+            border: '1px solid rgba(0, 229, 255, 0.25)',
             borderRadius: 6,
             display: 'grid',
             gap: '0.35rem',
+            boxShadow: '0 0 8px rgba(0, 229, 255, 0.1)',
           }}
         >
           {activity!.activeHats!.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
               {activity!.activeHats!.map(hat => (
                 <span key={hat} data-testid="live-active-hat" style={{
-                  background: '#dcf7e6',
-                  border: '1px solid #b7e5c7',
+                  background: 'rgba(0, 229, 255, 0.08)',
+                  border: '1px solid rgba(0, 229, 255, 0.3)',
                   borderRadius: 4,
                   padding: '0.05rem 0.4rem',
                   fontSize: '0.64rem',
-                  color: '#176b3a',
+                  color: '#00e5ff',
                   fontWeight: 700,
                 }}>
                   {hatDisplayName(hat)}
@@ -242,7 +244,7 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
             </div>
           )}
           {activity!.thinkingStatus && (
-            <div data-testid="live-thinking-status" style={{ fontSize: '0.68rem', color: '#176b3a' }}>
+            <div data-testid="live-thinking-status" style={{ fontSize: '0.68rem', color: 'rgba(0, 229, 255, 0.7)' }}>
               {activity!.thinkingStatus}
             </div>
           )}
@@ -251,15 +253,15 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
 
       {!loadedOnce && (
         <div data-testid="memory-loading" style={{ display: 'grid', gap: '0.45rem' }}>
-          <div style={{ height: 12, width: '75%', background: '#edf0f6', borderRadius: 4 }} />
-          <div style={{ height: 12, width: '55%', background: '#edf0f6', borderRadius: 4 }} />
-          <div style={{ height: 12, width: '68%', background: '#edf0f6', borderRadius: 4 }} />
+          <div style={{ height: 12, width: '75%', background: 'rgba(0, 229, 255, 0.06)', borderRadius: 4 }} />
+          <div style={{ height: 12, width: '55%', background: 'rgba(0, 229, 255, 0.06)', borderRadius: 4 }} />
+          <div style={{ height: 12, width: '68%', background: 'rgba(0, 229, 255, 0.06)', borderRadius: 4 }} />
         </div>
       )}
 
       {loadedOnce && !hasContent && (
-        <div data-testid="memory-empty" style={{ color: '#66728a', lineHeight: 1.45 }}>
-          No context yet - start a conversation
+        <div data-testid="memory-empty" style={{ color: 'rgba(0, 229, 255, 0.35)', lineHeight: 1.45 }}>
+          No context yet — start a conversation
         </div>
       )}
 
@@ -267,10 +269,10 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
         <div style={{ display: 'grid', gap: '0.75rem' }}>
           {view.challenge && (
             <section>
-              <div style={{ color: '#66728a', fontSize: '0.62rem', marginBottom: '0.24rem', fontWeight: 700 }}>
-                Challenge:
+              <div style={{ color: 'rgba(0, 229, 255, 0.5)', fontSize: '0.6rem', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: '0.24rem', fontWeight: 700 }}>
+                Challenge
               </div>
-              <div data-testid="memory-challenge" style={{ lineHeight: 1.45 }}>
+              <div data-testid="memory-challenge" style={{ lineHeight: 1.45, color: '#c8d8e8' }}>
                 {truncate(view.challenge)}
               </div>
             </section>
@@ -278,10 +280,10 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
 
           {view.services.length > 0 && (
             <section>
-              <div style={{ color: '#66728a', fontSize: '0.62rem', marginBottom: '0.24rem', fontWeight: 700 }}>
-                Services in scope:
+              <div style={{ color: 'rgba(0, 229, 255, 0.5)', fontSize: '0.6rem', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: '0.24rem', fontWeight: 700 }}>
+                Services in scope
               </div>
-              <ul data-testid="memory-services" style={{ margin: 0, paddingLeft: '1rem', lineHeight: 1.55 }}>
+              <ul data-testid="memory-services" style={{ margin: 0, paddingLeft: '1rem', lineHeight: 1.55, color: '#c8d8e8' }}>
                 {view.services.map(service => <li key={service}>{service}</li>)}
               </ul>
             </section>
@@ -289,8 +291,8 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
 
           {view.artifacts.length > 0 && (
             <section>
-              <div style={{ color: '#66728a', fontSize: '0.62rem', marginBottom: '0.24rem', fontWeight: 700 }}>
-                Artifacts:
+              <div style={{ color: 'rgba(0, 229, 255, 0.5)', fontSize: '0.6rem', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: '0.24rem', fontWeight: 700 }}>
+                Artifacts
               </div>
               <ul data-testid="memory-artifacts" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: '0.3rem' }}>
                 {view.artifacts.map(artifact => (
@@ -299,7 +301,7 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
                       href={`/download?key=${encodeURIComponent(artifact.key)}`}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ color: '#2356b5', textDecoration: 'none', overflowWrap: 'anywhere' }}
+                      style={{ color: '#00e5ff', textDecoration: 'none', overflowWrap: 'anywhere', textShadow: '0 0 6px rgba(0,229,255,0.3)' }}
                     >
                       {artifact.label} ↗
                     </a>

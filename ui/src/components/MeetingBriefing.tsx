@@ -14,22 +14,22 @@ interface Props {
 
 const SECTION: React.CSSProperties = {
   marginBottom: '1rem',
-  borderBottom: '1px solid #e5e7eb',
+  borderBottom: '1px solid rgba(0, 229, 255, 0.1)',
   paddingBottom: '0.75rem',
 };
 
 const LABEL: React.CSSProperties = {
-  fontSize: '0.7rem',
+  fontSize: '0.6rem',
   fontWeight: 700,
   textTransform: 'uppercase',
-  letterSpacing: '0.05em',
-  color: '#6b7280',
+  letterSpacing: '0.12em',
+  color: 'rgba(0, 229, 255, 0.5)',
   marginBottom: '0.35rem',
 };
 
 const PILL: React.CSSProperties = {
   display: 'inline-block',
-  fontSize: '0.7rem',
+  fontSize: '0.68rem',
   padding: '0.1rem 0.45rem',
   borderRadius: '9999px',
   marginRight: '0.3rem',
@@ -37,15 +37,15 @@ const PILL: React.CSSProperties = {
 };
 
 function phasePill(phase: string) {
-  const colors: Record<string, { bg: string; color: string }> = {
-    Discover:  { bg: '#dbeafe', color: '#1d4ed8' },
-    Design:    { bg: '#ede9fe', color: '#6d28d9' },
-    Develop:   { bg: '#fef9c3', color: '#92400e' },
-    Deliver:   { bg: '#dcfce7', color: '#166534' },
+  const colors: Record<string, { bg: string; color: string; glow: string }> = {
+    Discover:  { bg: 'rgba(0,229,255,0.08)',   color: '#00e5ff',  glow: '0 0 8px rgba(0,229,255,0.3)' },
+    Design:    { bg: 'rgba(139,92,246,0.1)',   color: '#a78bfa',  glow: '0 0 8px rgba(139,92,246,0.3)' },
+    Develop:   { bg: 'rgba(240,165,0,0.08)',   color: '#f0a500',  glow: '0 0 8px rgba(240,165,0,0.3)' },
+    Deliver:   { bg: 'rgba(46,204,138,0.08)',  color: '#2ecc8a',  glow: '0 0 8px rgba(46,204,138,0.3)' },
   };
-  const style = colors[phase] ?? { bg: '#f3f4f6', color: '#374151' };
+  const style = colors[phase] ?? { bg: 'rgba(255,255,255,0.05)', color: '#a8c4d8', glow: 'none' };
   return (
-    <span style={{ ...PILL, background: style.bg, color: style.color }}>{phase}</span>
+    <span style={{ ...PILL, background: style.bg, color: style.color, border: `1px solid ${style.color}55`, boxShadow: style.glow }}>{phase}</span>
   );
 }
 
@@ -53,8 +53,8 @@ function DebriefPanel({ debrief }: { debrief: DebriefResult }) {
   const total = debrief.fact_count;
   if (total === 0) return null;
   return (
-    <div style={{ background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 6, padding: '0.75rem', marginBottom: '1rem' }}>
-      <div style={{ ...LABEL, color: '#92400e' }}>Pending Debrief — {total} item{total !== 1 ? 's' : ''} to confirm</div>
+    <div style={{ background: 'rgba(240, 165, 0, 0.06)', border: '1px solid rgba(240, 165, 0, 0.4)', borderRadius: 6, padding: '0.75rem', marginBottom: '1rem', boxShadow: '0 0 10px rgba(240,165,0,0.08)' }}>
+      <div style={{ ...LABEL, color: '#f0a500' }}>Pending Debrief — {total} item{total !== 1 ? 's' : ''} to confirm</div>
       {debrief.stakeholders.length > 0 && (
         <div style={{ marginBottom: '0.4rem' }}>
           <strong style={{ fontSize: '0.75rem' }}>New stakeholders</strong>
@@ -95,7 +95,7 @@ function DebriefPanel({ debrief }: { debrief: DebriefResult }) {
           ))}
         </div>
       )}
-      <div style={{ fontSize: '0.72rem', color: '#92400e', marginTop: '0.5rem' }}>
+      <div style={{ fontSize: '0.72rem', color: 'rgba(240,165,0,0.7)', marginTop: '0.5rem' }}>
         Tell Archie "confirm debrief" to save these to engagement context.
       </div>
     </div>
@@ -144,7 +144,7 @@ export function MeetingBriefing({ customerId, customerName = '', refreshTrigger 
   }
 
   if (loading) {
-    return <div style={{ padding: '1rem', color: '#6b7280', fontSize: '0.85rem' }}>Loading briefing…</div>;
+    return <div style={{ padding: '1rem', color: 'rgba(0, 229, 255, 0.45)', fontSize: '0.85rem' }}>Loading briefing…</div>;
   }
 
   if (error) {
@@ -157,7 +157,7 @@ export function MeetingBriefing({ customerId, customerName = '', refreshTrigger 
   const phase = mission?.phase ?? '';
 
   return (
-    <div style={{ padding: '0.75rem 1rem', fontSize: '0.82rem', color: '#111827' }}>
+    <div style={{ padding: '0.75rem 1rem', fontSize: '0.82rem', color: '#a8c4d8', fontFamily: "'JetBrains Mono', monospace" }}>
 
       {/* Phase badge */}
       {phase && (
@@ -165,7 +165,7 @@ export function MeetingBriefing({ customerId, customerName = '', refreshTrigger 
           <div style={LABEL}>C3E Phase</div>
           {phasePill(phase)}
           {(mission.next_required ?? []).length > 0 && (
-            <div style={{ fontSize: '0.72rem', color: '#6b7280', marginTop: '0.25rem' }}>
+            <div style={{ fontSize: '0.72rem', color: 'rgba(0, 229, 255, 0.45)', marginTop: '0.25rem' }}>
               Next: {(mission.next_required ?? []).join(', ')}
             </div>
           )}
@@ -188,18 +188,19 @@ export function MeetingBriefing({ customerId, customerName = '', refreshTrigger 
           <div style={LABEL}>Stakeholders</div>
           {stakeholders.map((s, i) => (
             <div key={i} style={{ marginBottom: '0.2rem' }}>
-              <strong>{s.name}</strong> <span style={{ color: '#6b7280' }}>{s.role}</span>
+              <strong>{s.name}</strong> <span style={{ color: 'rgba(0, 229, 255, 0.45)' }}>{s.role}</span>
               {s.disposition && (
                 <span style={{
                   ...PILL,
                   marginLeft: '0.35rem',
-                  background: s.disposition === 'champion' ? '#dcfce7' : s.disposition === 'blocker' ? '#fee2e2' : '#f3f4f6',
-                  color: s.disposition === 'champion' ? '#166534' : s.disposition === 'blocker' ? '#991b1b' : '#374151',
+                  background: s.disposition === 'champion' ? 'rgba(46,204,138,0.1)' : s.disposition === 'blocker' ? 'rgba(232,65,90,0.1)' : 'rgba(0,229,255,0.06)',
+                  border: `1px solid ${s.disposition === 'champion' ? 'rgba(46,204,138,0.35)' : s.disposition === 'blocker' ? 'rgba(232,65,90,0.35)' : 'rgba(0,229,255,0.2)'}`,
+                  color: s.disposition === 'champion' ? '#2ecc8a' : s.disposition === 'blocker' ? '#e8415a' : 'rgba(0,229,255,0.6)',
                 }}>
                   {s.disposition}
                 </span>
               )}
-              {s.notes && <div style={{ fontSize: '0.72rem', color: '#6b7280', paddingLeft: '0.5rem' }}>{s.notes}</div>}
+              {s.notes && <div style={{ fontSize: '0.72rem', color: 'rgba(0, 229, 255, 0.45)', paddingLeft: '0.5rem' }}>{s.notes}</div>}
             </div>
           ))}
         </div>
@@ -211,8 +212,8 @@ export function MeetingBriefing({ customerId, customerName = '', refreshTrigger 
           <div style={LABEL}>Open Objections</div>
           {open_objections.map((o, i) => (
             <div key={i} style={{ marginBottom: '0.35rem' }}>
-              <div>{o.concern}{o.raised_by ? <span style={{ color: '#6b7280' }}> — {o.raised_by}</span> : ''}</div>
-              {o.response && <div style={{ fontSize: '0.72rem', color: '#6b7280', paddingLeft: '0.5rem' }}>→ {o.response}</div>}
+              <div>{o.concern}{o.raised_by ? <span style={{ color: 'rgba(0, 229, 255, 0.45)' }}> — {o.raised_by}</span> : ''}</div>
+              {o.response && <div style={{ fontSize: '0.72rem', color: 'rgba(0, 229, 255, 0.45)', paddingLeft: '0.5rem' }}>→ {o.response}</div>}
             </div>
           ))}
         </div>
@@ -224,8 +225,8 @@ export function MeetingBriefing({ customerId, customerName = '', refreshTrigger 
           <div style={LABEL}>Commitments</div>
           {open_commitments.map((c, i) => (
             <div key={i} style={{ marginBottom: '0.2rem' }}>
-              <span style={{ color: '#6b7280' }}>[{c.who}]</span> {c.what}
-              {c.due && <span style={{ color: '#d97706', marginLeft: '0.3rem' }}>due {c.due}</span>}
+              <span style={{ color: 'rgba(0, 229, 255, 0.45)' }}>[{c.who}]</span> {c.what}
+              {c.due && <span style={{ color: '#f0a500', marginLeft: '0.3rem' }}>due {c.due}</span>}
             </div>
           ))}
         </div>
@@ -237,8 +238,8 @@ export function MeetingBriefing({ customerId, customerName = '', refreshTrigger 
           <div style={LABEL}>Action Items</div>
           {open_action_items.map((a, i) => (
             <div key={i} style={{ marginBottom: '0.2rem' }}>
-              <span style={{ color: '#6b7280' }}>[{a.owner}]</span> {a.task}
-              {a.due && <span style={{ color: '#d97706', marginLeft: '0.3rem' }}>due {a.due}</span>}
+              <span style={{ color: 'rgba(0, 229, 255, 0.45)' }}>[{a.owner}]</span> {a.task}
+              {a.due && <span style={{ color: '#f0a500', marginLeft: '0.3rem' }}>due {a.due}</span>}
             </div>
           ))}
         </div>
@@ -252,11 +253,13 @@ export function MeetingBriefing({ customerId, customerName = '', refreshTrigger 
           style={{
             fontSize: '0.78rem',
             padding: '0.3rem 0.75rem',
-            background: '#1e40af',
-            color: '#fff',
-            border: 'none',
+            background: 'rgba(0, 229, 255, 0.1)',
+            color: '#00e5ff',
+            border: '1px solid rgba(0, 229, 255, 0.4)',
             borderRadius: 4,
             cursor: 'pointer',
+            boxShadow: '0 0 8px rgba(0, 229, 255, 0.2)',
+            fontFamily: "'JetBrains Mono', monospace",
           }}
         >
           {prepLoading ? 'Loading…' : showPrep ? 'Hide prep brief' : 'Get pre-call brief'}
@@ -265,12 +268,14 @@ export function MeetingBriefing({ customerId, customerName = '', refreshTrigger 
           <pre style={{
             marginTop: '0.75rem',
             fontSize: '0.75rem',
-            background: '#f9fafb',
-            border: '1px solid #e5e7eb',
+            background: '#05070d',
+            border: '1px solid rgba(0, 229, 255, 0.15)',
             borderRadius: 4,
             padding: '0.75rem',
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
+            color: '#a8c4d8',
+            boxShadow: '0 0 12px rgba(0, 229, 255, 0.05)',
           }}>
             {prep}
           </pre>

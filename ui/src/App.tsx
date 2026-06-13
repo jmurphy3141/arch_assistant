@@ -251,7 +251,7 @@ export function App() {
               onError={(e) => { e.currentTarget.style.display = 'none'; }}
             />
             <h1 style={{ margin: 0, fontFamily: "'Syne', sans-serif", fontSize: '1.3rem', fontWeight: 800, color: '#f7f9ff', lineHeight: 1 }}>
-              Archie<span style={{ color: '#e8571a' }}>.</span>
+              Archie<span style={{ color: '#00e5ff', textShadow: '0 0 8px rgba(0,229,255,0.6)' }}>.</span>
             </h1>
           </div>
         )}
@@ -284,10 +284,11 @@ export function App() {
             style={{
               width: '100%',
               padding: '0.7rem 0.8rem',
-              background: '#d8e4ff',
-              border: '1px solid #d8e4ff',
+              background: 'rgba(0, 229, 255, 0.08)',
+              border: '1px solid rgba(0, 229, 255, 0.35)',
               borderRadius: 7,
-              color: '#101624',
+              color: '#00e5ff',
+              boxShadow: '0 0 8px rgba(0, 229, 255, 0.15)',
               cursor: 'pointer',
               fontFamily: "'JetBrains Mono', monospace",
               fontSize: '0.82rem',
@@ -387,7 +388,7 @@ export function App() {
               padding: '0.55rem 0.75rem',
               border: '1px solid #252b3d',
               background: '#10141f',
-              color: '#d8e4ff',
+              color: 'rgba(0, 229, 255, 0.7)',
               borderRadius: 7,
               cursor: 'pointer',
               fontSize: '0.8rem',

@@ -12,8 +12,9 @@
   --card:     #12151d;
   --border:   #1c2030;
   --border2:  #242840;
-  --accent:   #e8571a;
-  --accentG:  rgba(232, 87, 26, 0.15);
+  --accent:   #00e5ff;
+  --accentG:  rgba(0, 229, 255, 0.08);
+  --glow:     0 0 8px rgba(0, 229, 255, 0.45), 0 0 20px rgba(0, 229, 255, 0.15);
   --text:     #cdd2e0;
   --muted:    #454d64;
   --green:    #2ecc8a;
@@ -97,8 +98,8 @@ select:focus {
 }
 
 .archie-md .archie-code-inline {
-  color: #e8571a;
-  background: rgba(232, 87, 26, 0.1);
+  color: #00e5ff;
+  background: rgba(0, 229, 255, 0.08);
   padding: 0 3px;
   border-radius: 3px;
   font-size: 0.9em;
@@ -147,7 +148,7 @@ select:focus {
 .archie-md .archie-h3 {
   margin: 0.5rem 0 0.2rem;
   font-size: 0.82rem;
-  color: #e8571a;
+  color: #00e5ff;
   font-weight: 700;
 }
 
@@ -194,4 +195,30 @@ select:focus {
 @keyframes fade-up {
   from { opacity: 0; transform: translateX(-50%) translateY(6px); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* ── JARVIS scan-line overlay ───────────────────────────────────────────────── */
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 229, 255, 0.012) 2px,
+    rgba(0, 229, 255, 0.012) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ── Cyan glow on focus ─────────────────────────────────────────────────────── */
+
+input[type="text"]:focus,
+input[type="email"]:focus,
+textarea:focus,
+select:focus {
+  box-shadow: 0 0 0 1px rgba(0, 229, 255, 0.35), 0 0 8px rgba(0, 229, 255, 0.2);
 }

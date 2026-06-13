@@ -39,7 +39,7 @@ function statusColor(status?: string): string {
   const s = status.toLowerCase();
   if (s.includes('needs input')) return '#e8b11a';
   if (s.includes('completed'))   return '#25c26e';
-  if (s.includes('in progress')) return '#e8571a';
+  if (s.includes('in progress')) return '#00e5ff';
   return '#8b93a8';
 }
 
@@ -298,9 +298,9 @@ export function ChatSidebar({
                   onClick={() => onSelectCustomer(item.customer_id, item.customer_name)}
                   style={{
                     textAlign: 'left',
-                    border: active ? '1px solid rgba(232,87,26,0.35)' : '1px solid #1c2233',
-                    borderLeft: active ? '3px solid #e8571a' : '3px solid transparent',
-                    background: active ? 'rgba(232,87,26,0.08)' : '#0e111a',
+                    border: active ? '1px solid rgba(0,229,255,0.35)' : '1px solid #1c2233',
+                    borderLeft: active ? '3px solid #00e5ff' : '3px solid transparent',
+                    background: active ? 'rgba(0,229,255,0.08)' : '#0e111a',
                     borderRadius: 7,
                     padding: '0.58rem 0.65rem',
                     cursor: active ? 'default' : 'pointer',
