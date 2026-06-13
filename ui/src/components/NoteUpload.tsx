@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { apiUploadNote, apiListNotes, type NoteEntry } from '../api/client';
+import { apiUploadNote, apiListNotes, type NoteEntry, type DebriefResult } from '../api/client';
 
 interface Props {
   customerId: string;
@@ -14,6 +14,7 @@ export function NoteUpload({ customerId, onCustomerIdChange }: Props) {
   const [listLoading, setListLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [debrief, setDebrief] = useState<DebriefResult | null>(null);
 
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault();
@@ -21,6 +22,7 @@ export function NoteUpload({ customerId, onCustomerIdChange }: Props) {
     setLoading(true);
     setMessage(null);
     setError(null);
+    setDebrief(null);
     try {
       const resp = await apiUploadNote(customerId.trim(), noteName.trim(), file);
       if (resp.extraction_status === 'failed') {
@@ -33,6 +35,9 @@ export function NoteUpload({ customerId, onCustomerIdChange }: Props) {
         );
       } else {
         setMessage(`Uploaded: ${resp.note_name} → ${resp.key}`);
+      }
+      if (resp.debrief && resp.debrief.fact_count > 0) {
+        setDebrief(resp.debrief);
       }
       setNoteName('');
       setFile(null);
@@ -125,6 +130,37 @@ export function NoteUpload({ customerId, onCustomerIdChange }: Props) {
       {error && (
         <div style={{ marginTop: '0.75rem', padding: '0.5rem', background: '#fff0f0', border: '1px solid #c00', borderRadius: '4px', fontSize: '0.85rem' }}>
           {error}
+        </div>
+      )}
+
+      {debrief && debrief.fact_count > 0 && (
+        <div style={{ marginTop: '0.75rem', padding: '0.75rem', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 6, fontSize: '0.82rem' }}>
+          <strong style={{ display: 'block', marginBottom: '0.4rem', color: '#92400e' }}>
+            Debrief extracted — {debrief.fact_count} item{debrief.fact_count !== 1 ? 's' : ''} pending confirmation
+          </strong>
+          {debrief.stakeholders.length > 0 && (
+            <div style={{ marginBottom: '0.35rem' }}>
+              <em>Stakeholders:</em> {debrief.stakeholders.map(s => `${s.name} (${s.role})`).join(', ')}
+            </div>
+          )}
+          {debrief.action_items.length > 0 && (
+            <div style={{ marginBottom: '0.35rem' }}>
+              <em>Action items:</em> {debrief.action_items.length} captured
+            </div>
+          )}
+          {debrief.objections.length > 0 && (
+            <div style={{ marginBottom: '0.35rem' }}>
+              <em>Objections:</em> {debrief.objections.map(o => o.concern).join('; ')}
+            </div>
+          )}
+          {debrief.commitments.length > 0 && (
+            <div style={{ marginBottom: '0.35rem' }}>
+              <em>Commitments:</em> {debrief.commitments.length} captured
+            </div>
+          )}
+          <div style={{ fontSize: '0.75rem', color: '#92400e', marginTop: '0.4rem' }}>
+            Switch to the Briefing tab or tell Archie "confirm debrief" to save these to engagement context.
+          </div>
         </div>
       )}
 

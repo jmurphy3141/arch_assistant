@@ -5,6 +5,7 @@ import { ChatInterface } from './components/ChatInterface';
 import { ChatSidebar, type SidebarHistoryItem, type SidebarProjectItem } from './components/ChatSidebar';
 import { ArtifactPreviewPanel } from './components/ArtifactPreviewPanel';
 import { EngagementMemoryPanel } from './components/EngagementMemoryPanel';
+import { MeetingBriefing } from './components/MeetingBriefing';
 import { useClientId } from './hooks/useClientId';
 import {
   apiGetChatProjects,
@@ -46,6 +47,7 @@ export function App() {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [memoryRefreshTrigger, setMemoryRefreshTrigger] = useState(0);
+  const [rightTab, setRightTab] = useState<'context' | 'briefing'>('context');
 
   function handleCustomerIdChange(id: string) {
     setCustomerId(id);
@@ -493,7 +495,19 @@ export function App() {
                   {/* Rail header */}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                     padding: '12px 14px 8px', borderBottom: '1px solid #1a2035', flexShrink: 0 }}>
-                    <span style={{ fontSize: '0.56rem', letterSpacing: '0.18em', color: '#6b7a94', textTransform: 'uppercase' }}>Context</span>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      {(['context', 'briefing'] as const).map(tab => (
+                        <button key={tab} onClick={() => setRightTab(tab)}
+                          style={{
+                            fontSize: '0.56rem', letterSpacing: '0.15em', textTransform: 'uppercase',
+                            padding: '2px 8px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                            background: rightTab === tab ? '#1e3a5f' : 'transparent',
+                            color: rightTab === tab ? '#93c5fd' : '#6b7a94',
+                          }}>
+                          {tab}
+                        </button>
+                      ))}
+                    </div>
                     <button onClick={() => setRightCollapsed(true)} title="Collapse context panel"
                       style={{ width: 24, height: 24, borderRadius: 5, display: 'grid', placeItems: 'center',
                         background: 'transparent', border: '1px solid #1a2035', color: '#6b7a94', cursor: 'pointer', fontSize: '0.7rem' }}>
@@ -502,13 +516,23 @@ export function App() {
                   </div>
                   {/* Memory + artifacts */}
                   <div style={{ flex: 1, padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto' }}>
-                    <EngagementMemoryPanel
-                      customerId={customerId || null}
-                      refreshTrigger={chatSessionKey + memoryRefreshTrigger}
-                      activity={chatActivity}
-                    />
-                    {chatArtifacts.length > 0 && (
-                      <ArtifactPreviewPanel artifacts={chatArtifacts} compact={true} onQuickPrompt={handleQuickPrompt} />
+                    {rightTab === 'context' ? (
+                      <>
+                        <EngagementMemoryPanel
+                          customerId={customerId || null}
+                          refreshTrigger={chatSessionKey + memoryRefreshTrigger}
+                          activity={chatActivity}
+                        />
+                        {chatArtifacts.length > 0 && (
+                          <ArtifactPreviewPanel artifacts={chatArtifacts} compact={true} onQuickPrompt={handleQuickPrompt} />
+                        )}
+                      </>
+                    ) : (
+                      <MeetingBriefing
+                        customerId={customerId || null}
+                        customerName={customerName}
+                        refreshTrigger={chatSessionKey + memoryRefreshTrigger}
+                      />
                     )}
                   </div>
                   {/* Footer stats */}

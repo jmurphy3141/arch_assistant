@@ -502,6 +502,17 @@ export interface TerraformVersionsResponse {
   versions: TerraformVersionEntry[];
 }
 
+export interface DebriefResult {
+  stakeholders: Array<{ name: string; role: string; disposition?: string; notes?: string }>;
+  action_items: Array<{ owner: string; task: string; due?: string; status?: string }>;
+  objections: Array<{ concern: string; raised_by?: string; response?: string; status?: string }>;
+  commitments: Array<{ who: string; what: string; due?: string; status?: string }>;
+  competitive: Record<string, unknown>;
+  client_facts: Record<string, unknown>;
+  fact_count: number;
+  pending_confirmation: boolean;
+}
+
 export interface NoteUploadResponse {
   status: string;
   key: string;
@@ -511,6 +522,7 @@ export interface NoteUploadResponse {
   extraction_status?: 'ok' | 'failed' | 'unsupported';
   char_count?: number;
   warning?: string | null;
+  debrief?: DebriefResult;
 }
 
 export interface NoteListResponse {
@@ -1121,4 +1133,93 @@ export interface EngagementContextResponse {
 
 export async function apiGetCustomerContext(customerId: string): Promise<EngagementContextResponse> {
   return apiFetch<EngagementContextResponse>(`/context/${encodeURIComponent(customerId)}`);
+}
+
+// ── Briefing & meeting prep ───────────────────────────────────────────────────
+
+export interface StakeholderEntry {
+  name: string;
+  role: string;
+  disposition?: string;
+  notes?: string;
+}
+
+export interface ActionItem {
+  owner: string;
+  task: string;
+  due?: string;
+  status?: string;
+}
+
+export interface Objection {
+  concern: string;
+  raised_by?: string;
+  response?: string;
+  status?: string;
+}
+
+export interface Commitment {
+  who: string;
+  what: string;
+  due?: string;
+  status?: string;
+}
+
+export interface BriefingResponse {
+  status: string;
+  customer_id: string;
+  customer_name: string;
+  mission: {
+    phase?: string;
+    completed_artifacts?: string[];
+    next_required?: string[];
+    blockers?: string[];
+  };
+  stakeholders: StakeholderEntry[];
+  competitive: Record<string, unknown>;
+  open_objections: Objection[];
+  open_commitments: Commitment[];
+  open_action_items: ActionItem[];
+  pending_debrief?: DebriefResult | null;
+}
+
+export interface MeetingPrepResponse {
+  status: string;
+  customer_id: string;
+  customer_name: string;
+  prep: string;
+}
+
+export interface SeAccountsResponse {
+  status: string;
+  se_id: string;
+  accounts: Array<{
+    customer_id: string;
+    customer_name?: string;
+    phase?: string;
+    updated_at?: string;
+    next_required?: string[];
+    blockers?: string[];
+  }>;
+  total: number;
+}
+
+export async function apiGetBriefing(
+  customerId: string,
+  customerName = '',
+): Promise<BriefingResponse> {
+  const params = customerName ? `?customer_name=${encodeURIComponent(customerName)}` : '';
+  return apiFetch<BriefingResponse>(`/briefing/${encodeURIComponent(customerId)}${params}`);
+}
+
+export async function apiGetMeetingPrep(
+  customerId: string,
+  customerName = '',
+): Promise<MeetingPrepResponse> {
+  const params = customerName ? `?customer_name=${encodeURIComponent(customerName)}` : '';
+  return apiFetch<MeetingPrepResponse>(`/briefing/${encodeURIComponent(customerId)}/prep${params}`);
+}
+
+export async function apiGetSeAccounts(seId: string): Promise<SeAccountsResponse> {
+  return apiFetch<SeAccountsResponse>(`/se/${encodeURIComponent(seId)}/accounts`);
 }
