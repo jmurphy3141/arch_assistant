@@ -2,9 +2,81 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   apiGetMeetingPrep,
   apiGetBriefing,
+  apiGetSeAccounts,
   type BriefingResponse,
   type DebriefResult,
+  type SeAccountsResponse,
 } from '../api/client';
+
+// ── SE Accounts cross-account panel ──────────────────────────────────────────
+
+function phaseDot(phase: string) {
+  const colors: Record<string, string> = {
+    Discover: '#00e5ff', Develop: '#a78bfa', Design: '#00e5ff',
+    Prove: '#f0a500', Win: '#2ecc8a', Deploy: '#2ecc8a',
+  };
+  return colors[phase] ?? '#454d64';
+}
+
+function SeAccountsPanel() {
+  const [data, setData] = useState<SeAccountsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    apiGetSeAccounts('default')
+      .then(setData)
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return <div style={{ padding: '1rem', color: 'rgba(0,229,255,0.35)', fontSize: '0.8rem' }}>Loading accounts…</div>;
+  }
+
+  const accounts = data?.accounts ?? [];
+
+  return (
+    <div style={{ padding: '0.75rem 1rem', fontFamily: "'JetBrains Mono', monospace" }}>
+      <div style={{ fontSize: '0.6rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'rgba(0,229,255,0.5)', marginBottom: '0.75rem' }}>
+        All Accounts — {accounts.length} engagement{accounts.length !== 1 ? 's' : ''}
+      </div>
+      {accounts.length === 0 && (
+        <div style={{ color: 'rgba(0,229,255,0.3)', fontSize: '0.8rem' }}>No accounts yet. Start a customer conversation.</div>
+      )}
+      {accounts.map((acct, i) => {
+        const needsAttention = (acct.blockers?.length ?? 0) > 0 || (acct.next_required?.length ?? 0) > 0;
+        return (
+          <div key={acct.customer_id ?? i} style={{
+            marginBottom: '0.65rem', paddingBottom: '0.65rem',
+            borderBottom: '1px solid rgba(0,229,255,0.08)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+              <span style={{
+                width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                background: phaseDot(acct.phase ?? ''),
+                boxShadow: `0 0 4px ${phaseDot(acct.phase ?? '')}`,
+              }} />
+              <span style={{ color: '#c8d8e8', fontWeight: 700, fontSize: '0.8rem' }}>
+                {acct.customer_name || acct.customer_id}
+              </span>
+              {acct.phase && (
+                <span style={{ fontSize: '0.62rem', color: phaseDot(acct.phase), marginLeft: 'auto' }}>{acct.phase}</span>
+              )}
+            </div>
+            {needsAttention && (
+              <div style={{ fontSize: '0.68rem', paddingLeft: '1.1rem', color: '#f0a500' }}>
+                {acct.blockers?.length ? `⚠ ${acct.blockers[0]}` : ''}
+                {(acct.next_required?.length ?? 0) > 0 && !acct.blockers?.length
+                  ? `→ ${acct.next_required![0]} needed`
+                  : ''}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 interface Props {
   customerId: string | null;
@@ -140,7 +212,7 @@ export function MeetingBriefing({ customerId, customerName = '', refreshTrigger 
   }
 
   if (!customerId) {
-    return <div style={{ padding: '1rem', color: '#9ca3af', fontSize: '0.85rem' }}>Select a customer to see briefing.</div>;
+    return <SeAccountsPanel />;
   }
 
   if (loading) {

@@ -398,6 +398,14 @@ def merge_archie_relationship_facts(
             existing_comp = {}
         rel["competitive"] = _deep_merge_dict(existing_comp, incoming["competitive"])
 
+    # Write-through: economic buyer stakeholder clears the mission blocker
+    for s in rel.get("stakeholders", []):
+        if isinstance(s, dict) and s.get("disposition") == "economic_buyer" and s.get("name"):
+            cf = archie.setdefault("client_facts", {})
+            if not cf.get("economic_buyer"):
+                cf["economic_buyer"] = s["name"]
+            break
+
     refresh_archie_memory(context)
     return context
 

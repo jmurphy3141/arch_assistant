@@ -82,9 +82,24 @@ def create_documents_router(deps) -> APIRouter:
 
                 if extraction.get("text"):
                     try:
-                        from agent.archie_memory import _extract_relationship_facts, _extract_client_facts
+                        from agent.archie_memory import (
+                            extract_relationship_facts_llm,
+                            _extract_relationship_facts,
+                            _extract_client_facts,
+                        )
                         text = extraction["text"]
-                        rel_facts = _extract_relationship_facts(text)
+                        # LLM extraction first; regex fallback if LLM unavailable/fails
+                        try:
+                            text_runner = build_inference_runner(
+                                deps.app().state,
+                                inference_config=deps.inference_settings(),
+                            )
+                        except Exception:
+                            text_runner = None
+                        if text_runner:
+                            rel_facts = extract_relationship_facts_llm(text, text_runner)
+                        if not text_runner or not rel_facts:
+                            rel_facts = _extract_relationship_facts(text)
                         client_facts = _extract_client_facts(text)
                         debrief = {
                             "stakeholders": rel_facts.get("stakeholders", []),

@@ -18,7 +18,7 @@ from agent.context_store import get_archie_state
 logger = logging.getLogger(__name__)
 
 C3E_PHASE_ORDER = [
-    "Qualify", "Develop", "Discover", "Design",
+    "Qualify", "Discover", "Develop", "Design",
     "Prove", "Win", "Deploy", "Support", "Grow",
 ]
 
@@ -69,14 +69,16 @@ def _init_mission(context: dict[str, Any]) -> dict[str, Any]:
         if key:
             completed.add(artifact)
 
-    # Derive current phase: highest phase where all required artifacts are done,
-    # then advance to the next phase.
-    current_phase = "Qualify"
-    for phase in C3E_PHASE_ORDER:
+    # Current phase = first phase whose required artifacts are NOT all done.
+    # Phases with no gate (Qualify, Support, Grow) are skipped automatically.
+    current_phase = C3E_PHASE_ORDER[0]
+    for i, phase in enumerate(C3E_PHASE_ORDER):
         required = PHASE_ARTIFACTS.get(phase, set())
         if required and not required.issubset(completed):
+            current_phase = phase
             break
-        current_phase = phase
+        if i == len(C3E_PHASE_ORDER) - 1:
+            current_phase = phase  # all phases complete
 
     return {
         "phase": current_phase,
@@ -198,25 +200,94 @@ class EngagementMission:
         context: dict[str, Any],
         tools_called_this_turn: list[str],
     ) -> str | None:
-        """Return a one-line next-step offer if no generation tool fired this turn."""
+        """
+        Return a one-line nudge if no generation tool fired this turn.
+
+        Priority order:
+          1. Overdue oracle commitment (date has passed)
+          2. Unaddressed objection in Prove/Win phase
+          3. Next required artifact offer
+
+        Suppression: same nudge is silenced for 3 consecutive turns so it
+        doesn't appear in every reply. Resets when nudge text changes.
+        """
         generation_tools = set(TOOL_TO_ARTIFACT.keys())
         if any(t in generation_tools for t in tools_called_this_turn):
             return None
         mission = self.get_mission(context)
         if not mission:
             return None
-        next_required = mission.get("next_required", [])
-        if not next_required:
+
+        archie = get_archie_state(context)
+        rel = archie.get("relationship") or {}
+        nudge: str | None = None
+
+        # 1. Overdue oracle commitment
+        try:
+            from datetime import date as _date
+            from dateutil.parser import parse as _parse_date
+            today = _date.today()
+            for c in (rel.get("commitments") or []):
+                if not isinstance(c, dict) or c.get("status") == "done":
+                    continue
+                due_str = str(c.get("due") or "").strip()
+                if not due_str:
+                    continue
+                try:
+                    due = _parse_date(due_str, dayfirst=False).date()
+                    days = (today - due).days
+                    if days >= 0:
+                        what = str(c.get("what") or "commitment")[:60]
+                        label = "overdue" if days > 0 else "due today"
+                        nudge = f"[{c.get('who', 'oracle')}] commitment is {label}: \"{what}\""
+                        break
+                except Exception:
+                    continue
+        except ImportError:
+            pass
+
+        # 2. Unaddressed objection at late phase
+        if nudge is None:
+            late_phases = {"Prove", "Win", "Deploy"}
+            if mission.get("phase") in late_phases:
+                open_obj = [
+                    o for o in (rel.get("objections") or [])
+                    if isinstance(o, dict) and o.get("status") != "addressed"
+                ]
+                if open_obj:
+                    concern = str(open_obj[0].get("concern") or "?")[:60]
+                    nudge = (
+                        f"Open objection unaddressed entering {mission['phase']}: "
+                        f"\"{concern}\" — worth resolving before proceeding."
+                    )
+
+        # 3. Next required artifact
+        if nudge is None:
+            next_required = mission.get("next_required", [])
+            if next_required:
+                phase = mission.get("phase", "")
+                artifact = next_required[0]
+                tool_name = next(
+                    (tool for tool, (_, art) in TOOL_TO_ARTIFACT.items() if art == artifact),
+                    None,
+                )
+                if tool_name:
+                    tool_label = tool_name.replace("generate_", "").replace("_", " ")
+                    nudge = (
+                        f"You're in {phase} phase — {artifact} is the next required artifact. "
+                        f"Want me to generate the {tool_label}?"
+                    )
+
+        if nudge is None:
             return None
-        phase = mission.get("phase", "")
-        artifact = next_required[0]
-        tool_name = next(
-            (tool for tool, (_, art) in TOOL_TO_ARTIFACT.items() if art == artifact), None
-        )
-        if not tool_name:
-            return None
-        tool_label = tool_name.replace("generate_", "").replace("_", " ")
-        return (
-            f"You're in {phase} phase — {artifact} is the next required artifact. "
-            f"Want me to generate the {tool_label}?"
-        )
+
+        # Suppression: silence same nudge for up to 3 consecutive turns
+        last = archie.get("_last_next_step_offer") or {}
+        if last.get("text") == nudge:
+            count = int(last.get("turns_since", 0))
+            if count < 3:
+                archie["_last_next_step_offer"] = {"text": nudge, "turns_since": count + 1}
+                return None
+
+        archie["_last_next_step_offer"] = {"text": nudge, "turns_since": 0}
+        return nudge

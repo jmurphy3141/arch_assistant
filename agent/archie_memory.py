@@ -1024,6 +1024,64 @@ def _record_infrastructure_profile_if_present(context: dict[str, Any], text: str
         context_store.merge_archie_relationship_facts(context, rel_facts)
 
 
+def extract_relationship_facts_llm(
+    text: str,
+    run_fn: "Callable[[str, str], str]",
+) -> dict[str, Any]:
+    """
+    LLM-based relationship extraction. Significantly higher precision than regex.
+
+    run_fn: callable(prompt, system_message) → raw text. Pass app.state.text_runner
+    or a wrapper built from build_inference_runner. Falls back to empty dict on any
+    failure so the caller can fall back to regex.
+    """
+    if not text or not run_fn:
+        return {}
+    system = (
+        "You are a data extraction assistant. Output ONLY valid JSON — no markdown, "
+        "no commentary, no code fences. Extract only facts clearly stated in the text."
+    )
+    prompt = (
+        "Extract relationship and sales facts from the meeting notes below.\n"
+        "Return a single JSON object with these keys (omit any key with no findings):\n\n"
+        "{\n"
+        '  "stakeholders": [{"name": "string", "role": "string", '
+        '"disposition": "champion|economic_buyer|blocker|influencer|unknown", "notes": "string"}],\n'
+        '  "objections": [{"concern": "string", "raised_by": "string", "status": "open", "response": ""}],\n'
+        '  "commitments": [{"who": "oracle|customer", "what": "string", "due": "YYYY-MM-DD or empty", "status": "open"}],\n'
+        '  "action_items": [{"owner": "se|archie|customer", "task": "string", "due": "YYYY-MM-DD or empty", "status": "open"}],\n'
+        '  "competitive": {"incumbent": "string", "competitors": ["string"], "their_claim": "string", "our_counter": "string"}\n'
+        "}\n\n"
+        "Rules:\n"
+        "- Only include items clearly present in the text. Do not invent.\n"
+        "- disposition 'economic_buyer' = the person who signs/approves budget.\n"
+        "- 'who' for commitments: 'oracle' if Oracle/we/our team is making the commitment.\n"
+        "- Keep 'what' and 'task' under 80 characters.\n"
+        "- Return {} if nothing relevant is found.\n\n"
+        f"MEETING NOTES:\n{text[:4000]}"
+    )
+    try:
+        raw = run_fn(prompt, system)
+        raw = raw.strip()
+        # Strip accidental markdown fences
+        if raw.startswith("```"):
+            raw = raw.split("```", 2)[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.rstrip("`").strip()
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        # Basic validation of list fields
+        for key in ("stakeholders", "objections", "commitments", "action_items"):
+            if key in data and not isinstance(data[key], list):
+                del data[key]
+        return data
+    except Exception as exc:
+        logger.debug("LLM relationship extraction failed, will use regex fallback: %s", exc)
+        return {}
+
+
 def _extract_relationship_facts(text: str) -> dict[str, Any]:
     raw = str(text or "")
     lower = raw.lower()
