@@ -53,7 +53,7 @@ function DebriefPanel({ debrief }: { debrief: DebriefResult }) {
   const total = debrief.fact_count;
   if (total === 0) return null;
   return (
-    <div style={{ background: 'rgba(240, 165, 0, 0.06)', border: '1px solid rgba(240, 165, 0, 0.4)', borderRadius: 6, padding: '0.75rem', marginBottom: '1rem', boxShadow: '0 0 10px rgba(240,165,0,0.08)' }}>
+    <div className="debrief-wipe-in" style={{ background: 'rgba(240, 165, 0, 0.06)', border: '1px solid rgba(240, 165, 0, 0.4)', borderRadius: 6, padding: '0.75rem', marginBottom: '1rem', boxShadow: '0 0 10px rgba(240,165,0,0.08)' }}>
       <div style={{ ...LABEL, color: '#f0a500' }}>Pending Debrief — {total} item{total !== 1 ? 's' : ''} to confirm</div>
       {debrief.stakeholders.length > 0 && (
         <div style={{ marginBottom: '0.4rem' }}>

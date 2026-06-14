@@ -236,6 +236,10 @@ function ToolChip({ call }: { call: ChatToolCall }) {
     <div data-testid={`tool-chip-${call.tool}`} style={blockStyle}>
       {/* ── header row ── */}
       <div style={headerStyle} onClick={() => setOpen(v => !v)}>
+        <span className="tool-dot-fire" style={{
+          display: 'inline-block', width: 5, height: 5, borderRadius: '50%',
+          background: '#00e5ff', flexShrink: 0,
+        }} />
         <span style={{ color: statusColor, fontSize: '0.7rem' }}>{statusIcon}</span>
         <span style={{ fontSize: '0.72rem', color: '#c9d1e4', fontWeight: 600 }}>
           Used {toolLabel(call.tool)}

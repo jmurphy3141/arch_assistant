@@ -229,7 +229,7 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
           {activity!.activeHats!.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
               {activity!.activeHats!.map(hat => (
-                <span key={hat} data-testid="live-active-hat" style={{
+                <span key={hat} data-testid="live-active-hat" className="hat-glow-in" style={{
                   background: 'rgba(0, 229, 255, 0.08)',
                   border: '1px solid rgba(0, 229, 255, 0.3)',
                   borderRadius: 4,
@@ -237,6 +237,7 @@ export function EngagementMemoryPanel({ customerId, refreshTrigger = 0, activity
                   fontSize: '0.64rem',
                   color: '#00e5ff',
                   fontWeight: 700,
+                  display: 'inline-block',
                 }}>
                   {hatDisplayName(hat)}
                 </span>

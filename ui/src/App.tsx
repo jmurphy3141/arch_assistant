@@ -488,14 +488,24 @@ export function App() {
                   )}
                 </div>
               ) : (
-                <div style={{
-                  width: 280, minWidth: 280, height: '100%', background: '#0a0c14',
-                  borderLeft: '1px solid #1a2035', display: 'flex', flexDirection: 'column',
-                  gap: 0, overflowY: 'auto', flexShrink: 0,
-                }}>
+                <div
+                  className={chatActivity.thinkingStatus ? 'rail-thinking' : ''}
+                  style={{
+                    width: 280, minWidth: 280, height: '100%', background: '#0a0c14',
+                    borderLeft: '1px solid #1a2035', display: 'flex', flexDirection: 'column',
+                    gap: 0, overflowY: 'auto', flexShrink: 0,
+                  }}
+                >
                   {/* Rail header */}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                     padding: '12px 14px 8px', borderBottom: '1px solid #1a2035', flexShrink: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {chatActivity.thinkingStatus && (
+                        <span
+                          className="archie-status-dot"
+                          style={{ color: '#00e5ff', boxShadow: '0 0 6px rgba(0,229,255,0.7)', flexShrink: 0 }}
+                        />
+                      )}
                     <div style={{ display: 'flex', gap: 4 }}>
                       {(['context', 'briefing'] as const).map(tab => (
                         <button key={tab} onClick={() => setRightTab(tab)}
@@ -508,6 +518,7 @@ export function App() {
                           {tab}
                         </button>
                       ))}
+                    </div>
                     </div>
                     <button onClick={() => setRightCollapsed(true)} title="Collapse context panel"
                       style={{ width: 24, height: 24, borderRadius: 5, display: 'grid', placeItems: 'center',
