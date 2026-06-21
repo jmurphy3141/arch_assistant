@@ -8,9 +8,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from agent import archie_memory, context_store, document_store
+from agent import archie_memory, context_store, document_sections, document_store
 from agent.persistence_objectstore import ObjectStoreBase
 from skillforge.types import MemorySnapshot, ToolResult
+
+_FULL_SECTION_CEILING = 12000
 
 
 class NotesHandlers:
@@ -127,6 +129,110 @@ class NotesHandlers:
             status="ok",
             artifact_key=key,
             data={"content": content},
+        )
+
+
+    async def list_documents(
+        self,
+        args: dict[str, Any],
+        *,
+        memory: MemorySnapshot | None,
+        context: dict[str, Any],
+        trace_id: str,
+    ) -> ToolResult:
+        notes = document_store.list_notes(self._store, self._customer_id)
+        items: list[dict[str, Any]] = []
+        for note in notes:
+            name = str(note.get("name") or "")
+            if not name:
+                continue
+            text = document_store.get_note_text(self._store, self._customer_id, name)
+            sections = document_sections.parse_sections(text) if text else []
+            items.append({
+                "name": name,
+                "section_count": len(sections),
+                "top_sections": [s.title for s in sections[:5]],
+            })
+        summary = (
+            f"{len(items)} uploaded document(s) found."
+            if items
+            else "No uploaded documents found."
+        )
+        return ToolResult(summary=summary, status="ok", data={"documents": items})
+
+    async def get_document_section(
+        self,
+        args: dict[str, Any],
+        *,
+        memory: MemorySnapshot | None,
+        context: dict[str, Any],
+        trace_id: str,
+    ) -> ToolResult:
+        note_name = str(args.get("note_name") or "")
+        section_ref = str(args.get("section") or "").strip()
+        if not note_name:
+            return ToolResult(
+                summary="No document name provided.",
+                status="needs_input",
+                clarification="Call list_documents first to get a valid note_name.",
+            )
+
+        text = document_store.get_note_text(self._store, self._customer_id, note_name)
+        if text is None:
+            return ToolResult(
+                summary=f"No document named '{note_name}' found.",
+                status="needs_input",
+                clarification="Call list_documents to see available documents.",
+            )
+
+        sections = document_sections.parse_sections(text)
+
+        if not section_ref:
+            toc = document_sections.build_toc(sections)
+            return ToolResult(
+                summary=f"Table of contents for '{note_name}' ({len(sections)} section(s)).",
+                status="ok",
+                data={"toc": toc, "note_name": note_name},
+            )
+
+        if section_ref.lower() in ("full", "*"):
+            content = text
+            truncated = len(content) > _FULL_SECTION_CEILING
+            if truncated:
+                remaining = len(content) - _FULL_SECTION_CEILING
+                content = (
+                    content[:_FULL_SECTION_CEILING]
+                    + f"\n...[truncated, {remaining} chars remaining — request a specific section]"
+                )
+            return ToolResult(
+                summary=f"Full text of '{note_name}'" + (" (truncated)." if truncated else "."),
+                status="ok",
+                data={"content": content, "note_name": note_name, "truncated": truncated},
+            )
+
+        section = document_sections.find_section(sections, section_ref)
+        if section is None:
+            toc = document_sections.build_toc(sections)
+            return ToolResult(
+                summary=f"No section matching '{section_ref}' in '{note_name}'.",
+                status="needs_input",
+                clarification=(
+                    f"That section wasn't found. Closest table of contents:\n{toc}"
+                ),
+            )
+
+        section_text = document_sections.get_section_text(text, section)
+        label = f"{section.number} {section.title}".strip() if section.number else section.title
+        return ToolResult(
+            summary=f"Section [{label}] retrieved from '{note_name}'.",
+            status="ok",
+            data={
+                "content": section_text,
+                "note_name": note_name,
+                "section_id": section.id,
+                "section_number": section.number,
+                "section_title": section.title,
+            },
         )
 
 

@@ -266,6 +266,27 @@ def _extract_legacy_note_text(store: ObjectStoreBase, customer_id: str, note: di
     return text if isinstance(text, str) else ""
 
 
+def get_note_text(store: ObjectStoreBase, customer_id: str, note_name: str) -> str | None:
+    """
+    Return the best-available readable text for a single note: prefer the
+    extracted-text sidecar, fall back to extracting the raw note on the fly.
+    Returns None if the note is not in the manifest.
+    """
+    text = _get_stored_note_text(store, customer_id, note_name)
+    if text is not None:
+        return text
+    note_meta = next(
+        (n for n in list_notes(store, customer_id) if n.get("name") == note_name),
+        None,
+    )
+    if note_meta is None:
+        return None
+    try:
+        return _extract_legacy_note_text(store, customer_id, note_meta)
+    except KeyError:
+        return None
+
+
 def get_all_notes_text(store: ObjectStoreBase, customer_id: str) -> str:
     """
     Read and concatenate all notes for a customer into a single string.

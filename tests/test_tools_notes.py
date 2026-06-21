@@ -106,3 +106,138 @@ async def test_get_document_not_found(monkeypatch):
     )
 
     assert result.status == "needs_input"
+
+
+_RFP_TEXT = (
+    "1 Introduction\n"
+    "This RFP covers cloud migration.\n"
+    "\n"
+    "4.2 Data Residency Requirements\n"
+    "All customer data must remain in-region.\n"
+    "\n"
+    "4.3 Security Requirements\n"
+    "Encryption at rest is mandatory.\n"
+)
+
+
+async def test_list_documents_empty(monkeypatch):
+    monkeypatch.setattr(notes_module.document_store, "list_notes", lambda store, cid: [])
+    notes = make_handlers()
+
+    result = await notes.list_documents({}, memory=None, context={}, trace_id="t")
+
+    assert result.status == "ok"
+    assert result.data["documents"] == []
+
+
+async def test_list_documents_with_sections(monkeypatch):
+    monkeypatch.setattr(
+        notes_module.document_store,
+        "list_notes",
+        lambda store, cid: [{"name": "rfp.txt"}],
+    )
+    monkeypatch.setattr(
+        notes_module.document_store,
+        "get_note_text",
+        lambda store, cid, name: _RFP_TEXT,
+    )
+    notes = make_handlers()
+
+    result = await notes.list_documents({}, memory=None, context={}, trace_id="t")
+
+    assert result.status == "ok"
+    assert len(result.data["documents"]) == 1
+    assert result.data["documents"][0]["name"] == "rfp.txt"
+    assert result.data["documents"][0]["section_count"] == 3
+
+
+async def test_get_document_section_missing_note_name():
+    notes = make_handlers()
+
+    result = await notes.get_document_section(
+        {}, memory=None, context={}, trace_id="t"
+    )
+
+    assert result.status == "needs_input"
+
+
+async def test_get_document_section_not_found(monkeypatch):
+    monkeypatch.setattr(
+        notes_module.document_store, "get_note_text", lambda store, cid, name: None
+    )
+    notes = make_handlers()
+
+    result = await notes.get_document_section(
+        {"note_name": "missing.txt"}, memory=None, context={}, trace_id="t"
+    )
+
+    assert result.status == "needs_input"
+
+
+async def test_get_document_section_toc(monkeypatch):
+    monkeypatch.setattr(
+        notes_module.document_store,
+        "get_note_text",
+        lambda store, cid, name: _RFP_TEXT,
+    )
+    notes = make_handlers()
+
+    result = await notes.get_document_section(
+        {"note_name": "rfp.txt"}, memory=None, context={}, trace_id="t"
+    )
+
+    assert result.status == "ok"
+    assert "4.2" in result.data["toc"]
+    assert "content" not in result.data
+
+
+async def test_get_document_section_specific_section(monkeypatch):
+    monkeypatch.setattr(
+        notes_module.document_store,
+        "get_note_text",
+        lambda store, cid, name: _RFP_TEXT,
+    )
+    notes = make_handlers()
+
+    result = await notes.get_document_section(
+        {"note_name": "rfp.txt", "section": "4.2"}, memory=None, context={}, trace_id="t"
+    )
+
+    assert result.status == "ok"
+    assert result.data["section_number"] == "4.2"
+    assert "Data Residency" in result.data["content"]
+    assert "in-region" in result.data["content"]
+
+
+async def test_get_document_section_unmatched(monkeypatch):
+    monkeypatch.setattr(
+        notes_module.document_store,
+        "get_note_text",
+        lambda store, cid, name: _RFP_TEXT,
+    )
+    notes = make_handlers()
+
+    result = await notes.get_document_section(
+        {"note_name": "rfp.txt", "section": "9.9"}, memory=None, context={}, trace_id="t"
+    )
+
+    assert result.status == "needs_input"
+    assert "4.2" in result.clarification
+
+
+async def test_get_document_section_full_with_truncation(monkeypatch):
+    long_text = "1 Section One\n" + ("x" * 13000) + "\n"
+    monkeypatch.setattr(
+        notes_module.document_store,
+        "get_note_text",
+        lambda store, cid, name: long_text,
+    )
+    notes = make_handlers()
+
+    result = await notes.get_document_section(
+        {"note_name": "big.txt", "section": "full"}, memory=None, context={}, trace_id="t"
+    )
+
+    assert result.status == "ok"
+    assert result.data["truncated"] is True
+    assert "truncated" in result.data["content"]

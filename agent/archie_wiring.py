@@ -338,6 +338,13 @@ or has explicitly asked for one.
     Do NOT call generate_bom or generate_diagram. The file is already in object
     storage — save_notes indexes it and confirms to the user.
 
+13. When asked to review an uploaded document, generate questions from it, or cite
+    its sections (e.g. "review this RFP", "what should I ask about the spec",
+    "cite the section"), call list_documents then get_document_section for the
+    relevant sections BEFORE drafting questions or claims. Never invent a section
+    reference — every citation must come from a get_document_section result
+    returned this turn.
+
 ### POC Planning Workflow
 
 This is a conversational, teammate-style workflow. The SE and Archie think through
@@ -638,6 +645,37 @@ def build_forge(
             "commit extracted stakeholders, action items, objections, or commitments "
             "from the most recently uploaded note."
         ),
+    )
+    forge.register_tool(
+        "list_documents",
+        notes.list_documents,
+        description=(
+            "List uploaded customer documents/notes with their detected section "
+            "structure. Call first when asked to review an uploaded document, RFP, "
+            "or spec, before citing any section."
+        ),
+    )
+    forge.register_tool(
+        "get_document_section",
+        notes.get_document_section,
+        description=(
+            "Retrieve verbatim text of a section from an uploaded document, or its "
+            "table of contents if no section is specified. Call before citing any "
+            "section number in a question or finding."
+        ),
+        args={
+            "note_name": ArgSchema(
+                description="Document name from list_documents.",
+                type="string",
+                required=True,
+            ),
+            "section": ArgSchema(
+                description="Section id/number/title to retrieve, or omit for the table of contents.",
+                type="string",
+                required=False,
+            ),
+        },
+        requires_hat="document_grounded_reviewer",
     )
 
     forge.register_tool(
