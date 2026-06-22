@@ -209,6 +209,69 @@ def list_notes(store: ObjectStoreBase, customer_id: str) -> list[dict]:
     return manifest.get("notes", [])
 
 
+def delete_note(store: ObjectStoreBase, customer_id: str, note_name: str) -> bool:
+    """
+    Remove a note's manifest entry. Returns True if found and removed, False
+    otherwise. ObjectStoreBase has no delete() primitive, so this only removes
+    the MANIFEST.json entry — the note becomes invisible to list_notes /
+    get_all_notes_text / search, but its underlying bytes are orphaned, not
+    erased. This is intentional: there is no safe way to reclaim storage with
+    the current ObjectStoreBase interface.
+    """
+    manifest_customer_key = _notes_manifest_key(customer_id, customer_first=True)
+    manifest_legacy_key = _notes_manifest_key(customer_id, customer_first=False)
+    manifest = _get_first_json(store, [manifest_customer_key, manifest_legacy_key], {"notes": []})
+    original_len = len(manifest.get("notes", []))
+    manifest["notes"] = [n for n in manifest.get("notes", []) if n.get("name") != note_name]
+    if len(manifest["notes"]) == original_len:
+        return False
+    manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
+    _put_dual(
+        store,
+        customer_key=manifest_customer_key,
+        legacy_key=manifest_legacy_key,
+        content=manifest_bytes,
+        content_type="application/json",
+    )
+    logger.info("Note removed from manifest: customer=%s name=%s", customer_id, note_name)
+    return True
+
+
+def rename_note(store: ObjectStoreBase, customer_id: str, old_name: str, new_name: str) -> bool:
+    """
+    Rename a note's manifest display name in place — the underlying object key
+    is unchanged (notes are addressed by key, not name, everywhere else in this
+    module), only the manifest's "name" field is updated. Returns False (no-op)
+    if old_name isn't found or new_name already exists, to avoid manifest name
+    collisions that would break get_note_text's name-based lookup.
+
+    Known tradeoff: any cached .extracted.txt sidecar was saved under the old
+    name, so get_note_text won't find it post-rename and will fall back to
+    re-extracting from the raw object (still addressable via the manifest's
+    unchanged "key" field) — this degrades gracefully rather than breaking.
+    """
+    manifest_customer_key = _notes_manifest_key(customer_id, customer_first=True)
+    manifest_legacy_key = _notes_manifest_key(customer_id, customer_first=False)
+    manifest = _get_first_json(store, [manifest_customer_key, manifest_legacy_key], {"notes": []})
+    names = {n.get("name") for n in manifest.get("notes", [])}
+    if old_name not in names or new_name in names:
+        return False
+    for entry in manifest["notes"]:
+        if entry.get("name") == old_name:
+            entry["name"] = new_name
+            break
+    manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
+    _put_dual(
+        store,
+        customer_key=manifest_customer_key,
+        legacy_key=manifest_legacy_key,
+        content=manifest_bytes,
+        content_type="application/json",
+    )
+    logger.info("Note renamed: customer=%s %s -> %s", customer_id, old_name, new_name)
+    return True
+
+
 def clear_notes_manifest(store: ObjectStoreBase, customer_id: str) -> None:
     """Clear the active notes manifest without deleting stored note files."""
     manifest_bytes = json.dumps({"notes": []}, indent=2).encode("utf-8")

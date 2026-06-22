@@ -235,6 +235,213 @@ class NotesHandlers:
             },
         )
 
+    async def update_relationship_status(
+        self,
+        args: dict[str, Any],
+        *,
+        memory: MemorySnapshot | None,
+        context: dict[str, Any],
+        trace_id: str,
+    ) -> ToolResult:
+        category = str(args.get("category") or "").strip().lower()
+        match_text = str(args.get("match_text") or "").strip()
+        new_status = str(args.get("status") or "").strip().lower()
+        if category not in ("objections", "commitments", "action_items"):
+            return ToolResult(
+                summary="Invalid category.",
+                status="needs_input",
+                clarification="category must be one of: objections, commitments, action_items.",
+            )
+        if not match_text or not new_status:
+            return ToolResult(
+                summary="match_text and status are required.",
+                status="needs_input",
+                clarification="Provide match_text (substring of the concern/what/task) and status.",
+            )
+
+        stored_context = context_store.read_context(
+            self._store, self._customer_id, self._customer_name
+        )
+        rel = context_store.get_archie_state(stored_context).get("relationship") or {}
+        before = [dict(item) for item in (rel.get(category) or []) if isinstance(item, dict)]
+
+        context_store.update_relationship_item_status(
+            stored_context,
+            category=category,
+            match_text=match_text,
+            new_status=new_status,
+            note=str(args.get("note") or ""),
+        )
+
+        after = [
+            item
+            for item in (context_store.get_archie_state(stored_context).get("relationship") or {}).get(category) or []
+            if isinstance(item, dict)
+        ]
+        matched = sum(
+            1 for b, a in zip(before, after) if a.get("status") != b.get("status")
+        )
+        if matched == 0:
+            return ToolResult(
+                summary=f"No {category} item matched '{match_text}'.",
+                status="needs_input",
+                clarification="Call get_open_relationship_items to see current open items and their exact wording.",
+            )
+
+        context_store.write_context(self._store, self._customer_id, stored_context)
+        return ToolResult(
+            summary=f"Marked {matched} {category} item(s) as {new_status}.",
+            status="ok",
+            data={"matched": matched, "category": category, "status": new_status},
+        )
+
+    async def get_open_relationship_items(
+        self,
+        args: dict[str, Any],
+        *,
+        memory: MemorySnapshot | None,
+        context: dict[str, Any],
+        trace_id: str,
+    ) -> ToolResult:
+        stored_context = context_store.read_context(
+            self._store, self._customer_id, self._customer_name
+        )
+        open_items = context_store.get_open_relationship_items(stored_context)
+        total = sum(len(v) for v in open_items.values())
+        summary = (
+            f"{len(open_items.get('objections', []))} open objection(s), "
+            f"{len(open_items.get('commitments', []))} open commitment(s), "
+            f"{len(open_items.get('action_items', []))} open action item(s)."
+            if total
+            else "No open objections, commitments, or action items."
+        )
+        return ToolResult(summary=summary, status="ok", data=open_items)
+
+    async def delete_note(
+        self,
+        args: dict[str, Any],
+        *,
+        memory: MemorySnapshot | None,
+        context: dict[str, Any],
+        trace_id: str,
+    ) -> ToolResult:
+        note_name = str(args.get("note_name") or "").strip()
+        if not note_name:
+            return ToolResult(
+                summary="note_name is required.",
+                status="needs_input",
+                clarification="Call list_documents to get a valid note_name.",
+            )
+        removed = document_store.delete_note(self._store, self._customer_id, note_name)
+        if not removed:
+            return ToolResult(
+                summary=f"No document named '{note_name}' found.",
+                status="needs_input",
+                clarification="Call list_documents to see available documents.",
+            )
+        return ToolResult(summary=f"Deleted '{note_name}'.", status="ok", data={"deleted": note_name})
+
+    async def rename_note(
+        self,
+        args: dict[str, Any],
+        *,
+        memory: MemorySnapshot | None,
+        context: dict[str, Any],
+        trace_id: str,
+    ) -> ToolResult:
+        old_name = str(args.get("old_name") or "").strip()
+        new_name = str(args.get("new_name") or "").strip()
+        if not old_name or not new_name:
+            return ToolResult(
+                summary="old_name and new_name are required.",
+                status="needs_input",
+                clarification="Call list_documents to get the current note name.",
+            )
+        renamed = document_store.rename_note(self._store, self._customer_id, old_name, new_name)
+        if not renamed:
+            return ToolResult(
+                summary=f"Could not rename '{old_name}' to '{new_name}'.",
+                status="needs_input",
+                clarification="Either the source name was not found or the target name is already in use.",
+            )
+        return ToolResult(
+            summary=f"Renamed '{old_name}' to '{new_name}'.",
+            status="ok",
+            data={"old_name": old_name, "new_name": new_name},
+        )
+
+    async def search_documents(
+        self,
+        args: dict[str, Any],
+        *,
+        memory: MemorySnapshot | None,
+        context: dict[str, Any],
+        trace_id: str,
+    ) -> ToolResult:
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return ToolResult(
+                summary="A search query is required.",
+                status="needs_input",
+                clarification="Provide a keyword or phrase to search for.",
+            )
+        max_hits = max(1, min(int(args.get("max_hits") or 10), 25))
+        query_lower = query.lower()
+
+        notes = document_store.list_notes(self._store, self._customer_id)
+        hits: list[dict[str, Any]] = []
+        for note in notes:
+            name = str(note.get("name") or "")
+            if not name:
+                continue
+            text = document_store.get_note_text(self._store, self._customer_id, name)
+            if not text or query_lower not in text.lower():
+                continue
+            lines = text.splitlines()
+            sections = document_sections.parse_sections(text)
+            for line_no, line in enumerate(lines):
+                if query_lower not in line.lower():
+                    continue
+                section = _find_section_for_line(sections, line_no)
+                label = (
+                    f"{section.number} {section.title}".strip()
+                    if section and section.number
+                    else (section.title if section else "")
+                )
+                hits.append({
+                    "note_name": name,
+                    "section_id": section.id if section else "",
+                    "section_label": label,
+                    "snippet": _snippet_around(lines, line_no),
+                })
+                if len(hits) >= max_hits:
+                    break
+            if len(hits) >= max_hits:
+                break
+
+        if not hits:
+            return ToolResult(
+                summary=f"No matches found for '{query}' across uploaded documents.",
+                status="ok",
+                data={"query": query, "hits": []},
+            )
+        summary = f"{len(hits)} match(es) for '{query}' across {len({h['note_name'] for h in hits})} document(s)."
+        return ToolResult(summary=summary, status="ok", data={"query": query, "hits": hits})
+
+
+def _find_section_for_line(sections: list, line_no: int):
+    for s in sections:
+        if s.start_line <= line_no < s.end_line:
+            return s
+    return None
+
+
+def _snippet_around(lines: list[str], line_no: int, *, radius: int = 1, max_len: int = 220) -> str:
+    start = max(0, line_no - radius)
+    end = min(len(lines), line_no + radius + 1)
+    snippet = " ".join(l.strip() for l in lines[start:end] if l.strip())
+    return snippet[:max_len] + ("..." if len(snippet) > max_len else "")
+
 
 def _normalize_latest_doc(latest: Any) -> tuple[str, str]:
     if latest is None:

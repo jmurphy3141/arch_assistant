@@ -16,6 +16,7 @@ from agent.lesson_store import EngagementLessonStore
 from agent.persistence_objectstore import ObjectStoreBase
 from agent.tools.bom import BomHandler
 from agent.tools.diagram import DiagramHandler
+from agent.tools.export import ExportHandlers
 from agent.tools.notes import NotesHandlers
 from agent.tools.presentation import PresentationHandler
 from agent.tools.specialists import (
@@ -285,7 +286,9 @@ These rules are mandatory. Follow them on every generation request.
 
 ### Artifact re-use
 7. If the user asks for a download link or asks to view an existing artifact,
-   return the artifact key from context -- do not re-generate.
+   return the artifact key from context -- do not re-generate. If the user
+   specifically asks for a PNG/image (not the .drawio file), call
+   export_diagram_png once a diagram exists.
 
 ### Update requests
 8. If the user says "update everything" or "regenerate all", identify which tools have existing artifacts in context and re-run them in this order:
@@ -343,7 +346,9 @@ or has explicitly asked for one.
     "cite the section"), call list_documents then get_document_section for the
     relevant sections BEFORE drafting questions or claims. Never invent a section
     reference — every citation must come from a get_document_section result
-    returned this turn.
+    returned this turn. If the SE doesn't know which document or section to look
+    at, call search_documents first, then get_document_section on the resulting
+    hit(s) before citing.
 
 ### POC Planning Workflow
 
@@ -633,6 +638,9 @@ def build_forge(
     notes = NotesHandlers(
         store=store, customer_id=customer_id, customer_name=customer_name
     )
+    export_handlers = ExportHandlers(
+        store=store, customer_id=customer_id, customer_name=customer_name
+    )
     forge.register_tool("save_notes", notes.save_notes, memory_contract=True)
     forge.register_tool("get_summary", notes.get_summary)
     forge.register_tool("get_document", notes.get_document)
@@ -676,6 +684,115 @@ def build_forge(
             ),
         },
         requires_hat="document_grounded_reviewer",
+    )
+    forge.register_tool(
+        "update_relationship_status",
+        notes.update_relationship_status,
+        description=(
+            "Mark an objection, commitment, or action item as resolved/addressed/done. "
+            "Call when the SE says something was resolved, fixed, completed, or closed out "
+            "(e.g. 'the security objection is resolved', 'mark that action item done')."
+        ),
+        args={
+            "category": ArgSchema(
+                description="objections | commitments | action_items",
+                type="string",
+                required=True,
+            ),
+            "match_text": ArgSchema(
+                description=(
+                    "Substring of the concern/what/task text to match (case-insensitive). "
+                    "Call get_open_relationship_items first if unsure of exact wording."
+                ),
+                type="string",
+                required=True,
+            ),
+            "status": ArgSchema(
+                description="New status, e.g. 'addressed' for objections, 'done' for commitments/action_items.",
+                type="string",
+                required=True,
+            ),
+            "note": ArgSchema(
+                description="Optional resolution note.",
+                type="string",
+                required=False,
+            ),
+        },
+    )
+    forge.register_tool(
+        "get_open_relationship_items",
+        notes.get_open_relationship_items,
+        description=(
+            "List currently open (unresolved) objections, commitments, and action items "
+            "for this customer. Call when asked 'what's still open', 'what do we owe the "
+            "customer', or before a status meeting/check-in."
+        ),
+    )
+    forge.register_tool(
+        "export_diagram_png",
+        export_handlers.export_diagram_png,
+        description=(
+            "Export the latest architecture diagram to a PNG image for sharing or "
+            "embedding in a deck/doc. Call when the user asks for a PNG, image, or "
+            "picture of the diagram (not just the .drawio file or a download link)."
+        ),
+    )
+    forge.register_tool(
+        "delete_note",
+        notes.delete_note,
+        description=(
+            "Delete an uploaded note/document by name. Call when the SE explicitly asks "
+            "to remove, delete, or get rid of an uploaded document (use list_documents "
+            "first if the exact name is unknown)."
+        ),
+        args={
+            "note_name": ArgSchema(
+                description="Exact document name from list_documents.",
+                type="string",
+                required=True,
+            ),
+        },
+    )
+    forge.register_tool(
+        "rename_note",
+        notes.rename_note,
+        description="Rename an uploaded note/document. Call when the SE asks to rename or relabel an uploaded document.",
+        args={
+            "old_name": ArgSchema(
+                description="Current document name from list_documents.",
+                type="string",
+                required=True,
+            ),
+            "new_name": ArgSchema(
+                description="New document name.",
+                type="string",
+                required=True,
+            ),
+        },
+    )
+    forge.register_tool(
+        "search_documents",
+        notes.search_documents,
+        description=(
+            "Search across all uploaded customer documents/notes for a keyword or "
+            "phrase. Returns matching document name, section, and a short snippet per "
+            "hit. Call when asked to find where something is mentioned across uploaded "
+            "documents, or to check whether a topic was discussed anywhere. Use "
+            "get_document_section afterward to retrieve full verbatim section text "
+            "before citing it."
+        ),
+        args={
+            "query": ArgSchema(
+                description="Keyword or phrase to search for.",
+                type="string",
+                required=True,
+            ),
+            "max_hits": ArgSchema(
+                description="Maximum number of matches to return (default 10, max 25).",
+                type="number",
+                required=False,
+            ),
+        },
     )
 
     forge.register_tool(

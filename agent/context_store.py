@@ -410,6 +410,82 @@ def merge_archie_relationship_facts(
     return context
 
 
+_RELATIONSHIP_STATUS_KEY_FIELDS = {
+    "objections": "concern",
+    "commitments": "what",
+    "action_items": "task",
+}
+
+
+def update_relationship_item_status(
+    context: dict[str, Any],
+    *,
+    category: str,
+    match_text: str,
+    new_status: str,
+    note: str = "",
+) -> dict[str, Any]:
+    """
+    Mark matching objection/commitment/action_item entries with a new status.
+
+    Matches by case-insensitive substring against the category's natural dedup
+    key field (the same field merge_archie_relationship_facts dedups on), since
+    the LLM never sees stable indices into these lists. Updates every match
+    (lists are small, capped by the upstream extractor) rather than only the
+    first, so the caller should report the match count back to the LLM.
+    """
+    key_field = _RELATIONSHIP_STATUS_KEY_FIELDS.get(category)
+    if key_field is None:
+        return context
+
+    archie = get_archie_state(context)
+    rel = archie.get("relationship")
+    if not isinstance(rel, dict):
+        return context
+
+    match_lower = match_text.strip().lower()
+    for item in rel.get(category, []) or []:
+        if not isinstance(item, dict):
+            continue
+        if match_lower and match_lower in str(item.get(key_field, "")).lower():
+            item["status"] = new_status
+            if note:
+                item["resolution_note"] = note
+
+    refresh_archie_memory(context)
+    return context
+
+
+def get_open_relationship_items(context: dict[str, Any]) -> dict[str, list[dict]]:
+    """
+    Return only the open (unresolved) objections, commitments, and action_items —
+    same filters build_context_summary uses for display, factored out here so the
+    on-demand tool and the ambient prompt injection never disagree.
+    """
+    archie = get_archie_state(context)
+    relationship = archie.get("relationship") or {}
+    if not isinstance(relationship, dict):
+        return {"objections": [], "commitments": [], "action_items": []}
+
+    open_objections = [
+        o for o in (relationship.get("objections") or [])
+        if isinstance(o, dict) and o.get("status") != "addressed"
+    ]
+    open_commitments = [
+        c for c in (relationship.get("commitments") or [])
+        if isinstance(c, dict) and c.get("status") != "done"
+    ]
+    open_actions = [
+        a for a in (relationship.get("action_items") or [])
+        if isinstance(a, dict) and a.get("status") != "done"
+    ]
+    return {
+        "objections": open_objections,
+        "commitments": open_commitments,
+        "action_items": open_actions,
+    }
+
+
 def refresh_archie_memory(context: dict[str, Any]) -> dict[str, Any]:
     """Rebuild canonical ``archie.memory`` from durable Archie state."""
     archie = get_archie_state(context)
@@ -1190,18 +1266,19 @@ def build_context_summary(context: dict) -> str:
                 for s in stakeholders[:5]
             )
             lines.append(f"  • Stakeholders: {names}")
-        open_objections = [o for o in (relationship.get("objections") or []) if isinstance(o, dict) and o.get("status") != "addressed"]
+        open_items = get_open_relationship_items(context)
+        open_objections = open_items["objections"]
         if open_objections:
             concerns = " | ".join(o.get("concern", "?") for o in open_objections[:3])
             lines.append(f"  • Open Objections: {concerns}")
-        open_commitments = [c for c in (relationship.get("commitments") or []) if isinstance(c, dict) and c.get("status") != "done"]
+        open_commitments = open_items["commitments"]
         if open_commitments:
             commits = " | ".join(f"{c.get('who','?')}: {c.get('what','?')}" for c in open_commitments[:3])
             lines.append(f"  • Open Commitments: {commits}")
         competitive = relationship.get("competitive") or {}
         if isinstance(competitive, dict) and competitive.get("incumbent"):
             lines.append(f"  • Competitive: incumbent={competitive.get('incumbent')}, competitors={competitive.get('competitors', [])}")
-        open_actions = [a for a in (relationship.get("action_items") or []) if isinstance(a, dict) and a.get("status") != "done"]
+        open_actions = open_items["action_items"]
         if open_actions:
             actions = " | ".join(f"[{a.get('owner','?')}] {a.get('task','?')}" for a in open_actions[:5])
             lines.append(f"  • Open Action Items: {actions}")
