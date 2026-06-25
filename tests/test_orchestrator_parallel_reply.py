@@ -205,6 +205,52 @@ def test_legacy_jep_update_uses_prior_jep_and_artifact_context(monkeypatch) -> N
     assert captured["engagement_context"]["artifact_context"]["diagram"]["diagram_name"] == "askrga-rag-genai"
 
 
+def test_legacy_jep_review_failure_repairs_before_save(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    archie_session.document_store.save_doc(
+        store,
+        "jep",
+        "legacy-jep-repair",
+        "# Joint Execution Plan - AskRGA RAG + GenAI PoC\n\n## Executive Summary\nExisting base.",
+        {"source": "test"},
+    )
+    calls: list[str] = []
+
+    async def _fake_call_sub_agent(name, task, engagement_context, trace_id):
+        _ = (engagement_context, trace_id)
+        assert name == "jep"
+        calls.append(task)
+        if len(calls) == 1:
+            return {"status": "ok", "result": "# Joint Execution Plan\n\n## Executive Summary\npartial"}
+        assert "JEP REVIEW REPAIR" in task
+        return {"status": "ok", "result": "# Joint Execution Plan\n\n## Executive Summary\nrepaired"}
+
+    monkeypatch.setattr(archie_session.sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
+    monkeypatch.setattr(
+        specialists_module,
+        "_jep_writer_review_findings",
+        lambda content: ["missing required sections"] if "partial" in content else [],
+    )
+
+    summary, key, data = asyncio.run(
+        archie_session._legacy_tool_core_compat(
+            "generate_jep",
+            {"feedback": "Please update the JEP"},
+            customer_id="legacy-jep-repair",
+            customer_name="RGA",
+            store=store,
+            text_runner=lambda prompt, system_message: "",
+            a2a_base_url="http://localhost:8080",
+        )
+    )
+
+    assert summary.startswith("JEP v2 saved.")
+    assert key == "jep/legacy-jep-repair/v2.md"
+    assert data["repair_attempted"] is True
+    assert data["initial_review_findings"] == ["missing required sections"]
+    assert len(calls) == 2
+
+
 def test_bom_parallel_fast_path_returns_tool_summary_without_llm_freewrite(monkeypatch) -> None:
     llm_calls = {"count": 0}
 

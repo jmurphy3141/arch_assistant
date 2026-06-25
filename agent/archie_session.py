@@ -3530,9 +3530,33 @@ async def _legacy_tool_core_compat(
                 return content.strip(), "", {"status": "needs_input", **response}
             review_findings = _specialist_helpers._jep_writer_review_findings(content)
             if review_findings:
+                try:
+                    response, content, review_findings = await _specialist_helpers._retry_jep_after_review_failure(
+                        task=task,
+                        engagement_context=engagement_context,
+                        trace_id=str(uuid.uuid4()),
+                        initial_response=response,
+                        initial_content=content,
+                        initial_findings=review_findings,
+                    )
+                except sub_agent_client.SubAgentError as exc:
+                    return (
+                        _specialist_helpers._jep_review_blocked_summary(review_findings),
+                        "",
+                        {
+                            **response,
+                            "review_verdict": "blocked",
+                            "review_findings": review_findings,
+                            "repair_error": str(exc),
+                        },
+                    )
+                if str(response.get("status") or "").lower() == "needs_input":
+                    return str(response.get("result") or content or "JEP needs more input before it can be repaired."), "", response
+                if _specialist_helpers._is_jep_kickoff_questions(content):
+                    return content.strip(), "", {"status": "needs_input", **response}
+            if review_findings:
                 return (
-                    "JEP failed JEP Writer review before persistence: "
-                    + "; ".join(review_findings),
+                    _specialist_helpers._jep_review_blocked_summary(review_findings),
                     "",
                     {
                         **response,

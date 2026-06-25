@@ -311,6 +311,51 @@ async def test_jep_revision_passes_latest_prior_version(monkeypatch):
     assert "AskRGA RAG + GenAI PoC" in captured_task["value"]
 
 
+async def test_jep_review_failure_repairs_before_save(monkeypatch):
+    install_jep_lifecycle_stub(
+        monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
+    )
+    store = InMemoryObjectStore()
+    specialists_module.document_store.save_doc(
+        store,
+        "jep",
+        "cust-1",
+        "# Existing JEP\n\n## Executive Summary\nUse this as the base.",
+        {"source": "test"},
+    )
+    calls: list[str] = []
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        assert name == "jep"
+        calls.append(task)
+        if len(calls) == 1:
+            return {
+                "status": "ok",
+                "result": "# Joint Execution Plan - ACME\n\n## Executive Summary\nPartial update only.",
+            }
+        assert "JEP REVIEW REPAIR" in task
+        return {"status": "ok", "result": valid_jep_markdown()}
+
+    monkeypatch.setattr(
+        specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+    stub_save_doc(monkeypatch, "docs/jep_v2.md", version=2)
+    stub_save_jep_docx(monkeypatch, "docs/jep_v2.docx")
+
+    result = await JepHandler(store, "cust-1", "ACME")(
+        {"feedback": "Please update the JEP"},
+        memory=make_memory(),
+        context={"agents": {}},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "ok"
+    assert result.artifact_key == "docs/jep_v2.md"
+    assert result.data["repair_attempted"] is True
+    assert result.data["initial_review_findings"]
+    assert len(calls) == 2
+
+
 async def test_jep_blocks_self_referential_revision_before_save(monkeypatch):
     install_jep_lifecycle_stub(
         monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
@@ -324,9 +369,12 @@ async def test_jep_blocks_self_referential_revision_before_save(monkeypatch):
         {"source": "test"},
     )
     saved = False
+    call_count = 0
 
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        nonlocal call_count
         assert name == "jep"
+        call_count += 1
         return {
             "status": "ok",
             "result": """**Updated JEP (Job Execution Plan) - Revision 2.0**
@@ -360,8 +408,9 @@ Generate and maintain an iterative Job Execution Plan.
     )
 
     assert result.status == "blocked"
-    assert "JEP failed JEP Writer review" in result.summary
-    assert "Job Execution Plan" in result.summary
+    assert "couldn't save the JEP update" in result.summary
+    assert "Job Execution Plan" in result.data["review_findings"][0]
+    assert call_count == 2
     assert saved is False
 
 

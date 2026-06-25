@@ -256,11 +256,44 @@ class _SpecialistHandler:
         if self._agent_name == "jep":
             review_findings = _jep_writer_review_findings(content)
             if review_findings:
+                try:
+                    response, content, review_findings = await _retry_jep_after_review_failure(
+                        task=raw_request,
+                        engagement_context=engagement_context,
+                        trace_id=trace_id,
+                        initial_response=response,
+                        initial_content=content,
+                        initial_findings=review_findings,
+                    )
+                except SubAgentError as exc:
+                    return ToolResult(
+                        summary=_jep_review_blocked_summary(review_findings),
+                        status="blocked",
+                        data={
+                            **response,
+                            "review_verdict": "blocked",
+                            "review_findings": review_findings,
+                            "repair_error": str(exc),
+                        },
+                    )
+                if str(response.get("status") or "").lower() == "needs_input":
+                    clarification = str(response.get("result") or content or "").strip()
+                    return ToolResult(
+                        summary=clarification or "JEP needs more input before it can be repaired.",
+                        status="needs_input",
+                        clarification=clarification,
+                        data=response,
+                    )
+                if _is_jep_kickoff_questions(content):
+                    clarification = content.strip()
+                    return ToolResult(
+                        summary=clarification,
+                        status="needs_input",
+                        clarification=clarification,
+                    )
+            if review_findings:
                 return ToolResult(
-                    summary=(
-                        "JEP failed JEP Writer review before persistence: "
-                        + "; ".join(review_findings)
-                    ),
+                    summary=_jep_review_blocked_summary(review_findings),
                     status="blocked",
                     data={
                         **response,
@@ -1054,6 +1087,95 @@ def _hydrate_jep_task(
         blocks.append(f"[RESOLVED DECISIONS]\n{resolved}\n[/RESOLVED DECISIONS]")
     blocks.append(str(task or "").strip())
     return "\n\n".join(block for block in blocks if block).strip()
+
+
+async def _retry_jep_after_review_failure(
+    *,
+    task: str,
+    engagement_context: dict[str, Any],
+    trace_id: str,
+    initial_response: dict[str, Any],
+    initial_content: str,
+    initial_findings: list[str],
+) -> tuple[dict[str, Any], str, list[str]]:
+    repair_task = _build_jep_repair_task(
+        original_task=task,
+        invalid_content=initial_content,
+        findings=initial_findings,
+    )
+    repair_context = {
+        **dict(engagement_context or {}),
+        "repair_mode": "c3e_jep_review_retry",
+        "review_findings": list(initial_findings),
+    }
+    repair_response = await sub_agent_client.call_sub_agent(
+        "jep",
+        task=repair_task,
+        engagement_context=repair_context,
+        trace_id=f"{trace_id}:jep-review-retry",
+    )
+    if str(repair_response.get("status") or "").lower() == "needs_input":
+        repaired_content = str(repair_response.get("result") or "")
+        return (
+            {
+                **dict(repair_response),
+                "initial_review_findings": list(initial_findings),
+                "repair_attempted": True,
+            },
+            repaired_content,
+            [],
+        )
+
+    repaired_content = str(repair_response.get("result") or "")
+    repair_findings = _jep_writer_review_findings(repaired_content)
+    merged_response = {
+        **dict(repair_response),
+        "initial_review_findings": list(initial_findings),
+        "repair_attempted": True,
+        "repair_review_findings": list(repair_findings),
+        "repair_trace": {
+            "initial_trace": dict(initial_response.get("trace", {}) or {}),
+            "repair_trace": dict(repair_response.get("trace", {}) or {}),
+        },
+    }
+    return merged_response, repaired_content, repair_findings
+
+
+def _build_jep_repair_task(
+    *,
+    original_task: str,
+    invalid_content: str,
+    findings: list[str],
+) -> str:
+    findings_text = "\n".join(f"- {finding}" for finding in findings)
+    return (
+        f"{str(original_task or '').strip()}\n\n"
+        "[JEP REVIEW REPAIR]\n"
+        "The previous draft failed the C3E JEP review and was not saved. "
+        "Return a complete corrected Joint Execution Plan in Markdown only. "
+        "Do not summarize the defects, do not return a partial patch, and do not invent a different POC. "
+        "Use the prior JEP and persisted engagement context above as the source of truth.\n\n"
+        "Required repair findings:\n"
+        f"{findings_text}\n\n"
+        "The corrected document must include exactly these substantive sections: Executive Summary, "
+        "Objectives, Scope, POC Architecture, Phased Execution Plan, Success Criteria, Resource Plan, "
+        "Risk Registry, and Approvals. Include Phase 1 Assessment, Phase 2 Build, and Phase 3 Validate; "
+        "at least 3 numeric SMART success criteria; at least 3 risks; and Phase 3 go/no-go sign-off "
+        "with fallback.\n\n"
+        "Invalid draft for reference only:\n"
+        "```markdown\n"
+        f"{str(invalid_content or '').strip()[:6000]}\n"
+        "```\n"
+        "[/JEP REVIEW REPAIR]"
+    ).strip()
+
+
+def _jep_review_blocked_summary(findings: list[str] | None = None) -> str:
+    _ = findings
+    return (
+        "I couldn't save the JEP update because the generated draft was still incomplete "
+        "after an automatic repair attempt. I left the existing JEP unchanged."
+    )
 
 
 def _hydrate_waf_task(
