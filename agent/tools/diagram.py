@@ -169,6 +169,12 @@ class DiagramHandler:
                 status="needs_input",
                 clarification=clarify,
             )
+        if result_data.get("diagram_recovery_status") == "backend_error":
+            return ToolResult(
+                summary=summary or "Diagram generation failed before a drawable artifact was produced.",
+                status="blocked",
+                data=result_data,
+            )
         if not artifact_key:
             drawio_xml = str(result_data.get("drawio_xml") or "")
             if drawio_xml.strip():
@@ -195,6 +201,12 @@ class DiagramHandler:
                     result_data["drawio_key"] = artifact_key
                     result_data["object_key"] = artifact_key
                     summary = f"Diagram generated. Key: {artifact_key}"
+        if not artifact_key:
+            return ToolResult(
+                summary=summary or "Diagram generation did not return a saved draw.io artifact.",
+                status="blocked",
+                data=result_data,
+            )
         xml = result_data.get("drawio_xml") or ""
         inventory = _summarise_drawio(xml) if xml else ""
         full_summary = f"{summary} ({inventory})" if inventory else summary

@@ -8,6 +8,7 @@ No other orchestrator file may import sub-agent modules directly.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,16 @@ _CARD_CACHE: dict[str, dict[str, Any]] = {}
 
 class SubAgentError(Exception):
     pass
+
+
+def _response_error_detail(body: Any, fallback: str) -> str:
+    if not isinstance(body, dict):
+        return fallback
+    for key in ("error_message", "detail", "result", "message"):
+        value = body.get(key)
+        if value not in (None, "", [], {}):
+            return str(value)
+    return fallback
 
 
 def _load_config() -> dict[str, Any]:
@@ -103,15 +114,33 @@ async def call_sub_agent(
         payload["trace_id"] = str(trace_id or "")
 
     base_url = _sub_agent_url(name)
-    try:
-        async with httpx.AsyncClient(timeout=180) as client:
-            response = await client.post(f"{base_url}/a2a", json=payload)
-    except Exception as exc:
-        raise SubAgentError(f"Failed to call sub-agent {name!r}: {exc}") from exc
+    last_error: Exception | None = None
+    response: httpx.Response | None = None
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=180) as client:
+                response = await client.post(f"{base_url}/a2a", json=payload)
+            if response.status_code < 500:
+                break
+        except Exception as exc:
+            last_error = exc
+            if attempt == 1:
+                raise SubAgentError(f"Failed to call sub-agent {name!r}: {exc}") from exc
+        if attempt == 0:
+            await asyncio.sleep(0.25)
+    if response is None:
+        detail = str(last_error) if last_error else "no response"
+        raise SubAgentError(f"Failed to call sub-agent {name!r}: {detail}")
 
     if response.status_code != 200:
+        detail = ""
+        try:
+            detail = _response_error_detail(response.json(), "")
+        except Exception:
+            detail = response.text
+        suffix = f": {detail}" if detail else ""
         raise SubAgentError(
-            f"Sub-agent {name!r} returned HTTP {response.status_code}"
+            f"Sub-agent {name!r} returned HTTP {response.status_code}{suffix}"
         )
 
     try:
@@ -123,5 +152,6 @@ async def call_sub_agent(
         raise SubAgentError(f"Invalid response from sub-agent {name!r}: expected object")
     status = str(body.get("status") or "").lower()
     if status == "error" or status not in {"ok", "needs_input"}:
-        raise SubAgentError(f"Sub-agent {name!r} returned error status")
+        detail = _response_error_detail(body, "error status")
+        raise SubAgentError(f"Sub-agent {name!r} returned error status: {detail}")
     return body

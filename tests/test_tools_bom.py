@@ -190,6 +190,39 @@ async def test_bom_accepts_correct_line_item_arithmetic(monkeypatch):
     assert result.status == "ok"
 
 
+async def test_bom_accepts_valid_payload_before_xlsx_artifact_is_persisted(monkeypatch):
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        return {
+            "status": "ok",
+            "result": json.dumps(
+                {
+                    "bom_payload": {
+                        "line_items": [
+                            {
+                                "sku": "B12345",
+                                "description": "Compute",
+                                "quantity": 1,
+                                "unit_price": 1.0,
+                            }
+                        ],
+                        "monthly_total": 730.0,
+                    },
+                }
+            ),
+        }
+
+    monkeypatch.setattr(
+        bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+
+    result = await make_handler()(
+        {"prompt": "size it"}, memory=make_memory(), context={}, trace_id="trace-1"
+    )
+
+    assert result.status == "ok"
+    assert result.artifact_key == ""
+
+
 async def test_bom_blocks_incorrect_line_item_arithmetic(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         return {
@@ -356,4 +389,25 @@ async def test_bom_sub_agent_error(monkeypatch):
         {"prompt": "size it"}, memory=make_memory(), context={}, trace_id="trace-1"
     )
 
-    assert result.status == "blocked"
+    assert result.status == "needs_input"
+    assert "local fallback needs" in result.summary
+
+
+async def test_bom_sub_agent_error_uses_local_fallback_when_sizing_is_present(monkeypatch):
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        raise sub_agent_client.SubAgentError("connection refused")
+
+    monkeypatch.setattr(
+        bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+
+    result = await make_handler()(
+        {"prompt": "Generate a BOM for 4 OCPU, 32 GB RAM, and 2 TB storage."},
+        memory=make_memory(),
+        context={},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "ok"
+    assert result.data["bom_payload"]["line_items"]
+    assert result.data["trace"]["fallback_used"] is True

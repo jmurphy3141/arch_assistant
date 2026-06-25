@@ -109,6 +109,28 @@ async def test_tool_call_ok():
 
 
 @pytest.mark.asyncio
+async def test_step3_poc_override_does_not_hijack_artifact_request():
+    planning = (
+        "STEP 1 - UNDERSTAND:\n"
+        "The user wants a POC BOM and architecture diagram.\n"
+        "STEP 2 - MEMORY ASSESSMENT:\n"
+        "Enough context is available for a first pass.\n"
+        "STEP 3 - PLAN + HAT SELECTION:\n"
+        "Evaluate the POC and generate requested deliverables."
+    )
+    runner = QueueTextRunner(planning, "Done.")
+    forge = make_forge(runner, step3_planning=True)
+
+    await forge.run_turn(
+        session_id="s1",
+        user_message="generate the BOM and diagram for the AskRGA POC",
+        context={},
+    )
+
+    assert "FORGE OVERRIDE: poc_recommendation absent" not in runner.calls[1]["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_needs_input_surfaces():
     async def needs_input_handler(args, *, memory, context, trace_id):
         return ToolResult(
@@ -291,6 +313,36 @@ async def test_max_iterations_exhausted():
 
     assert isinstance(result, TurnResult)
     assert len(result.tool_calls) == 3
+    assert result.reply == "Done — the test tool is ready: `key/1`."
+    assert "done" in result.reply.lower()
+    assert "key/1" in result.reply
+
+
+@pytest.mark.asyncio
+async def test_final_synthesis_cleans_overstructured_simple_question():
+    runner = QueueTextRunner(
+        (
+            "## Recommendation\n"
+            "- First point.\n"
+            "- Second point.\n"
+            "- Third point.\n"
+            "- Fourth point."
+        ),
+        "OCI is the better fit here because the workload is Oracle Database-heavy and cost-sensitive.",
+    )
+    forge = make_forge(runner)
+
+    result = await forge.run_turn(
+        session_id="s1",
+        user_message="Why would we pick OCI here?",
+        context={},
+    )
+
+    assert result.reply == (
+        "OCI is the better fit here because the workload is Oracle Database-heavy and cost-sensitive."
+    )
+    assert "Recommendation" not in result.reply
+    assert "- First point" not in result.reply
 
 
 def test_format_instruction_in_system_prompt():

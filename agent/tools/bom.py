@@ -9,10 +9,11 @@ import copy
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from agent import archie_memory, sub_agent_client
-from agent.bom_service import BomService, DEFAULT_PRICE_TABLE
+from agent.bom_service import BomService, CacheSnapshot, DEFAULT_PRICE_TABLE
 from agent.persistence_objectstore import ObjectStoreBase
 from skillforge.types import MemorySnapshot, ToolResult
 
@@ -120,9 +121,11 @@ class BomHandler:
                     trace_id=trace_id,
                 )
             except sub_agent_client.SubAgentError as exc:
-                return ToolResult(
-                    summary=f"BOM sub-agent failed: {exc}",
-                    status="blocked",
+                return _fallback_bom_result(
+                    prompt=prompt,
+                    args=args,
+                    trace_id=trace_id,
+                    reason=f"BOM sub-agent failed: {exc}",
                 )
 
             if body.get("status") == "needs_input":
@@ -143,16 +146,24 @@ class BomHandler:
                     else {}
                 )
             except (TypeError, json.JSONDecodeError) as exc:
-                return ToolResult(
-                    summary=f"BOM sub-agent returned invalid JSON: {exc}",
-                    status="blocked",
+                return _fallback_bom_result(
+                    prompt=prompt,
+                    args=args,
+                    trace_id=trace_id,
+                    reason=f"BOM sub-agent returned invalid JSON: {exc}",
                 )
             bom_payload = _flag_unverified_skus(_extract_bom_payload(parsed))
             validation_error = _validate_bom_result(parsed, bom_payload)
             if not validation_error:
                 break
             if "monthly_total arithmetic error" not in validation_error or attempt == 1:
-                return _validation_blocked("bom", validation_error)
+                return _fallback_bom_result(
+                    prompt=prompt,
+                    args=args,
+                    trace_id=trace_id,
+                    reason=f"BOM validation failed: {validation_error}",
+                    incomplete_status="blocked",
+                )
             prompt = (
                 "[CORRECTION FROM PYTHON VALIDATION]\n"
                 f"{validation_error}. Recalculate monthly_total: hourly SKUs use quantity * unit_price * 730, "
@@ -160,7 +171,13 @@ class BomHandler:
                 f"{prompt}"
             )
         if validation_error:
-            return _validation_blocked("bom", validation_error)
+            return _fallback_bom_result(
+                prompt=prompt,
+                args=args,
+                trace_id=trace_id,
+                reason=f"BOM validation failed: {validation_error}",
+                incomplete_status="blocked",
+            )
         bom_payload = _enrich_bom_payload_for_prompt(
             bom_payload,
             prompt="\n".join(
@@ -313,8 +330,6 @@ def _validate_bom_result(result: dict[str, Any], bom_payload: dict[str, Any]) ->
             return f"quantity <= 0 for {item.get('sku')}"
         if price <= 0:
             return f"unit_price <= 0 for {item.get('sku')}"
-    if not (result.get("artifact_key") or bom_payload.get("artifact_key") or bom_payload.get("xlsx_key")):
-        return "missing artifact_key"
     def _monthly_multiplier(item: dict[str, Any]) -> float:
         billing = str(item.get("billing_unit") or item.get("metric") or "hour").lower()
         return 730.0 if "hour" in billing else 1.0
@@ -390,6 +405,126 @@ def _validation_blocked(tool: str, error: str) -> ToolResult:
         status="blocked",
         data={"validation_error": error, "validation_stage": "python_contract"},
     )
+
+
+def _fallback_bom_result(
+    *,
+    prompt: str,
+    args: dict[str, Any],
+    trace_id: str,
+    reason: str,
+    incomplete_status: str = "needs_input",
+) -> ToolResult:
+    service = BomService()
+    service._cache = CacheSnapshot(  # local deterministic fallback; avoids network during recovery
+        pricing_table=dict(DEFAULT_PRICE_TABLE),
+        shapes_text="OCI compute shapes catalog unavailable; using fallback guidance.",
+        services_text="OCI services catalog unavailable; using fallback guidance.",
+        refreshed_at=time.time(),
+        source="fallback_local",
+    )
+    try:
+        structured_inputs = _structured_bom_inputs_from_args(args)
+        if structured_inputs:
+            response = service.generate_from_inputs(
+                inputs=structured_inputs,
+                trace_id=trace_id,
+                model_id="local-fallback",
+            )
+        else:
+            response = service.chat(
+                message=prompt,
+                conversation=[],
+                trace_id=trace_id,
+                model_id="local-fallback",
+            )
+    except Exception as exc:
+        return ToolResult(
+            summary=(
+                "I could not complete the BOM because the specialist failed and "
+                f"the local fallback also failed: {exc}"
+            ),
+            status="blocked",
+            data={"fallback_reason": reason, "fallback_error": str(exc)},
+        )
+
+    data = dict(response or {})
+    payload = data.get("bom_payload") if isinstance(data.get("bom_payload"), dict) else {}
+    if payload:
+        payload = _flag_unverified_skus(payload)
+        payload["prices_from"] = "fallback_local"
+        data["bom_payload"] = payload
+    trace = data.get("trace", {}) if isinstance(data.get("trace"), dict) else {}
+    trace.update(
+        {
+            "fallback_used": True,
+            "fallback_reason": reason,
+            "prices_from": "fallback_local",
+        }
+    )
+    data["trace"] = trace
+    data["fallback_reason"] = reason
+    data["prices_from"] = "fallback_local"
+
+    if str(data.get("type", "") or "").lower() == "final" and payload:
+        return ToolResult(
+            summary=(
+                "Final BOM prepared using the local pricing fallback. "
+                "Review line items, then export XLSX."
+            ),
+            status="ok",
+            data=data,
+            artifact_key="",
+        )
+
+    reply = str(data.get("reply") or "").strip()
+    if incomplete_status == "blocked":
+        if "validation failed:" in reason.lower():
+            data["validation_error"] = reason.split(":", 1)[-1].strip()
+            data["validation_stage"] = "python_contract"
+        return ToolResult(
+            summary=reason,
+            status="blocked",
+            data=data,
+        )
+    clarification = (
+        "I couldn't reach the BOM specialist, and the local fallback needs a bit more sizing detail."
+    )
+    if reply and "BOM data is not ready" not in reply:
+        clarification = f"{clarification} {reply}"
+    return ToolResult(
+        summary=clarification,
+        status="needs_input",
+        clarification=clarification,
+        data=data,
+    )
+
+
+def _structured_bom_inputs_from_args(args: dict[str, Any]) -> dict[str, Any]:
+    for key in ("inputs", "structured_inputs"):
+        value = args.get(key)
+        if isinstance(value, dict) and value:
+            return dict(value)
+    if any(isinstance(args.get(key), dict) for key in ("compute", "memory", "storage")):
+        return {
+            key: copy.deepcopy(args.get(key))
+            for key in (
+                "region",
+                "architecture_option",
+                "compute",
+                "memory",
+                "storage",
+                "connectivity",
+                "dr",
+                "workloads",
+                "os_mix",
+                "target_services",
+                "workload_service_mapping",
+                "output_format",
+            )
+            if key in args
+        }
+    return {}
 
 
 def _enrich_bom_payload_for_prompt(payload: dict[str, Any], *, prompt: str) -> dict[str, Any]:

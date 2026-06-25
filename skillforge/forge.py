@@ -81,6 +81,24 @@ _EXPERT_REVIEW_MIN_CHARS = 1000
 _EXPERT_REVIEW_APPROVED = "EXPERT_APPROVED"
 _EXPERT_REVIEW_ITERATE = "EXPERT_ITERATE:"
 _EXPERT_REVIEW_SURFACE = "EXPERT_SURFACE:"
+_FINAL_SYNTHESIS_SYSTEM = (
+    "You rewrite Archie assistant output for the end user. Keep the internal "
+    "reasoning depth hidden. Return only the final user-visible answer in plain "
+    "Markdown. Be concise, natural, and direct."
+)
+_INTERNAL_RESPONSE_MARKERS = (
+    "[Internal Orchestrator Self-Guidance",
+    "[Internal Plan]",
+    "[End Internal Orchestrator Self-Guidance]",
+    "STEP 1 - UNDERSTAND:",
+    "STEP 2 - MEMORY ASSESSMENT:",
+    "STEP 3 - PLAN + HAT SELECTION:",
+    "KNOWN FACTS:",
+    "GAPS:",
+    "EXPERT ASSESSMENT:",
+    "SUB-AGENT TASK:",
+    "TOOL_RESULT(",
+)
 
 
 def _plan_has_poc_intent(plan: str) -> bool:
@@ -88,6 +106,36 @@ def _plan_has_poc_intent(plan: str) -> bool:
                 "generate_poc_plan", "options", "evaluate")
     plan_lower = plan.lower()
     return sum(1 for k in keywords if k in plan_lower) >= 2
+
+
+def _user_message_requests_formal_artifact(user_message: str) -> bool:
+    text = str(user_message or "").lower()
+    artifact_terms = (
+        "bom",
+        "bill of materials",
+        "diagram",
+        "draw.io",
+        "drawio",
+        "jep",
+        "joint execution plan",
+        "terraform",
+        "waf",
+        "well-architected",
+        "pov",
+        "point of view",
+    )
+    action_terms = (
+        "build",
+        "create",
+        "generate",
+        "draft",
+        "make",
+        "need",
+        "produce",
+    )
+    return any(term in text for term in artifact_terms) and any(
+        term in text for term in action_terms
+    )
 
 
 def _memory_has_poc_recommendation(memory) -> bool:
@@ -960,6 +1008,14 @@ class Forge:
 
         context["_active_hats"] = active_hats
         context["_hat_rounds"] = hat_rounds
+        if not reply.strip() and tool_calls:
+            reply = _synthesize_reply_from_tool_calls(tool_calls)
+        reply = await self._synthesize_final_user_reply(
+            user_message=user_message,
+            reply=reply,
+            tool_calls=tool_calls,
+            session_id=session_id,
+        )
 
         return TurnResult(
             reply=reply,
@@ -971,6 +1027,48 @@ class Forge:
             expert_surfaces=_expert_surfaces,
             iterations_used=_iterations_used,
         )
+
+    async def _synthesize_final_user_reply(
+        self,
+        *,
+        user_message: str,
+        reply: str,
+        tool_calls: list[ToolCall],
+        session_id: str,
+    ) -> str:
+        cleaned = _strip_internal_response_artifacts(reply)
+        direct_tool_reply = _direct_tool_outcome_reply(tool_calls)
+        if direct_tool_reply:
+            return direct_tool_reply
+        if not _needs_final_synthesis(
+            user_message=user_message,
+            reply=cleaned,
+            tool_calls=tool_calls,
+        ):
+            return cleaned
+
+        fallback = _deterministic_clean_reply(
+            user_message=user_message,
+            reply=cleaned,
+            tool_calls=tool_calls,
+        )
+        prompt = _build_final_synthesis_prompt(
+            user_message=user_message,
+            current_reply=cleaned,
+            tool_calls=tool_calls,
+        )
+        try:
+            raw = await self._text_runner(prompt, _FINAL_SYNTHESIS_SYSTEM, "final_synthesis")
+        except Exception as exc:
+            logger.warning("Final synthesis failed session=%s: %s", session_id, exc)
+            return fallback
+
+        if _parse_tool_call(raw) is not _NO_TOOL:
+            return fallback
+        synthesized = _strip_internal_response_artifacts(str(raw or ""))
+        if not synthesized or _reply_leaks_internal_artifacts(synthesized):
+            return fallback
+        return synthesized
 
     async def run_turn_background(
         self,
@@ -1183,6 +1281,7 @@ class Forge:
 
         if (
             _plan_has_poc_intent(planning_text)
+            and not _user_message_requests_formal_artifact(user_message)
             and not _memory_has_poc_recommendation(memory_snapshot)
         ):
             planning_text = (
@@ -1886,6 +1985,265 @@ def _extract_balanced(text: str, start: int) -> str | None:
             if depth == 0:
                 return text[start : i + 1]
     return None
+
+
+def _tool_display_name(tool_name: str) -> str:
+    return {
+        "generate_bom": "BOM",
+        "generate_diagram": "diagram",
+        "generate_terraform": "Terraform bundle",
+        "generate_pov": "POV",
+        "generate_jep": "JEP",
+        "generate_waf": "WAF review",
+        "generate_tech_report": "technical research report",
+        "generate_presentation": "presentation",
+        "generate_sales_deck": "sales deck",
+        "generate_sta": "STA",
+        "generate_technical_proposal": "technical proposal",
+        "save_notes": "notes",
+    }.get(str(tool_name or ""), str(tool_name or "tool").replace("_", " "))
+
+
+def _reply_leaks_internal_artifacts(reply: str) -> bool:
+    text = str(reply or "")
+    if any(marker in text for marker in _INTERNAL_RESPONSE_MARKERS):
+        return True
+    return bool(re.search(r"(?im)^Management Summary\s*$", text))
+
+
+def _strip_internal_response_artifacts(reply: str) -> str:
+    text = str(reply or "").strip()
+    if not text:
+        return ""
+    text = re.sub(
+        r"\[Internal Orchestrator Self-Guidance[^\]]*\].*?\[End Internal Orchestrator Self-Guidance\]",
+        "",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    text = re.split(r"(?im)^Management Summary\s*$", text, maxsplit=1)[0]
+    kept: list[str] = []
+    skip_prefixes = (
+        "STEP 1 - UNDERSTAND:",
+        "STEP 2 - MEMORY ASSESSMENT:",
+        "STEP 3 - PLAN + HAT SELECTION:",
+        "KNOWN FACTS:",
+        "GAPS:",
+        "EXPERT ASSESSMENT:",
+        "SUB-AGENT TASK:",
+        "[Internal Plan]",
+        "[End Internal Orchestrator Self-Guidance]",
+    )
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            kept.append("")
+            continue
+        if stripped.startswith("TOOL_RESULT("):
+            continue
+        if any(stripped.startswith(prefix) for prefix in skip_prefixes):
+            continue
+        kept.append(line.rstrip())
+    cleaned = "\n".join(kept)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def _is_simple_conversation_question(user_message: str) -> bool:
+    text = str(user_message or "").strip().lower()
+    if not text or _user_message_requests_formal_artifact(text):
+        return False
+    simple_markers = (
+        "why",
+        "what do you think",
+        "what's your take",
+        "whats your take",
+        "should we",
+        "would you",
+        "do you think",
+        "does this make sense",
+        "is this",
+        "can you explain why",
+    )
+    return any(text.startswith(marker) or marker in text for marker in simple_markers)
+
+
+def _reply_looks_overstructured(reply: str) -> bool:
+    lines = [line.strip() for line in str(reply or "").splitlines() if line.strip()]
+    if not lines:
+        return False
+    if _reply_leaks_internal_artifacts(reply):
+        return True
+    bullet_count = sum(1 for line in lines if re.match(r"^([-*]|\d+\.)\s+", line))
+    heading_count = sum(1 for line in lines if line.startswith("#") or line.endswith(":"))
+    return bullet_count >= 4 or heading_count >= 3 or len(lines) >= 14
+
+
+def _needs_final_synthesis(
+    *,
+    user_message: str,
+    reply: str,
+    tool_calls: list[ToolCall],
+) -> bool:
+    text = str(reply or "").strip()
+    if not text:
+        return False
+    if _reply_leaks_internal_artifacts(text):
+        return True
+    if _is_simple_conversation_question(user_message) and (
+        len(text) > 700 or _reply_looks_overstructured(text)
+    ):
+        return True
+    if tool_calls and (len(text) > 1200 or _reply_looks_overstructured(text)):
+        return True
+    return False
+
+
+def _build_final_synthesis_prompt(
+    *,
+    user_message: str,
+    current_reply: str,
+    tool_calls: list[ToolCall],
+) -> str:
+    tool_lines: list[str] = []
+    for call in tool_calls[-6:]:
+        artifact = str(call.result.artifact_key or "").strip()
+        artifact_clause = f" artifact_key={artifact}" if artifact else ""
+        tool_lines.append(
+            f"- {_tool_display_name(call.tool)} status={call.result.status}: "
+            f"{str(call.result.summary or '').strip()}{artifact_clause}"
+        )
+    tool_block = "\n".join(tool_lines) if tool_lines else "No tools ran."
+    return (
+        "Rewrite the assistant response for the user.\n"
+        "- Start with the direct answer or result.\n"
+        "- For simple why/opinion questions, answer in 1-3 short paragraphs.\n"
+        "- For artifact requests, state what was produced and include any artifact key.\n"
+        "- If something failed or needs input, say that clearly and give the next useful step.\n"
+        "- Do not include headings, tables, Management Summary, tool traces, or internal reasoning.\n"
+        "- Use bullets only if they make the answer materially easier to scan.\n\n"
+        f"User message:\n{user_message}\n\n"
+        f"Tool outcomes:\n{tool_block}\n\n"
+        f"Current assistant draft:\n{current_reply}\n\n"
+        "Final answer:"
+    )
+
+
+def _first_plain_sentence(text: str) -> str:
+    cleaned = re.sub(r"(?m)^#+\s*", "", str(text or "")).strip()
+    cleaned = re.sub(r"(?m)^[-*]\s+", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return ""
+    match = re.search(r"(.+?[.!?])(?:\s|$)", cleaned)
+    return match.group(1).strip() if match else cleaned[:320].strip()
+
+
+def _deterministic_clean_reply(
+    *,
+    user_message: str,
+    reply: str,
+    tool_calls: list[ToolCall],
+) -> str:
+    cleaned = _strip_internal_response_artifacts(reply)
+    if tool_calls and (not cleaned or _reply_looks_overstructured(cleaned)):
+        return _synthesize_reply_from_tool_calls(tool_calls)
+    if _is_simple_conversation_question(user_message) and _reply_looks_overstructured(cleaned):
+        sentence = _first_plain_sentence(cleaned)
+        return sentence or cleaned
+    return cleaned or _synthesize_reply_from_tool_calls(tool_calls)
+
+
+def _direct_tool_outcome_reply(tool_calls: list[ToolCall]) -> str:
+    """
+    Preserve actionable tool outcomes that should not be rewritten by an LLM.
+
+    Governor checkpoints and blocks are control-flow decisions, not prose drafts.
+    Returning them directly prevents a final synthesis pass from hiding the
+    reason a document was not exposed.
+    """
+    if not tool_calls:
+        return ""
+    latest_by_tool: dict[str, ToolCall] = {}
+    tool_order: list[str] = []
+    for call in tool_calls:
+        if call.tool not in latest_by_tool:
+            tool_order.append(call.tool)
+        latest_by_tool[call.tool] = call
+
+    actionable: list[str] = []
+    for tool_name in tool_order:
+        call = latest_by_tool[tool_name]
+        data = call.result.data if isinstance(call.result.data, dict) else {}
+        governor = data.get("governor") if isinstance(data.get("governor"), dict) else {}
+        governor_status = str(governor.get("overall_status", "") or "").strip().lower()
+        if governor_status in {"checkpoint_required", "blocked", "revise"}:
+            checkpoint = data.get("checkpoint") if isinstance(data.get("checkpoint"), dict) else {}
+            message = str(checkpoint.get("prompt", "") or governor.get("decision_summary", "") or call.result.summary or "").strip()
+            if message:
+                actionable.append(message)
+
+    if not actionable:
+        return ""
+    return "\n\n".join(dict.fromkeys(actionable)).strip()
+
+
+def _synthesize_reply_from_tool_calls(tool_calls: list[ToolCall]) -> str:
+    """
+    Build a non-empty user reply when the model exhausts the loop after tools.
+
+    This keeps successful artifact-producing turns from being persisted as blank
+    assistant messages if the LLM keeps calling tools and never writes prose.
+    """
+    latest_by_tool: dict[str, ToolCall] = {}
+    tool_order: list[str] = []
+    for call in tool_calls:
+        if call.tool not in latest_by_tool:
+            tool_order.append(call.tool)
+        latest_by_tool[call.tool] = call
+
+    successes: list[str] = []
+    issues: list[str] = []
+    artifacts: list[str] = []
+    for tool_name in tool_order:
+        call = latest_by_tool[tool_name]
+        label = _tool_display_name(tool_name)
+        summary = str(call.result.summary or "").strip()
+        if not summary:
+            summary = f"{label} finished with status {call.result.status}."
+        artifact = str(call.result.artifact_key or "").strip()
+        if call.result.status == "ok":
+            successes.append(f"{label}: {summary}")
+            if artifact:
+                artifacts.append(f"{label} `{artifact}`")
+        elif call.result.status == "needs_input":
+            issues.append(summary)
+        else:
+            issues.append(f"{label}: {summary}")
+
+    if len(tool_order) == 1:
+        call = latest_by_tool[tool_order[0]]
+        label = _tool_display_name(call.tool)
+        summary = str(call.result.summary or "").strip()
+        artifact = str(call.result.artifact_key or "").strip()
+        if call.result.status == "ok":
+            if artifact:
+                return f"Done — the {label} is ready: `{artifact}`."
+            if summary:
+                return f"Done — {summary}"
+            return f"Done — the {label} completed, but I do not see a saved artifact key yet."
+        if call.result.status == "needs_input":
+            return summary or f"I need one more detail before I can finish the {label}."
+        return f"I could not complete the {label}: {summary or 'the tool failed before returning a usable result.'}"
+
+    parts: list[str] = []
+    if successes:
+        parts.append("I finished the requested outputs: " + "; ".join(successes) + ".")
+    if artifacts:
+        parts.append("Files: " + ", ".join(artifacts) + ".")
+    if issues:
+        parts.append("One thing still needs attention: " + "; ".join(issues) + ".")
+    return " ".join(parts).strip() or "I could not complete the requested tool work."
 
 
 def _append_result(prompt: str, tool_name: str, summary: str) -> str:
