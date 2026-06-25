@@ -17,7 +17,9 @@ Primary bucket layout (all paths are relative to the root bucket):
   customers/{customer_id}/pov/feedback.json            — append-only SA feedback history
 
   customers/{customer_id}/jep/v{n}.md                  — JEP versions
+  customers/{customer_id}/jep/v{n}.docx                — C3E-formatted JEP Word versions
   customers/{customer_id}/jep/LATEST.md
+  customers/{customer_id}/jep/LATEST.docx
   customers/{customer_id}/jep/MANIFEST.json
   customers/{customer_id}/jep/v{n}_prompt_log.json
   customers/{customer_id}/jep/feedback.json
@@ -46,6 +48,10 @@ from agent.persistence_objectstore import ObjectStoreBase
 from agent.note_extractor import extract_text
 
 logger = logging.getLogger(__name__)
+
+JEP_DOCX_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
 
 
 # ── Key layout helpers ───────────────────────────────────────────────────────
@@ -399,6 +405,81 @@ def save_doc(
     }
 
 
+def validate_jep_docx_filename(filename: str) -> str:
+    safe = str(filename or "").strip()
+    if not re.fullmatch(r"(?:v\d+|LATEST)\.docx", safe):
+        raise ValueError("Invalid JEP DOCX filename")
+    return safe
+
+
+def save_jep_docx(
+    store: ObjectStoreBase,
+    customer_id: str,
+    version: int,
+    content: bytes,
+    metadata: Optional[dict] = None,
+) -> dict:
+    """
+    Save a C3E-formatted Word rendering for an existing JEP Markdown version.
+
+    Writes:
+      1. jep/{customer_id}/v{n}.docx
+      2. jep/{customer_id}/LATEST.docx
+      3. JEP manifest metadata with DOCX artifact keys
+    """
+    version = int(version)
+    filename = f"v{version}.docx"
+    version_key = _doc_key("jep", customer_id, filename, customer_first=False)
+    version_customer_key = _doc_key("jep", customer_id, filename, customer_first=True)
+    latest_key = _doc_key("jep", customer_id, "LATEST.docx", customer_first=False)
+    latest_customer_key = _doc_key("jep", customer_id, "LATEST.docx", customer_first=True)
+
+    _put_dual(
+        store,
+        customer_key=version_customer_key,
+        legacy_key=version_key,
+        content=bytes(content),
+        content_type=JEP_DOCX_CONTENT_TYPE,
+    )
+    _put_dual(
+        store,
+        customer_key=latest_customer_key,
+        legacy_key=latest_key,
+        content=bytes(content),
+        content_type=JEP_DOCX_CONTENT_TYPE,
+    )
+
+    docx_metadata = {
+        "docx_key": version_key,
+        "docx_customer_key": version_customer_key,
+        "docx_latest_key": latest_key,
+        "docx_latest_customer_key": latest_customer_key,
+        "docx_filename": filename,
+        "docx_content_type": JEP_DOCX_CONTENT_TYPE,
+    }
+    if metadata:
+        docx_metadata["docx_metadata"] = dict(metadata)
+    merge_latest_doc_metadata(store, "jep", customer_id, docx_metadata)
+    logger.info("JEP DOCX saved: key=%s version=%d", version_key, version)
+    return docx_metadata
+
+
+def get_jep_docx(
+    store: ObjectStoreBase,
+    customer_id: str,
+    filename: str,
+) -> Optional[bytes]:
+    safe_filename = validate_jep_docx_filename(filename)
+    keys = [
+        _doc_key("jep", customer_id, safe_filename, customer_first=True),
+        _doc_key("jep", customer_id, safe_filename, customer_first=False),
+    ]
+    try:
+        return _get_first_bytes(store, keys)
+    except KeyError:
+        return None
+
+
 def list_versions(
     store: ObjectStoreBase,
     doc_type: str,
@@ -688,6 +769,38 @@ def save_conversation_turns(
         content=payload,
         content_type="application/json",
     )
+
+
+def update_latest_assistant_turn(
+    store: ObjectStoreBase,
+    customer_id: str,
+    patch: dict,
+) -> bool:
+    """
+    Merge ``patch`` into the most recent assistant turn in conversation history.
+    """
+    if not isinstance(patch, dict) or not patch:
+        return False
+    key = _conversation_key(customer_id, "history.json", customer_first=False)
+    customer_key = _conversation_key(customer_id, "history.json", customer_first=True)
+    history = _get_first_json(store, [customer_key, key], [])
+    if not isinstance(history, list):
+        return False
+    for idx in range(len(history) - 1, -1, -1):
+        turn = history[idx]
+        if not isinstance(turn, dict) or turn.get("role") != "assistant":
+            continue
+        history[idx] = {**turn, **patch}
+        payload = json.dumps(history, indent=2).encode("utf-8")
+        _put_dual(
+            store,
+            customer_key=customer_key,
+            legacy_key=key,
+            content=payload,
+            content_type="application/json",
+        )
+        return True
+    return False
 
 
 def load_conversation_history(

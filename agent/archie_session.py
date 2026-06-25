@@ -2627,6 +2627,31 @@ def _artifact_downloads_from_context(
                 }
             )
 
+    jep = dict((agents or {}).get("jep", {}) or {})
+    context_jep_key = str(jep.get("docx_key", "") or "").strip()
+    if context_jep_key and store.head(context_jep_key):
+        filename = str(jep.get("docx_filename") or context_jep_key.split("/")[-1]).strip()
+        downloads.append(
+            {
+                "type": "jep",
+                "key": context_jep_key,
+                "download_url": f"/api/jep/{customer_id}/download/{filename}",
+            }
+        )
+    for key in sorted(store.list(f"customers/{customer_id}/jep/"), reverse=True):
+        if not key.endswith(".docx") or key.endswith("/LATEST.docx"):
+            continue
+        if all(item.get("key") != key for item in downloads):
+            filename = key.split("/")[-1]
+            downloads.append(
+                {
+                    "type": "jep",
+                    "key": key,
+                    "download_url": f"/api/jep/{customer_id}/download/{filename}",
+                }
+            )
+            break
+
     terraform = document_store.get_latest_terraform_bundle(store, customer_id)
     if isinstance(terraform, dict):
         files = terraform.get("files", {}) if isinstance(terraform.get("files"), dict) else {}
@@ -3282,6 +3307,30 @@ async def _legacy_tool_core_compat(
         return f"Terraform bundle v{saved.get('version')} saved. Key: {key}", key, response
     if tool_name in {"generate_pov", "generate_jep", "generate_waf"}:
         agent_name = tool_name.replace("generate_", "")
+        if tool_name == "generate_jep":
+            import agent.jep_lifecycle as jep_lifecycle
+
+            policy_block = await asyncio.to_thread(
+                jep_lifecycle.generate_policy_block_payload,
+                store,
+                customer_id,
+            )
+            if policy_block is not None:
+                return (
+                    "JEP generation is locked because an approved JEP exists. Request revision first.",
+                    "",
+                    {
+                        "jep_state": policy_block.get("jep_state", {}),
+                        "reason_codes": list(policy_block.get("reason_codes", [])),
+                        "required_next_step": policy_block.get("required_next_step", ""),
+                        "lock_outcome": "blocked",
+                        "trace": {
+                            "lock_outcome": "blocked",
+                            "reason_codes": list(policy_block.get("reason_codes", [])),
+                            "jep_state": policy_block.get("jep_state", {}),
+                        },
+                    },
+                )
         feedback = str(args.get("feedback", "") or "")
         response = await sub_agent_client.call_sub_agent(
             agent_name,
@@ -3306,6 +3355,19 @@ async def _legacy_tool_core_compat(
         response["result_length"] = len(content)
         response.pop("result", None)
         key = str(saved.get("key", "") or "")
+        if tool_name == "generate_jep":
+            from agent.jep_docx_renderer import render_jep_docx
+
+            docx_bytes = render_jep_docx(content, customer_name=customer_name)
+            docx = await asyncio.to_thread(
+                document_store.save_jep_docx,
+                store,
+                customer_id,
+                int(saved.get("version") or 1),
+                docx_bytes,
+                {"customer_name": customer_name, "source": "legacy_tool_core"},
+            )
+            response.update(docx)
         return f"{agent_name.upper()} v{saved.get('version')} saved. Key: {key}", key, response
     if tool_name == "generate_bom":
         response = await sub_agent_client.call_sub_agent("bom", str(args.get("prompt") or ""), {}, str(uuid.uuid4()))

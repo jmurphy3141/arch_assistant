@@ -8,7 +8,9 @@ from fastapi.responses import JSONResponse, Response
 
 from agent.context_store import read_context, write_context, merge_archie_relationship_facts
 from agent.document_store import (
+    JEP_DOCX_CONTENT_TYPE,
     get_approved_doc,
+    get_jep_docx,
     get_jep_questions,
     get_latest_doc,
     get_latest_terraform_bundle,
@@ -20,6 +22,7 @@ from agent.document_store import (
     save_jep_questions,
     save_note,
     save_note_text,
+    validate_jep_docx_filename,
 )
 from agent.note_extractor import extract_text
 from agent.jep_lifecycle import (
@@ -238,6 +241,13 @@ def create_documents_router(deps) -> APIRouter:
                 "key": result["key"],
                 "latest_key": result["latest_key"],
                 "content": result["content"],
+                "docx_key": result.get("docx_key", ""),
+                "docx_filename": result.get("docx_filename", ""),
+                "docx_download_url": (
+                    f"/api/jep/{req.customer_id}/download/{result.get('docx_filename')}"
+                    if result.get("docx_filename")
+                    else ""
+                ),
                 "bom": result.get("bom"),
                 "diagram_key": result.get("diagram_key"),
                 "jep_state": jep_state,
@@ -257,6 +267,27 @@ def create_documents_router(deps) -> APIRouter:
             raise HTTPException(status_code=404, detail=f"No JEP found for customer_id={customer_id!r}")
         jep_state = await anyio.to_thread.run_sync(functools.partial(sync_jep_state, store, customer_id))
         return {"status": "ok", "customer_id": customer_id, "doc_type": "jep", "content": content, "jep_state": jep_state}
+
+    @router.get("/api/jep/{customer_id}/download/{filename}")
+    async def jep_download_docx(customer_id: str, filename: str):
+        store = deps.require_object_store()
+        try:
+            safe_filename = validate_jep_docx_filename(filename)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        content = await anyio.to_thread.run_sync(
+            functools.partial(get_jep_docx, store, customer_id, safe_filename)
+        )
+        if content is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"JEP Word document {safe_filename!r} not found for customer {customer_id!r}",
+            )
+        return Response(
+            content=content,
+            media_type=JEP_DOCX_CONTENT_TYPE,
+            headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+        )
 
     @router.get("/api/jep/{customer_id}/versions")
     async def jep_versions(customer_id: str):

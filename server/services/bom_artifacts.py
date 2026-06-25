@@ -40,6 +40,7 @@ def build_artifact_manifest(customer_id: str, result: dict) -> dict:
     manifest: dict[str, list[dict]] = {"downloads": []}
     seen_diagram_keys: set[str] = set()
     seen_bom_keys: set[str] = set()
+    seen_jep_keys: set[str] = set()
 
     def _append_diagram_download(artifact_key: str, *, tool_name: str, scenario_label: str = "") -> None:
         if not artifact_key or artifact_key in seen_diagram_keys:
@@ -101,6 +102,30 @@ def build_artifact_manifest(customer_id: str, result: dict) -> dict:
                 "filename": filename,
                 "download_url": (
                     f"/api/bom/{urllib.parse.quote(customer_id)}/download/"
+                    f"{urllib.parse.quote(filename)}"
+                ),
+            }
+        )
+
+    for tool_call in result.get("tool_calls", []) or []:
+        if tool_call.get("tool") != "generate_jep":
+            continue
+        result_data = tool_call.get("result_data", {}) or {}
+        if not isinstance(result_data, dict):
+            continue
+        artifact_key = str(result_data.get("docx_key") or "").strip()
+        filename = str(result_data.get("docx_filename") or "").strip()
+        if not artifact_key or not filename or artifact_key in seen_jep_keys:
+            continue
+        seen_jep_keys.add(artifact_key)
+        manifest["downloads"].append(
+            {
+                "type": "jep",
+                "tool": "generate_jep",
+                "key": artifact_key,
+                "filename": filename,
+                "download_url": (
+                    f"/api/jep/{urllib.parse.quote(customer_id)}/download/"
                     f"{urllib.parse.quote(filename)}"
                 ),
             }
@@ -170,6 +195,7 @@ def _artifact_delivery_sentence(downloads: list[dict]) -> str:
         label = {
             "bom": "BOM workbook",
             "diagram": "diagram",
+            "jep": "JEP Word document",
             "terraform": "Terraform file",
         }.get(artifact_type, artifact_type or "artifact")
         links.append(f"{label}: [{filename}]({url})")
