@@ -438,6 +438,16 @@ async def run_turn(
     if action_reply is not None:
         return _finalize_turn(action_reply)
 
+    if _is_active_poc_recall_intent(user_message):
+        return _finalize_turn(
+            _build_active_poc_recall_reply(
+                context=context,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                store=store,
+            )
+        )
+
     prompt = _build_prompt(
         history,
         summary,
@@ -2953,6 +2963,26 @@ def _is_recall_intent(user_message: str) -> bool:
         )
     )
 
+def _is_active_poc_recall_intent(user_message: str) -> bool:
+    msg = f" {str(user_message or '').lower()} "
+    if "poc" not in msg or _requested_generation_tools(user_message):
+        return False
+    if any(marker in msg for marker in ("should", "options", "ideas", "recommend", "explore", "build for")):
+        return False
+    return any(
+        marker in msg
+        for marker in (
+            "what poc",
+            "which poc",
+            "current poc",
+            "poc are we working on",
+            "poc we're working on",
+            "poc is this",
+            "poc scope",
+        )
+    )
+
+
 def _is_migration_target_recall_intent(user_message: str) -> bool:
     msg = (user_message or "").lower()
     return any(
@@ -2970,6 +3000,117 @@ def _build_recall_reply(context: dict[str, Any]) -> str:
     if not summary:
         return "I don't have persisted Archie context for this customer yet."
     return "Here is the latest persisted Archie engagement state:\n\n" + summary
+
+
+def _build_active_poc_recall_reply(
+    *,
+    context: dict[str, Any],
+    customer_id: str,
+    customer_name: str,
+    store: ObjectStoreBase,
+) -> str:
+    facts = _active_poc_facts(context=context, customer_id=customer_id, store=store)
+    if not facts:
+        return (
+            "I don't have a verified POC recorded for this customer yet. "
+            "Give me the current POC scope or ask me to explore POC options, and I'll anchor the artifacts to that."
+        )
+
+    name = facts.get("name") or "the current POC"
+    lines = [f"We're working on {name} for {customer_name}."]
+    details = [str(item).strip() for item in facts.get("details", []) if str(item).strip()]
+    if details:
+        lines.append(" ".join(details[:3]))
+    artifacts = [str(item).strip() for item in facts.get("artifacts", []) if str(item).strip()]
+    if artifacts:
+        lines.append("Current artifacts: " + "; ".join(artifacts[:4]) + ".")
+    return "\n\n".join(lines).strip()
+
+
+def _active_poc_facts(
+    *,
+    context: dict[str, Any],
+    customer_id: str,
+    store: ObjectStoreBase,
+) -> dict[str, Any]:
+    facts: dict[str, Any] = {"details": [], "artifacts": []}
+    agents = context.get("agents", {}) if isinstance(context, dict) else {}
+    if not isinstance(agents, dict):
+        agents = {}
+    archie = context_store.get_archie_state(context) if isinstance(context, dict) else {}
+    resolved = archie.get("resolved_decisions", {}) if isinstance(archie, dict) else {}
+    poc = resolved.get("poc", {}) if isinstance(resolved, dict) and isinstance(resolved.get("poc"), dict) else {}
+    if poc.get("recommended_option"):
+        facts["name"] = str(poc.get("recommended_option")).strip()
+        success = str(poc.get("success_criteria", "") or "").strip()
+        if success:
+            facts["details"].append(f"Success criteria: {success}.")
+
+    latest_jep = document_store.get_latest_doc(store, "jep", customer_id)
+    if latest_jep:
+        heading = _first_markdown_heading(latest_jep)
+        if heading and "name" not in facts:
+            facts["name"] = _clean_jep_poc_heading(heading)
+        summary = _first_jep_summary_sentence(latest_jep)
+        if summary:
+            facts["details"].append(summary)
+        facts["artifacts"].append("JEP saved")
+
+    diagram = agents.get("diagram", {}) if isinstance(agents.get("diagram"), dict) else {}
+    diagram_name = str(diagram.get("diagram_name", "") or "").strip()
+    diagram_key = str(diagram.get("diagram_key", "") or diagram.get("artifact_ref", "") or "").strip()
+    deployment = str(diagram.get("deployment_summary", "") or "").strip()
+    if diagram_name and "name" not in facts:
+        facts["name"] = diagram_name.replace("_", " ").replace("-", " ")
+    if deployment:
+        facts["details"].append(f"Architecture: {deployment}.")
+    if diagram_key:
+        facts["artifacts"].append(f"diagram {diagram_key}")
+
+    bom = agents.get("bom", {}) if isinstance(agents.get("bom"), dict) else {}
+    bom_summary = str(bom.get("summary", "") or "").strip()
+    if bom_summary:
+        facts["details"].append(f"BOM: {bom_summary}.")
+    bom_key = str(bom.get("xlsx_artifact_key", "") or "").strip()
+    if bom_key:
+        facts["artifacts"].append(f"BOM {bom_key}")
+
+    memory = context_store.get_archie_memory(context) if isinstance(context, dict) else {}
+    memory_summary = str(memory.get("memory_summary", "") or "").strip() if isinstance(memory, dict) else ""
+    if memory_summary:
+        facts["details"].append(f"Context: {memory_summary}.")
+
+    if not facts.get("name") and not facts["details"] and not facts["artifacts"]:
+        return {}
+    return facts
+
+
+def _first_markdown_heading(markdown: str) -> str:
+    for line in str(markdown or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip()
+    return ""
+
+
+def _clean_jep_poc_heading(heading: str) -> str:
+    text = re.sub(r"(?i)^joint\s+execution\s+plan\s*[-—:]*\s*", "", str(heading or "")).strip()
+    return text or "the current POC"
+
+
+def _first_jep_summary_sentence(markdown: str) -> str:
+    section = re.search(
+        r"(?ims)^##+\s+(?:\d+\.\s*)?Executive Summary\s*$"
+        r"(?P<body>.*?)(?=^##+\s+|\Z)",
+        str(markdown or ""),
+    )
+    body = section.group("body").strip() if section else ""
+    if not body:
+        return ""
+    body = re.sub(r"\s+", " ", body)
+    sentence = re.split(r"(?<=[.!?])\s+", body, maxsplit=1)[0].strip()
+    return sentence[:500]
+
 
 def _build_update_plan_from_context(context: dict[str, Any], *, change_request: str = "") -> list[str]:
     agents = context.get("agents", {}) if isinstance(context, dict) else {}
@@ -3332,10 +3473,48 @@ async def _legacy_tool_core_compat(
                     },
                 )
         feedback = str(args.get("feedback", "") or "")
+        task = feedback or f"Generate {agent_name.upper()} from current engagement context."
+        engagement_context = {
+            "customer_id": customer_id,
+            "customer_name": customer_name,
+            "feedback": feedback,
+            "architect_brief": dict(args.get("_architect_brief", {}) or {}),
+        }
+        if tool_name == "generate_jep":
+            from agent.tools import specialists as _specialist_helpers
+
+            context = await asyncio.to_thread(
+                context_store.read_context,
+                store,
+                customer_id,
+                customer_name,
+            )
+            revision_context = await _specialist_helpers._latest_jep_revision_context(
+                store,
+                customer_id,
+            )
+            if _specialist_helpers._is_vague_jep_revision_request(task) and not revision_context.get("prior_version"):
+                clarify = (
+                    "I don't have an existing JEP to update for this customer yet. "
+                    "Provide the current JEP or ask me to create a new JEP from the confirmed POC scope."
+                )
+                return clarify, "", {"status": "needs_input"}
+            engagement_context.update(revision_context)
+            engagement_context.update(
+                _specialist_helpers._jep_grounding_context(
+                    context=context,
+                    args=args,
+                    memory_raw=context,
+                )
+            )
+            task = _specialist_helpers._hydrate_jep_task(
+                task,
+                engagement_context=engagement_context,
+            )
         response = await sub_agent_client.call_sub_agent(
             agent_name,
-            feedback or f"Generate {agent_name.upper()} from current engagement context.",
-            {"customer_id": customer_id, "customer_name": customer_name, "feedback": feedback, "architect_brief": dict(args.get("_architect_brief", {}) or {})},
+            task,
+            engagement_context,
             str(uuid.uuid4()),
         )
         if str(response.get("status") or "").lower() == "needs_input":
@@ -3344,6 +3523,23 @@ async def _legacy_tool_core_compat(
         if tool_name == "generate_waf":
             content = _ensure_waf_markdown_sections(content)
             response["result"] = content
+        if tool_name == "generate_jep":
+            from agent.tools import specialists as _specialist_helpers
+
+            if _specialist_helpers._is_jep_kickoff_questions(content):
+                return content.strip(), "", {"status": "needs_input", **response}
+            review_findings = _specialist_helpers._jep_writer_review_findings(content)
+            if review_findings:
+                return (
+                    "JEP failed JEP Writer review before persistence: "
+                    + "; ".join(review_findings),
+                    "",
+                    {
+                        **response,
+                        "review_verdict": "blocked",
+                        "review_findings": review_findings,
+                    },
+                )
         saved = await asyncio.to_thread(
             document_store.save_doc,
             store,

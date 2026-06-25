@@ -10,6 +10,7 @@ import agent.orchestrator_agent as orchestrator_agent
 import agent.archie_session as archie_session
 import agent.archie_memory as archie_memory
 from agent import context_store
+from agent.tools import specialists as specialists_module
 from agent import sub_agent_client
 from agent.persistence_objectstore import InMemoryObjectStore
 
@@ -56,6 +57,152 @@ def test_simple_why_question_gets_clean_answer_without_mission_nudge() -> None:
     )
     assert "next required artifact" not in result["reply"]
     assert result["tool_calls"] == []
+
+
+def test_active_poc_question_uses_persisted_context_without_poc_tool() -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "active-poc", "RGA")
+    context_store.set_resolved_decisions(
+        ctx,
+        poc={
+            "recommended_option": "AskRGA RAG + GenAI PoC",
+            "success_criteria": "Answer telemetry questions with citations in under 5 seconds.",
+        },
+    )
+    context_store.record_agent_run(
+        ctx,
+        "diagram",
+        [],
+        {
+            "version": 4,
+            "diagram_name": "askrga-rag-genai",
+            "diagram_key": "diagrams/active-poc/askrga/v4/diagram.drawio",
+            "deployment_summary": "RAG retrieval and GenAI response path",
+        },
+    )
+    context_store.record_agent_run(
+        ctx,
+        "bom",
+        [],
+        {
+            "version": 5,
+            "summary": "100GB repository and 1M tokens/day",
+            "estimated_monthly_cost": 1234,
+        },
+    )
+    context_store.write_context(store, "active-poc", ctx)
+    archie_session.document_store.save_doc(
+        store,
+        "jep",
+        "active-poc",
+        """# Joint Execution Plan - AskRGA RAG + GenAI PoC
+
+## Executive Summary
+RGA will validate a RAG and GenAI assistant for telemetry questions using OCI services and governed external inference.
+""",
+        {"source": "test"},
+    )
+
+    def _text_runner(prompt: str, system_message: str) -> str:
+        _ = (prompt, system_message)
+        raise AssertionError("POC recall should not call the LLM")
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="active-poc",
+            customer_name="RGA",
+            user_message="what POC are we working on",
+            store=store,
+            text_runner=_text_runner,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert result["tool_calls"] == []
+    assert "AskRGA RAG + GenAI PoC" in result["reply"]
+    assert "diagrams/active-poc/askrga/v4/diagram.drawio" in result["reply"]
+    assert "generate_poc_plan" not in result["reply"]
+
+
+def test_active_poc_question_without_context_is_clear_without_tool_call() -> None:
+    def _text_runner(prompt: str, system_message: str) -> str:
+        _ = (prompt, system_message)
+        raise AssertionError("empty POC recall should not call the LLM")
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="active-poc-empty",
+            customer_name="RGA",
+            user_message="what POC are we working on",
+            store=InMemoryObjectStore(),
+            text_runner=_text_runner,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert result["tool_calls"] == []
+    assert "verified POC" in result["reply"]
+    assert "generate_poc_plan" not in result["reply"]
+
+
+def test_legacy_jep_update_uses_prior_jep_and_artifact_context(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    archie_session.document_store.save_doc(
+        store,
+        "jep",
+        "legacy-jep",
+        "# Joint Execution Plan - AskRGA RAG + GenAI PoC\n\n## Executive Summary\nExisting base.",
+        {"source": "test"},
+    )
+    ctx = context_store.read_context(store, "legacy-jep", "RGA")
+    context_store.set_resolved_decisions(
+        ctx,
+        poc={"recommended_option": "AskRGA RAG + GenAI PoC"},
+    )
+    context_store.record_agent_run(
+        ctx,
+        "diagram",
+        [],
+        {
+            "version": 4,
+            "diagram_name": "askrga-rag-genai",
+            "diagram_key": "diagrams/legacy-jep/askrga/v4/diagram.drawio",
+        },
+    )
+    context_store.write_context(store, "legacy-jep", ctx)
+    captured = {}
+
+    async def _fake_call_sub_agent(name, task, engagement_context, trace_id):
+        _ = trace_id
+        assert name == "jep"
+        captured["task"] = task
+        captured["engagement_context"] = engagement_context
+        return {
+            "status": "ok",
+            "result": "# Joint Execution Plan - AskRGA RAG + GenAI PoC\n\n## Executive Summary\nUpdated base.",
+        }
+
+    monkeypatch.setattr(archie_session.sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
+    monkeypatch.setattr(specialists_module, "_jep_writer_review_findings", lambda content: [])
+
+    summary, key, data = asyncio.run(
+        archie_session._legacy_tool_core_compat(
+            "generate_jep",
+            {"feedback": "Please update the JEP"},
+            customer_id="legacy-jep",
+            customer_name="RGA",
+            store=store,
+            text_runner=lambda prompt, system_message: "",
+            a2a_base_url="http://localhost:8080",
+        )
+    )
+
+    assert summary.startswith("JEP v2 saved.")
+    assert key == "jep/legacy-jep/v2.md"
+    assert data["docx_key"] == "jep/legacy-jep/v2.docx"
+    assert "JEP REVISION GROUNDING" in captured["task"]
+    assert "AskRGA RAG + GenAI PoC" in captured["task"]
+    assert captured["engagement_context"]["artifact_context"]["diagram"]["diagram_name"] == "askrga-rag-genai"
 
 
 def test_bom_parallel_fast_path_returns_tool_summary_without_llm_freewrite(monkeypatch) -> None:

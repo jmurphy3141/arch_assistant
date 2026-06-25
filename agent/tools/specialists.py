@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from agent import archie_memory, document_store, sub_agent_client
+from agent import archie_memory, context_store, document_store, sub_agent_client
 from agent.jep_docx_renderer import render_jep_docx
 from agent.persistence_objectstore import ObjectStoreBase
 from agent.sub_agent_client import SubAgentError
@@ -174,11 +174,31 @@ class _SpecialistHandler:
             "architect_brief": dict(args.get("_architect_brief", {}) or {}),
         }
         if self._agent_name == "jep":
-            engagement_context.update(
-                await _latest_jep_revision_context(
-                    self._store,
-                    self._customer_id,
+            revision_context = await _latest_jep_revision_context(
+                self._store,
+                self._customer_id,
+            )
+            if _is_vague_jep_revision_request(raw_request) and not revision_context.get("prior_version"):
+                clarify = (
+                    "I don't have an existing JEP to update for this customer yet. "
+                    "Provide the current JEP or ask me to create a new JEP from the confirmed POC scope."
                 )
+                return ToolResult(
+                    summary=clarify,
+                    status="needs_input",
+                    clarification=clarify,
+                )
+            engagement_context.update(revision_context)
+            engagement_context.update(
+                _jep_grounding_context(
+                    context=ctx,
+                    args=args,
+                    memory_raw=memory.raw if memory else {},
+                )
+            )
+            raw_request = _hydrate_jep_task(
+                raw_request,
+                engagement_context=engagement_context,
             )
         if self._agent_name == "waf":
             raw_request = _hydrate_waf_task(
@@ -211,6 +231,13 @@ class _SpecialistHandler:
 
         content = str(response.get("result") or "")
         summary_content = content
+        if self._agent_name == "jep" and _is_jep_kickoff_questions(content):
+            clarification = content.strip()
+            return ToolResult(
+                summary=clarification,
+                status="needs_input",
+                clarification=clarification,
+            )
         if self._agent_name == "waf":
             missing_pillars = _missing_waf_pillars(content)
             if missing_pillars:
@@ -852,6 +879,182 @@ class PocStrategistHandler:
                 ),
             ],
         )
+
+
+_JEP_VAGUE_REVISION_PATTERNS: tuple[str, ...] = (
+    r"\bupdate\s+(?:the\s+)?jep\b",
+    r"\brevise\s+(?:the\s+)?jep\b",
+    r"\brefresh\s+(?:the\s+)?jep\b",
+    r"\bchange\s+(?:the\s+)?jep\b",
+    r"\bfix\s+(?:the\s+)?jep\b",
+    r"\bupdate\s+it\b",
+    r"\brevise\s+it\b",
+)
+
+
+def _is_vague_jep_revision_request(text: str) -> bool:
+    msg = str(text or "").strip().lower()
+    if not msg:
+        return False
+    if not any(re.search(pattern, msg, flags=re.IGNORECASE) for pattern in _JEP_VAGUE_REVISION_PATTERNS):
+        return False
+    concrete_markers = (
+        "add ",
+        "remove ",
+        "replace ",
+        "change ",
+        "include ",
+        "exclude ",
+        "diagram",
+        "bom",
+        "success criteria",
+        "timeline",
+        "scope",
+        "risk",
+        "resource",
+        "approval",
+        "customer",
+        "workload",
+        "architecture",
+        "poc",
+    )
+    return not any(marker in f" {msg} " for marker in concrete_markers)
+
+
+def _is_jep_kickoff_questions(content: str) -> bool:
+    text = str(content or "").strip().lower()
+    return text.startswith("kickoff questions required") or "please provide answers before i generate the jep" in text
+
+
+def _jep_grounding_context(
+    *,
+    context: dict[str, Any],
+    args: dict[str, Any],
+    memory_raw: dict[str, Any],
+) -> dict[str, Any]:
+    grounded: dict[str, Any] = {}
+    if isinstance(context, dict):
+        summary = context_store.build_context_summary(context).strip()
+        if summary:
+            grounded["engagement_context_summary"] = summary[:4000]
+        archie_memory_payload = context_store.get_archie_memory(context)
+        memory_summary = str(archie_memory_payload.get("memory_summary", "") or "").strip()
+        if memory_summary:
+            grounded["archie_memory_summary"] = memory_summary[:1200]
+        archie_state = context_store.get_archie_state(context)
+        resolved = archie_state.get("resolved_decisions")
+        if isinstance(resolved, dict) and resolved:
+            grounded["resolved_decisions"] = _compact_jsonable(resolved, limit=3000)
+        artifact_context = _jep_artifact_context(context)
+        if artifact_context:
+            grounded["artifact_context"] = artifact_context
+    architect_brief = args.get("_architect_brief")
+    if isinstance(architect_brief, dict) and architect_brief:
+        grounded["architect_brief"] = dict(architect_brief)
+    if isinstance(memory_raw, dict):
+        memory_summary = str(
+            ((memory_raw.get("archie") or {}).get("memory") or {}).get("memory_summary", "")
+            if isinstance(memory_raw.get("archie"), dict)
+            else ""
+        ).strip()
+        if memory_summary and "archie_memory_summary" not in grounded:
+            grounded["archie_memory_summary"] = memory_summary[:1200]
+    return grounded
+
+
+def _jep_artifact_context(context: dict[str, Any]) -> dict[str, Any]:
+    agents = context.get("agents", {}) if isinstance(context, dict) else {}
+    if not isinstance(agents, dict):
+        return {}
+    artifacts: dict[str, Any] = {}
+    diagram = agents.get("diagram", {}) if isinstance(agents.get("diagram"), dict) else {}
+    if diagram:
+        artifacts["diagram"] = {
+            key: diagram.get(key)
+            for key in (
+                "version",
+                "diagram_name",
+                "diagram_key",
+                "artifact_ref",
+                "deployment_summary",
+                "reference_family",
+                "reference_mode",
+            )
+            if diagram.get(key) not in (None, "", [], {})
+        }
+    bom = agents.get("bom", {}) if isinstance(agents.get("bom"), dict) else {}
+    if bom:
+        artifacts["bom"] = {
+            key: bom.get(key)
+            for key in (
+                "version",
+                "summary",
+                "estimated_monthly_cost",
+                "line_item_count",
+                "payload_ref",
+                "xlsx_artifact_key",
+                "xlsx_filename",
+            )
+            if bom.get(key) not in (None, "", [], {})
+        }
+    pov = agents.get("pov", {}) if isinstance(agents.get("pov"), dict) else {}
+    if pov:
+        artifacts["pov"] = {
+            key: pov.get(key)
+            for key in ("version", "summary", "key", "latest_key")
+            if pov.get(key) not in (None, "", [], {})
+        }
+    jep = agents.get("jep", {}) if isinstance(agents.get("jep"), dict) else {}
+    if jep:
+        artifacts["jep"] = {
+            key: jep.get(key)
+            for key in ("version", "key", "latest_key", "docx_key", "docx_filename")
+            if jep.get(key) not in (None, "", [], {})
+        }
+    return artifacts
+
+
+def _compact_jsonable(value: Any, *, limit: int) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=True, sort_keys=True)
+    except TypeError:
+        text = str(value)
+    return text[:limit]
+
+
+def _hydrate_jep_task(
+    task: str,
+    *,
+    engagement_context: dict[str, Any],
+) -> str:
+    blocks: list[str] = []
+    if engagement_context.get("prior_version"):
+        blocks.append(
+            "[JEP REVISION GROUNDING]\n"
+            "Revise the existing JEP. Preserve the same customer, POC identity, workload, "
+            "architecture, scope, success criteria, and timeline unless the user explicitly changed them. "
+            "Do not introduce a different POC idea or unrelated customer scenario.\n"
+            "[/JEP REVISION GROUNDING]"
+        )
+    summary = str(engagement_context.get("engagement_context_summary", "") or "").strip()
+    if summary:
+        blocks.append(f"[PERSISTED ENGAGEMENT CONTEXT]\n{summary}\n[/PERSISTED ENGAGEMENT CONTEXT]")
+    memory_summary = str(engagement_context.get("archie_memory_summary", "") or "").strip()
+    if memory_summary:
+        blocks.append(f"[ARCHIE MEMORY SUMMARY]\n{memory_summary}\n[/ARCHIE MEMORY SUMMARY]")
+    artifact_context = engagement_context.get("artifact_context")
+    if isinstance(artifact_context, dict) and artifact_context:
+        blocks.append(
+            "[RELATED ARTIFACT CONTEXT]\n"
+            f"{json.dumps(artifact_context, ensure_ascii=True, sort_keys=True, indent=2)}\n"
+            "[/RELATED ARTIFACT CONTEXT]"
+        )
+    resolved = engagement_context.get("resolved_decisions")
+    if resolved:
+        blocks.append(f"[RESOLVED DECISIONS]\n{resolved}\n[/RESOLVED DECISIONS]")
+    blocks.append(str(task or "").strip())
+    return "\n\n".join(block for block in blocks if block).strip()
+
 
 def _hydrate_waf_task(
     task: str,

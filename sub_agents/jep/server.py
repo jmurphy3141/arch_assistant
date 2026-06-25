@@ -105,6 +105,28 @@ def _build_prompt(req: A2ARequest) -> str:
     prior = context.get("prior_version")
     prior_key = context.get("prior_version_key")
     prior_number = context.get("prior_version_number")
+    engagement_summary = str(context.get("engagement_context_summary") or "").strip()
+    memory_summary = str(context.get("archie_memory_summary") or "").strip()
+    artifact_context = context.get("artifact_context")
+    resolved_decisions = context.get("resolved_decisions")
+    if engagement_summary:
+        parts.append(f"Persisted engagement context:\n{engagement_summary}")
+    if memory_summary:
+        parts.append(f"Archie memory summary:\n{memory_summary}")
+    if isinstance(artifact_context, dict) and artifact_context:
+        parts.append(
+            "Related artifact context:\n"
+            "```json\n"
+            f"{json.dumps(artifact_context, ensure_ascii=True, sort_keys=True, indent=2)}\n"
+            "```"
+        )
+    if resolved_decisions:
+        resolved_text = (
+            resolved_decisions
+            if isinstance(resolved_decisions, str)
+            else json.dumps(resolved_decisions, ensure_ascii=True, sort_keys=True, indent=2)
+        )
+        parts.append(f"Resolved decisions:\n{resolved_text}")
     if feedback:
         parts.append(f"Revision feedback:\n{feedback}")
     if prior:
@@ -124,7 +146,9 @@ def _build_prompt(req: A2ARequest) -> str:
         parts.append(
             "Treat this call as a revision request. Use the prior JEP as the base, "
             "preserve customer-specific facts, and replace any non-C3E or self-referential "
-            "revision text with an executable Joint Execution Plan."
+            "revision text with an executable Joint Execution Plan. Do not invent a new POC, "
+            "customer scenario, workload, or architecture that is not present in the prior JEP "
+            "or persisted engagement context."
         )
     parts.append(
         "JEP Writer review gate: return exactly the C3E JEP document in Markdown with "

@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from agent import sub_agent_client
+from agent import context_store, sub_agent_client
 from agent.persistence_objectstore import InMemoryObjectStore
 from agent.tools import specialists as specialists_module
 from agent.tools.specialists import REQUIRED_WAF_PILLARS, JepHandler, PovHandler, WafHandler
@@ -218,6 +218,33 @@ async def test_jep_ok(monkeypatch):
     assert result.data["docx_key"] == "docs/jep_v1.docx"
 
 
+async def test_jep_vague_update_without_existing_jep_needs_input(monkeypatch):
+    install_jep_lifecycle_stub(
+        monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
+    )
+    called = False
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        nonlocal called
+        called = True
+        return {"status": "ok", "result": valid_jep_markdown()}
+
+    monkeypatch.setattr(
+        specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+
+    result = await JepHandler(InMemoryObjectStore(), "cust-1", "ACME")(
+        {"feedback": "Please update the JEP"},
+        memory=make_memory(),
+        context={"agents": {}},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "needs_input"
+    assert "existing JEP" in result.summary
+    assert called is False
+
+
 async def test_jep_revision_passes_latest_prior_version(monkeypatch):
     install_jep_lifecycle_stub(
         monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
@@ -231,9 +258,11 @@ async def test_jep_revision_passes_latest_prior_version(monkeypatch):
         {"source": "test"},
     )
     captured_context = {}
+    captured_task = {"value": ""}
 
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "jep"
+        captured_task["value"] = task
         captured_context.update(engagement_context)
         return {"status": "ok", "result": valid_jep_markdown()}
 
@@ -242,11 +271,33 @@ async def test_jep_revision_passes_latest_prior_version(monkeypatch):
     )
     stub_save_doc(monkeypatch, "docs/jep_v2.md", version=2)
     stub_save_jep_docx(monkeypatch, "docs/jep_v2.docx")
+    ctx = {
+        "agents": {
+            "diagram": {
+                "version": 4,
+                "diagram_name": "askrga-rag-genai",
+                "diagram_key": "diagrams/cust-1/askrga/v4/diagram.drawio",
+                "deployment_summary": "RAG retrieval and GenAI response path",
+            },
+            "bom": {
+                "version": 5,
+                "summary": "100GB repository and 1M tokens/day",
+                "estimated_monthly_cost": 1234,
+            },
+        }
+    }
+    context_store.set_resolved_decisions(
+        ctx,
+        poc={
+            "recommended_option": "AskRGA RAG + GenAI PoC",
+            "success_criteria": "Answer telemetry questions with citations in under 5 seconds.",
+        },
+    )
 
     result = await JepHandler(store, "cust-1", "ACME")(
         {"feedback": "Please update the JEP"},
         memory=make_memory(),
-        context={"agents": {}},
+        context=ctx,
         trace_id="trace-1",
     )
 
@@ -254,11 +305,23 @@ async def test_jep_revision_passes_latest_prior_version(monkeypatch):
     assert "Existing JEP v3" in captured_context["prior_version"]
     assert captured_context["prior_version_key"] == "jep/cust-1/v1.md"
     assert captured_context["feedback"] == "Please update the JEP"
+    assert captured_context["artifact_context"]["diagram"]["diagram_name"] == "askrga-rag-genai"
+    assert "JEP REVISION GROUNDING" in captured_task["value"]
+    assert "RELATED ARTIFACT CONTEXT" in captured_task["value"]
+    assert "AskRGA RAG + GenAI PoC" in captured_task["value"]
 
 
 async def test_jep_blocks_self_referential_revision_before_save(monkeypatch):
     install_jep_lifecycle_stub(
         monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
+    )
+    store = InMemoryObjectStore()
+    specialists_module.document_store.save_doc(
+        store,
+        "jep",
+        "cust-1",
+        "# Existing JEP\n\n## Executive Summary\nUse this as the base.",
+        {"source": "test"},
     )
     saved = False
 
@@ -289,7 +352,7 @@ Generate and maintain an iterative Job Execution Plan.
     )
     monkeypatch.setattr(specialists_module.document_store, "save_doc", fake_save_doc)
 
-    result = await JepHandler(object(), "cust-1", "ACME")(
+    result = await JepHandler(store, "cust-1", "ACME")(
         {"feedback": "Please update the JEP"},
         memory=make_memory(),
         context={"agents": {}},
