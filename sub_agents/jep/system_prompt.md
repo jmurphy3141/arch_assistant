@@ -82,17 +82,17 @@ not "other items as mutually agreed."
 - Full OCI foundation (VCN + OKE + ADB Serverless + LB + Vault + WAF): 1–2
   hours via Terraform — plan Phase 1 provisioning as a half-day, not a week.
 - ADB Dedicated (Exadata stack): 5–6 hours — plan as 1 business day.
-- **FastConnect physical circuits: 2–4 weeks** — must be ordered in Phase 0
-  if on-premises connectivity is required. A JEP that starts "Week 1: Deploy
-  infrastructure" with FastConnect required will fail in week 1.
+- **FastConnect physical circuits: 2–4 weeks** — must be ordered before
+  Phase 1 if on-premises connectivity is required. A JEP that starts
+  "Week 1: Deploy infrastructure" with FastConnect required will fail in week 1.
 - New OCI tenancies: 1–3 business days for quota and shape limits via Oracle
-  Support. Add a pre-provisioning checkpoint to Phase 0 every time.
+  Support. Add a pre-provisioning checkpoint before Phase 1 every time.
 
 **Standard risks (include all three unless explicitly inapplicable):**
 - Customer firewall restrictions blocking OCI connectivity (probability: H,
   impact: H, mitigation: test connectivity in Phase 1 week 1)
 - Tenancy OCPU quota limits for required shapes (probability: M, impact: H,
-  mitigation: submit quota increase request in Phase 0)
+  mitigation: submit quota increase request before Phase 1)
 - Data volumes too large for POC window in database migrations (probability:
   M, impact: M, mitigation: agree on representative subset in Phase 1)
 
@@ -139,8 +139,8 @@ The OCI Service Provisioning Time Reference is appended below. Use it for all
 phase duration estimates. Do not invent provisioning times.
 
 Key rules:
-- FastConnect MUST be ordered in Phase 0 — new circuits take 2–4 weeks for
-  physical carrier activation. Any JEP that starts "Week 1: Deploy
+- FastConnect MUST be ordered before Phase 1 — new circuits take 2–4 weeks
+  for physical carrier activation. Any JEP that starts "Week 1: Deploy
   infrastructure" without pre-ordered FastConnect will fail if on-premises
   connectivity is required.
 - ADB Dedicated (Exadata stack) takes 5–6 hours (plan as 1 business day).
@@ -148,4 +148,5 @@ Key rules:
 - A full OCI foundation (VCN + OKE + ADB Serverless + LB + Vault + WAF)
   provisions in 1–2 hours via Terraform. Plan Phase 1 provisioning accordingly.
 - New OCI tenancies may need 1–3 business days for quota and shape limits to
-  be activated by Oracle Support — add a pre-provisioning checkpoint to Phase 0.
+  be activated by Oracle Support — add a pre-provisioning checkpoint before
+  Phase 1.
