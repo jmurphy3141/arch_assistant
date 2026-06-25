@@ -427,6 +427,8 @@ function ArtifactManifestLinks({ manifest }: { manifest?: ChatArtifactManifest }
         >
           {dl.type === 'terraform'
             ? `Download Terraform: ${dl.filename ?? 'file'}`
+            : dl.type === 'jep'
+            ? `Download JEP Word: ${dl.filename ?? 'artifact'}`
             : `Download ${dl.type}: ${dl.filename ?? 'artifact'}`}
         </a>
       ))}

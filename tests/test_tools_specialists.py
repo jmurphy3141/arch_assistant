@@ -80,6 +80,18 @@ def stub_save_doc(monkeypatch, key, version=1):
     )
 
 
+def stub_save_jep_docx(monkeypatch, key="docs/jep_v1.docx"):
+    monkeypatch.setattr(
+        specialists_module.document_store,
+        "save_jep_docx",
+        lambda store, customer_id, version, content, metadata: {
+            "docx_key": key,
+            "docx_filename": f"v{version}.docx",
+            "docx_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        },
+    )
+
+
 async def test_pov_ok(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "pov"
@@ -138,6 +150,7 @@ async def test_jep_ok(monkeypatch):
         specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
     )
     stub_save_doc(monkeypatch, "docs/jep_v1.md")
+    stub_save_jep_docx(monkeypatch, "docs/jep_v1.docx")
 
     result = await JepHandler(object(), "cust-1", "ACME")(
         {}, memory=make_memory(), context={"agents": {}}, trace_id="trace-1"
@@ -145,6 +158,7 @@ async def test_jep_ok(monkeypatch):
 
     assert result.status == "ok"
     assert result.data["lock_outcome"] == "allowed"
+    assert result.data["docx_key"] == "docs/jep_v1.docx"
 
 
 async def test_jep_locked(monkeypatch):

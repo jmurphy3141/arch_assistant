@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent import archie_memory, document_store, sub_agent_client
+from agent.jep_docx_renderer import render_jep_docx
 from agent.persistence_objectstore import ObjectStoreBase
 from agent.sub_agent_client import SubAgentError
 from skillforge.types import MemorySnapshot, ParallelToolCall, ToolResult
@@ -227,12 +228,33 @@ class _SpecialistHandler:
         if self._agent_name == "jep":
             import agent.jep_lifecycle as jep_lifecycle
 
+            try:
+                docx_bytes = render_jep_docx(content, customer_name=self._customer_name)
+                docx = await asyncio.to_thread(
+                    document_store.save_jep_docx,
+                    self._store,
+                    self._customer_id,
+                    int(saved.get("version") or 1),
+                    docx_bytes,
+                    {"customer_name": self._customer_name, "source": "jep_specialist"},
+                )
+            except Exception as exc:
+                return ToolResult(
+                    summary=f"JEP Word document rendering failed: {exc}",
+                    status="blocked",
+                    data=response,
+                )
+
             jep_state = await asyncio.to_thread(
                 jep_lifecycle.mark_generated,
                 self._store,
                 self._customer_id,
             )
-            response.update({"jep_state": jep_state, "lock_outcome": "allowed"})
+            response.update({
+                "jep_state": jep_state,
+                "lock_outcome": "allowed",
+                **docx,
+            })
 
         findings_summary = ""
         if self._agent_name == "waf":

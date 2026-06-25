@@ -56,9 +56,11 @@ from agent.document_store import (
     get_feedback_history,
     get_jep_questions,
     save_doc,
+    save_jep_docx,
     save_jep_questions,
     save_prompt_log,
 )
+from agent.jep_docx_renderer import render_jep_docx
 from agent.notifications import notify
 from agent.persistence_objectstore import ObjectStoreBase
 
@@ -586,6 +588,15 @@ def generate_jep(
             "duration":      duration,
         },
     )
+    docx_bytes = render_jep_docx(content, customer_name=customer_name)
+    docx = save_jep_docx(
+        store,
+        customer_id,
+        int(result["version"]),
+        docx_bytes,
+        {"customer_name": customer_name, "source": "jep_agent"},
+    )
+    result.update(docx)
 
     # ── Save prompt log ───────────────────────────────────────────────────────
     save_prompt_log(store, "jep", customer_id, result["version"], {
@@ -614,6 +625,8 @@ def generate_jep(
         {
             "version":      result["version"],
             "key":          result["key"],
+            "docx_key":     result.get("docx_key", ""),
+            "docx_filename": result.get("docx_filename", ""),
             "duration_days": bom.get("duration_days", 14),
             "bom_source":   bom.get("source", "stub"),
             "summary":      first_line[:120],

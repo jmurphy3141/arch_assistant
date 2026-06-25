@@ -455,6 +455,9 @@ export interface DocResponse {
   key: string;
   latest_key: string;
   content: string;
+  docx_key?: string;
+  docx_filename?: string;
+  docx_download_url?: string;
   bom?: Record<string, unknown>;
   diagram_key?: string;
   overall_rating?: string;
