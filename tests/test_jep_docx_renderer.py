@@ -3,6 +3,7 @@ from io import BytesIO
 import pytest
 from docx import Document
 
+import agent.jep_agent as jep_agent
 from agent.document_store import (
     JEP_DOCX_CONTENT_TYPE,
     get_jep_docx,
@@ -56,10 +57,51 @@ ACME will validate OCI for a production POC.
     assert payload.startswith(b"PK")
     doc = Document(BytesIO(payload))
     text = _doc_text(doc)
+    assert "Proof of Concept Joint Execution Plan (JEP)" in text
+    assert "Customer name: ACME" in text
+    assert "Document Body Placeholder" not in text
+    assert "Section Heading Placeholder" not in text
     assert "Joint Execution Plan - ACME" in text
     assert "Confirm tenancy quota" in text
     assert "Oracle" in text
     assert "Technical Champion" in text
+    assert doc.tables[0].style.name == Document(str(TEMPLATE_PATH)).tables[0].style.name
+
+
+def test_jep_agent_prompt_uses_c3e_section_contract() -> None:
+    prompt = jep_agent._PROMPT_TEMPLATE.format(
+        customer_name="ACME",
+        context_summary="",
+        new_notes_section="Notes",
+        feedback_section="",
+        qa_section="",
+        previous_jep_section="",
+        bom_md="BOM context",
+        diagram_ref="Diagram key: agent3/acme/poc/LATEST.json",
+        duration="2 weeks",
+    )
+
+    expected_sections = [
+        "## Executive Summary",
+        "## Objectives",
+        "## Scope",
+        "## POC Architecture",
+        "## Phased Execution Plan",
+        "## Success Criteria",
+        "## Resource Plan",
+        "## Risk Registry",
+        "## Approvals",
+    ]
+    for section in expected_sections:
+        assert section in prompt
+    assert [prompt.index(section) for section in expected_sections] == sorted(
+        prompt.index(section) for section in expected_sections
+    )
+    assert "## High Level Scope and Approach" not in prompt
+    assert "## POC Participants" not in prompt
+    assert "## Logistics" not in prompt
+    assert "Oracle Corporation | 2300 Oracle Way" not in prompt
+    assert prompt.rstrip().endswith("| [TBD] | ACME | Customer Technical Lead |  | [TBD] |")
 
 
 def test_render_jep_docx_missing_template_fails(tmp_path) -> None:

@@ -148,10 +148,11 @@ If the notes clearly answer a question, set known_value to the extracted value.
 
 JEP_SYSTEM_MESSAGE = (
     "You are an Oracle Cloud solutions architect writing a Joint Execution Plan (JEP) for a POC. "
-    "A JEP defines POC goals, success criteria, scope, BOM, participants, deliverables, and logistics. "
+    "A JEP defines POC goals, success criteria, scope, architecture, execution phases, resource plan, risks, and approvals. "
     "Write in precise, professional language suitable for an Oracle–customer engagement document. "
-    "Be specific about hardware specs, software versions, and measurable success criteria. "
-    "Use Markdown tables for hardware specs, software specs, participants, and BOM. "
+    "Use exactly the C3E JEP section order requested in the prompt. "
+    "Be specific about OCI services, shapes, network topology, measurable gates, owners, and dates. "
+    "Use Markdown tables for execution phases, success criteria, resource plan, and risk registry. "
     "Fill in values from the meeting notes. Use [TBD] where information is not available. "
     "Operating contract: make scope, milestones, ownership, risks, and success criteria explicit and actionable. "
     "Output ONLY the document content in Markdown format. No meta-commentary, no preamble."
@@ -178,115 +179,97 @@ Bill of Materials (pre-generated from notes):
 Diagram reference:
 {diagram_ref}
 
-Generate a complete, professionally written JEP in Markdown. Use this exact structure:
+Generate a complete C3E Joint Engagement Plan in Markdown. Use exactly these nine sections, in this order.
+Do not add legacy top-level sections such as Overview, High Level Scope and Approach, Bill of Materials,
+POC Participants, Deliverables, or Logistics. Incorporate BOM details inside Scope, POC Architecture,
+Phased Execution Plan, and Resource Plan as appropriate.
 
-# AI Infrastructure on OCI — {customer_name}
+Document quality requirements:
+- All nine sections below must be present and substantive.
+- Success criteria must be SMART, with number, unit, and validation week.
+- Scope must include named in-scope services/workloads and named out-of-scope exclusions.
+- POC Architecture must reference the diagram key when one exists.
+- Resource Plan must include Oracle SA and Customer Technical Lead roles.
+- Risk Registry must include the three standard risks below unless explicitly inapplicable.
+- The document must end with the Approvals section.
+
+# Joint Execution Plan — {customer_name}
 *Confidential — Oracle Restricted*
 
 ---
 
-## Overview
-[2–3 paragraphs describing: (1) enterprise demand for GPU/compute resources and why it is growing;
-(2) the dual challenges organisations face (power density, operational expertise);
-(3) how OCI addresses these challenges.
-Include 2–3 bullet points for the primary driving factors.]
+## Executive Summary
+[One paragraph explaining why this POC is being run, what it proves, and what success looks like.
+Reference the primary workload, target OCI environment, expected duration ({duration}), and business outcome.]
 
-## High Level Scope and Approach
-[1–2 paragraphs: what the customer will test, the primary focus areas.]
+## Objectives
+1. [Objective drawn from notes and Q&A; must be testable]
+2. [Objective drawn from notes and Q&A; must be testable]
+3. [Objective drawn from notes and Q&A; must be testable]
 
-Key objectives include:
-- [objective drawn from notes]
-- [objective drawn from notes]
-- [add further objectives as warranted]
+## Scope
 
-### Hardware Specs
-| Component | Specification |
-|-----------|---------------|
-[Fill from notes: GPU model, GPU memory, CPU OCPU count, RAM, local NVMe storage.
-Use [TBD] for missing values.]
+### In Scope
+- [Specific OCI services, workloads, data sets, integrations, and validation activities]
+- [Include OCI shapes, tiers, versions, or quantities from BOM when known]
 
-### Software Specs
-| Component | Specification |
-|-----------|---------------|
-[Fill from notes: host OS, CUDA version, container runtime, Kubernetes version,
-ML framework (PyTorch/TensorFlow), workload description.
-Use [TBD] for missing values.]
+### Out of Scope
+- [Specific named exclusions; do not use generic "other items as agreed"]
+- [Explicitly exclude production cutover unless notes say otherwise]
 
-## Future State Architecture
+## POC Architecture
 {diagram_ref}
 
-[1 paragraph describing the target OCI architecture for the POC based on the notes and BOM.]
+[Describe the target OCI architecture for the POC. Include VCN/subnets/connectivity/security,
+compute or platform services, storage/database services, observability, Vault/KMS, and any external APIs.
+Reference specific OCI shapes/services from the notes and BOM. Use [TBD] only for unknowns.]
 
-## POC Plan
-[Describe the POC timeline, approach, and phases.
-Default to a 2-week duration unless the notes or Q&A specify otherwise.
-Include pre-POC setup (allow-lists, image pre-pull) and post-POC activities (results documentation).]
+## Phased Execution Plan
 
-## Proof of Concept Test Cases
+| Phase | Weeks | Owner | Activities | Deliverables | Exit Gate |
+|-------|-------|-------|------------|--------------|-----------|
+| Phase 0 - Pre-Provisioning | Before Week 1 | Oracle + {customer_name} | Confirm tenancy access, quotas, allow-lists, data availability, FastConnect ordering if required | Access and quota checklist | Required access, quotas, and connectivity path confirmed |
+| Phase 1 - Assessment | Weeks 1-2 | Oracle SA + Customer Technical Lead | Environment setup, baseline measurement, architecture review sign-off | Validated architecture and baseline report | Tenancy OCPU quota confirmed before Phase 2 |
+| Phase 2 - Build | Weeks 3-N | Oracle Cloud Engineer + Customer Engineer | OCI provisioning, workload deployment or migration, integration testing | Working POC environment | Workload deployed and ready for measurement |
+| Phase 3 - Validate | Final 2 weeks | Oracle SA + Customer Technical Lead | Load/performance testing, success criteria measurement, results documentation, go/no-go review | POC results report and recommendation | Customer validates pass/fail criteria |
 
-| # | Test Case | Description | Pass Criteria |
-|---|-----------|-------------|---------------|
-[Infer 4–6 test cases from the notes and scope.
-Include performance benchmarks (NCCL throughput, GPU utilisation),
-provisioning speed, networking (NVLink / RDMA), storage I/O, and Kubernetes operations.
-Fill Pass Criteria with measurable thresholds where possible.]
+Use OCI provisioning references: full OCI foundation via Terraform is 1-2 hours, ADB Dedicated is 5-6 hours,
+FastConnect physical circuits are 2-4 weeks and must start in Phase 0, and new tenancy quota activation can take
+1-3 business days.
 
 ## Success Criteria
-[4–6 bullet points with measurable success criteria inferred from the notes.
-Examples: provisioning time < X minutes, NCCL all-reduce bandwidth > X GB/s, etc.]
-- [criterion]
-- [criterion]
 
-## Bill of Materials
+| # | Criterion | Measurement Method | Target | Validation Week |
+|---|-----------|--------------------|--------|-----------------|
+| 1 | [SMART criterion with number and unit] | [Tool/process] | [Threshold] | [Week] |
+| 2 | [SMART criterion with number and unit] | [Tool/process] | [Threshold] | [Week] |
+| 3 | [SMART criterion with number and unit] | [Tool/process] | [Threshold] | [Week] |
 
-{bom_md}
+## Resource Plan
 
-## POC Participants
+| Organization | Name | Role | Weekly Hours | Responsibilities |
+|--------------|------|------|--------------|------------------|
+| Oracle | [TBD] | Solutions Architect | [TBD] | Architecture, success criteria, customer technical alignment |
+| Oracle | [TBD] | Cloud Engineer | [TBD] | OCI provisioning, deployment support |
+| {customer_name} | [TBD] | Customer Technical Lead | [TBD] | Access, validation, sign-off coordination |
+| {customer_name} | [TBD] | Customer Engineer/Operator | [TBD] | Workload deployment, testing, operational review |
 
-### Oracle Team Members
-| Name | Role |
-|------|------|
-| [TBD] | Account Executive |
-| [TBD] | Solutions Architect |
-| [TBD] | Cloud Engineer |
+## Risk Registry
 
-### {customer_name} Team Members
-| Name | Role |
-|------|------|
-[Extract names and roles from notes. Use [TBD] rows if not mentioned.]
+| Risk | Probability | Impact | Mitigation | Owner |
+|------|-------------|--------|------------|-------|
+| Customer firewall restrictions block OCI connectivity | H | H | Test connectivity in Phase 1 Week 1 and pre-stage firewall rules | Customer Technical Lead |
+| Tenancy OCPU quota limits block required shapes | M | H | Submit quota request in Phase 0 and confirm before Phase 2 | Oracle SA |
+| Data volumes exceed POC window | M | M | Agree on representative subset in Phase 1 and document sampling method | Customer Engineer |
 
-## Deliverables
-- Documentation of POC test results and performance benchmarks
-- Architecture diagram (draw.io) — see Future State Architecture section
-- Final POC report with pass/fail assessment against success criteria
-[Add further deliverables mentioned in notes.]
+Add additional project-specific risks from the notes. Keep probability and impact to H/M/L.
 
-## Logistics
+## Approvals
 
-### Location
-[Describe remote/on-site arrangement from notes.
-Default if not specified: Oracle resources working remotely; customer team working on-site or remotely.]
-
-### Data Transfer
-[Describe data transfer approach from notes.
-Default if not specified: Data transferred to Oracle Cloud into OCI Object Storage.]
-
-### Communication
-[Describe communication plan from notes — daily stand-ups, shared Slack/Teams workspace,
-weekly steering calls, etc.]
-
-### Data Cleansing
-[Describe any data masking or cleansing requirements from notes.
-Default if not specified: Customer will remove or mask any sensitive data used in the POC.
-Oracle has no data cleansing effort.]
-
-### Timing
-**POC Duration**: {duration}
-
-[Describe start/end dates if mentioned in notes, otherwise leave as [TBD].]
-
----
-*Oracle Corporation | 2300 Oracle Way, Austin, TX 78741*
+| Approver | Organization | Role | Signature | Date |
+|----------|--------------|------|-----------|------|
+| [TBD] | Oracle | Oracle Solutions Architect |  | [TBD] |
+| [TBD] | {customer_name} | Customer Technical Lead |  | [TBD] |
 """
 
 
