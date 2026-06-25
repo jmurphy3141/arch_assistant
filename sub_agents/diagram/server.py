@@ -81,8 +81,41 @@ card = AgentCard(
 )
 
 
+def _component_clarification_questions(task: str) -> list[dict[str, Any]]:
+    lowered = str(task or "").lower()
+    questions = [
+        {
+            "id": "workload.components",
+            "question": "What major OCI components need to appear in the diagram (for example OKE, load balancer, database, Object Storage, WAF, VCN, or subnets)?",
+            "blocking": True,
+        }
+    ]
+    if any(marker in lowered for marker in ("update", "updated", "revise", "revision", "correct", "fix", "icon", "icons")):
+        questions.insert(
+            0,
+            {
+                "id": "diagram.source",
+                "question": "Which existing diagram should be updated, or should I regenerate it from a fresh component list?",
+                "blocking": True,
+            },
+        )
+    return questions
+
+
 async def handle(req: A2ARequest) -> A2AResponse:
-    items, prompt = freeform_arch_text_to_llm_input(req.task)
+    try:
+        items, prompt = freeform_arch_text_to_llm_input(req.task)
+    except ValueError as exc:
+        return A2AResponse(
+            result=json.dumps(_component_clarification_questions(req.task), ensure_ascii=False),
+            status="needs_input",
+            trace={
+                "agent": card.name,
+                "trace_id": req.trace_id,
+                "error_type": exc.__class__.__name__,
+                "stage": "freeform_input_parsing",
+            },
+        )
 
     raw = await asyncio.to_thread(
         run_inference,

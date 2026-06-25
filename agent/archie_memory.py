@@ -42,6 +42,11 @@ _DIAGRAM_COMPONENT_MARKERS = (
     "public subnet", "vcn", "subnet", "dr", "disaster recovery", "multi-region", "multi region",
 )
 
+_DIAGRAM_REVISION_MARKERS = (
+    "update", "updated", "revise", "revision", "change", "correct", "fix", "replace",
+    "existing diagram", "current diagram", "latest diagram", "previous diagram",
+)
+
 
 async def _execute_tool(*args: Any, **kwargs: Any) -> tuple[str, str, dict[str, Any]]:
     import agent.archie_session as archie_session
@@ -68,6 +73,10 @@ def _build_context_summary_for_skills(
 def _diagram_request_has_topology_intent(text: str) -> bool:
     lowered = str(text or "").lower()
     return any(marker in lowered for marker in _DIAGRAM_COMPONENT_MARKERS)
+
+def _diagram_request_is_revision(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in _DIAGRAM_REVISION_MARKERS)
 
 def _prepare_bom_tool_args(
     *,
@@ -882,6 +891,20 @@ def _diagram_has_sufficient_context(
     args: dict[str, Any],
     user_message: str,
 ) -> bool:
+    architect_context = str((args.get("_architect_brief", {}) or {}).get("architect_context", "") or "").strip()
+    request_text = " ".join(
+        part
+        for part in (
+            str(args.get("_user_request_text", "") or ""),
+            str(args.get("prompt", "") or ""),
+            str(args.get("bom_text", "") or ""),
+            user_message,
+            architect_context,
+        )
+        if str(part).strip()
+    )
+    if _diagram_request_is_revision(request_text) and not _has_architecture_definition(context):
+        return _diagram_request_has_topology_intent(request_text)
     if _has_architecture_definition(context):
         return True
     archie = context_store.get_archie_state(context or {})
@@ -892,7 +915,6 @@ def _diagram_has_sufficient_context(
         return True
     if list(archie.get("resolved_questions", []) or []):
         return True
-    architect_context = str((args.get("_architect_brief", {}) or {}).get("architect_context", "") or "").strip()
     combined = " ".join(
         part
         for part in (
