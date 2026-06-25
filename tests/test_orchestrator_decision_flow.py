@@ -2525,6 +2525,60 @@ def test_turn_intent_does_not_treat_generic_object_storage_as_verification() -> 
     assert action == {}
 
 
+def test_diagram_file_location_request_is_artifact_download_intent() -> None:
+    requested_tools = orchestrator_agent._requested_generation_tools("where is the new diagram file")
+
+    intent = orchestrator_agent._classify_turn_intent(
+        user_message="where is the new diagram file",
+        requested_tools=requested_tools,
+        context={},
+    )
+
+    assert requested_tools == {"generate_diagram"}
+    assert intent.classification == "artifact_download"
+    assert intent.target_artifact == "diagram"
+
+
+def test_diagram_file_location_request_returns_existing_link_without_regeneration() -> None:
+    store = InMemoryObjectStore()
+    customer_id = "diagram-file-location"
+    diagram_key = f"agent3/{customer_id}/ask_rga_poc/v1/diagram.drawio"
+    store.put(diagram_key, b"<mxfile />", "application/xml")
+    ctx = context_store.read_context(store, customer_id, "Diagram File Location")
+    context_store.record_agent_run(
+        ctx,
+        "diagram",
+        [],
+        {
+            "version": 1,
+            "diagram_key": diagram_key,
+            "diagram_name": "ask_rga_poc",
+            "node_count": 4,
+        },
+    )
+    context_store.write_context(store, customer_id, ctx)
+
+    def _text_runner(_prompt: str, _system_message: str) -> str:
+        raise AssertionError("artifact location requests should not call the LLM")
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id=customer_id,
+            customer_name="Diagram File Location",
+            user_message="where is the new diagram file",
+            store=store,
+            text_runner=_text_runner,
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "Available generated artifact links" in result["reply"]
+    assert f"/api/download/diagram.drawio?client_id={customer_id}&diagram_name=ask_rga_poc" in result["reply"]
+    assert diagram_key in result["reply"]
+    assert result["tool_calls"] == []
+
+
 def test_metadata_less_bom_xlsx_is_hidden_from_link_replies() -> None:
     store = InMemoryObjectStore()
     bom_key = "customers/old-bom/bom/xlsx/old.xlsx"

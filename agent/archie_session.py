@@ -2283,7 +2283,42 @@ def _is_explicit_artifact_download_request(
         return True
     if any(marker in msg for marker in _ACTION_ACCESS_MARKERS) and (target_artifact or requested_tools):
         return True
+    if _is_artifact_location_request(user_message, target_artifact) and (target_artifact or requested_tools):
+        return True
     return bool(_is_export_only_request(user_message) and target_artifact == "bom")
+
+def _is_artifact_location_request(user_message: str, target_artifact: str) -> bool:
+    msg = f" {str(user_message or '').lower()} "
+    if not target_artifact:
+        return False
+    location_question = bool(
+        re.search(r"\bwhere(?:'s|\s+is|\s+are|\s+can\s+i\s+find|\s+do\s+i\s+find)\b", msg)
+        or re.search(r"\bwhere\s+(?:did|was|were).{0,60}\b(?:save|store|upload|put)\b", msg)
+        or re.search(r"\b(?:find|locate|open|access|get)\b.{0,80}\b(?:file|artifact|link|url|download)\b", msg)
+    )
+    if not location_question:
+        return False
+    artifact_location_terms = (
+        " file",
+        " artifact",
+        " link",
+        " url",
+        " download",
+        " drawio",
+        " draw.io",
+        " xlsx",
+        " workbook",
+        " docx",
+        " document",
+        " bundle",
+        " saved",
+        " stored",
+        " uploaded",
+        " generated",
+        " new ",
+        " latest ",
+    )
+    return any(marker in msg for marker in artifact_location_terms)
 
 def _is_explicit_artifact_verification_request(user_message: str, target_artifact: str) -> bool:
     msg = f" {str(user_message or '').lower()} "
