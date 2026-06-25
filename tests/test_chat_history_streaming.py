@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -14,6 +16,7 @@ from agent.document_store import (
     save_conversation_turns,
     save_note,
     save_project_engagement,
+    update_latest_assistant_turn,
 )
 
 
@@ -25,6 +28,76 @@ class _FakeBomService:
     def generate_xlsx(self, payload: dict) -> bytes:
         self.payloads.append(dict(payload))
         return self.content
+
+
+def test_run_turn_persists_artifact_metadata_in_chat_history(monkeypatch):
+    from agent import archie_session
+    from skillforge.types import ToolCall, ToolResult, TurnResult
+
+    class _FakeForge:
+        async def run_turn(self, **_kwargs):
+            return TurnResult(
+                reply="JEP v1 saved.",
+                tool_calls=[
+                    ToolCall(
+                        tool="generate_jep",
+                        args={},
+                        result=ToolResult(
+                            summary="JEP v1 saved.",
+                            status="ok",
+                            artifact_key="jep/acme/v1.md",
+                        ),
+                    )
+                ],
+                artifacts={"generate_jep": "jep/acme/v1.md"},
+            )
+
+    store = InMemoryObjectStore()
+    monkeypatch.setattr(archie_session, "_get_forge", lambda **_kwargs: _FakeForge())
+
+    result = asyncio.run(
+        archie_session.run_turn(
+            customer_id="acme",
+            customer_name="Acme",
+            user_message="Please continue with the current discussion and respond briefly.",
+            store=store,
+            text_runner=lambda _prompt, _system: "",
+        )
+    )
+
+    assert result["artifacts"] == {"generate_jep": "jep/acme/v1.md"}
+    history = load_conversation_history(store, "acme")
+    assistant_turn = history[-1]
+    assert assistant_turn["artifacts"] == {"generate_jep": "jep/acme/v1.md"}
+    assert assistant_turn["tool_calls"][0]["artifact_key"] == "jep/acme/v1.md"
+
+
+def test_update_latest_assistant_turn_merges_artifact_manifest():
+    store = InMemoryObjectStore()
+    save_conversation_turns(
+        store,
+        "acme",
+        [
+            {"role": "user", "content": "generate", "timestamp": "2026-06-24T00:00:00Z"},
+            {"role": "assistant", "content": "Done", "timestamp": "2026-06-24T00:00:01Z"},
+        ],
+    )
+
+    updated = update_latest_assistant_turn(
+        store,
+        "acme",
+        {
+            "tool_calls": [{"tool": "generate_jep", "artifact_key": "jep/acme/v1.md"}],
+            "artifacts": {"generate_jep": "jep/acme/v1.md"},
+            "artifact_manifest": {"downloads": []},
+        },
+    )
+
+    assert updated is True
+    assistant_turn = load_conversation_history(store, "acme")[-1]
+    assert assistant_turn["content"] == "Done"
+    assert assistant_turn["artifacts"] == {"generate_jep": "jep/acme/v1.md"}
+    assert assistant_turn["tool_calls"][0]["artifact_key"] == "jep/acme/v1.md"
 
 
 @pytest.fixture
@@ -363,7 +436,7 @@ def test_api_chat_includes_artifact_manifest(monkeypatch, client):
     test_client, store = client
 
     async def _fake_run_turn(**_kwargs):
-        return {
+        result = {
             "reply": "Done",
             "tool_calls": [
                 {
@@ -398,6 +471,22 @@ def test_api_chat_includes_artifact_manifest(monkeypatch, client):
             "artifacts": {"generate_diagram": "agent3/acme/arch/v1/diagram.drawio"},
             "history_length": 3,
         }
+        req = _kwargs["req"]
+        save_conversation_turns(
+            _kwargs["store"],
+            req.customer_id,
+            [
+                {"role": "user", "content": req.message, "timestamp": "2026-06-24T00:00:00Z"},
+                {
+                    "role": "assistant",
+                    "content": result["reply"],
+                    "timestamp": "2026-06-24T00:00:01Z",
+                    "tool_calls": result["tool_calls"],
+                    "artifacts": result["artifacts"],
+                },
+            ],
+        )
+        return result
 
     import drawing_agent_server as srv
 
@@ -415,6 +504,8 @@ def test_api_chat_includes_artifact_manifest(monkeypatch, client):
     downloads = body["artifact_manifest"]["downloads"]
     assert any(item["type"] == "diagram" for item in downloads)
     bom_download = next(item for item in downloads if item["type"] == "bom")
+    assert "File" in body["reply"] or "Files" in body["reply"]
+    assert bom_download["download_url"] in body["reply"]
     assert bom_download["filename"].endswith(".xlsx")
     assert store.head(bom_download["key"])
     assert any(item["type"] == "terraform" and item["filename"] == "main.tf" for item in downloads)
@@ -426,6 +517,13 @@ def test_api_chat_includes_artifact_manifest(monkeypatch, client):
     assert download_resp.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+    assistant_turn = load_conversation_history(store, "acme")[-1]
+    saved_bom_download = next(
+        item for item in assistant_turn["artifact_manifest"]["downloads"] if item["type"] == "bom"
+    )
+    assert saved_bom_download["key"] == bom_download["key"]
+    assert assistant_turn["tool_calls"][0]["result_data"]["xlsx_artifact_key"] == bom_download["key"]
+    assert bom_download["download_url"] in assistant_turn["content"]
 
 
 def test_api_chat_does_not_persist_checkpointed_bom_xlsx(monkeypatch, client):
@@ -841,10 +939,10 @@ def test_chat_stream_emits_terraform_stage_events(monkeypatch, client):
 
 
 def test_chat_stream_completion_includes_artifact_manifest(monkeypatch, client):
-    test_client, _store = client
+    test_client, store = client
 
     async def _fake_run_turn(**_kwargs):
-        return {
+        result = {
             "reply": "Done",
             "tool_calls": [
                 {
@@ -865,6 +963,22 @@ def test_chat_stream_completion_includes_artifact_manifest(monkeypatch, client):
             "artifacts": {"generate_diagram": "agent3/acme/arch/v1/diagram.drawio"},
             "history_length": 9,
         }
+        req = _kwargs["req"]
+        save_conversation_turns(
+            _kwargs["store"],
+            req.customer_id,
+            [
+                {"role": "user", "content": req.message, "timestamp": "2026-06-24T00:00:00Z"},
+                {
+                    "role": "assistant",
+                    "content": result["reply"],
+                    "timestamp": "2026-06-24T00:00:01Z",
+                    "tool_calls": result["tool_calls"],
+                    "artifacts": result["artifacts"],
+                },
+            ],
+        )
+        return result
 
     import drawing_agent_server as srv
 
@@ -881,3 +995,11 @@ def test_chat_stream_completion_includes_artifact_manifest(monkeypatch, client):
     assert resp.status_code == 200
     assert '"artifact_manifest"' in resp.text
     assert '/api/terraform/acme/download/main.tf' in resp.text
+    assistant_turn = load_conversation_history(store, "acme")[-1]
+    assert assistant_turn["artifact_manifest"]["downloads"][0]["download_url"] == (
+        "/api/download/diagram.drawio?client_id=acme&diagram_name=arch"
+    )
+    assert any(
+        item["download_url"] == "/api/terraform/acme/download/main.tf"
+        for item in assistant_turn["artifact_manifest"]["downloads"]
+    )

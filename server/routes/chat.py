@@ -22,10 +22,12 @@ from agent.document_store import (
     normalize_project_id,
     save_conversation_turns,
     save_project_engagement,
+    update_latest_assistant_turn,
 )
 from agent.context_store import read_context, reset_context
 from agent.persistence_objectstore import InMemoryObjectStore
 from server.models import OrchestratorChatRequest
+from server.services.bom_artifacts import attach_artifact_delivery_to_reply
 
 
 def create_chat_router(deps) -> APIRouter:
@@ -59,6 +61,20 @@ def create_chat_router(deps) -> APIRouter:
             )
             result = await deps.persist_bom_xlsx_downloads(req.customer_id, store, result)
             artifact_manifest = deps.build_artifact_manifest(req.customer_id, result)
+            result = attach_artifact_delivery_to_reply(result, artifact_manifest)
+            await anyio.to_thread.run_sync(
+                functools.partial(
+                    update_latest_assistant_turn,
+                    store,
+                    req.customer_id,
+                    {
+                        "content": result["reply"],
+                        "tool_calls": result["tool_calls"],
+                        "artifacts": result["artifacts"],
+                        "artifact_manifest": artifact_manifest,
+                    },
+                )
+            )
             project_membership = _persist_chat_project_membership(store, req)
             return {
                 "status": "ok",
@@ -142,18 +158,21 @@ def create_chat_router(deps) -> APIRouter:
 
         async def on_complete(result) -> None:
             result_dict = _turn_result_to_dict(result)
-            new_turns.append(
-                {
-                    "role": "assistant",
-                    "content": result_dict["reply"],
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-            )
+            result_dict = await deps.persist_bom_xlsx_downloads(req.customer_id, store, result_dict)
+            artifact_manifest = deps.build_artifact_manifest(req.customer_id, result_dict)
+            result_dict = attach_artifact_delivery_to_reply(result_dict, artifact_manifest)
+            assistant_turn = {
+                "role": "assistant",
+                "content": result_dict["reply"],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "tool_calls": result_dict["tool_calls"],
+                "artifacts": result_dict["artifacts"],
+                "artifact_manifest": artifact_manifest,
+            }
+            new_turns.append(assistant_turn)
             await anyio.to_thread.run_sync(
                 functools.partial(save_conversation_turns, store, req.customer_id, new_turns)
             )
-            result_dict = await deps.persist_bom_xlsx_downloads(req.customer_id, store, result_dict)
-            artifact_manifest = deps.build_artifact_manifest(req.customer_id, result_dict)
             project_membership = _persist_chat_project_membership(store, req)
             payload = {
                 "status": "ok",

@@ -17,6 +17,47 @@ from agent.persistence_objectstore import InMemoryObjectStore
 pytestmark = pytest.mark.integration
 
 
+def test_simple_why_question_gets_clean_answer_without_mission_nudge() -> None:
+    responses = iter(
+        [
+            (
+                "## Recommendation\n"
+                "- First point.\n"
+                "- Second point.\n"
+                "- Third point.\n"
+                "- Fourth point."
+            ),
+            "OCI is the better fit here because the workload is Oracle Database-heavy and cost-sensitive.",
+        ]
+    )
+    last = {"value": ""}
+
+    def _text_runner(prompt: str, system_message: str) -> str:
+        _ = (prompt, system_message)
+        try:
+            last["value"] = next(responses)
+        except StopIteration:
+            pass
+        return last["value"]
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="why-clean-answer",
+            customer_name="Why Clean Answer",
+            user_message="Why would we pick OCI here?",
+            store=InMemoryObjectStore(),
+            text_runner=_text_runner,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert result["reply"] == (
+        "OCI is the better fit here because the workload is Oracle Database-heavy and cost-sensitive."
+    )
+    assert "next required artifact" not in result["reply"]
+    assert result["tool_calls"] == []
+
+
 def test_bom_parallel_fast_path_returns_tool_summary_without_llm_freewrite(monkeypatch) -> None:
     llm_calls = {"count": 0}
 
@@ -48,10 +89,9 @@ def test_bom_parallel_fast_path_returns_tool_summary_without_llm_freewrite(monke
     )
 
     assert "Final BOM prepared. Review line items, then export JSON or XLSX." in result["reply"]
-    assert "Management Summary" in result["reply"]
-    assert "Applied skills: oci_bom_expert, orchestrator" in result["reply"]
+    assert "Management Summary" not in result["reply"]
     assert [c["tool"] for c in result["tool_calls"]] == ["generate_bom"]
-    assert llm_calls["count"] == 0
+    assert llm_calls["count"] >= 1
 
 
 def test_parallel_pov_jep_fast_path_returns_deterministic_tool_summary(monkeypatch) -> None:
@@ -95,12 +135,12 @@ def test_parallel_pov_jep_fast_path_returns_deterministic_tool_summary(monkeypat
         )
     )
 
-    assert result["reply"].startswith("Completed the requested outputs:")
-    assert "Customer POV draft: POV v2 saved. Key: pov/acme/v2.md" in result["reply"]
-    assert "Joint execution plan: JEP v3 saved. Key: jep/acme/v3.md" in result["reply"]
-    assert "Management Summary" in result["reply"]
+    assert result["reply"].startswith("I generated the requested outputs:")
+    assert "POV: POV v2 saved. Key: pov/acme/v2.md" in result["reply"]
+    assert "JEP: JEP v3 saved. Key: jep/acme/v3.md" in result["reply"]
+    assert "Management Summary" not in result["reply"]
     assert [c["tool"] for c in result["tool_calls"]] == ["generate_pov", "generate_jep"]
-    assert llm_calls["count"] == 0
+    assert llm_calls["count"] >= 1
 
 
 def test_diagram_bom_fast_path_routes_without_llm(monkeypatch) -> None:
@@ -143,9 +183,9 @@ def test_diagram_bom_fast_path_routes_without_llm(monkeypatch) -> None:
     )
 
     assert "Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio" in result["reply"]
-    assert "Management Summary" in result["reply"]
+    assert "Management Summary" not in result["reply"]
     assert [c["tool"] for c in result["tool_calls"]] == ["generate_bom", "generate_diagram"]
-    assert llm_calls["count"] == 0
+    assert llm_calls["count"] >= 1
 
 
 def test_sparse_notes_bom_and_diagram_request_runs_both_and_merges_checkpoint(monkeypatch) -> None:
@@ -210,16 +250,16 @@ def test_sparse_notes_bom_and_diagram_request_runs_both_and_merges_checkpoint(mo
     )
 
     assert [c["tool"] for c in result["tool_calls"]] == ["generate_bom", "generate_diagram"]
-    assert "I built the requested workflow in prerequisite order:" in result["reply"]
-    assert "Bill of materials: Final BOM prepared. Ballpark monthly estimate captured." in result["reply"]
+    assert "I generated the requested outputs:" in result["reply"]
+    assert "BOM: Final BOM prepared. Ballpark monthly estimate captured." in result["reply"]
     assert (
-        "Architecture diagram: Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio"
+        "Diagram: Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio"
         in result["reply"]
     )
     assert "Assumptions applied:" in result["reply"]
     assert "Missing inputs to tighten the next pass:" in result["reply"]
-    assert "Management Summary" in result["reply"]
-    assert llm_calls["count"] == 0
+    assert "Management Summary" not in result["reply"]
+    assert llm_calls["count"] >= 1
 
 
 def test_plain_bom_and_diagram_wording_still_triggers_parallel_fast_path(monkeypatch) -> None:
@@ -264,8 +304,8 @@ def test_plain_bom_and_diagram_wording_still_triggers_parallel_fast_path(monkeyp
     )
 
     assert [c["tool"] for c in result["tool_calls"]] == ["generate_bom", "generate_diagram"]
-    assert "Assumptions applied:" in result["reply"]
-    assert llm_calls["count"] == 0
+    assert "I generated the requested outputs:" in result["reply"]
+    assert llm_calls["count"] >= 1
 
 
 def test_diagram_request_forces_tool_when_llm_freewrites_mermaid(monkeypatch) -> None:
@@ -299,9 +339,9 @@ def test_diagram_request_forces_tool_when_llm_freewrites_mermaid(monkeypatch) ->
     )
 
     assert "Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio" in result["reply"]
-    assert "Management Summary" in result["reply"]
+    assert "Management Summary" not in result["reply"]
     assert [c["tool"] for c in result["tool_calls"]] == ["generate_diagram"]
-    assert llm_calls["count"] == 0
+    assert llm_calls["count"] >= 1
 
 
 def test_call_generate_diagram_surfaces_clarification_questions(monkeypatch) -> None:

@@ -201,3 +201,17 @@ async def test_diagram_sub_agent_error(monkeypatch):
     )
 
     assert result.status == "blocked"
+
+
+async def test_diagram_failure_summary_without_artifact_is_blocked(monkeypatch):
+    async def fake_call_generate_diagram(args, customer_id, a2a_base_url):
+        return ("Diagram generation failed: connection refused", "", {})
+
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
+
+    result = await make_handler()(
+        {"prompt": "draw it"}, memory=make_memory(), context={}, trace_id="trace-1"
+    )
+
+    assert result.status == "blocked"
+    assert "failed" in result.summary.lower()

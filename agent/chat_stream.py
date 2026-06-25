@@ -11,6 +11,9 @@ import logging
 from types import SimpleNamespace
 from typing import AsyncGenerator
 
+from agent.document_store import update_latest_assistant_turn
+from server.services.bom_artifacts import attach_artifact_delivery_to_reply
+
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +108,19 @@ async def _chat_event_dicts(
         async for payload in _drain_status_queue(status_queue, task):
             yield payload
         result, project_membership = await task
+        artifact_manifest = server._build_artifact_manifest(customer_id, result)
+        result = attach_artifact_delivery_to_reply(result, artifact_manifest)
+        await asyncio.to_thread(
+            update_latest_assistant_turn,
+            store,
+            customer_id,
+            {
+                "content": result.get("reply", ""),
+                "tool_calls": result.get("tool_calls", []),
+                "artifacts": result.get("artifacts", {}),
+                "artifact_manifest": artifact_manifest,
+            },
+        )
         for event in result.get("events", []):
             event_type = str(event.get("type") or "")
             event_data = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
@@ -187,7 +203,7 @@ async def _chat_event_dicts(
             "reply": result.get("reply", ""),
             "tool_calls": result.get("tool_calls", []),
             "artifacts": result.get("artifacts", {}),
-            "artifact_manifest": server._build_artifact_manifest(customer_id, result),
+            "artifact_manifest": artifact_manifest,
             "history_length": result.get("history_length", 0),
         }
     except Exception as exc:

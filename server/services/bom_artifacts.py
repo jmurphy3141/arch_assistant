@@ -124,6 +124,62 @@ def build_artifact_manifest(customer_id: str, result: dict) -> dict:
     return manifest
 
 
+def attach_artifact_delivery_to_reply(result: dict, artifact_manifest: dict) -> dict:
+    """
+    Add a concise delivery sentence after server-side artifact persistence.
+
+    The orchestrator can finish before the server creates downloadable BOM XLSX
+    files. This keeps the UI and saved chat history honest without exposing
+    internal artifact bookkeeping.
+    """
+    if not isinstance(result, dict):
+        return result
+    downloads = (
+        artifact_manifest.get("downloads", [])
+        if isinstance(artifact_manifest, dict)
+        else []
+    )
+    if not isinstance(downloads, list) or not downloads:
+        return result
+    reply = str(result.get("reply", "") or "").strip()
+    unseen = [
+        item
+        for item in downloads
+        if isinstance(item, dict)
+        and str(item.get("download_url", "") or "").strip()
+        and str(item.get("download_url", "") or "").strip() not in reply
+        and str(item.get("key", "") or "").strip() not in reply
+    ]
+    if not unseen:
+        return result
+    sentence = _artifact_delivery_sentence(unseen)
+    if not sentence:
+        return result
+    result["reply"] = f"{reply}\n\n{sentence}".strip() if reply else sentence
+    return result
+
+
+def _artifact_delivery_sentence(downloads: list[dict]) -> str:
+    links: list[str] = []
+    for item in downloads[:4]:
+        artifact_type = str(item.get("type", "") or "artifact").strip().lower()
+        filename = str(item.get("filename", "") or artifact_type or "artifact").strip()
+        url = str(item.get("download_url", "") or "").strip()
+        if not url:
+            continue
+        label = {
+            "bom": "BOM workbook",
+            "diagram": "diagram",
+            "terraform": "Terraform file",
+        }.get(artifact_type, artifact_type or "artifact")
+        links.append(f"{label}: [{filename}]({url})")
+    if not links:
+        return ""
+    if len(links) == 1:
+        return f"File is ready — {links[0]}."
+    return "Files are ready — " + "; ".join(links) + "."
+
+
 def bom_result_is_exportable(result_data: dict) -> bool:
     result_type = str(result_data.get("type", "") or "").strip().lower()
     if result_type and result_type != "final":

@@ -303,7 +303,16 @@ async def run_turn(
     reply = ""
 
     def _finalize_turn(reply_text: str) -> dict:
-        new_turns.append({"role": "assistant", "content": reply_text, "timestamp": _now()})
+        assistant_turn = {
+            "role": "assistant",
+            "content": reply_text,
+            "timestamp": _now(),
+        }
+        if tool_calls:
+            assistant_turn["tool_calls"] = [dict(call) for call in tool_calls]
+        if artifacts:
+            assistant_turn["artifacts"] = dict(artifacts)
+        new_turns.append(assistant_turn)
         document_store.save_conversation_turns(store, customer_id, new_turns)
         return {
             "reply": reply_text,
@@ -576,6 +585,24 @@ async def run_turn(
     if isinstance(forge_result.artifacts, dict):
         artifacts.update(forge_result.artifacts)
 
+    if requested_tools and not tool_calls:
+        fallback_calls, fallback_artifacts, fallback_reply = await _run_requested_generation_fallback(
+            requested_tools=requested_tools,
+            user_message=user_message,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            specialist_mode=specialist_mode,
+            max_refinements=max_refinements,
+            decision_context=decision_context,
+        )
+        if fallback_calls:
+            tool_calls.extend(fallback_calls)
+            artifacts.update(fallback_artifacts)
+            reply = fallback_reply
+
     # Persist turn quality log for notable turns (corrections or deep iterations)
     if forge_result.corrections_issued > 0 or forge_result.iterations_used > 3:
         archie = context_store.get_archie_state(context)
@@ -590,10 +617,10 @@ async def run_turn(
         archie["turn_quality_log"] = log[-20:]
 
     # Append next-step offer if no generation tool fired this turn
-    tools_called = [tc.tool for tc in forge_tool_calls]
+    tools_called = [str(call.get("tool", "") or "") for call in tool_calls]
     _mission = EngagementMission()
     next_step = _mission.suggest_next_step(context, tools_called)
-    if next_step:
+    if next_step and _should_append_mission_next_step(user_message):
         reply = reply.rstrip() + "\n\n" + next_step
 
     # Upsert SE engagement index (lightweight, fire-and-forget)
@@ -617,6 +644,165 @@ async def run_turn(
         pass
 
     return _finalize_turn(reply)
+
+
+async def _run_requested_generation_fallback(
+    *,
+    requested_tools: set[str],
+    user_message: str,
+    customer_id: str,
+    customer_name: str,
+    store: ObjectStoreBase,
+    text_runner: Callable,
+    a2a_base_url: str,
+    specialist_mode: str,
+    max_refinements: int,
+    decision_context: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, str], str]:
+    ordered_tools = _ordered_requested_tools(requested_tools)
+    if not ordered_tools:
+        return [], {}, ""
+
+    calls: list[dict[str, Any]] = []
+    artifacts: dict[str, str] = {}
+    prior_summaries: list[str] = []
+    executor = globals().get("_execute_tool") or _legacy_tool_dispatch_compat
+    for tool_name in ordered_tools:
+        args = _fallback_generation_args(
+            tool_name=tool_name,
+            user_message=user_message,
+            prior_summaries=prior_summaries,
+        )
+        summary, artifact_key, result_data = await executor(
+            tool_name,
+            args,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            store=store,
+            text_runner=text_runner,
+            a2a_base_url=a2a_base_url,
+            specialist_mode=specialist_mode,
+            user_message=user_message,
+            max_refinements=max_refinements,
+            decision_context=decision_context,
+        )
+        call = {
+            "tool": tool_name,
+            "args": args,
+            "result_summary": summary,
+            "result_data": dict(result_data or {}),
+            "artifact_key": artifact_key or "",
+        }
+        calls.append(call)
+        if artifact_key:
+            artifacts[tool_name] = artifact_key
+        prior_summaries.append(f"{tool_name}: {summary}")
+
+    return calls, artifacts, _build_generation_fallback_reply(calls, decision_context=decision_context)
+
+
+def _fallback_generation_args(
+    *,
+    tool_name: str,
+    user_message: str,
+    prior_summaries: list[str],
+) -> dict[str, Any]:
+    prior_context = "\n".join(prior_summaries)
+    if tool_name == "generate_bom":
+        return {"prompt": user_message, "_user_message": user_message}
+    if tool_name == "generate_diagram":
+        bom_text = "\n\n".join(part for part in (user_message, prior_context) if part.strip())
+        return {"prompt": user_message, "bom_text": bom_text, "_user_message": user_message}
+    if tool_name == "generate_terraform":
+        return {"prompt": user_message, "_user_message": user_message}
+    if tool_name in {"generate_pov", "generate_jep", "generate_waf", "generate_sta", "generate_sales_deck", "generate_technical_proposal"}:
+        return {"feedback": user_message, "_user_message": user_message}
+    return {"prompt": user_message, "_user_message": user_message}
+
+
+def _should_append_mission_next_step(user_message: str) -> bool:
+    msg = f" {str(user_message or '').lower()} "
+    markers = (
+        " next ",
+        " next?",
+        " what should ",
+        " what do i need ",
+        " what do we need ",
+        " what's missing",
+        " whats missing",
+        " deliverable",
+        " artifact",
+        " c3e",
+        " phase",
+        " where are we",
+        " required",
+    )
+    return any(marker in msg for marker in markers)
+
+
+def _build_generation_fallback_reply(
+    calls: list[dict[str, Any]],
+    *,
+    decision_context: dict[str, Any] | None = None,
+) -> str:
+    if not calls:
+        return ""
+    if len(calls) == 1:
+        call = calls[0]
+        if call.get("tool") == "generate_diagram":
+            return _build_single_diagram_reply(call, decision_context=decision_context)
+        lines = [str(call.get("result_summary", "") or "").strip()]
+        result_data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+        if call.get("tool") == "generate_bom":
+            lines.extend(_bom_resolved_inputs_reply_section(result_data))
+        return "\n".join(line for line in lines if line).strip()
+
+    labels = {
+        "generate_bom": "BOM",
+        "generate_diagram": "Diagram",
+        "generate_pov": "POV",
+        "generate_jep": "JEP",
+        "generate_waf": "WAF review",
+        "generate_terraform": "Terraform",
+    }
+    completed: list[str] = []
+    issues: list[str] = []
+    assumptions: list[str] = []
+    missing_inputs: list[str] = []
+    for call in calls:
+        label = labels.get(str(call.get("tool", "") or ""), str(call.get("tool", "") or "tool").replace("_", " "))
+        summary = str(call.get("result_summary", "") or "").strip()
+        lowered = summary.lower()
+        if any(marker in lowered for marker in ("failed", "blocked", "clarification required", "please ")):
+            issues.append(f"{label}: {summary}")
+        else:
+            completed.append(f"{label}: {summary}")
+        data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
+        dc = data.get("decision_context", {}) if isinstance(data.get("decision_context"), dict) else {}
+        for item in archie_memory._merge_assumption_lists(
+            list(dc.get("assumptions", []) or []),
+            list(data.get("assumptions_used", []) or []),
+        ):
+            statement = str(item.get("statement", "") or "").strip() if isinstance(item, dict) else ""
+            risk = str(item.get("risk", "") or "low").strip().lower() if isinstance(item, dict) else "low"
+            if statement:
+                assumptions.append(f"{statement} (risk: {risk or 'low'})")
+        missing_inputs.extend(str(item).strip() for item in dc.get("missing_inputs", []) or [] if str(item).strip())
+
+    lines: list[str] = []
+    if completed:
+        lines.append("I generated the requested outputs: " + "; ".join(completed) + ".")
+    if issues:
+        lines.append("I could not finish every output: " + "; ".join(issues) + ".")
+    if assumptions:
+        lines.append("")
+        lines.append("Assumptions applied:")
+        lines.extend(f"- {item}" for item in list(dict.fromkeys(assumptions))[:4])
+    if missing_inputs:
+        lines.append("")
+        lines.append("Missing inputs to tighten the next pass:")
+        lines.extend(f"- {item}" for item in list(dict.fromkeys(missing_inputs))[:4])
+    return "\n".join(lines).strip()
 
 # ── Tool dispatch ─────────────────────────────────────────────────────────────
 
@@ -1211,7 +1397,19 @@ async def _call_generate_diagram(
         }
     except Exception as exc:
         logger.warning("Diagram A2A call failed: %s", exc)
-        return f"Diagram generation failed: {exc}", "", {}
+        backend_error_message = _sanitize_diagram_backend_error_message(str(exc))
+        error_reply, next_steps = _build_diagram_error_reply(
+            backend_error_message=backend_error_message,
+            attempted_recovery=False,
+        )
+        return error_reply, "", {
+            "backend_error_message": backend_error_message,
+            "diagram_recovery_status": "backend_error",
+            "assumptions_used": [],
+            "recovery_attempt_count": 0,
+            "diagram_final_disposition": "backend_error",
+            "diagram_next_steps": next_steps,
+        }
 
 def _notes_request_best_effort_assumptions(notes: str) -> bool:
     lowered = str(notes or "").lower()
