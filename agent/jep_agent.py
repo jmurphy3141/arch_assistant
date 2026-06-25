@@ -228,14 +228,13 @@ Reference specific OCI shapes/services from the notes and BOM. Use [TBD] only fo
 
 | Phase | Weeks | Owner | Activities | Deliverables | Exit Gate |
 |-------|-------|-------|------------|--------------|-----------|
-| Phase 0 - Pre-Provisioning | Before Week 1 | Oracle + {customer_name} | Confirm tenancy access, quotas, allow-lists, data availability, FastConnect ordering if required | Access and quota checklist | Required access, quotas, and connectivity path confirmed |
-| Phase 1 - Assessment | Weeks 1-2 | Oracle SA + Customer Technical Lead | Environment setup, baseline measurement, architecture review sign-off | Validated architecture and baseline report | Tenancy OCPU quota confirmed before Phase 2 |
+| Phase 1 - Assessment | Weeks 1-2 | Oracle SA + Customer Technical Lead | Pre-provisioning checkpoint, tenancy access, quota confirmation, baseline measurement, architecture review sign-off | Access checklist, quota confirmation, validated architecture, baseline report | Required access, quotas, connectivity path, and tenancy OCPU quota confirmed before Phase 2 |
 | Phase 2 - Build | Weeks 3-N | Oracle Cloud Engineer + Customer Engineer | OCI provisioning, workload deployment or migration, integration testing | Working POC environment | Workload deployed and ready for measurement |
-| Phase 3 - Validate | Final 2 weeks | Oracle SA + Customer Technical Lead | Load/performance testing, success criteria measurement, results documentation, go/no-go review | POC results report and recommendation | Customer validates pass/fail criteria |
+| Phase 3 - Validate | Final 2 weeks | Oracle SA + Customer Technical Lead | Load/performance testing, success criteria measurement, results documentation, go/no-go review, fallback decision if criteria are missed | POC results report, pass/fail recommendation, sign-off record | Customer validates pass/fail criteria and signs go/no-go decision |
 
 Use OCI provisioning references: full OCI foundation via Terraform is 1-2 hours, ADB Dedicated is 5-6 hours,
-FastConnect physical circuits are 2-4 weeks and must start in Phase 0, and new tenancy quota activation can take
-1-3 business days.
+FastConnect physical circuits are 2-4 weeks and must be started before Phase 1 when required, and new tenancy
+quota activation can take 1-3 business days.
 
 ## Success Criteria
 
@@ -259,7 +258,7 @@ FastConnect physical circuits are 2-4 weeks and must start in Phase 0, and new t
 | Risk | Probability | Impact | Mitigation | Owner |
 |------|-------------|--------|------------|-------|
 | Customer firewall restrictions block OCI connectivity | H | H | Test connectivity in Phase 1 Week 1 and pre-stage firewall rules | Customer Technical Lead |
-| Tenancy OCPU quota limits block required shapes | M | H | Submit quota request in Phase 0 and confirm before Phase 2 | Oracle SA |
+| Tenancy OCPU quota limits block required shapes | M | H | Submit quota request before Phase 1 and confirm before Phase 2 | Oracle SA |
 | Data volumes exceed POC window | M | M | Agree on representative subset in Phase 1 and document sampling method | Customer Engineer |
 
 Add additional project-specific risks from the notes. Keep probability and impact to H/M/L.

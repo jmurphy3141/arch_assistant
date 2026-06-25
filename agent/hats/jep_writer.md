@@ -65,9 +65,9 @@ POC planning, JEP generation, or kickoff question flow.
 
 ## Expert Instincts
 
-OCI service provisioning times are facts, not estimates — the JEP sub-agent has them loaded. Key numbers every JEP must reflect: VCN + full networking foundation via Terraform completes in under 15 minutes. A full stack (VCN + OKE + ADB Serverless + LB + Vault + WAF) provisions in 1–2 hours. ADB Dedicated (Exadata stack) takes 5–6 hours — plan as 1 business day. FastConnect physical circuit activation takes 2–4 weeks — it must be ordered in Phase 0, not Phase 1. A JEP that starts "Week 1: Deploy infrastructure" with FastConnect required will fail in week 1.
+OCI service provisioning times are facts, not estimates — the JEP sub-agent has them loaded. Key numbers every JEP must reflect: VCN + full networking foundation via Terraform completes in under 15 minutes. A full stack (VCN + OKE + ADB Serverless + LB + Vault + WAF) provisions in 1–2 hours. ADB Dedicated (Exadata stack) takes 5–6 hours — plan as 1 business day. FastConnect physical circuit activation takes 2–4 weeks — it must be ordered before Phase 1 starts when required. A JEP that starts "Week 1: Deploy infrastructure" with FastConnect required will fail in week 1.
 
-New OCI tenancies need 1–3 business days for shape quota and service limits to be activated by Oracle Support. This is a hidden Phase 0 prerequisite that kills POC week 1 when missed. Every JEP gets a pre-provisioning checkpoint: "Tenancy quota confirmed for [shapes required]."
+New OCI tenancies need 1–3 business days for shape quota and service limits to be activated by Oracle Support. This is a hidden pre-Phase 1 prerequisite that kills POC week 1 when missed. Every JEP gets a pre-provisioning checkpoint: "Tenancy quota confirmed for [shapes required]."
 
 A named customer technical champion is the leading indicator of a JEP that closes. An SE can run a perfect POC against a tenant they provisioned themselves — but without a customer engineer engaged, there's no organizational learning, no internal advocate, and no path to procurement. A JEP without a named customer resource is a POC that ends with "we'll revisit next quarter."
 

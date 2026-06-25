@@ -4,6 +4,8 @@ import pytest
 from docx import Document
 
 import agent.jep_agent as jep_agent
+from sub_agents.jep.server import _build_prompt as build_jep_sub_agent_prompt
+from sub_agents.models import A2ARequest
 from agent.document_store import (
     JEP_DOCX_CONTENT_TYPE,
     get_jep_docx,
@@ -63,6 +65,7 @@ ACME will validate OCI for a production POC.
     assert "Section Heading Placeholder" not in text
     assert "Joint Execution Plan - ACME" in text
     assert "Confirm tenancy quota" in text
+    assert text.count("Confirm tenancy quota") == 1
     assert "Oracle" in text
     assert "Technical Champion" in text
     assert doc.tables[0].style.name == Document(str(TEMPLATE_PATH)).tables[0].style.name
@@ -102,6 +105,27 @@ def test_jep_agent_prompt_uses_c3e_section_contract() -> None:
     assert "## Logistics" not in prompt
     assert "Oracle Corporation | 2300 Oracle Way" not in prompt
     assert prompt.rstrip().endswith("| [TBD] | ACME | Customer Technical Lead |  | [TBD] |")
+
+
+def test_jep_sub_agent_prompt_includes_prior_version_review_gate() -> None:
+    prompt = build_jep_sub_agent_prompt(
+        A2ARequest(
+            task="Please update the JEP",
+            engagement_context={
+                "customer_name": "ACME",
+                "feedback": "Please update the JEP",
+                "prior_version": "# Existing JEP v3\n\n## Executive Summary\nOriginal.",
+                "prior_version_number": 3,
+                "prior_version_key": "jep/ACME/v3.md",
+            },
+            trace_id="trace-1",
+        )
+    )
+
+    assert "Prior JEP version to revise v3 (jep/ACME/v3.md)" in prompt
+    assert "# Existing JEP v3" in prompt
+    assert "Use the prior JEP as the base" in prompt
+    assert "JEP Writer review gate" in prompt
 
 
 def test_render_jep_docx_missing_template_fails(tmp_path) -> None:

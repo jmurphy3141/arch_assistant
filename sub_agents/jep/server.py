@@ -96,15 +96,42 @@ card = AgentCard(
 
 def _build_prompt(req: A2ARequest) -> str:
     context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
-    parts = [req.task]
+    parts: list[str] = []
+    customer_name = context.get("customer_name")
+    if customer_name:
+        parts.append(f"Customer: {customer_name}")
+    parts.append(req.task)
     feedback = context.get("feedback")
     prior = context.get("prior_version")
+    prior_key = context.get("prior_version_key")
+    prior_number = context.get("prior_version_number")
     if feedback:
         parts.append(f"Revision feedback:\n{feedback}")
     if prior:
-        parts.append(f"Prior draft to update:\n{prior}")
+        label_parts = ["Prior JEP version to revise"]
+        if prior_number:
+            label_parts.append(f"v{prior_number}")
+        if prior_key:
+            label_parts.append(f"({prior_key})")
+        label = " ".join(str(part) for part in label_parts)
+        parts.append(
+            f"{label}:\n"
+            "```markdown\n"
+            f"{prior}\n"
+            "```"
+        )
     if feedback or prior:
-        parts.append("Treat this call as a revision request.")
+        parts.append(
+            "Treat this call as a revision request. Use the prior JEP as the base, "
+            "preserve customer-specific facts, and replace any non-C3E or self-referential "
+            "revision text with an executable Joint Execution Plan."
+        )
+    parts.append(
+        "JEP Writer review gate: return exactly the C3E JEP document in Markdown with "
+        "the 9 required sections, exactly Phase 1 Assessment / Phase 2 Build / "
+        "Phase 3 Validate, at least 3 numeric SMART success criteria, at least 3 "
+        "customer-specific risks, and a Phase 3 go/no-go sign-off and fallback."
+    )
     return "\n\n".join(str(part).strip() for part in parts if str(part).strip())
 
 

@@ -228,8 +228,14 @@ def _parse_table(lines: list[str]) -> list[list[str]]:
 
 
 def _add_paragraph(doc: DocumentObject, text: str, style_name: str) -> Paragraph:
+    style = None
+    if style_name:
+        try:
+            style = doc.styles[style_name]
+        except Exception:
+            style = None
     try:
-        return doc.add_paragraph(text, style=style_name)
+        return doc.add_paragraph(text, style=style)
     except Exception:
         return doc.add_paragraph(text)
 

@@ -28,6 +28,23 @@ REQUIRED_WAF_PILLARS = frozenset(
         "Continuous Improvement",
     }
 )
+_JEP_REQUIRED_SECTIONS = (
+    "Executive Summary",
+    "Objectives",
+    "Scope",
+    "POC Architecture",
+    "Phased Execution Plan",
+    "Success Criteria",
+    "Resource Plan",
+    "Risk Registry",
+    "Approvals",
+)
+_JEP_NUMERIC_THRESHOLD_RE = re.compile(
+    r"(?:[<>]=?\s*)?\b\d+(?:[.,]\d+)?\s*"
+    r"(?:%|ms|milliseconds?|seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|"
+    r"rps|qps|tps|gb/s|mb/s|gb|tb|ocpu|ocpus|users?|requests?|queries?)\b",
+    flags=re.IGNORECASE,
+)
 
 
 def build_inference_runner(app_state, *, inference_config: dict):
@@ -156,6 +173,13 @@ class _SpecialistHandler:
             "feedback": feedback,
             "architect_brief": dict(args.get("_architect_brief", {}) or {}),
         }
+        if self._agent_name == "jep":
+            engagement_context.update(
+                await _latest_jep_revision_context(
+                    self._store,
+                    self._customer_id,
+                )
+            )
         if self._agent_name == "waf":
             raw_request = _hydrate_waf_task(
                 raw_request,
@@ -201,6 +225,22 @@ class _SpecialistHandler:
                 )
             content = _ensure_waf_markdown_sections(content)
             response["result"] = content
+
+        if self._agent_name == "jep":
+            review_findings = _jep_writer_review_findings(content)
+            if review_findings:
+                return ToolResult(
+                    summary=(
+                        "JEP failed JEP Writer review before persistence: "
+                        + "; ".join(review_findings)
+                    ),
+                    status="blocked",
+                    data={
+                        **response,
+                        "review_verdict": "blocked",
+                        "review_findings": review_findings,
+                    },
+                )
 
         metadata = {"trace": response.get("trace", {}), "source": "sub_agent_client"}
         if self._agent_name == "sales_deck":
@@ -931,6 +971,135 @@ def _hydrate_sta_task(
         ]
     )
     return f"{block}\n\n{task}".strip()
+
+
+async def _latest_jep_revision_context(
+    store: ObjectStoreBase,
+    customer_id: str,
+) -> dict[str, Any]:
+    try:
+        prior_version = await asyncio.to_thread(
+            document_store.get_best_base_doc,
+            store,
+            "jep",
+            customer_id,
+        )
+    except Exception:
+        return {}
+    if not prior_version:
+        return {}
+    revision_context: dict[str, Any] = {"prior_version": prior_version}
+    try:
+        versions = await asyncio.to_thread(
+            document_store.list_versions,
+            store,
+            "jep",
+            customer_id,
+        )
+    except Exception:
+        versions = []
+    if versions:
+        latest = versions[-1] if isinstance(versions[-1], dict) else {}
+        revision_context["prior_version_number"] = latest.get("version")
+        revision_context["prior_version_key"] = latest.get("key")
+    return revision_context
+
+
+def _jep_writer_review_findings(content: str) -> list[str]:
+    text = str(content or "").strip()
+    lower = text.lower()
+    findings: list[str] = []
+    if not text:
+        return ["empty JEP content"]
+    if "job execution plan" in lower:
+        findings.append("uses Job Execution Plan wording instead of Joint Execution Plan")
+    if "self-update clause" in lower or "vague feedback loops" in lower or "revision trigger" in lower:
+        findings.append("self-referential revision content detected instead of customer execution plan")
+
+    missing_sections = [
+        section for section in _JEP_REQUIRED_SECTIONS if not _has_markdown_heading(text, section)
+    ]
+    if missing_sections:
+        findings.append("missing required sections: " + ", ".join(missing_sections))
+
+    phase_section = _markdown_section(text, "Phased Execution Plan")
+    if not phase_section:
+        findings.append("missing phased execution plan details")
+    else:
+        expected_phases = (
+            ("Phase 1", "Assessment"),
+            ("Phase 2", "Build"),
+            ("Phase 3", "Validate"),
+        )
+        for phase, label in expected_phases:
+            if phase.lower() not in phase_section.lower() or label.lower() not in phase_section.lower():
+                findings.append(f"missing {phase} {label}")
+        if re.search(r"\bPhase\s+0\b|\bPhase\s+4\b", phase_section, flags=re.IGNORECASE):
+            findings.append("phased execution plan must contain exactly Phase 1, Phase 2, and Phase 3")
+
+    success_section = _markdown_section(text, "Success Criteria")
+    smart_count = _count_numeric_criteria(success_section)
+    if smart_count < 3:
+        findings.append("fewer than 3 SMART success criteria with numeric thresholds")
+
+    risk_section = _markdown_section(text, "Risk Registry")
+    if _count_table_body_rows(risk_section) < 3:
+        findings.append("risk registry has fewer than 3 risks")
+
+    phase_three_text = phase_section.lower()
+    if phase_section and not (
+        ("go/no-go" in phase_three_text or "go no-go" in phase_three_text)
+        and ("fallback" in phase_three_text or "criteria" in phase_three_text)
+        and ("sign-off" in phase_three_text or "sign off" in phase_three_text or "approv" in phase_three_text)
+    ):
+        findings.append("Phase 3 lacks go/no-go decision, sign-off, and fallback framing")
+    return findings
+
+
+def _has_markdown_heading(content: str, heading: str) -> bool:
+    return re.search(
+        rf"(?im)^##+\s+(?:\d+\.\s*)?{re.escape(heading)}\s*$",
+        content,
+    ) is not None
+
+
+def _markdown_section(content: str, heading: str) -> str:
+    match = re.search(
+        rf"(?ims)^##+\s+(?:\d+\.\s*)?{re.escape(heading)}\s*$"
+        rf"(?P<body>.*?)(?=^##+\s+|\Z)",
+        content,
+    )
+    return match.group("body").strip() if match else ""
+
+
+def _count_numeric_criteria(section: str) -> int:
+    count = 0
+    for line in str(section or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("|") and re.fullmatch(r"\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?", stripped):
+            continue
+        if _JEP_NUMERIC_THRESHOLD_RE.search(stripped):
+            count += 1
+    return count
+
+
+def _count_table_body_rows(section: str) -> int:
+    rows = 0
+    for line in str(section or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not cells or all(not cell for cell in cells):
+            continue
+        if all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
+            continue
+        if any(cell.lower() in {"risk", "probability", "impact", "mitigation", "owner"} for cell in cells):
+            continue
+        rows += 1
+    return rows
 
 
 def _default_request(agent_name: str) -> str:

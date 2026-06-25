@@ -6,6 +6,7 @@ import json
 import pytest
 
 from agent import sub_agent_client
+from agent.persistence_objectstore import InMemoryObjectStore
 from agent.tools import specialists as specialists_module
 from agent.tools.specialists import REQUIRED_WAF_PILLARS, JepHandler, PovHandler, WafHandler
 from skillforge.types import MemorySnapshot
@@ -92,6 +93,62 @@ def stub_save_jep_docx(monkeypatch, key="docs/jep_v1.docx"):
     )
 
 
+def valid_jep_markdown() -> str:
+    return """# Joint Execution Plan - ACME
+
+## Executive Summary
+ACME will validate an OCI POC for VMware log analytics over 6 weeks.
+
+## Objectives
+1. Validate OCI ingestion for 10 GB/day of telemetry.
+2. Confirm query latency targets for 50 users.
+3. Validate operating handoff and support readiness.
+
+## Scope
+### In Scope
+- OCI Logging Analytics, Object Storage, Functions, Vault, and Vector Search.
+
+### Out of Scope
+- Production cutover and migration of non-telemetry workloads.
+
+## POC Architecture
+The POC uses OCI Logging Analytics, Object Storage, Vector Search, OCI Functions, Vault, and private networking.
+
+## Phased Execution Plan
+| Phase | Weeks | Activities | Exit Gate |
+|-------|-------|------------|-----------|
+| Phase 1 - Assessment | Weeks 1-2 | Confirm tenancy quota, firewall paths, and baseline telemetry flow | Access and quota confirmed |
+| Phase 2 - Build | Weeks 3-4 | Provision OCI services and deploy the log ingestion path | Workload deployed and ready for measurement |
+| Phase 3 - Validate | Weeks 5-6 | Measure success criteria, run go/no-go review, capture sign-off, and define fallback if criteria fail | Customer signs go/no-go decision |
+
+## Success Criteria
+| # | Criterion | Target | Validation Week |
+|---|-----------|--------|-----------------|
+| 1 | Log ingestion sustained at 10 GB/day | >= 10 GB/day | Week 5 |
+| 2 | Response latency for analyst queries | < 5 seconds | Week 6 |
+| 3 | User acceptance test coverage | >= 50 users | Week 6 |
+
+## Resource Plan
+| Organization | Name | Role | Weekly Hours |
+|--------------|------|------|--------------|
+| Oracle | TBD | Solutions Architect | 4 |
+| ACME | TBD | Customer Technical Lead | 4 |
+
+## Risk Registry
+| Risk | Probability | Impact | Mitigation | Owner |
+|------|-------------|--------|------------|-------|
+| ACME firewall blocks OCI log ingestion | H | H | Test connectivity in Week 1 | ACME Technical Lead |
+| OCI tenancy OCPU quota delays required functions | M | H | Confirm quota before Phase 2 | Oracle SA |
+| VMware telemetry volume exceeds POC window | M | M | Use a representative 10 GB/day subset | ACME Engineer |
+
+## Approvals
+| Approver | Organization | Role | Signature | Date |
+|----------|--------------|------|-----------|------|
+| TBD | Oracle | Oracle Solutions Architect |  | TBD |
+| TBD | ACME | Customer Technical Lead |  | TBD |
+"""
+
+
 async def test_pov_ok(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "pov"
@@ -144,7 +201,7 @@ async def test_jep_ok(monkeypatch):
 
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "jep"
-        return {"status": "ok", "result": "JEP document text."}
+        return {"status": "ok", "result": valid_jep_markdown()}
 
     monkeypatch.setattr(
         specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
@@ -159,6 +216,90 @@ async def test_jep_ok(monkeypatch):
     assert result.status == "ok"
     assert result.data["lock_outcome"] == "allowed"
     assert result.data["docx_key"] == "docs/jep_v1.docx"
+
+
+async def test_jep_revision_passes_latest_prior_version(monkeypatch):
+    install_jep_lifecycle_stub(
+        monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
+    )
+    store = InMemoryObjectStore()
+    specialists_module.document_store.save_doc(
+        store,
+        "jep",
+        "cust-1",
+        "# Existing JEP v3\n\n## Executive Summary\nUse this as the base.",
+        {"source": "test"},
+    )
+    captured_context = {}
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        assert name == "jep"
+        captured_context.update(engagement_context)
+        return {"status": "ok", "result": valid_jep_markdown()}
+
+    monkeypatch.setattr(
+        specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+    stub_save_doc(monkeypatch, "docs/jep_v2.md", version=2)
+    stub_save_jep_docx(monkeypatch, "docs/jep_v2.docx")
+
+    result = await JepHandler(store, "cust-1", "ACME")(
+        {"feedback": "Please update the JEP"},
+        memory=make_memory(),
+        context={"agents": {}},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "ok"
+    assert "Existing JEP v3" in captured_context["prior_version"]
+    assert captured_context["prior_version_key"] == "jep/cust-1/v1.md"
+    assert captured_context["feedback"] == "Please update the JEP"
+
+
+async def test_jep_blocks_self_referential_revision_before_save(monkeypatch):
+    install_jep_lifecycle_stub(
+        monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
+    )
+    saved = False
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        assert name == "jep"
+        return {
+            "status": "ok",
+            "result": """**Updated JEP (Job Execution Plan) - Revision 2.0**
+
+### Summary of Changes
+- **Revision Trigger**: Treated as a revision request.
+
+### 1. Objective
+Generate and maintain an iterative Job Execution Plan.
+
+### 6. Self-Update Clause
+- On next revision request, auto-increment the version.
+""",
+        }
+
+    def fake_save_doc(*_args, **_kwargs):
+        nonlocal saved
+        saved = True
+        raise AssertionError("invalid JEP should not be persisted")
+
+    monkeypatch.setattr(
+        specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+    monkeypatch.setattr(specialists_module.document_store, "save_doc", fake_save_doc)
+
+    result = await JepHandler(object(), "cust-1", "ACME")(
+        {"feedback": "Please update the JEP"},
+        memory=make_memory(),
+        context={"agents": {}},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "blocked"
+    assert "JEP failed JEP Writer review" in result.summary
+    assert "Job Execution Plan" in result.summary
+    assert saved is False
 
 
 async def test_jep_locked(monkeypatch):
