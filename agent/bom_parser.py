@@ -474,6 +474,16 @@ def inline_bom_text_to_llm_input(
 
 
 _FREEFORM_HINTS: list[tuple[str, tuple[str | None, str | None]]] = [
+    ("internet gateway", ("internet gateway", "external")),
+    ("nat gateway", ("nat gateway", "ingress")),
+    ("service gateway", ("service gateway", "ingress")),
+    ("network security groups", ("network security group", "ingress")),
+    ("network security group", ("network security group", "ingress")),
+    ("nsgs", ("network security group", "ingress")),
+    ("route tables", ("route table", "ingress")),
+    ("route table", ("route table", "ingress")),
+    ("single-ad poc boundary", ("poc boundary", "data")),
+    ("block volume", ("block volume", "data")),
     ("web application firewall", ("waf", "ingress")),
     ("network load balancer", ("load balancer", "ingress")),
     ("web servers", ("compute", "compute")),
@@ -559,32 +569,66 @@ def freeform_arch_text_to_llm_input(
     if not discovered:
         raise ValueError("freeform architecture request did not identify any OCI services")
 
-    items: list[ServiceItem] = [
-        ServiceItem(
-            id="on_prem",
-            oci_type="on premises",
-            label="On-Premises\n(3 Offices)",
-            layer="external",
+    items: list[ServiceItem] = []
+    seen_global: set[str] = set()
+    if re.search(r"\bon[- ]premises?\b|\bhybrid\b|\boffices?\b", desc):
+        items.append(
+            ServiceItem(
+                id="on_prem",
+                oci_type="on premises",
+                label="On-Premises",
+                layer="external",
+            )
         )
-    ]
-    seen_global: set[str] = {"on premises"}
+        seen_global.add("on premises")
     counters: dict[str, int] = {}
 
     for oci_type, layer in discovered:
         counters[oci_type] = counters.get(oci_type, 0) + 1
+        label = _make_label(oci_type, 1, 0, 0, 0.0, desc)
+        quantity = 1.0
+        if oci_type == "compute":
+            count_match = re.search(r"\b(?:two|2)\s+vm\.standard\.e5\.flex\s+web\s+servers?", desc)
+            if count_match:
+                quantity = 2.0
+                label = "2 × VM.Standard.E5.Flex Web Servers\n2 OCPU / 16 GB each"
+        elif oci_type == "database" and "postgresql" in desc:
+            label = "Private PostgreSQL Database\n2 OCPU"
+        elif oci_type == "block volume":
+            size = re.search(r"\b(\d+(?:\.\d+)?)\s*(gb|tb)\s+(?:balanced\s+)?block\s+volume", desc)
+            performance = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:performance units|vpus?)", desc)
+            label = f"{size.group(1)} {size.group(2).upper()} Balanced Block Volume" if size else "Block Volume"
+            if performance:
+                label += f"\n{performance.group(1)} Performance Units"
+        elif oci_type == "object storage":
+            size = re.search(r"\b(\d+(?:\.\d+)?)\s*(gb|tb)\s+object\s+storage", desc)
+            label = f"{size.group(1)} {size.group(2).upper()} Object Storage" if size else "Object Storage"
+        elif oci_type == "waf":
+            label = "OCI WAF Policy ×1"
+        elif oci_type == "network security group":
+            label = "NSGs: Public LB, Private App, Private DB"
+            quantity = 3.0
+        elif oci_type == "route table":
+            label = "Route Tables: Public, Private App, Private DB"
+            quantity = 3.0
+        elif oci_type == "poc boundary":
+            label = "Single-AD POC Boundary"
         items.append(
             ServiceItem(
                 id=f"{oci_type.replace(' ', '_')}_{counters[oci_type]}",
                 oci_type=oci_type,
-                label=_make_label(oci_type, 1, 0, 0, 0.0, desc),
+                label=label,
                 layer=layer,
-                quantity=1.0,
+                quantity=quantity,
                 notes="freeform_notes",
             )
         )
         seen_global.add(oci_type)
 
+    explicit_component_request = "include" in desc and len(discovered) >= 5
     for bp in BEST_PRACTICE:
+        if explicit_component_request and bp["type"] not in desc:
+            continue
         if bp["type"] not in seen_global:
             items.append(
                 ServiceItem(
@@ -609,7 +653,11 @@ def freeform_arch_text_to_llm_input(
         )
         seen_global.add("internet")
 
-    if any(i.oci_type in {"compute", "database"} for i in items) and "bastion" not in seen_global:
+    if (
+        not explicit_component_request
+        and any(i.oci_type in {"compute", "database"} for i in items)
+        and "bastion" not in seen_global
+    ):
         items.append(
             ServiceItem(
                 id="bastion_1",

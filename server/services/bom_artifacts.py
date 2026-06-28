@@ -66,9 +66,12 @@ def build_artifact_manifest(customer_id: str, result: dict) -> dict:
             item["label"] = scenario_label
         manifest["downloads"].append(item)
 
-    for tool_call in result.get("tool_calls", []) or []:
-        if tool_call.get("tool") != "generate_diagram":
-            continue
+    tool_calls = list(result.get("tool_calls", []) or [])
+
+    diagram_calls = [call for call in tool_calls if call.get("tool") == "generate_diagram"]
+    if diagram_calls and not any(str(call.get("scenario_label", "") or "").strip() for call in diagram_calls):
+        diagram_calls = diagram_calls[-1:]
+    for tool_call in diagram_calls:
         _append_diagram_download(
             str(tool_call.get("artifact_key", "") or ""),
             tool_name="generate_diagram",
@@ -80,9 +83,10 @@ def build_artifact_manifest(customer_id: str, result: dict) -> dict:
         if tool_name == "generate_diagram":
             _append_diagram_download(str(artifact_key or ""), tool_name=tool_name)
 
-    for tool_call in result.get("tool_calls", []) or []:
-        if tool_call.get("tool") != "generate_bom":
-            continue
+    bom_calls = [call for call in tool_calls if call.get("tool") == "generate_bom"]
+    if bom_calls and not any(str(call.get("scenario_label", "") or "").strip() for call in bom_calls):
+        bom_calls = bom_calls[-1:]
+    for tool_call in bom_calls:
         result_data = tool_call.get("result_data", {}) or {}
         if not isinstance(result_data, dict):
             continue
@@ -107,9 +111,8 @@ def build_artifact_manifest(customer_id: str, result: dict) -> dict:
             }
         )
 
-    for tool_call in result.get("tool_calls", []) or []:
-        if tool_call.get("tool") != "generate_jep":
-            continue
+    jep_calls = [call for call in tool_calls if call.get("tool") == "generate_jep"][-1:]
+    for tool_call in jep_calls:
         result_data = tool_call.get("result_data", {}) or {}
         if not isinstance(result_data, dict):
             continue
@@ -173,7 +176,6 @@ def attach_artifact_delivery_to_reply(result: dict, artifact_manifest: dict) -> 
         if isinstance(item, dict)
         and str(item.get("download_url", "") or "").strip()
         and str(item.get("download_url", "") or "").strip() not in reply
-        and str(item.get("key", "") or "").strip() not in reply
     ]
     if not unseen:
         return result

@@ -5,11 +5,60 @@ import pytest
 
 from agent.tools import diagram as diagram_module
 from agent.tools.diagram import DiagramHandler
+from agent.archie_session import _build_single_diagram_reply
 from agent.persistence_objectstore import InMemoryObjectStore
 from skillforge.types import MemorySnapshot
 
 
 pytestmark = pytest.mark.anyio
+
+
+def test_successful_diagram_reply_hides_internal_object_key():
+    reply = _build_single_diagram_reply(
+        {
+            "result_summary": "Diagram generated. Key: agent3/acme/trace/v1/diagram.drawio",
+            "artifact_key": "agent3/acme/trace/v1/diagram.drawio",
+            "result_data": {"diagram_recovery_status": "none"},
+        }
+    )
+
+    assert reply == "Done — the diagram is ready."
+
+
+def test_bom_context_block_normalizes_quantitative_diagram_labels():
+    block = diagram_module._diagram_bom_context_block(
+        [
+            {"description": "Storage - Block Volume - Storage", "quantity": 500, "metric": "GB"},
+            {"description": "Storage - Block Volume - Performance Units", "quantity": 5000},
+            {"description": "Object Storage - Storage", "quantity": 1024},
+            {"description": "Web Application Firewall Policy", "quantity": 1},
+        ]
+    )
+
+    assert "500 GB Balanced Block Volume" in block
+    assert "5000 Performance Units for Block Volume" in block
+    assert "1024 GB Object Storage" in block
+    assert "OCI WAF Policy ×1" in block
+
+
+def test_bom_coverage_gate_requires_all_quantitative_labels():
+    line_items = [
+        {"description": "Storage - Block Volume - Storage", "quantity": 500},
+        {"description": "Storage - Block Volume - Performance Units", "quantity": 5000},
+        {"description": "Object Storage - Storage", "quantity": 1024},
+        {"description": "Web Application Firewall Policy", "quantity": 1},
+    ]
+    incomplete = '<mxfile><mxCell value="500 GB Balanced Block Volume"/><mxCell value="Object Storage"/></mxfile>'
+    complete = (
+        '<mxfile><mxCell value="500 GB Balanced Block Volume&#xa;5000 Performance Units"/>'
+        '<mxCell value="1024 GB Object Storage"/><mxCell value="OCI WAF Policy ×1"/></mxfile>'
+    )
+
+    error = diagram_module._diagram_bom_coverage_error(line_items, incomplete)
+    assert "5000 performance units" in error
+    assert "Object Storage 1024 GB" in error
+    assert "WAF policy" in error
+    assert diagram_module._diagram_bom_coverage_error(line_items, complete) == ""
 
 
 @pytest.fixture
@@ -88,6 +137,49 @@ async def test_diagram_ok(monkeypatch):
 
     assert result.status == "ok"
     assert result.artifact_key == "diagrams/foo.drawio"
+
+
+async def test_diagram_correction_preserves_authoritative_user_request(monkeypatch):
+    captured = {}
+
+    async def fake_call_generate_diagram(args, customer_id, a2a_base_url):
+        captured.update(args)
+        return ("Diagram generated.", "diagrams/foo.drawio", {})
+
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
+    request = "Generate a diagram with two web servers and 500 GB Block Volume."
+    result = await make_handler()(
+        {
+            "prompt": "Add Bastion and Active Directory.",
+            "_user_message": request,
+            "_forge_correction": "Include a route table.",
+        },
+        memory=make_memory(),
+        context={},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "ok"
+    assert request in captured["prompt"]
+    assert "Add Bastion and Active Directory" not in captured["prompt"]
+    assert "Do not add services, integrations, sizes" in captured["prompt"]
+
+
+def test_diagram_content_review_requires_explicit_labels():
+    request = (
+        "Generate a diagram with two VM.Standard.E5.Flex web servers, PostgreSQL, "
+        "500 GB Block Volume, NSGs, route tables, and a single-AD POC boundary."
+    )
+    incomplete = '<mxfile><mxCell value="PostgreSQL"/><mxCell value="500 GB Block Volume"/></mxfile>'
+    complete = (
+        '<mxfile><mxCell value="2 × VM.Standard.E5.Flex Web Servers"/>'
+        '<mxCell value="PostgreSQL"/><mxCell value="500 GB Block Volume"/>'
+        '<mxCell value="NSGs"/><mxCell value="Route Tables"/>'
+        '<mxCell value="Single-AD POC Boundary"/></mxfile>'
+    )
+
+    assert "single-ad poc boundary" in diagram_module._diagram_content_error(request, incomplete)
+    assert diagram_module._diagram_content_error(request, complete) == ""
 
 
 async def test_diagram_persists_drawio_xml_when_sub_agent_returns_no_key(monkeypatch):

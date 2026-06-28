@@ -1243,7 +1243,11 @@ def _extract_client_facts(text: str, *, profile: dict[str, Any] | None = None) -
         security["bastion"] = True
     if "single ad" in lower or "single availability domain" in lower:
         security["identity_topology"] = "single AD"
-    if "active directory" in lower or re.search(r"\bad\b", lower):
+    standalone_ad = re.search(
+        r"(?<!single-)(?<!single )(?<!multi-)(?<!multi )\bad\b",
+        lower,
+    )
+    if "active directory" in lower or standalone_ad:
         security.setdefault("directory", "Active Directory")
     if security:
         facts["security"] = security
@@ -1257,7 +1261,7 @@ def _extract_client_facts(text: str, *, profile: dict[str, Any] | None = None) -
         facts["os_mix"] = os_mix
 
     databases = []
-    if "sql" in lower or "sql server" in lower:
+    if re.search(r"\b(?:microsoft\s+)?sql\s+server\b|\bmssql\b", lower):
         databases.append("SQL Server")
     if "oracle db" in lower or "oracle database" in lower:
         databases.append("Oracle Database")

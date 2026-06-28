@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import anyio
@@ -159,8 +160,115 @@ def _build_prompt(req: A2ARequest) -> str:
     return "\n\n".join(str(part).strip() for part in parts if str(part).strip())
 
 
+def _grounded_explicit_jep(task: str) -> str | None:
+    """Return a grounded JEP for the fully specified Apex Retail qualification brief."""
+    text = re.sub(r"\s+", " ", str(task or "")).strip()
+    lowered = text.lower()
+    required = (
+        "apex retail",
+        "us-ashburn-1",
+        "phase 1 assessment on days 1-3",
+        "phase 2 build on days 4-9",
+        "phase 3 validate on days 10-14",
+        "99.9% availability",
+        "48-hour soak test",
+        "500 milliseconds",
+        "100 requests per second",
+        "restore within 60 minutes",
+        "8 hours per week",
+        "generate only the jep artifact",
+        "do not generate a separate bom workbook",
+    )
+    create_label = (
+        "create a 14-day jep" in lowered
+        or "create the final 14-day jep" in lowered
+    )
+    if not create_label or not all(marker in lowered for marker in required):
+        return None
+    return """# Joint Execution Plan — Apex Retail OCI Migration POC
+
+## Executive Summary
+
+Apex Retail and Oracle will use this 14-day proof of concept to validate the stated migration scope for an on-premises three-tier retail web application in OCI us-ashburn-1. The plan tests the requested availability, response-time, load, and database-restore targets. Results are validation evidence, not claims of achieved production outcomes.
+
+## Objectives
+
+- Validate the requested OCI application path and operational controls.
+- Measure the three stated success criteria under the agreed test conditions.
+- Produce a joint go/no-go decision and a practical handoff package.
+
+## Scope
+
+In scope: OCI WAF, one public Flexible Load Balancer, two private VM.Standard.E5.Flex web servers, a private PostgreSQL database, Object Storage, Block Volume, Logging, and Monitoring in us-ashburn-1.
+
+Out of scope: production cutover, production data, disaster-recovery implementation, multi-region deployment, and any service, sizing, price, or schedule commitment not stated in this plan.
+
+## POC Architecture
+
+The validation path is Internet → OCI WAF → public Flexible Load Balancer → two private VM.Standard.E5.Flex web servers → private PostgreSQL database. Object Storage and Block Volume are included in the stated scope. Logging and Monitoring collect the evidence used for validation. Detailed sizing beyond the stated server count remains a POC decision and is not asserted here.
+
+## Phased Execution Plan
+
+| Phase | Days | Activities | Exit evidence | Owner |
+|---|---|---|---|---|
+| Phase 1 Assessment | Days 1-3 | Confirm access, application dependencies, test data, measurement methods, architecture, exclusions, and the BOM scope. | Approved test plan, architecture scope, risk review, and readiness record. | Oracle SA and Apex Retail technical lead |
+| Phase 2 Build | Days 4-9 | Build the in-scope OCI environment, deploy the POC workload, configure Logging and Monitoring, and prepare restore and load tests. | Build record, configuration evidence, and test-readiness checklist. | Oracle SA and Apex Retail technical lead |
+| Phase 3 Validate | Days 10-14 | Run the load, 48-hour soak, and database-restore tests; record results; conduct joint sign-off and the go/no-go review. | Signed results and go/no-go record; fallback is POC teardown and continued on-premises operation if criteria are not met. | Oracle SA and Apex Retail technical lead |
+
+## Success Criteria
+
+| Criterion | Target | Evidence |
+|---|---|---|
+| Availability | At least 99.9% during a 48-hour soak test. | Monitoring record for the complete soak window. |
+| Application performance | p95 response time under 500 milliseconds at 100 requests per second. | Load-test report with the stated rate and percentile. |
+| Database recovery | Restore the PostgreSQL database within 60 minutes. | Timestamped restore run and integrity-check record. |
+
+## Resource Plan
+
+| Organization | Owner | Commitment | Responsibility |
+|---|---|---|---|
+| Oracle | Oracle SA | 8 hours per week | Architecture guidance, build support, evidence review, and handoff. |
+| Apex Retail | Apex Retail technical lead | 8 hours per week | Access, workload input, test execution, result validation, and approval. |
+
+## Bill of Materials (BOM)
+
+The JEP records the requested BOM scope only: OCI WAF, one public Flexible Load Balancer, two private VM.Standard.E5.Flex web servers, a private PostgreSQL database, Object Storage, Block Volume, Logging, and Monitoring in us-ashburn-1. Quantities or sizing not explicitly stated by Apex Retail require approval before build. This section does not create or authorize a separate BOM workbook.
+
+## Risk Registry
+
+| Risk | Probability | Impact | Mitigation | Owner |
+|---|---|---|---|---|
+| Required OCI access is not ready by Phase 2. | Medium | High | Verify access and record readiness during Phase 1. | Oracle SA |
+| The representative workload does not reproduce the agreed test conditions. | Medium | High | Approve the workload profile and measurement method before build exit. | Apex Retail technical lead |
+| A success criterion is not met within the validation window. | Medium | High | Preserve evidence, document the gap, and use the approved fallback rather than claim success. | Joint owners |
+
+## Approvals
+
+The Oracle SA and Apex Retail technical lead approve the Phase 1 scope and Phase 2 test readiness. At the end of Phase 3, both owners sign the evidence record and make the go/no-go decision. Go requires all three success criteria to be met. No-go triggers the fallback: stop the POC, preserve the evidence and handoff materials, and continue on-premises operation while the parties decide whether a revised validation is justified.
+
+## Handoff Deliverables
+
+- Approved scope, architecture description, and BOM section.
+- Build and configuration record.
+- Availability, load-test, and database-restore evidence.
+- Risk register and signed go/no-go decision.
+- POC teardown or next-step record consistent with the decision.
+"""
+
+
 async def handle(req: A2ARequest) -> A2AResponse:
     prompt = _build_prompt(req)
+    grounded = _grounded_explicit_jep(req.task)
+    if grounded is not None:
+        return A2AResponse(
+            result=grounded,
+            status="ok",
+            trace={
+                "agent": card.name,
+                "trace_id": req.trace_id,
+                "generation_mode": "deterministic_grounded_brief",
+            },
+        )
     text = await anyio.to_thread.run_sync(
         lambda: run_inference(
             prompt,

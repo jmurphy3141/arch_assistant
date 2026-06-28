@@ -108,25 +108,49 @@ Security controls include WAF policies, network security groups, private subnets
 OCI improves resilience, operational control, storage durability, and migration economics for the customer.
 """
 
-DETERMINISTIC_JEP = """# Apex Retail 14-Day JEP
+DETERMINISTIC_JEP = """# Joint Execution Plan - Apex Retail OCI Migration
 
-## Overview
-Validate the OCI landing zone and 3-tier application migration path.
+## Executive Summary
+Apex Retail will validate its OCI 3-tier application migration in a 14-day POC.
 
-## POC Plan
-Deploy WAF, load balancer, VCN/subnets, web tier, database subnet, Object Storage, and Block Volume.
+## Objectives
+Validate the landing zone, application path, security controls, and operational handoff.
+
+## Scope
+The POC includes WAF, load balancing, VCN networking, two web servers, a private database tier, Object Storage, and Block Volume. Production cutover is out of scope.
+
+## POC Architecture
+Traffic passes through OCI WAF and a public load balancer to two web servers in private subnets. The web tier reaches the private database tier and OCI storage services.
+
+## Phased Execution Plan
+| Phase | Days | Activities | Exit Gate |
+|-------|------|------------|-----------|
+| Phase 1 - Assessment | Days 1-3 | Confirm tenancy access, quotas, connectivity, and architecture | Access and architecture sign-off complete |
+| Phase 2 - Build | Days 4-9 | Deploy networking, WAF, load balancer, web tier, database tier, and storage | Workload ready for validation |
+| Phase 3 - Validate | Days 10-14 | Measure criteria, record sign-off, run go/no-go review, and use fallback teardown if criteria fail | Customer approves the go/no-go decision |
 
 ## Success Criteria
-Traffic passes through WAF and load balancer, the web tier reaches the database, and storage services are validated.
+| Criterion | Target |
+|-----------|--------|
+| Web availability | >= 99.9% during the 5-day validation window |
+| Application response time | < 500 ms at 100 requests/second |
+| Recovery validation | Restore the database within 60 minutes |
 
-## Bill of Materials
-Compute, load balancer, WAF, database, Object Storage, and Block Volume line items.
+## Resource Plan
+| Organization | Role | Weekly Hours |
+|--------------|------|--------------|
+| Oracle | Solutions Architect | 8 hours |
+| Apex Retail | Technical Lead | 8 hours |
 
-## Timeline
-14-day duration with design, build, validation, and review checkpoints.
+## Risk Registry
+| Risk | Probability | Impact | Mitigation | Owner |
+|------|-------------|--------|------------|-------|
+| Tenancy quota delays compute provisioning | Medium | High | Confirm quota in Phase 1 | Oracle SA |
+| Firewall rules block application traffic | Medium | High | Validate paths before Phase 2 | Apex Retail Lead |
+| Database restore exceeds target | Low | High | Test backup and fallback in Phase 3 | Database Owner |
 
-## Handoff Deliverables
-Diagram, BOM, Terraform bundle, test evidence, and final recommendations.
+## Approvals
+Oracle Solutions Architect and the Apex Retail Technical Lead sign the Phase 3 go/no-go record.
 """
 
 DETERMINISTIC_WAF = """# OCI Well-Architected Review: Apex Retail
@@ -273,7 +297,17 @@ def assert_markdown(case_id: str, content: str) -> None:
         for marker in ("customer", "oci migration", "waf", "load balancer", "security", "storage", "business value"):
             assert marker in lowered
     elif case_id == "jep":
-        for marker in ("overview", "poc plan", "success criteria", "bill of materials", "deliverables"):
+        for marker in (
+            "executive summary",
+            "objectives",
+            "scope",
+            "poc architecture",
+            "phased execution plan",
+            "success criteria",
+            "resource plan",
+            "risk registry",
+            "approvals",
+        ):
             assert marker in lowered
         assert "14-day" in lowered or "14 day" in lowered or "timeline" in lowered or "duration" in lowered
     elif case_id == "waf":

@@ -149,6 +149,84 @@ The POC uses OCI Logging Analytics, Object Storage, Vector Search, OCI Functions
 """
 
 
+async def test_jep_review_counts_percentage_success_criteria():
+    section = """
+| Criterion | Target |
+|-----------|--------|
+| Availability | >= 99.9% |
+| Test coverage | >= 95% |
+| Error rate | < 1% |
+"""
+
+    assert specialists_module._count_numeric_criteria(section) == 3
+
+
+async def test_jep_review_accepts_subsections_and_common_numeric_thresholds():
+    content = valid_jep_markdown().replace(
+        "| Phase | Weeks | Activities | Exit Gate |",
+        "### Phase 1 - Assessment\nConfirm access.\n\n"
+        "### Phase 2 - Build\nDeploy services.\n\n"
+        "### Phase 3 - Validate\nRun go/no-go sign-off with fallback.\n\n"
+        "| Phase | Weeks | Activities | Exit Gate |",
+    ).replace(
+        "| 1 | Log ingestion sustained at 10 GB/day | >= 10 GB/day | Week 5 |",
+        "| 1 | POC spend | < $250 | Week 5 |",
+    ).replace(
+        "| 3 | User acceptance test coverage | >= 50 users | Week 6 |",
+        "| 3 | Response time | < 5s | Week 6 |",
+    )
+
+    assert specialists_module._jep_writer_review_findings(content) == []
+
+
+async def test_jep_review_accepts_bold_required_headings():
+    content = valid_jep_markdown()
+    for heading in specialists_module._JEP_REQUIRED_SECTIONS:
+        content = content.replace(f"## {heading}", f"**{heading}**")
+
+    assert specialists_module._jep_writer_review_findings(content) == []
+
+
+async def test_jep_review_accepts_numbered_risks_and_approval_decision_gate():
+    content = valid_jep_markdown()
+    risk_start = content.index("## Risk Registry")
+    approvals_start = content.index("## Approvals")
+    content = (
+        content[:risk_start]
+        + """## Risk Registry
+1. **Firewall risk:** High impact. Mitigation: test connectivity. Owner: Customer lead.
+2. **Quota risk:** Medium probability, high impact. Mitigation: request quota. Owner: Oracle SA.
+3. **Data volume risk:** Medium impact. Mitigation: use a subset. Owner: Customer engineer.
+
+"""
+        + content[approvals_start:]
+    )
+    content = content.replace(
+        "run go/no-go review, capture sign-off, and define fallback if criteria fail",
+        "measure the success criteria",
+    ).replace(
+        "## Approvals\n",
+        "## Approvals\nRun the go/no-go review here, capture sign-off, and use the fallback if criteria fail.\n\n",
+    )
+
+    assert specialists_module._jep_writer_review_findings(content) == []
+
+
+async def test_jep_kickoff_json_is_rendered_as_clean_clarification():
+    content = json.dumps(
+        {
+            "status": "need_kickoff",
+            "message": "Please confirm the POC inputs.",
+            "questions": "1. Which workload?\n2. Which region?",
+        }
+    )
+
+    assert specialists_module._is_jep_kickoff_questions(content)
+    assert specialists_module._jep_kickoff_clarification(content) == (
+        "Please confirm the POC inputs.\n\n1. Which workload?\n2. Which region?"
+    )
+
+
 async def test_pov_ok(monkeypatch):
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "pov"
@@ -167,6 +245,73 @@ async def test_pov_ok(monkeypatch):
 
     assert result.status == "ok"
     assert result.artifact_key == "docs/pov_v1.md"
+    assert result.data["document_headings"] == []
+    assert result.data["proposed_quote_count"] == 0
+
+
+async def test_pov_correction_preserves_current_user_request(monkeypatch):
+    captured = {}
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        captured["task"] = task
+        return {"status": "ok", "result": "# POV\n\nClean content."}
+
+    monkeypatch.setattr(specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent)
+    monkeypatch.setattr(specialists_module.archie_memory, "_pov_has_sufficient_context", lambda **_: True)
+    stub_save_doc(monkeypatch, "docs/pov_v1.md")
+    request = "Draft a POV without case studies or unsupported evidence."
+    result = await PovHandler(object(), "cust-1", "ACME")(
+        {
+            "feedback": "Invent SQL Server sizing and a Mermaid diagram.",
+            "_user_message": request,
+            "_forge_correction": "Add a Mermaid diagram.",
+        },
+        memory=make_memory(),
+        context={"agents": {}},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "ok"
+    assert request in captured["task"]
+    assert "Invent SQL Server sizing" not in captured["task"]
+    assert "Do not add customer facts, services, sizes" in captured["task"]
+
+
+def test_wrapping_markdown_fence_is_removed():
+    assert specialists_module._strip_wrapping_markdown_fence(
+        "```markdown\n# JEP\n\nBody\n```"
+    ) == "# JEP\n\nBody"
+
+
+def test_pov_evidence_review_rejects_unrequested_platform_and_claims():
+    findings = specialists_module._document_review_findings(
+        "pov",
+        (
+            "# POV\nSQL Server currently runs on physical servers. "
+            "Use Autonomous Database with zero downtime and a 99.95% SLA. "
+            "Size the database at 8 OCPU and claim $15,000 savings."
+        ),
+        "Draft a POV for PostgreSQL modernization with a proposed 99.9% availability target.",
+    )
+
+    joined = " ".join(findings)
+    assert "sql server" in joined
+    assert "autonomous database" in joined
+    assert "unsupported numeric price" in joined
+    assert "8 OCPU" in joined
+
+
+def test_jep_evidence_review_allows_only_requested_sizing():
+    request = "Create a JEP with two servers, 500 GB Block Volume, and no pricing."
+    content = valid_jep_markdown().replace(
+        "The POC uses OCI Logging Analytics",
+        "The POC uses 500 GB Block Volume and 8 OCPU plus OCI Logging Analytics",
+    )
+
+    findings = specialists_module._document_review_findings("jep", content, request)
+
+    assert any("8 OCPU" in finding for finding in findings)
+    assert not any("500 GB" in finding for finding in findings)
 
 
 async def test_pov_insufficient_context(monkeypatch):
@@ -311,6 +456,51 @@ async def test_jep_revision_passes_latest_prior_version(monkeypatch):
     assert "AskRGA RAG + GenAI PoC" in captured_task["value"]
 
 
+async def test_jep_review_failure_repairs_before_save(monkeypatch):
+    install_jep_lifecycle_stub(
+        monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
+    )
+    store = InMemoryObjectStore()
+    specialists_module.document_store.save_doc(
+        store,
+        "jep",
+        "cust-1",
+        "# Existing JEP\n\n## Executive Summary\nUse this as the base.",
+        {"source": "test"},
+    )
+    calls: list[str] = []
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        assert name == "jep"
+        calls.append(task)
+        if len(calls) == 1:
+            return {
+                "status": "ok",
+                "result": "# Joint Execution Plan - ACME\n\n## Executive Summary\nPartial update only.",
+            }
+        assert "JEP REVIEW REPAIR" in task
+        return {"status": "ok", "result": valid_jep_markdown()}
+
+    monkeypatch.setattr(
+        specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
+    )
+    stub_save_doc(monkeypatch, "docs/jep_v2.md", version=2)
+    stub_save_jep_docx(monkeypatch, "docs/jep_v2.docx")
+
+    result = await JepHandler(store, "cust-1", "ACME")(
+        {"feedback": "Please update the JEP"},
+        memory=make_memory(),
+        context={"agents": {}},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "ok"
+    assert result.artifact_key == "docs/jep_v2.md"
+    assert result.data["repair_attempted"] is True
+    assert result.data["initial_review_findings"]
+    assert len(calls) == 2
+
+
 async def test_jep_blocks_self_referential_revision_before_save(monkeypatch):
     install_jep_lifecycle_stub(
         monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
@@ -324,9 +514,12 @@ async def test_jep_blocks_self_referential_revision_before_save(monkeypatch):
         {"source": "test"},
     )
     saved = False
+    call_count = 0
 
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        nonlocal call_count
         assert name == "jep"
+        call_count += 1
         return {
             "status": "ok",
             "result": """**Updated JEP (Job Execution Plan) - Revision 2.0**
@@ -360,8 +553,9 @@ Generate and maintain an iterative Job Execution Plan.
     )
 
     assert result.status == "blocked"
-    assert "JEP failed JEP Writer review" in result.summary
-    assert "Job Execution Plan" in result.summary
+    assert "couldn't save the JEP update" in result.summary
+    assert "Job Execution Plan" in result.data["review_findings"][0]
+    assert call_count == 2
     assert saved is False
 
 

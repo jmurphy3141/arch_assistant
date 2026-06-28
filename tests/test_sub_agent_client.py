@@ -133,3 +133,9 @@ def test_needs_input_response_returned_without_raising(tmp_path, monkeypatch) ->
         "status": "needs_input",
         "trace": {"agent": "bom"},
     }
+
+
+def test_sub_agent_url_prefers_environment_override(monkeypatch) -> None:
+    monkeypatch.setenv("ARCHIE_SUB_AGENT_DIAGRAM_URL", "http://127.0.0.1:18082/")
+
+    assert sub_agent_client._sub_agent_url("diagram") == "http://127.0.0.1:18082"

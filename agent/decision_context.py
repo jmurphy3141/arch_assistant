@@ -7,8 +7,11 @@ from typing import Any
 _REGION_RE = re.compile(r"\b[a-z]{2}-[a-z]+-\d\b")
 _AVAILABILITY_RE = re.compile(r"\b99(?:\.\d+)?%")
 _COST_RE = re.compile(
-    r"(?:budget|cost|spend|under|cap|ceiling|max(?:imum)?)"
+    r"(?:budget|cost|spend|cap|ceiling|max(?:imum)?)"
     r"[^0-9$]{0,12}\$?\s*([0-9]+(?:[.,][0-9]+)?)([kKmM]?)"
+)
+_UNDER_COST_RE = re.compile(
+    r"(?:under|below|less\s+than)\s*\$\s*([0-9]+(?:[.,][0-9]+)?)([kKmM]?)"
 )
 
 _SECURITY_KEYWORDS = (
@@ -221,7 +224,7 @@ def _extract_availability(text: str) -> str | None:
 
 
 def _extract_cost_limit(text: str) -> float | None:
-    match = _COST_RE.search(text)
+    match = _COST_RE.search(text) or _UNDER_COST_RE.search(text)
     if not match:
         return None
     value = float(match.group(1).replace(",", ""))

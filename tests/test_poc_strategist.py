@@ -83,6 +83,32 @@ async def test_three_parallel_calls_made(monkeypatch):
     assert len(calls) == 3
 
 
+async def test_frozen_customer_uses_grounded_options_without_inference(monkeypatch):
+    async def fail_call(*_args, **_kwargs):
+        raise AssertionError("grounded frozen scenario must not call inference")
+
+    monkeypatch.setattr(specialists_module.sub_agent_client, "call_sub_agent", fail_call)
+    context = {"latest_decision_context": {}}
+    result = await PocStrategistHandler(
+        InMemoryObjectStore(), "apex-1", "Apex Retail"
+    )(
+        {"action": "explore", "_user_message": "Yes, explore the POC options."},
+        memory=make_memory(),
+        context=context,
+        trace_id="t1",
+    )
+
+    assert result.status == "ok"
+    assert result.data["generation_mode"] == "deterministic_grounded_options"
+    assert result.data["recommendation"]["poc_name"] == "Apex Retail Core Workload Validation POC"
+    assert len(result.data["poc_options"]) == 3
+    assert "Autonomous Database" not in json.dumps(result.data)
+    assert context["latest_decision_context"]["poc_options"] == result.data["poc_options"]
+    assert context["archie"]["resolved_decisions"]["poc"]["options"] == result.data["poc_options"]
+    assert "Which option would you like to proceed with?" in result.summary
+    assert "Present all options" not in result.summary
+
+
 async def test_needs_clarification_when_pain_absent(monkeypatch):
     called = False
 
@@ -172,6 +198,24 @@ async def test_confirmation_returns_parallel_toolresult():
     assert result.status == "parallel"
     assert result.parallel_tools is not None
     assert len(result.parallel_tools) == 5
+
+
+async def test_apex_confirmation_grounds_diagram_and_jep_prompts():
+    apex_options = specialists_module._grounded_poc_options("Apex Retail")
+    memory = make_memory(poc_options=apex_options)
+    result = await PocStrategistHandler(
+        InMemoryObjectStore(), "apex-1", "Apex Retail"
+    )(
+        {"action": "confirm", "confirmed_option_name": apex_options[0]["option_name"]},
+        memory=memory,
+        context={},
+        trace_id="t1",
+    )
+
+    calls = {call.tool: call for call in result.parallel_tools or []}
+    assert "single-AD POC boundary" in calls["generate_diagram"].args["prompt"]
+    assert "Phase 1 Assessment on days 1-3" in calls["generate_jep"].args["feedback"]
+    assert "do not generate a separate BOM workbook" in calls["generate_jep"].args["feedback"]
 
 
 async def test_confirmation_tool_names_correct():

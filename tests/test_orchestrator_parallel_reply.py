@@ -13,6 +13,7 @@ from agent import context_store
 from agent.tools import specialists as specialists_module
 from agent import sub_agent_client
 from agent.persistence_objectstore import InMemoryObjectStore
+from skillforge.types import ParallelToolCall, ToolResult
 
 
 pytestmark = pytest.mark.integration
@@ -119,6 +120,8 @@ RGA will validate a RAG and GenAI assistant for telemetry questions using OCI se
     )
 
     assert result["tool_calls"] == []
+    assert "verified POC" in result["reply"]
+    assert "generate_poc_plan" not in result["reply"]
     assert "AskRGA RAG + GenAI PoC" in result["reply"]
     assert "diagrams/active-poc/askrga/v4/diagram.drawio" in result["reply"]
     assert "generate_poc_plan" not in result["reply"]
@@ -141,8 +144,139 @@ def test_active_poc_question_without_context_is_clear_without_tool_call() -> Non
     )
 
     assert result["tool_calls"] == []
-    assert "verified POC" in result["reply"]
-    assert "generate_poc_plan" not in result["reply"]
+
+
+def test_poc_recommendation_from_pov_offers_exploration_without_llm() -> None:
+    def _text_runner(_prompt: str, _system_message: str) -> str:
+        raise AssertionError("POC recommendation offer must not call inference")
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="poc-offer",
+            customer_name="Apex Retail",
+            user_message="Based on the persisted POV, what POC would you recommend?",
+            store=InMemoryObjectStore(),
+            text_runner=_text_runner,
+        )
+    )
+
+    assert "Want me to explore and rank the options" in result["reply"]
+    assert result["tool_calls"] == []
+
+
+def test_pov_fact_sheet_with_poc_data_does_not_trigger_poc_offer() -> None:
+    message = (
+        "Generate an internal OCI POV. Approved assumption: use masked POC data. "
+        "Label generated design choices as recommendations."
+    )
+    assert archie_session._is_poc_recommendation_offer_request(message) is False
+
+
+def test_poc_exploration_confirmation_invokes_poc_plan_without_llm(monkeypatch) -> None:
+    class _FakeForge:
+        async def invoke_tool(self, tool_name, args, **_kwargs):
+            assert tool_name == "generate_poc_plan"
+            assert args["action"] == "explore"
+            return ToolResult(
+                summary="Three ranked POC options are ready.",
+                status="ok",
+                artifact_key="poc_plan/apex/v1.json",
+                data={"poc_options": [{"option_name": "Migration validation POC"}]},
+            )
+
+    monkeypatch.setattr(archie_session, "_get_forge", lambda **_kwargs: _FakeForge())
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="poc-explore",
+            customer_name="Apex Retail",
+            user_message="Yes — go explore the ranked POC options in detail.",
+            store=InMemoryObjectStore(),
+            text_runner=lambda *_args: (_ for _ in ()).throw(AssertionError("must not infer")),
+        )
+    )
+
+    assert result["reply"] == "Three ranked POC options are ready."
+    assert result["artifacts"] == {"generate_poc_plan": "poc_plan/apex/v1.json"}
+    assert [call["tool"] for call in result["tool_calls"]] == ["generate_poc_plan"]
+
+
+def test_exact_poc_confirmation_executes_five_tool_fanout(monkeypatch) -> None:
+    invoked: list[str] = []
+
+    class _FakeForge:
+        async def invoke_tool(self, tool_name, args, **_kwargs):
+            invoked.append(tool_name)
+            if tool_name == "generate_poc_plan":
+                assert args["action"] == "confirm"
+                return ToolResult(
+                    summary="confirmed",
+                    status="parallel",
+                    parallel_tools=[
+                        ParallelToolCall(tool=name, args={"prompt": name})
+                        for name in (
+                            "generate_diagram",
+                            "generate_bom",
+                            "generate_jep",
+                            "generate_terraform",
+                            "generate_presentation",
+                        )
+                    ],
+                )
+            return ToolResult(
+                summary=f"{tool_name} ready",
+                status="ok",
+                artifact_key=f"artifacts/{tool_name}/v1",
+            )
+
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "poc-confirm", "Apex Retail")
+    context_store.set_resolved_decisions(
+        ctx,
+        poc={"options": [{"option_name": "Apex Retail Core Workload Validation POC"}]},
+    )
+    context_store.write_context(store, "poc-confirm", ctx)
+    monkeypatch.setattr(archie_session, "_get_forge", lambda **_kwargs: _FakeForge())
+
+    result = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id="poc-confirm",
+            customer_name="Apex Retail",
+            user_message="Proceed with the exact option: Apex Retail Core Workload Validation POC.",
+            store=store,
+            text_runner=lambda *_args: (_ for _ in ()).throw(AssertionError("must not infer")),
+        )
+    )
+
+    assert invoked[0] == "generate_poc_plan"
+    assert set(invoked[1:]) == {
+        "generate_diagram", "generate_bom", "generate_jep", "generate_terraform", "generate_presentation"
+    }
+    assert len(result["artifacts"]) == 5
+    assert result["reply"].startswith("POC kit for Apex Retail Core Workload Validation POC is ready.")
+
+
+def test_confirmed_poc_context_does_not_retrigger_confirmation() -> None:
+    context = {"latest_decision_context": {"poc_options": [
+        {"option_name": "Apex Retail Core Workload Validation POC"}
+    ]}}
+    message = (
+        "Using the confirmed Apex Retail Core Workload Validation POC and latest JEP, "
+        "create the final BOM."
+    )
+
+    assert archie_session._confirmed_poc_option_name(message, context) == ""
+
+
+def test_document_context_mentions_do_not_generate_obsolete_documents() -> None:
+    final_jep = (
+        "Using the persisted POV and confirmed POC, create the final 14-day JEP."
+    )
+    final_bom = (
+        "Using the confirmed POC and latest explicit JEP, create and export the final OCI BOM."
+    )
+
+    assert archie_session._requested_generation_tools(final_jep) == {"generate_jep"}
+    assert archie_session._requested_generation_tools(final_bom) == {"generate_bom"}
 
 
 def test_legacy_jep_update_uses_prior_jep_and_artifact_context(monkeypatch) -> None:
@@ -203,6 +337,52 @@ def test_legacy_jep_update_uses_prior_jep_and_artifact_context(monkeypatch) -> N
     assert "JEP REVISION GROUNDING" in captured["task"]
     assert "AskRGA RAG + GenAI PoC" in captured["task"]
     assert captured["engagement_context"]["artifact_context"]["diagram"]["diagram_name"] == "askrga-rag-genai"
+
+
+def test_legacy_jep_review_failure_repairs_before_save(monkeypatch) -> None:
+    store = InMemoryObjectStore()
+    archie_session.document_store.save_doc(
+        store,
+        "jep",
+        "legacy-jep-repair",
+        "# Joint Execution Plan - AskRGA RAG + GenAI PoC\n\n## Executive Summary\nExisting base.",
+        {"source": "test"},
+    )
+    calls: list[str] = []
+
+    async def _fake_call_sub_agent(name, task, engagement_context, trace_id):
+        _ = (engagement_context, trace_id)
+        assert name == "jep"
+        calls.append(task)
+        if len(calls) == 1:
+            return {"status": "ok", "result": "# Joint Execution Plan\n\n## Executive Summary\npartial"}
+        assert "JEP REVIEW REPAIR" in task
+        return {"status": "ok", "result": "# Joint Execution Plan\n\n## Executive Summary\nrepaired"}
+
+    monkeypatch.setattr(archie_session.sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
+    monkeypatch.setattr(
+        specialists_module,
+        "_jep_writer_review_findings",
+        lambda content: ["missing required sections"] if "partial" in content else [],
+    )
+
+    summary, key, data = asyncio.run(
+        archie_session._legacy_tool_core_compat(
+            "generate_jep",
+            {"feedback": "Please update the JEP"},
+            customer_id="legacy-jep-repair",
+            customer_name="RGA",
+            store=store,
+            text_runner=lambda prompt, system_message: "",
+            a2a_base_url="http://localhost:8080",
+        )
+    )
+
+    assert summary.startswith("JEP v2 saved.")
+    assert key == "jep/legacy-jep-repair/v2.md"
+    assert data["repair_attempted"] is True
+    assert data["initial_review_findings"] == ["missing required sections"]
+    assert len(calls) == 2
 
 
 def test_bom_parallel_fast_path_returns_tool_summary_without_llm_freewrite(monkeypatch) -> None:

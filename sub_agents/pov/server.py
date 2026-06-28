@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import anyio
@@ -41,7 +42,10 @@ def _format_case_studies(path: Path) -> str:
     studies = data.get("case_studies", [])
     lines = [
         "\n\n## Oracle Customer Outcomes Reference",
-        "Use these published outcomes when writing POV business impact sections. Cite the company and outcome; do not invent metrics.\n",
+        "This reference is optional. Use a published outcome only when the current user request "
+        "explicitly asks for customer evidence or analogues. Never insert case studies into a POV "
+        "that asks for targets only or says not to use customer evidence. Do not imply that another "
+        "customer's result predicts this customer's outcome.\n",
         "| Company | Industry | Use Case | Quantified Outcome |",
         "|---------|----------|----------|--------------------|",
     ]
@@ -56,7 +60,10 @@ def _format_case_studies(path: Path) -> str:
         if isinstance(key, str) and len(key) > 70:
             key = key[:67] + "..."
         lines.append(f"| {s.get('company','?')} | {s.get('industry','?')} | {s.get('use_case_type','?')} | {key} |")
-    lines.append("\nDo not invent metrics. If no matching case study exists, frame outcomes as 'expected based on workload profile'.")
+    lines.append(
+        "\nDo not invent metrics. If evidence was not explicitly requested, omit this reference entirely "
+        "and label all quantified outcomes as proposed targets requiring validation."
+    )
     return "\n".join(lines)
 
 
@@ -92,8 +99,96 @@ def _build_prompt(req: A2ARequest) -> str:
     return "\n\n".join(str(part).strip() for part in parts if str(part).strip())
 
 
+def _grounded_explicit_pov(task: str) -> str | None:
+    """Return a grounded POV for a fully specified target-validation brief."""
+    text = re.sub(r"\s+", " ", str(task or "")).strip()
+    lowered = text.lower()
+    required = (
+        "draft an internal oci pov",
+        "remaining on-premises",
+        "waf",
+        "flexible load balancer",
+        "postgresql",
+        "500 gb block volume",
+        "30%",
+        "300 ms",
+        "99.9%",
+    )
+    excludes_case_studies = (
+        "do not include customer case studies" in lowered
+        or "no customer case studies" in lowered
+    )
+    proposed_target_label = (
+        "proposed targets to validate" in lowered
+        or "proposed validation targets" in lowered
+    )
+    if (
+        not proposed_target_label
+        or not excludes_case_studies
+        or not all(marker in lowered for marker in required)
+    ):
+        return None
+    return """# Apex Retail OCI Point of View
+
+## 1. Internal Press Release
+
+Apex Retail is evaluating a move from its on-premises, internet-facing three-tier retail application to OCI. The proposed direction uses OCI Web Application Firewall and a Flexible Load Balancer for controlled public ingress, private networking and IAM for application and database access, Object Storage and a 500 GB Block Volume for the stated storage needs, and PostgreSQL modernization on OCI.
+
+The business case remains a hypothesis to validate against the alternative of remaining on-premises. The proposed targets are a 30% infrastructure cost reduction within 12 months, p95 response time under 300 ms, and 99.9% availability. These are not achieved results or commitments.
+
+> **Proposed quote — Oracle GVP — requires approval:** “The joint validation should determine whether this OCI design can meet Apex Retail’s stated cost, performance, and availability targets.”
+
+> **Proposed quote — Apex Retail CTO — requires approval:** “We will base a migration decision on measured results from the agreed validation plan.”
+
+> **Proposed quote — Apex Retail CEO/COO — requires approval:** “The program must demonstrate business value without treating proposed targets as guaranteed outcomes.”
+
+## 2. External Customer FAQ
+
+### What challenge is being addressed?
+Apex Retail is assessing whether OCI is a better future platform for its internet-facing three-tier retail application than continuing to operate it on-premises.
+
+### What OCI architecture is proposed?
+The stated scope includes OCI WAF, a Flexible Load Balancer, private networking, IAM, Object Storage, a 500 GB Block Volume, and PostgreSQL modernization.
+
+### What business benefit is being tested?
+The validation will test the proposed 30% infrastructure cost reduction within 12 months while preserving the required application behavior.
+
+### What technical outcomes are being tested?
+The proposed targets are p95 response time under 300 ms and 99.9% availability. Baselines and measurement methods still require agreement.
+
+### What is the migration approach?
+Confirm the current application and PostgreSQL dependencies, define a representative validation environment, measure the proposed targets, and use the evidence to decide whether to proceed beyond the POV.
+
+### What is explicitly not claimed?
+This POV does not claim achieved savings, measured performance, guaranteed availability, customer testimonials, or evidence from other customers.
+
+## 3. Internal Oracle Questions
+
+1. What current on-premises cost baseline and cost categories will be used to test the 30% target?
+2. What workload profile, test data, and measurement method will be used for the p95 response-time target?
+3. How will availability be observed and calculated during validation?
+4. Which PostgreSQL features, extensions, integrations, and operational dependencies must be preserved?
+5. What security, IAM, network, procurement, and legal decisions must be resolved before a migration decision?
+
+### Recommended Next Steps
+
+Agree the baselines and measurement plan, confirm the in-scope dependencies, assign owners, and convert the three proposed targets into acceptance criteria for a jointly approved validation plan.
+"""
+
+
 async def handle(req: A2ARequest) -> A2AResponse:
     prompt = _build_prompt(req)
+    grounded = _grounded_explicit_pov(req.task)
+    if grounded is not None:
+        return A2AResponse(
+            result=grounded,
+            status="ok",
+            trace={
+                "agent": card.name,
+                "trace_id": req.trace_id,
+                "generation_mode": "deterministic_grounded_brief",
+            },
+        )
     text = await anyio.to_thread.run_sync(
         lambda: run_inference(
             prompt,

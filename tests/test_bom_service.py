@@ -100,6 +100,37 @@ def test_bom_fast_path_honors_explicit_large_sizing() -> None:
     assert by_sku["B91961"]["quantity"] == 43008.0
 
 
+def test_bom_fast_path_keeps_block_and_object_storage_quantities_distinct() -> None:
+    svc = BomService()
+    payload = svc._draft_bom_payload(
+        "Create an OCI BOM with 500 GB Balanced Block Volume and 1 TB Standard Object Storage.",
+        dict(DEFAULT_PRICE_TABLE),
+    )
+
+    by_sku = {row["sku"]: row for row in payload["line_items"]}
+    assert by_sku["B91961"]["quantity"] == 500.0
+    assert by_sku["B91962"]["quantity"] == 5000.0
+    assert by_sku["B91628"]["quantity"] == 1024.0
+
+
+def test_bom_fast_path_ignores_memory_table_sizing_before_user_request() -> None:
+    svc = BomService()
+    payload = svc._draft_bom_payload(
+        """[Archie Canonical Memory]
+| Compute memory | 2048 GB |
+| Block Volume | 1024 GB |
+| Object Storage | 204.8 GB |
+[End Archie Canonical Memory]
+Create an OCI BOM for 2 servers, each with 2 OCPU and 16 GB memory, with 500 GB Balanced Block Volume and 1 TB Object Storage.""",
+        dict(DEFAULT_PRICE_TABLE),
+    )
+
+    by_sku = {row["sku"]: row for row in payload["line_items"]}
+    assert by_sku["B97385"]["quantity"] == 32.0
+    assert by_sku["B91961"]["quantity"] == 500.0
+    assert by_sku["B91628"]["quantity"] == 1024.0
+
+
 def test_bom_fast_path_includes_waf_and_database_line_items() -> None:
     svc = BomService()
     payload = svc._draft_bom_payload(

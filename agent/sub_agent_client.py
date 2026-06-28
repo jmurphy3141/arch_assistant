@@ -8,7 +8,7 @@ No other orchestrator file may import sub-agent modules directly.
 """
 from __future__ import annotations
 
-import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +41,10 @@ def _load_config() -> dict[str, Any]:
 
 
 def _sub_agent_url(name: str) -> str:
+    env_name = f"ARCHIE_SUB_AGENT_{str(name or '').upper()}_URL"
+    env_url = str(os.environ.get(env_name) or "").rstrip("/")
+    if env_url:
+        return env_url
     config = _load_config()
     sub_agents = config.get("sub_agents") or {}
     if not isinstance(sub_agents, dict):
@@ -116,7 +120,10 @@ async def call_sub_agent(
     base_url = _sub_agent_url(name)
     last_error: Exception | None = None
     response: httpx.Response | None = None
-    for attempt in range(2):
+    # A sub-agent owns its own bounded repair policy. Repeating the identical
+    # HTTP request here doubles inference latency and can create duplicate
+    # artifacts, so transport dispatch is single-attempt and fail-closed.
+    for attempt in range(1):
         try:
             async with httpx.AsyncClient(timeout=180) as client:
                 response = await client.post(f"{base_url}/a2a", json=payload)
@@ -124,10 +131,7 @@ async def call_sub_agent(
                 break
         except Exception as exc:
             last_error = exc
-            if attempt == 1:
-                raise SubAgentError(f"Failed to call sub-agent {name!r}: {exc}") from exc
-        if attempt == 0:
-            await asyncio.sleep(0.25)
+            raise SubAgentError(f"Failed to call sub-agent {name!r}: {exc}") from exc
     if response is None:
         detail = str(last_error) if last_error else "no response"
         raise SubAgentError(f"Failed to call sub-agent {name!r}: {detail}")

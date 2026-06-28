@@ -156,7 +156,13 @@ async def handle(req: A2ARequest) -> A2AResponse:
     )
     files = _parse_files(raw)
     return A2AResponse(
-        result=json.dumps(files, ensure_ascii=False),
+        result=json.dumps(
+            {
+                "files": files,
+                "artifact_key": "generated/terraform/bundle",
+            },
+            ensure_ascii=False,
+        ),
         status="ok",
         trace={"agent": card.name, "trace_id": req.trace_id},
     )

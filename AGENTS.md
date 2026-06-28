@@ -120,6 +120,9 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - Sub-agents: `sub_agents/` contains independent A2A services for BOM,
   diagram, POV, JEP, WAF, Terraform, tech research, sales deck, POC strategy,
   and presentation.
+- Individual specialist endpoints can be overridden at runtime with
+  `ARCHIE_SUB_AGENT_<NAME>_URL` (for example,
+  `ARCHIE_SUB_AGENT_DIAGRAM_URL=http://127.0.0.1:18082`).
 - React UI: `App.tsx` coordinates tabs; form components call typed helpers in
   `ui/src/api/client.ts`; chat lives in `ChatInterface.tsx`.
 - Tests: Python tests use `pytest.ini` markers; UI tests use Vitest,

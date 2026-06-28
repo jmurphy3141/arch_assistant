@@ -691,6 +691,43 @@ def test_run_turn_architecture_chat_only_does_not_force_artifact_generation(monk
     assert "architecture discussion first" in result["reply"]
 
 
+def test_architecture_why_followup_preserves_deferred_product_choices() -> None:
+    store = InMemoryObjectStore()
+    customer_id = "arch-chat-why"
+
+    first = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id=customer_id,
+            customer_name="Arch Chat",
+            user_message=(
+                "We are planning to move an internet-facing three-tier retail web application "
+                "to OCI in us-ashburn-1. What architecture would you recommend?"
+            ),
+            store=store,
+            text_runner=lambda *_args: "unused",
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+    assert "architecture discussion first" in first["reply"]
+
+    second = asyncio.run(
+        orchestrator_agent.run_turn(
+            customer_id=customer_id,
+            customer_name="Arch Chat",
+            user_message="Why do you recommend that architecture?",
+            store=store,
+            text_runner=lambda *_args: (_ for _ in ()).throw(AssertionError("LLM should not run")),
+            max_tool_iterations=1,
+            specialist_mode="legacy",
+        )
+    )
+
+    assert "starting pattern" in second["reply"]
+    assert "still determine Compute versus OKE and the database service" in second["reply"]
+    assert "Autonomous DB" not in second["reply"]
+
+
 def test_save_notes_then_bom_request_hydrates_archie_context(monkeypatch) -> None:
     store = InMemoryObjectStore()
 
