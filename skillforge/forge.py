@@ -34,6 +34,7 @@ Minimal wiring for a new domain (e.g. AWS):
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import re
@@ -84,7 +85,25 @@ _EXPERT_REVIEW_SURFACE = "EXPERT_SURFACE:"
 _FINAL_SYNTHESIS_SYSTEM = (
     "You rewrite Archie assistant output for the end user. Keep the internal "
     "reasoning depth hidden. Return only the final user-visible answer in plain "
-    "Markdown. Be concise, natural, and direct."
+    "Markdown. Be concise, natural, and direct. Remove precise benchmarks, prices, "
+    "percentages, customer examples, and citations unless they are explicitly present "
+    "in the tool outcomes supplied for this synthesis. Never turn an assumption or "
+    "illustrative target into an achieved fact."
+)
+_ARTIFACT_GENERATION_TOOLS = frozenset(
+    {
+        "generate_bom",
+        "generate_diagram",
+        "generate_jep",
+        "generate_pov",
+        "generate_waf",
+        "generate_terraform",
+        "generate_tech_report",
+        "generate_presentation",
+        "generate_sales_deck",
+        "generate_sta",
+        "generate_technical_proposal",
+    }
 )
 _INTERNAL_RESPONSE_MARKERS = (
     "[Internal Orchestrator Self-Guidance",
@@ -98,6 +117,7 @@ _INTERNAL_RESPONSE_MARKERS = (
     "EXPERT ASSESSMENT:",
     "SUB-AGENT TASK:",
     "TOOL_RESULT(",
+    "TOOL_EVIDENCE(",
 )
 
 
@@ -931,7 +951,7 @@ class Forge:
                 except Exception:
                     pass
 
-            prompt = _append_result(prompt, tool_name, result.summary)
+            prompt = _append_result_with_evidence(prompt, tool_name, result)
 
             # Step 6: expert post-review, then critic pass
             if reasoning_sink and spec.critique_enabled and result.status == "ok":
@@ -1037,7 +1057,10 @@ class Forge:
         session_id: str,
     ) -> str:
         cleaned = _strip_internal_response_artifacts(reply)
-        direct_tool_reply = _direct_tool_outcome_reply(tool_calls)
+        direct_tool_reply = _direct_tool_outcome_reply(
+            tool_calls,
+            user_message=user_message,
+        )
         if direct_tool_reply:
             return direct_tool_reply
         if not _needs_final_synthesis(
@@ -1045,7 +1068,7 @@ class Forge:
             reply=cleaned,
             tool_calls=tool_calls,
         ):
-            return cleaned
+            return _clean_simple_question_claims(user_message, cleaned)
 
         fallback = _deterministic_clean_reply(
             user_message=user_message,
@@ -1068,7 +1091,7 @@ class Forge:
         synthesized = _strip_internal_response_artifacts(str(raw or ""))
         if not synthesized or _reply_leaks_internal_artifacts(synthesized):
             return fallback
-        return synthesized
+        return _clean_simple_question_claims(user_message, synthesized)
 
     async def run_turn_background(
         self,
@@ -2041,10 +2064,14 @@ def _strip_internal_response_artifacts(reply: str) -> str:
             continue
         if stripped.startswith("TOOL_RESULT("):
             continue
+        if stripped.startswith("TOOL_EVIDENCE("):
+            continue
         if any(stripped.startswith(prefix) for prefix in skip_prefixes):
             continue
         kept.append(line.rstrip())
     cleaned = "\n".join(kept)
+    if cleaned.count(" - **") >= 2:
+        cleaned = cleaned.replace(" - **", "\n- **")
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned
 
@@ -2154,7 +2181,11 @@ def _deterministic_clean_reply(
     return cleaned or _synthesize_reply_from_tool_calls(tool_calls)
 
 
-def _direct_tool_outcome_reply(tool_calls: list[ToolCall]) -> str:
+def _direct_tool_outcome_reply(
+    tool_calls: list[ToolCall],
+    *,
+    user_message: str = "",
+) -> str:
     """
     Preserve actionable tool outcomes that should not be rewritten by an LLM.
 
@@ -2183,9 +2214,32 @@ def _direct_tool_outcome_reply(tool_calls: list[ToolCall]) -> str:
             if message:
                 actionable.append(message)
 
-    if not actionable:
-        return ""
-    return "\n\n".join(dict.fromkeys(actionable)).strip()
+    if actionable:
+        return "\n\n".join(dict.fromkeys(actionable)).strip()
+    if (
+        tool_order
+        and _user_message_requests_formal_artifact(user_message)
+        and all(tool_name in _ARTIFACT_GENERATION_TOOLS for tool_name in tool_order)
+    ):
+        return _synthesize_reply_from_tool_calls(tool_calls)
+    return ""
+
+
+def _clean_simple_question_claims(user_message: str, reply: str) -> str:
+    """Remove unsupported precision from colleague-style conversational replies."""
+    text = str(reply or "").strip()
+    if not text or not _is_simple_conversation_question(user_message):
+        return text
+    paragraphs: list[str] = []
+    unsupported_precision = re.compile(
+        r"(?:\b\d+(?:\.\d+)?\s*%|[$€£]\s*\d|\b\d+(?:\.\d+)?\s*(?:x\s+)?(?:tco|savings?)\b)",
+        flags=re.IGNORECASE,
+    )
+    for paragraph in re.split(r"\n\s*\n", text):
+        paragraph = paragraph.strip()
+        if paragraph and not unsupported_precision.search(paragraph):
+            paragraphs.append(paragraph)
+    return "\n\n".join(paragraphs).strip() or _first_plain_sentence(text)
 
 
 def _synthesize_reply_from_tool_calls(tool_calls: list[ToolCall]) -> str:
@@ -2248,6 +2302,71 @@ def _synthesize_reply_from_tool_calls(tool_calls: list[ToolCall]) -> str:
 
 def _append_result(prompt: str, tool_name: str, summary: str) -> str:
     return prompt + f"\nTOOL_RESULT({tool_name}): {summary}"
+
+
+def _append_result_with_evidence(
+    prompt: str,
+    tool_name: str,
+    result: ToolResult,
+) -> str:
+    updated = _append_result(prompt, tool_name, result.summary)
+    data = result.data if isinstance(result.data, dict) else {}
+    evidence: dict[str, Any] = {
+        "status": result.status,
+        "artifact_key": str(result.artifact_key or ""),
+    }
+    if tool_name == "generate_diagram":
+        drawio = str(data.get("drawio_xml") or "")
+        labels = []
+        for raw_label in re.findall(r'\bvalue="([^"]+)"', drawio, flags=re.IGNORECASE):
+            label = re.sub(r"<[^>]+>|&#xa;", " ", html.unescape(raw_label))
+            label = re.sub(r"\s+", " ", label).strip()
+            if label and label not in labels:
+                labels.append(label[:120])
+        evidence.update(
+            {
+                "drawio_xml_present": drawio.lstrip().lower().startswith("<mxfile"),
+                "drawio_xml_length": len(drawio),
+                "diagram_labels": labels[:40],
+                "node_count": data.get("node_count"),
+                "diagram_final_disposition": data.get("diagram_final_disposition"),
+            }
+        )
+    elif tool_name == "generate_bom":
+        payload = data.get("bom_payload") if isinstance(data.get("bom_payload"), dict) else {}
+        rows = []
+        for item in (payload.get("line_items") or [])[:30]:
+            if not isinstance(item, dict):
+                continue
+            rows.append(
+                {
+                    key: item.get(key)
+                    for key in ("sku", "description", "quantity", "instance_count", "unit_price", "extended_price")
+                    if item.get(key) is not None
+                }
+            )
+        evidence.update(
+            {
+                "line_items": rows,
+                "monthly_total": payload.get("monthly_total") or (payload.get("totals") or {}).get("estimated_monthly_cost"),
+                "xlsx_artifact_key": data.get("xlsx_artifact_key"),
+                "prices_from": data.get("prices_from"),
+            }
+        )
+    elif tool_name in {"generate_jep", "generate_pov", "generate_waf"}:
+        evidence.update(
+            {
+                "result_length": data.get("result_length"),
+                "review_verdict": data.get("review_verdict"),
+                "review_findings": data.get("review_findings") or data.get("repair_review_findings"),
+                "docx_key": data.get("docx_key"),
+                "document_headings": data.get("document_headings"),
+                "proposed_quote_count": data.get("proposed_quote_count"),
+                "target_label_count": data.get("target_label_count"),
+            }
+        )
+    compact = json.dumps(evidence, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return updated + f"\nTOOL_EVIDENCE({tool_name}): {compact}"
 
 
 def _format_suggested_hats(suggestions: list[dict[str, str]]) -> str:

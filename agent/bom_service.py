@@ -854,7 +854,10 @@ class BomService:
         text = message.lower()
         is_gpu = "gpu" in text
         mentions_non_oci = self._mentions_non_oci_provider(text)
-        table_signals = self._extract_table_signals(message)
+        # Canonical memory and reviewer notes may contain older tables or
+        # defaults.  Explicit request sizing must win, so derive table signals
+        # from the user portion only.
+        table_signals = self._extract_table_signals(user_text)
 
         # Detect instance count ("2 servers", "3 nodes", etc.) from user text only.
         _server_count = max(1, int(self._extract_number(
@@ -863,18 +866,56 @@ class BomService:
 
         ocpu = float(table_signals.get("ocpu") or 0.0)
         if ocpu <= 0:
-            ocpu = self._extract_number(r"(\d+(?:\.\d+)?)\s*ocpu", text, default=4.0)
+            ocpu = self._extract_number(r"(\d+(?:\.\d+)?)\s*ocpu", user_text, default=4.0)
 
         mem_gb = float(table_signals.get("mem_gb") or 0.0)
         if mem_gb <= 0:
-            mem_gb = self._extract_number(r"(\d+(?:\.\d+)?)\s*gb\s*(?:memory|ram)?", text, default=ocpu * 16)
+            mem_gb = self._extract_number(
+                r"(\d+(?:\.\d+)?)\s*gb\s*(?:memory|ram)?",
+                user_text,
+                default=ocpu * 16,
+            )
 
         block_gb = float(table_signals.get("block_gb") or 0.0)
         if block_gb <= 0:
-            block_tb = self._extract_number(r"(\d+(?:\.\d+)?)\s*tb\s*(?:block|storage)", text, default=1.0)
-            block_gb = block_tb * 1024.0
+            block_match = re.search(
+                r"(\d+(?:\.\d+)?)\s*(gb|tb)\s*(?:balanced\s+|higher\s+performance\s+)?"
+                r"(?:block\s+(?:volume|storage)|boot\s+volume)",
+                user_text,
+            )
+            if not block_match:
+                block_match = re.search(
+                    r"(?:block\s+(?:volume|storage)|boot\s+volume)[^\d]{0,24}"
+                    r"(\d+(?:\.\d+)?)\s*(gb|tb)",
+                    user_text,
+                )
+            if block_match:
+                block_gb = float(block_match.group(1)) * (
+                    1024.0 if block_match.group(2).lower() == "tb" else 1.0
+                )
+            else:
+                block_tb = self._extract_number(
+                    r"(\d+(?:\.\d+)?)\s*tb\s*(?:block|storage)",
+                    user_text,
+                    default=1.0,
+                )
+                block_gb = block_tb * 1024.0
 
         object_storage_gb = float(table_signals.get("object_storage_gb") or 0.0)
+        if object_storage_gb <= 0:
+            object_match = re.search(
+                r"(\d+(?:\.\d+)?)\s*(gb|tb)\s*(?:standard\s+)?object\s+storage",
+                user_text,
+            )
+            if not object_match:
+                object_match = re.search(
+                    r"object\s+storage[^\d]{0,24}(\d+(?:\.\d+)?)\s*(gb|tb)",
+                    user_text,
+                )
+            if object_match:
+                object_storage_gb = float(object_match.group(1)) * (
+                    1024.0 if object_match.group(2).lower() == "tb" else 1.0
+                )
         load_balancer_qty = float(table_signals.get("load_balancer_qty") or 0.0)
         ocpu_notes = str(table_signals.get("ocpu_notes") or "Primary compute OCPU")
         mem_notes = str(table_signals.get("mem_notes") or "Primary compute memory")

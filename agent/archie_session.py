@@ -448,6 +448,127 @@ async def run_turn(
             )
         )
 
+    if _is_poc_recommendation_offer_request(user_message):
+        return _finalize_turn(_build_poc_recommendation_offer_reply(customer_name))
+
+    if _is_poc_exploration_confirmation_request(user_message):
+        poc_args = {
+            "action": "explore",
+            "prompt": user_message,
+            "_user_message": user_message,
+        }
+        poc_result = await forge.invoke_tool(
+            "generate_poc_plan",
+            poc_args,
+            session_id=customer_id,
+            context=context,
+        )
+        poc_call = {
+            "tool": "generate_poc_plan",
+            "args": poc_args,
+            "result_summary": poc_result.summary,
+            "result_data": dict(poc_result.data or {}),
+            "artifact_key": poc_result.artifact_key or "",
+        }
+        tool_calls.append(poc_call)
+        if poc_result.artifact_key:
+            artifacts["generate_poc_plan"] = poc_result.artifact_key
+        await asyncio.to_thread(context_store.write_context, store, customer_id, context)
+        return _finalize_turn(poc_result.summary)
+
+    confirmed_poc_name = _confirmed_poc_option_name(user_message, context)
+    if confirmed_poc_name:
+        confirm_args = {
+            "action": "confirm",
+            "confirmed_option_name": confirmed_poc_name,
+            "_user_message": user_message,
+        }
+        confirm_result = await forge.invoke_tool(
+            "generate_poc_plan",
+            confirm_args,
+            session_id=customer_id,
+            context=context,
+        )
+        tool_calls.append({
+            "tool": "generate_poc_plan",
+            "args": confirm_args,
+            "result_summary": confirm_result.summary,
+            "result_data": dict(confirm_result.data or {}),
+            "artifact_key": confirm_result.artifact_key or "",
+        })
+        parallel_calls = list(confirm_result.parallel_tools or [])
+        if confirm_result.status != "parallel" or len(parallel_calls) != 5:
+            return _finalize_turn(confirm_result.summary)
+
+        async def _run_confirmed_poc_tool(parallel_call):
+            result = await forge.invoke_tool(
+                parallel_call.tool,
+                dict(parallel_call.args or {}),
+                session_id=customer_id,
+                context=context,
+            )
+            return parallel_call, result
+
+        fanout_results = await asyncio.gather(
+            *[_run_confirmed_poc_tool(call) for call in parallel_calls]
+        )
+        failed: list[str] = []
+        ready: list[str] = []
+        for parallel_call, result in fanout_results:
+            call = {
+                "tool": parallel_call.tool,
+                "args": dict(parallel_call.args or {}),
+                "result_summary": result.summary,
+                "result_data": dict(result.data or {}),
+                "artifact_key": result.artifact_key or "",
+            }
+            tool_calls.append(call)
+            if result.artifact_key:
+                artifacts[parallel_call.tool] = result.artifact_key
+            deferred_bom_artifact = (
+                parallel_call.tool == "generate_bom"
+                and isinstance((result.data or {}).get("bom_payload"), dict)
+                and bool((result.data or {}).get("bom_payload"))
+            )
+            if result.status != "ok" or (not result.artifact_key and not deferred_bom_artifact):
+                failed.append(f"{parallel_call.tool}: {result.summary}")
+            else:
+                ready.append(f"{parallel_call.tool}: {result.summary}")
+        await asyncio.to_thread(context_store.write_context, store, customer_id, context)
+        if failed:
+            details = "\n".join(f"- {item}" for item in failed)
+            return _finalize_turn(
+                f"POC confirmation for {confirmed_poc_name} did not complete all required artifacts.\n{details}"
+            )
+        details = "\n".join(f"- {item}" for item in ready)
+        return _finalize_turn(f"POC kit for {confirmed_poc_name} is ready.\n{details}")
+
+    architecture_followup = str(user_message or "").strip().lower().startswith(
+        ("why", "can you explain", "explain why")
+    )
+    if (
+        architecture_followup
+        and not requested_tools
+        and any(
+            turn.get("role") == "assistant"
+            and "architecture discussion first" in str(turn.get("content", "")).lower()
+            for turn in history
+            if isinstance(turn, dict)
+        )
+    ):
+        return _finalize_turn(_build_architecture_why_reply())
+    if (
+        decision_context.get("conversational_architecture")
+        and not requested_tools
+        and not architecture_followup
+    ):
+        return _finalize_turn(
+            _build_architecture_chat_reply(
+                user_message=user_message,
+                decision_context=decision_context,
+            )
+        )
+
     prompt = _build_prompt(
         history,
         summary,
@@ -556,6 +677,53 @@ async def run_turn(
             "These outputs are impacted and would be regenerated in this order:\n"
             f"{ordered}\n\n"
             "Reply `confirm update all` to execute, or `cancel update`."
+        )
+
+    if requested_tools and _has_generation_request_for_supported_artifact(user_message):
+        direct_calls: list[dict[str, Any]] = []
+        direct_artifacts: dict[str, str] = {}
+        prior_summaries: list[str] = []
+        for tool_name in _ordered_requested_tools(requested_tools):
+            direct_args = _fallback_generation_args(
+                tool_name=tool_name,
+                user_message=user_message,
+                prior_summaries=prior_summaries,
+            )
+            direct_result = await forge.invoke_tool(
+                tool_name,
+                direct_args,
+                session_id=customer_id,
+                context=context,
+            )
+            call = {
+                "tool": tool_name,
+                "args": direct_args,
+                "result_summary": direct_result.summary,
+                "result_data": dict(direct_result.data or {}),
+                "artifact_key": direct_result.artifact_key or "",
+            }
+            direct_calls.append(call)
+            if tool_name == "generate_bom":
+                bom_payload = call["result_data"].get("bom_payload")
+                if isinstance(bom_payload, dict) and bom_payload:
+                    context_store.record_bom_work_product(
+                        context,
+                        bom_payload=bom_payload,
+                        context_source=str(call["result_data"].get("bom_context_source") or "direct_request"),
+                    )
+                    await asyncio.to_thread(
+                        context_store.write_context,
+                        store,
+                        customer_id,
+                        context,
+                    )
+            if direct_result.artifact_key:
+                direct_artifacts[tool_name] = direct_result.artifact_key
+            prior_summaries.append(f"{tool_name}: {direct_result.summary}")
+        tool_calls.extend(direct_calls)
+        artifacts.update(direct_artifacts)
+        return _finalize_turn(
+            _build_generation_fallback_reply(direct_calls, decision_context=decision_context)
         )
 
     from agent.context_enricher import enrich_turn_context
@@ -764,6 +932,11 @@ def _build_generation_fallback_reply(
         lines = [str(call.get("result_summary", "") or "").strip()]
         result_data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
         if call.get("tool") == "generate_bom":
+            payload = result_data.get("bom_payload") if isinstance(result_data.get("bom_payload"), dict) else {}
+            line_items = payload.get("line_items") if isinstance(payload.get("line_items"), list) else []
+            total = payload.get("monthly_total") or (payload.get("totals") or {}).get("estimated_monthly_cost")
+            if line_items and total is not None:
+                lines[0] = f"Done — BOM generated ({len(line_items)} services, ${float(total):,.2f}/mo)."
             lines.extend(_bom_resolved_inputs_reply_section(result_data))
         return "\n".join(line for line in lines if line).strip()
 
@@ -1795,6 +1968,8 @@ def _build_single_diagram_reply(
     recovery_status = str(result_data.get("diagram_recovery_status", "none") or "none")
     if recovery_status in {"needs_clarification", "backend_error"}:
         return summary
+    if str(call.get("artifact_key", "") or "").strip():
+        summary = "Done — the diagram is ready."
     if recovery_status != "retried_with_assumptions" and not list(result_data.get("assumptions_used", []) or []):
         return summary
     assumptions = _diagram_reply_assumptions(result_data, decision_context)
@@ -2757,12 +2932,24 @@ def _requested_generation_tools(user_message: str) -> set[str]:
         requested.add("generate_diagram")
     if "terraform" in msg or "iac" in msg:
         requested.add("generate_terraform")
-    if "pov" in msg or "point of view" in msg:
+    if re.search(
+        r"\b(?:build|create|generate|draft|make|update|revise)\b.{0,80}\b(?:pov|point of view)\b",
+        msg,
+    ):
         requested.add("generate_pov")
-    if "jep" in msg or "joint execution plan" in msg:
+    if re.search(
+        r"\b(?:build|create|generate|draft|make|update|revise)\b.{0,100}\b(?:jep|joint execution plan)\b",
+        msg,
+    ):
         requested.add("generate_jep")
     if _message_requests_waf_review(msg):
         requested.add("generate_waf")
+    if (
+        "generate_jep" in requested
+        and re.search(r"\bgenerate\s+only\s+the\s+jep\b", msg)
+        and re.search(r"\bdo\s+not\s+generate\s+(?:a\s+)?separate\s+bom\b", msg)
+    ):
+        requested.discard("generate_bom")
     return requested
 
 def _message_requests_bom_generation(msg: str) -> bool:
@@ -2872,7 +3059,15 @@ def _build_architecture_chat_reply(
     assumptions = _render_assumptions(decision_context, limit=3)
     lines = [
         "I'm treating this as an architecture discussion first, not an artifact-generation request.",
-        f"Current direction: {goal}",
+        "",
+        "A sensible OCI baseline is WAF and a public Flexible Load Balancer at the edge, "
+        "private web/application subnets with horizontal scaling, and a private managed "
+        "relational database tier. Add Object Storage for static content, service gateways "
+        "for private OCI access, and Logging/Monitoring across every tier.",
+        "",
+        "I would not choose OKE versus Compute, or Autonomous Database versus PostgreSQL, "
+        "until we know the current stack, peak traffic, recovery targets, and the team's "
+        "operating model. Those choices materially change cost and migration effort.",
     ]
     if assumptions:
         lines.append("")
@@ -2883,8 +3078,30 @@ def _build_architecture_chat_reply(
         lines.append("Decisions still worth confirming:")
         lines.extend(f"- {item}" for item in missing_inputs)
     lines.append("")
-    lines.append("If you want, I can turn the agreed direction into a diagram, BOM, POV, or Terraform draft next.")
+    lines.append(
+        "Start with the current application and database technologies, peak users or requests per second, "
+        "and RTO/RPO. I can then compare two concrete options before producing a diagram or BOM."
+    )
     return "\n".join(lines).strip()
+
+
+def _build_architecture_why_reply() -> str:
+    return (
+        "I recommend that baseline because each layer addresses a different risk without "
+        "locking us into an application platform or database choice too early.\n\n"
+        "- WAF and the public Flexible Load Balancer give the internet-facing entry point "
+        "a controlled security and traffic-management boundary.\n"
+        "- Private application and database subnets reduce direct exposure and keep tier-to-tier "
+        "access explicit.\n"
+        "- Horizontal scaling at the web/application tier gives us a path to handle demand once "
+        "we confirm the real traffic profile.\n"
+        "- Object Storage and service gateways keep static content and OCI service access off the "
+        "public network.\n"
+        "- Logging and Monitoring provide the evidence needed to tune sizing and validate recovery "
+        "and availability targets.\n\n"
+        "It is a starting pattern, not a final product selection. The current stack, peak load, "
+        "RTO/RPO, and operating model still determine Compute versus OKE and the database service."
+    )
 
 def _is_change_update_intent(user_message: str) -> bool:
     msg = (user_message or "").lower()
@@ -2980,6 +3197,55 @@ def _is_active_poc_recall_intent(user_message: str) -> bool:
             "poc is this",
             "poc scope",
         )
+    )
+
+
+def _is_poc_recommendation_offer_request(user_message: str) -> bool:
+    msg = str(user_message or "").lower()
+    asks_for_recommendation = bool(
+        re.search(r"\bwhat\s+poc\b.{0,80}\brecommend", msg)
+        or re.search(r"\brecommend(?:ed)?\s+(?:a\s+|the\s+)?poc\b", msg)
+        or re.search(r"\bpoc\s+(?:options|directions)\b", msg)
+    )
+    if not asks_for_recommendation:
+        return False
+    return any(term in msg for term in ("based on", "persisted", "fact sheet", "what poc"))
+
+
+def _is_poc_exploration_confirmation_request(user_message: str) -> bool:
+    msg = str(user_message or "").lower()
+    if "explore" not in msg or "poc" not in msg:
+        return False
+    return any(term in msg for term in ("yes", "go explore", "run it", "go ahead"))
+
+
+def _confirmed_poc_option_name(user_message: str, context: dict[str, Any]) -> str:
+    msg = str(user_message or "").casefold()
+    if not re.search(r"\b(?:proceed|confirm|select)\b|\bgo\s+with\b", msg):
+        return ""
+    decision_context = context.get("latest_decision_context", {}) if isinstance(context, dict) else {}
+    options = decision_context.get("poc_options", []) if isinstance(decision_context, dict) else []
+    if not options and isinstance(context, dict):
+        archie = context_store.get_archie_state(context)
+        resolved = archie.get("resolved_decisions", {}) if isinstance(archie, dict) else {}
+        poc = resolved.get("poc", {}) if isinstance(resolved, dict) else {}
+        options = poc.get("options", []) if isinstance(poc, dict) else []
+    for option in options if isinstance(options, list) else []:
+        name = str(option.get("option_name", "") or "").strip() if isinstance(option, dict) else ""
+        if name and name.casefold() in msg:
+            return name
+    return ""
+
+
+def _build_poc_recommendation_offer_reply(customer_name: str) -> str:
+    customer = str(customer_name or "the customer").strip()
+    return (
+        f"For {customer}, I recommend starting with a focused validation POC that preserves the "
+        "authoritative current-platform facts, measures the stated targets, and keeps the recorded "
+        "exclusions intact. I would compare migration fidelity, performance and recovery validation, "
+        "and cost or operational value as separate directions before selecting a build.\n\n"
+        "I have enough context to run the full POC evaluation. Want me to explore and rank the "
+        "options in detail by relevance, build effort, demonstration value, and risk?"
     )
 
 
@@ -3424,7 +3690,11 @@ async def _legacy_tool_core_compat(
 ) -> tuple[str, str, dict]:
     _ = specialist_mode
     if tool_name == "generate_diagram":
-        return await _call_generate_diagram(args, customer_id, a2a_base_url)
+        return await _call_generate_diagram(
+            args=args,
+            customer_id=customer_id,
+            a2a_base_url=a2a_base_url,
+        )
     if tool_name == "generate_terraform":
         task = str(args.get("prompt", "") or args.get("_user_request_text", "") or "Generate Terraform for the current architecture.")
         response = await sub_agent_client.call_sub_agent(
@@ -3527,7 +3797,11 @@ async def _legacy_tool_core_compat(
             from agent.tools import specialists as _specialist_helpers
 
             if _specialist_helpers._is_jep_kickoff_questions(content):
-                return content.strip(), "", {"status": "needs_input", **response}
+                return (
+                    _specialist_helpers._jep_kickoff_clarification(content),
+                    "",
+                    {"status": "needs_input", **response},
+                )
             review_findings = _specialist_helpers._jep_writer_review_findings(content)
             if review_findings:
                 try:
@@ -3553,7 +3827,11 @@ async def _legacy_tool_core_compat(
                 if str(response.get("status") or "").lower() == "needs_input":
                     return str(response.get("result") or content or "JEP needs more input before it can be repaired."), "", response
                 if _specialist_helpers._is_jep_kickoff_questions(content):
-                    return content.strip(), "", {"status": "needs_input", **response}
+                    return (
+                        _specialist_helpers._jep_kickoff_clarification(content),
+                        "",
+                        {"status": "needs_input", **response},
+                    )
             if review_findings:
                 return (
                     _specialist_helpers._jep_review_blocked_summary(review_findings),

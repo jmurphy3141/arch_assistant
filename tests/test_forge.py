@@ -3,6 +3,7 @@ import warnings
 import pytest
 
 from skillforge import Forge, MemorySnapshot, ToolResult, TurnResult
+from skillforge.forge import _append_result_with_evidence, _clean_simple_question_claims
 
 
 warnings.filterwarnings(
@@ -343,6 +344,77 @@ async def test_final_synthesis_cleans_overstructured_simple_question():
     )
     assert "Recommendation" not in result.reply
     assert "- First point" not in result.reply
+
+
+@pytest.mark.asyncio
+async def test_artifact_tool_uses_clean_deterministic_completion_reply():
+    forge = make_forge(
+        QueueTextRunner(
+            '{"tool": "generate_pov", "args": {}}',
+            "A long promotional response with unsupported claims and internal details.",
+        )
+    )
+
+    async def handler(args, *, memory, context, trace_id):
+        return ToolResult(summary="POV v1 saved.", status="ok", artifact_key="pov/acme/v1.md")
+
+    forge.register_tool("generate_pov", handler)
+    result = await forge.run_turn(
+        session_id="s1",
+        user_message="Generate the POV.",
+        context={},
+    )
+
+    assert result.reply == "Done — the POV is ready: `pov/acme/v1.md`."
+    assert "unsupported claims" not in result.reply
+
+
+def test_simple_question_claim_cleaner_drops_unsupported_precision():
+    reply = (
+        "I recommend this design because it isolates each tier and uses managed services.\n\n"
+        "It cuts operations by 70% and costs $1,200 per month. Competitors are higher.\n\n"
+        "The WAF and private subnets reduce exposure, while autoscaling handles retail peaks."
+    )
+
+    cleaned = _clean_simple_question_claims("Why this architecture?", reply)
+
+    assert "isolates each tier" in cleaned
+    assert "WAF and private subnets" in cleaned
+    assert "70%" not in cleaned
+    assert "$1,200" not in cleaned
+    assert "Competitors are higher" not in cleaned
+
+
+def test_response_cleaner_splits_inline_markdown_bullets():
+    from skillforge.forge import _strip_internal_response_artifacts
+
+    cleaned = _strip_internal_response_artifacts(
+        "Traffic flow:\n- **Ingress**: WAF. - **Web**: Compute. - **Data**: Database."
+    )
+
+    assert "WAF.\n- **Web**" in cleaned
+    assert "Compute.\n- **Data**" in cleaned
+
+
+def test_diagram_review_evidence_includes_xml_presence_and_labels():
+    result = ToolResult(
+        summary="Diagram generated. Key: diagram.drawio",
+        status="ok",
+        artifact_key="diagram.drawio",
+        data={
+            "drawio_xml": (
+                '<mxfile><diagram><mxCell value="OCI WAF"/>'
+                '<mxCell value="Private Database"/></diagram></mxfile>'
+            ),
+            "node_count": 2,
+        },
+    )
+
+    prompt = _append_result_with_evidence("prompt", "generate_diagram", result)
+
+    assert '"drawio_xml_present":true' in prompt
+    assert "OCI WAF" in prompt
+    assert "Private Database" in prompt
 
 
 def test_format_instruction_in_system_prompt():

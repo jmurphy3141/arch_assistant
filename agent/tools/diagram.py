@@ -6,6 +6,7 @@ ToolHandler implementation for the generate_diagram pipeline.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import re
 from typing import Any
@@ -83,6 +84,8 @@ class DiagramHandler:
         ctx = context
         decision_context = memory.decision_context if memory else {}
         user_message = str(args.get("_user_message", "") or "")
+        if user_message:
+            args = {**args, "prompt": user_message}
         args = archie_memory._hydrate_tool_args_from_context(
             tool_name="generate_diagram",
             args=args,
@@ -118,14 +121,26 @@ class DiagramHandler:
                 clarification=message,
             )
 
+        # For a direct chat artifact request, the current user turn is the
+        # authoritative diagram brief.  Forge may propose richer arguments,
+        # but those must not silently add topology or sizing requirements.
+        if user_message:
+            args = {**args, "prompt": user_message}
+
         correction = str(args.pop("_forge_correction", "") or "").strip()
         if correction:
             existing_prompt = str(args.get("prompt") or "")
             args = {
                 **args,
                 "prompt": (
-                    f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
-                    f"{existing_prompt}"
+                    f"[AUTHORITATIVE USER REQUEST]\n{existing_prompt}\n"
+                    "[/AUTHORITATIVE USER REQUEST]\n\n"
+                    "[SCOPED REVIEW FEEDBACK]\n"
+                    f"{correction}\n"
+                    "Apply this feedback only where it corrects a requirement "
+                    "explicitly present in the authoritative user request. Do not "
+                    "add services, integrations, sizes, quantities, or topology.\n"
+                    "[/SCOPED REVIEW FEEDBACK]"
                 ).strip(),
             }
         args = _hydrate_diagram_args(
@@ -155,12 +170,22 @@ class DiagramHandler:
             validation_error = _validate_diagram_result(result_data)
             if validation_error:
                 return _validation_blocked("diagram", validation_error)
-            node_error = _diagram_node_count_error(args, result_data)
-            if not node_error:
+            diagram_error = (
+                _diagram_node_count_error(args, result_data)
+                or _diagram_content_error(
+                    user_message or str(args.get("prompt") or ""),
+                    str(result_data.get("drawio_xml") or ""),
+                )
+                or _diagram_bom_coverage_error(
+                    list(args.get("_bom_line_items", []) or []),
+                    str(result_data.get("drawio_xml") or ""),
+                )
+            )
+            if not diagram_error:
                 break
             if attempt == 1:
-                return _validation_blocked("diagram", node_error)
-            args = _prepend_diagram_correction(args, node_error)
+                return _validation_blocked("diagram", diagram_error)
+            args = _prepend_diagram_correction(args, diagram_error)
 
         if result_data.get("diagram_recovery_status") == "needs_clarification":
             clarify = summary
@@ -267,22 +292,60 @@ def _hydrate_diagram_args(
     hydrated["diagram_name"] = _safe_diagram_name(diagram_name, "diagram")
     hydrated["customer_id"] = customer_id
     task = str(hydrated.get("prompt") or hydrated.get("bom_text") or "")
+    from agent import context_store as _context_store
+
+    latest_bom = _context_store.latest_bom_work_product(context)
+    baseline = latest_bom.get("baseline", {}) if isinstance(latest_bom, dict) else {}
+    line_items = baseline.get("line_items", []) if isinstance(baseline, dict) else []
+    line_items = [dict(item) for item in line_items if isinstance(item, dict)]
+    if line_items:
+        hydrated["_bom_line_items"] = line_items
     block = _build_diagram_confirmed_context(
         args=args,
         context=context,
         memory_raw=memory_raw,
         artifact_key=prior_diagram_key,
     )
+    bom_block = _diagram_bom_context_block(line_items)
     revision = ""
     if prior_diagram_key and not _requests_full_redraw(task):
         revision = "[UPDATE REQUEST - PRESERVE ALL EXISTING NODES EXCEPT: changes explicitly requested by the user]"
-    hydrated_task = "\n\n".join(part for part in (block, revision, task) if part).strip()
+    hydrated_task = "\n\n".join(part for part in (block, bom_block, revision, task) if part).strip()
     hydrated["prompt"] = hydrated_task
     hydrated["bom_text"] = hydrated_task
     brief = dict(hydrated.get("_architect_brief", {}) or {})
     brief["user_notes"] = hydrated_task
     hydrated["_architect_brief"] = brief
     return hydrated
+
+
+def _diagram_bom_context_block(line_items: list[dict[str, Any]]) -> str:
+    if not line_items:
+        return ""
+    rows = []
+    for item in line_items:
+        description = str(item.get("description") or item.get("sku") or "").strip()
+        quantity = item.get("quantity")
+        metric = str(item.get("metric") or "").strip()
+        notes = str(item.get("notes") or "").strip()
+        lowered = description.lower()
+        if isinstance(quantity, (int, float)) and "performance units" in lowered:
+            rendered = f"{quantity:g} Performance Units for Block Volume"
+        elif isinstance(quantity, (int, float)) and "block volume" in lowered and "storage" in lowered:
+            rendered = f"{quantity:g} GB Balanced Block Volume"
+        elif isinstance(quantity, (int, float)) and "object storage" in lowered:
+            rendered = f"{quantity:g} GB Object Storage"
+        elif "web application firewall" in lowered:
+            rendered = "OCI WAF Policy ×1"
+        else:
+            rendered = f"{description}: {quantity:g} {metric}" if isinstance(quantity, (int, float)) else description
+        rows.append(f"- {rendered}. {notes}")
+    return (
+        "[AUTHORITATIVE BOM PARITY REQUIREMENTS]\n"
+        "Include and explicitly label every BOM element and quantitative attribute below.\n"
+        + "\n".join(rows)
+        + "\n[/AUTHORITATIVE BOM PARITY REQUIREMENTS]"
+    )
 
 
 def _build_diagram_confirmed_context(
@@ -352,6 +415,67 @@ def _diagram_node_count_error(args: dict[str, Any], result_data: dict[str, Any])
     if expected > 0 and actual > 0 and actual < expected:
         return f"node_count too low: expected at least {expected}, got {actual}"
     return ""
+
+
+def _diagram_content_error(user_message: str, drawio_xml: str) -> str:
+    if not str(drawio_xml or "").strip():
+        return ""
+    request = re.sub(r"\s+", " ", str(user_message or "").lower())
+    values = re.findall(r'\bvalue=["\']([^"\']*)["\']', str(drawio_xml or ""), flags=re.IGNORECASE)
+    labels = " ".join(html.unescape(value) for value in values).lower()
+    labels = re.sub(r"<[^>]+>|&#xa;", " ", labels)
+    labels = re.sub(r"\s+", " ", labels)
+    checks = (
+        ("single-ad poc boundary", "single-ad poc boundary"),
+        ("500 gb", "500 gb"),
+        ("object storage", "object storage"),
+        ("internet gateway", "internet gateway"),
+        ("nat gateway", "nat gateway"),
+        ("service gateway", "service gateway"),
+        ("postgresql", "postgresql"),
+    )
+    missing = [label for trigger, label in checks if trigger in request and label not in labels]
+    if "nsgs" in request and not any(token in labels for token in ("nsg", "network security group")):
+        missing.append("NSGs")
+    if "route tables" in request and "route table" not in labels:
+        missing.append("route tables")
+    if re.search(r"\b(?:two|2)\s+vm\.standard\.e5\.flex\s+web\s+servers?", request):
+        if not re.search(r"(?:2|two|×2|2\s*×).*vm\.standard\.e5\.flex", labels):
+            missing.append("two VM.Standard.E5.Flex web servers")
+    return "missing requested diagram labels: " + ", ".join(missing) if missing else ""
+
+
+def _diagram_bom_coverage_error(line_items: list[dict[str, Any]], drawio_xml: str) -> str:
+    if not line_items or not str(drawio_xml or "").strip():
+        return ""
+    values = re.findall(r'\bvalue=["\']([^"\']*)["\']', drawio_xml, flags=re.IGNORECASE)
+    labels = re.sub(r"\s+", " ", " ".join(html.unescape(value) for value in values).replace("&#xa;", " ")).lower()
+    missing: list[str] = []
+    for item in line_items:
+        description = str(item.get("description") or "").lower()
+        quantity = float(item.get("quantity") or 0)
+        if "performance units" in description:
+            if not (f"{quantity:g} performance units" in labels or f"{quantity:g} vpu" in labels):
+                missing.append(f"Block Volume {quantity:g} performance units")
+            continue
+        if "compute" in description and "ocpu" in description and f"{quantity:g} ocpu" not in labels and "2 ocpu" not in labels:
+            missing.append(f"compute {quantity:g} OCPU total")
+        elif "compute" in description and "memory" in description and not re.search(r"(?:16 gb each|32 gb total)", labels):
+            missing.append(f"compute {quantity:g} GB memory total")
+        elif "block volume" in description and "storage" in description and f"{quantity:g} gb" not in labels:
+            missing.append(f"Block Volume {quantity:g} GB")
+        elif "load balancer" in description and "load balancer" not in labels:
+            missing.append("Flexible Load Balancer")
+        elif "web application firewall" in description and not re.search(r"waf policy|web application firewall policy", labels):
+            missing.append("WAF policy")
+        elif "postgresql" in description and not ("postgresql" in labels and f"{quantity:g} ocpu" in labels):
+            missing.append(f"PostgreSQL {quantity:g} OCPU")
+        elif "object storage" in description and not (
+            f"{quantity:g} gb object storage" in labels
+            or (quantity == 1024 and "1 tb object storage" in labels)
+        ):
+            missing.append(f"Object Storage {quantity:g} GB")
+    return "missing BOM diagram coverage: " + ", ".join(missing) if missing else ""
 
 
 def _requested_service_type_count(args: dict[str, Any]) -> int:

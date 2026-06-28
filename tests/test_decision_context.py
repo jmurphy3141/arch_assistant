@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent import decision_context
+from agent import archie_memory, decision_context
 
 
 def test_ballpark_assumption_mode_does_not_require_confirmation_for_missing_budget_cap() -> None:
@@ -40,6 +40,15 @@ def test_architecture_chat_prompt_is_marked_conversational() -> None:
     assert result["risk_level"] in {"low", "medium", "high"}
 
 
+def test_single_ad_does_not_imply_active_directory_or_sql_server() -> None:
+    facts = archie_memory._extract_client_facts(
+        "Use a single-AD POC with a private PostgreSQL database."
+    )
+
+    assert facts.get("security", {}).get("directory") is None
+    assert "SQL Server" not in facts.get("databases", [])
+
+
 def test_decision_context_extracts_constraints_and_tags() -> None:
     result = decision_context.build_decision_context(
         user_message=(
@@ -59,3 +68,19 @@ def test_decision_context_extracts_constraints_and_tags() -> None:
     assert "ha_required" in tags
     assert "region_pinned" in tags
     assert "security_sensitive" in tags
+
+
+def test_latency_threshold_is_not_misread_as_monthly_budget() -> None:
+    result = decision_context.build_decision_context(
+        user_message="Target p95 response time under 300 ms for the retail application."
+    )
+
+    assert result["constraints"]["cost_max_monthly"] is None
+
+
+def test_under_currency_without_budget_word_is_still_a_cost_limit() -> None:
+    result = decision_context.build_decision_context(
+        user_message="Keep the monthly OCI estimate under $5k."
+    )
+
+    assert result["constraints"]["cost_max_monthly"] == 5000.0

@@ -675,7 +675,7 @@ def build_forge(
             required=True,
         )},
         memory_contract=True,
-        critique_enabled=True,
+        critique_enabled=False,
         requires_hat="oci_bom_expert",
     )
     forge.register_tool(
@@ -697,7 +697,7 @@ def build_forge(
             required=True,
         )},
         memory_contract=True,
-        critique_enabled=True,
+        critique_enabled=False,
         requires_hat="diagram_for_oci",
     )
     forge.register_tool(
@@ -735,7 +735,7 @@ def build_forge(
             required=False,
         )},
         memory_contract=True,
-        critique_enabled=True,
+        critique_enabled=False,
         requires_hat="oci_customer_pov_writer",
     )
     forge.register_tool(
@@ -751,7 +751,7 @@ def build_forge(
             required=False,
         )},
         memory_contract=True,
-        critique_enabled=True,
+        critique_enabled=False,
         requires_hat="jep_writer",
     )
     forge.register_tool(

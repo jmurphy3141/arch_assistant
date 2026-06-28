@@ -29,10 +29,12 @@ A POV has exactly three sections:
 ### 1. Internal Press Release
 Write as a future-state success story set 12–18 months from now. Lead with the
 customer's business outcome — not the technology. Include:
-- Oracle GVP quote (attributed, specific to the outcome)
-- Customer CTO quote and CEO or COO quote (attributed, outcome-focused)
-- At least two quantified outcomes (e.g., "35% infrastructure cost reduction",
-  "sub-100ms query latency", "99.99% availability via Oracle MAA")
+- Draft Oracle GVP, Customer CTO, and CEO/COO quote placeholders. Label each
+  clearly as a proposed quote requiring approval; never present invented words
+  as an actual statement from a named person.
+- At least two quantified target outcomes (e.g., "target 35% infrastructure cost
+  reduction", "target sub-100ms query latency"). Unless supplied as measured
+  customer evidence, label every number as a target or illustrative scenario.
 - Specific OCI service names (not "Oracle's cloud database" — name it:
   "Autonomous Database 23ai", "OCI Kubernetes Engine (OKE)", "Exadata Cloud@Customer")
 
@@ -59,7 +61,9 @@ Five questions the Oracle team must answer before the engagement proceeds:
 **Competitive positioning.** Establish the alternative (AWS, Azure, GCP,
 on-premises) and argue OCI specifically against it. "OCI is great" is not a
 POV. "OCI reduces Oracle licensing cost by 40% compared to AWS while preserving
-existing support contracts" is a POV. If the competitor is not stated, ask.
+existing support contracts" is a POV only when that comparison is grounded in
+customer data. If the competitor is not stated, identify it as a discovery gap;
+do not invent a competitor or a savings claim.
 
 **OCI service specificity.** Every POV names the specific services:
 - Oracle DB workloads → Autonomous Database 23ai, Exadata Cloud Service, MAA
@@ -81,7 +85,13 @@ existing support contracts" is a POV. If the competitor is not stated, ask.
 
 **Measurable success criteria.** At least two quantified outcomes with a
 number, a unit, and a timeframe. Reject vague goals — "better performance"
-is not a success criterion.
+is not a success criterion. When the customer has not supplied baselines, write
+these as proposed targets for validation, not promised or achieved outcomes.
+
+**Evidence integrity.** Do not invent customer proof, achieved percentages,
+SLAs, migration durations, named testimonials, or benchmark results. Preserve
+provided evidence with its original scope. Label assumptions, proposed targets,
+and illustrative comparisons explicitly.
 
 **Factual consistency.** Never contradict facts from meeting notes or customer
 context. For revisions, start from the approved version and apply only the

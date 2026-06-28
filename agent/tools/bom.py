@@ -64,6 +64,8 @@ class BomHandler:
         # Forge's ToolHandler signature does not include the user turn text.
         # archie_wiring.py will inject it into tool args before this handler runs.
         user_message = str(args.get("_user_message", "") or "")
+        if user_message:
+            args = {**args, "prompt": user_message}
 
         args = archie_memory._prepare_bom_tool_args(
             args=args,
@@ -92,13 +94,23 @@ class BomHandler:
                 clarification=message,
             )
 
-        prompt = str(args.get("prompt") or "")
+        # Preserve the exact direct request through Forge review retries.  The
+        # deterministic BOM parser and sizing guard must evaluate customer
+        # values, not reviewer-invented defaults.
+        prompt = user_message or str(args.get("prompt") or "")
 
         correction = str(args.pop("_forge_correction", "") or "").strip()
         if correction:
             prompt = (
-                f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
-                f"{prompt}"
+                f"[AUTHORITATIVE USER REQUEST]\n{prompt}\n"
+                "[/AUTHORITATIVE USER REQUEST]\n\n"
+                "[SCOPED REVIEW FEEDBACK]\n"
+                f"{correction}\n"
+                "Apply this feedback only where it corrects a requirement "
+                "explicitly present in the authoritative user request. Do not "
+                "add services, sizes, quantities, storage, bandwidth, or output "
+                "requirements.\n"
+                "[/SCOPED REVIEW FEEDBACK]"
             ).strip()
         args = {**args, "prompt": prompt}
 
@@ -109,6 +121,14 @@ class BomHandler:
             context=ctx,
             memory_raw=engagement_context,
         )
+        direct_sized_request = bool(
+            user_message
+            and re.search(r"\b\d+(?:\.\d+)?\s*ocpus?\b", user_message, re.IGNORECASE)
+            and re.search(r"\b\d+(?:\.\d+)?\s*(?:gb|tb)\b", user_message, re.IGNORECASE)
+        )
+        if direct_sized_request:
+            prompt = user_message
+            engagement_context = {}
         parsed: dict[str, Any] = {}
         bom_payload: dict[str, Any] = {}
         validation_error = ""
@@ -221,6 +241,11 @@ class BomHandler:
             "monthly_total": monthly,
             "region": str(bom_payload.get("region") or "us-chicago-1"),
         })
+        _cs.record_bom_work_product(
+            ctx,
+            bom_payload=bom_payload,
+            context_source=str(args.get("_bom_context_source") or "direct_request"),
+        )
 
         return ToolResult(
             summary=bom_summary,

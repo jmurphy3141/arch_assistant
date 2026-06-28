@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from agent import sub_agent_client
+from agent import context_store, sub_agent_client
 from agent.tools import bom as bom_module
 from agent.tools.bom import BomHandler
 from skillforge.types import MemorySnapshot
@@ -92,18 +92,21 @@ async def test_bom_ok(monkeypatch):
         bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
     )
 
+    context = {}
     result = await make_handler()(
         {"prompt": "size it"},
         memory=make_memory(),
-        context={},
+        context=context,
         trace_id="trace-1",
     )
 
     assert result.status == "ok"
     assert result.data["bom_payload"]["line_items"][0]["sku"] == "B12345"
+    latest = context_store.latest_bom_work_product(context)
+    assert latest["baseline"]["line_items"][0]["sku"] == "B12345"
 
 
-async def test_bom_injects_confirmed_context_before_correction(monkeypatch):
+async def test_bom_injects_confirmed_context_before_scoped_correction(monkeypatch):
     captured = {}
 
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
@@ -153,8 +156,48 @@ async def test_bom_injects_confirmed_context_before_correction(monkeypatch):
     assert "Shape: ['VM.Standard.E5.Flex']\n" in captured["task"]
     assert "Instance" not in captured["task"]
     assert captured["task"].index("[CONFIRMED CONTEXT]") < captured["task"].index(
-        "[CORRECTION FROM EXPERT REVIEW:"
+        "[SCOPED REVIEW FEEDBACK]"
     )
+
+
+async def test_bom_correction_preserves_authoritative_user_request(monkeypatch):
+    captured = {}
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        captured["task"] = task
+        return {
+            "status": "ok",
+            "result": json.dumps(
+                {
+                    "artifact_key": "bom.xlsx",
+                    "bom_payload": {
+                        "line_items": [
+                            {"sku": "B1", "description": "Block", "quantity": 500, "unit_price": 1}
+                        ],
+                        "monthly_total": 500,
+                        "totals": {"estimated_monthly_cost": 500},
+                    },
+                }
+            ),
+        }
+
+    monkeypatch.setattr(bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent)
+    request = "Create a BOM with 500 GB Balanced Block Volume."
+    result = await make_handler()(
+        {
+            "prompt": "Create a BOM with invented 256 GB database storage.",
+            "_user_message": request,
+            "_forge_correction": "Add database storage.",
+        },
+        memory=make_memory(),
+        context={},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "ok"
+    assert request in captured["task"]
+    assert "invented 256 GB" not in captured["task"]
+    assert "Do not add services, sizes, quantities, storage" in captured["task"]
 
 
 async def test_bom_accepts_correct_line_item_arithmetic(monkeypatch):

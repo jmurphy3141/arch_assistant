@@ -39,10 +39,18 @@ _JEP_REQUIRED_SECTIONS = (
     "Risk Registry",
     "Approvals",
 )
+_JEP_SECTION_HEADINGS = frozenset(
+    section.casefold()
+    for section in (*_JEP_REQUIRED_SECTIONS, "Handoff Deliverables")
+)
 _JEP_NUMERIC_THRESHOLD_RE = re.compile(
-    r"(?:[<>]=?\s*)?\b\d+(?:[.,]\d+)?\s*"
-    r"(?:%|ms|milliseconds?|seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|"
-    r"rps|qps|tps|gb/s|mb/s|gb|tb|ocpu|ocpus|users?|requests?|queries?)\b",
+    r"(?:[<>]=?\s*)?(?:"
+    r"[$€£]\s*\d+(?:[.,]\d+)?|"
+    r"\b\d+(?:[.,]\d+)?\s*"
+    r"(?:%|ms|milliseconds?|s|seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|"
+    r"rps|qps|tps|gb/s|mb/s|gb|tb|ocpu|ocpus|users?|requests?|queries?|usd|dollars?)"
+    r"(?:\b|(?<=%))"
+    r")",
     flags=re.IGNORECASE,
 )
 
@@ -159,13 +167,39 @@ class _SpecialistHandler:
                 data={"questions": archie_memory._pov_targeted_questions()},
             )
 
-        feedback = str(args.get("feedback", "") or "")
-        raw_request = feedback or _default_request(self._agent_name)
+        feedback = (
+            user_message
+            if self._agent_name in {"pov", "jep"} and user_message
+            else str(args.get("feedback", "") or "")
+        )
+        raw_request = (
+            user_message
+            if self._agent_name in {"pov", "jep"} and user_message
+            else feedback or _default_request(self._agent_name)
+        )
+        if self._agent_name in {"pov", "jep"} and user_message:
+            raw_request = (
+                f"{raw_request}\n\n"
+                "[CURRENT USER REQUEST - AUTHORITATIVE]\n"
+                f"{user_message}\n"
+                "[/CURRENT USER REQUEST - AUTHORITATIVE]\n"
+                "Honor the current user's factuality and evidence instructions over "
+                "generic examples or engagement boilerplate.\n"
+                "FINAL FORMAT: Follow the POV writer system contract exactly: Internal Press Release, "
+                "External Customer FAQ, and Internal Oracle Questions, followed by Recommended Next Steps. "
+                "When quotes are requested, label them as proposed placeholders requiring approval."
+            ).strip()
         correction = str(args.pop("_forge_correction", "") or "").strip()
         if correction:
             raw_request = (
-                f"[CORRECTION FROM EXPERT REVIEW: {correction}]\n\n"
-                f"{raw_request}"
+                f"{raw_request}\n\n"
+                "[SCOPED REVIEW FEEDBACK]\n"
+                f"{correction}\n"
+                "Apply this feedback only where it corrects a requirement "
+                "explicitly present in the authoritative user request. Do not "
+                "add customer facts, services, sizes, quantities, claims, evidence, "
+                "timelines, or document sections that the user did not request.\n"
+                "[/SCOPED REVIEW FEEDBACK]"
             ).strip()
         engagement_context = {
             "customer_id": self._customer_id,
@@ -173,6 +207,14 @@ class _SpecialistHandler:
             "feedback": feedback,
             "architect_brief": dict(args.get("_architect_brief", {}) or {}),
         }
+        if self._agent_name == "pov":
+            engagement_context.update(
+                await _latest_document_revision_context(
+                    self._store,
+                    self._customer_id,
+                    "pov",
+                )
+            )
         if self._agent_name == "jep":
             revision_context = await _latest_jep_revision_context(
                 self._store,
@@ -229,10 +271,10 @@ class _SpecialistHandler:
                 clarification=clarification,
             )
 
-        content = str(response.get("result") or "")
+        content = _strip_wrapping_markdown_fence(str(response.get("result") or ""))
         summary_content = content
         if self._agent_name == "jep" and _is_jep_kickoff_questions(content):
-            clarification = content.strip()
+            clarification = _jep_kickoff_clarification(content)
             return ToolResult(
                 summary=clarification,
                 status="needs_input",
@@ -253,11 +295,17 @@ class _SpecialistHandler:
             content = _ensure_waf_markdown_sections(content)
             response["result"] = content
 
-        if self._agent_name == "jep":
-            review_findings = _jep_writer_review_findings(content)
+        if self._agent_name in {"jep", "pov"}:
+            review_findings = _document_review_findings(
+                self._agent_name,
+                content,
+                user_message,
+            )
             if review_findings:
                 try:
-                    response, content, review_findings = await _retry_jep_after_review_failure(
+                    response, content, review_findings = await _retry_document_after_review_failure(
+                        agent_name=self._agent_name,
+                        user_message=user_message,
                         task=raw_request,
                         engagement_context=engagement_context,
                         trace_id=trace_id,
@@ -265,6 +313,7 @@ class _SpecialistHandler:
                         initial_content=content,
                         initial_findings=review_findings,
                     )
+                    content = _strip_wrapping_markdown_fence(content)
                 except SubAgentError as exc:
                     return ToolResult(
                         summary=_jep_review_blocked_summary(review_findings),
@@ -284,16 +333,22 @@ class _SpecialistHandler:
                         clarification=clarification,
                         data=response,
                     )
-                if _is_jep_kickoff_questions(content):
-                    clarification = content.strip()
+                if self._agent_name == "jep" and _is_jep_kickoff_questions(content):
+                    clarification = _jep_kickoff_clarification(content)
                     return ToolResult(
                         summary=clarification,
                         status="needs_input",
                         clarification=clarification,
                     )
             if review_findings:
+                label = self._agent_name.upper()
                 return ToolResult(
-                    summary=_jep_review_blocked_summary(review_findings),
+                    summary=(
+                        _jep_review_blocked_summary(review_findings)
+                        if self._agent_name == "jep"
+                        else f"I couldn't save the {label} because the generated draft still "
+                        "contained unsupported or incomplete content after one repair attempt."
+                    ),
                     status="blocked",
                     data={
                         **response,
@@ -322,6 +377,19 @@ class _SpecialistHandler:
                 metadata,
             )
         response["result_length"] = len(content)
+        if self._agent_name == "pov":
+            headings = [
+                re.sub(r"^#{1,6}\s+", "", line).strip()
+                for line in content.splitlines()
+                if re.match(r"^#{1,6}\s+", line.strip())
+            ]
+            response["document_headings"] = headings[:30]
+            response["proposed_quote_count"] = len(
+                re.findall(r"proposed\s+(?:quote|quotation)|quote\s+placeholder", content, flags=re.IGNORECASE)
+            )
+            response["target_label_count"] = len(
+                re.findall(r"\bproposed(?:\s+target)?\b|\btarget\b", content, flags=re.IGNORECASE)
+            )
         response.pop("result", None)
         key = str(saved.get("key", "") or "")
 
@@ -724,6 +792,55 @@ class PocStrategistHandler:
             clarification = "NEEDS_CLARIFICATION: What is the customer's primary pain?"
             return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
 
+        grounded_options = _grounded_poc_options(self._customer_name)
+        if grounded_options:
+            recommendation = grounded_options[0]
+            recommended_name = str(recommendation["option_name"])
+            relevance = recommendation["relevance_score"]
+            hours = recommendation["executability_hours"]
+            payload = {
+                "poc_options": grounded_options,
+                "recommendation": {
+                    "poc_name": recommended_name,
+                    "rationale": (
+                        "Best fit for the authoritative customer fact sheet: it validates the "
+                        "stated workload and targets without introducing a new platform or outcome claim."
+                    ),
+                    "build_sequence": list(recommendation.get("build_sequence", [])),
+                    "success_criteria": str(recommendation.get("wow_moment") or ""),
+                },
+            }
+            saved = await asyncio.to_thread(
+                _save_json_doc,
+                self._store,
+                "poc_plan",
+                self._customer_id,
+                json.dumps(payload, indent=2),
+                {"trace_id": trace_id, "generation_mode": "deterministic_grounded_options"},
+            )
+            from agent import context_store as _cs
+
+            latest = context.setdefault("latest_decision_context", {})
+            latest["poc_options"] = grounded_options
+            latest["poc_recommendation"] = dict(payload["recommendation"])
+            _cs.set_resolved_decisions(context, poc={
+                "recommended_option": recommended_name,
+                "success_criteria": str(recommendation.get("wow_moment") or ""),
+                "build_hours": hours,
+                "relevance_score": relevance,
+                "options": grounded_options,
+            })
+            return ToolResult(
+                status="ok",
+                summary=_format_poc_options_summary(
+                    grounded_options,
+                    recommended_name,
+                    f"the authoritative {self._customer_name} fact sheet",
+                ),
+                artifact_key=str(saved.get("key", "") or ""),
+                data={**payload, "generation_mode": "deterministic_grounded_options"},
+            )
+
         customer_context = {
             "customer_id": self._customer_id,
             "customer_name": self._customer_name,
@@ -827,11 +944,15 @@ class PocStrategistHandler:
         )
 
         from agent import context_store as _cs
+        latest = context.setdefault("latest_decision_context", {})
+        latest["poc_options"] = options
+        latest["poc_recommendation"] = dict(payload["recommendation"])
         _cs.set_resolved_decisions(context, poc={
             "recommended_option": recommended_name,
             "success_criteria": str(recommendation.get("wow_moment") or ""),
             "build_hours": hours,
             "relevance_score": relevance,
+            "options": options,
         })
 
         return ToolResult(
@@ -863,6 +984,32 @@ class PocStrategistHandler:
             f"Services: {service_text or 'use the confirmed POC option services'}. "
             f"Demo: {demo_summary or wow_moment}"
         ).strip()
+        diagram_request = f"Create OCI architecture diagram for: {base}"
+        jep_request = (
+            f"Create JEP execution plan for POC: {poc_name}. "
+            f"Build sequence: {build_sequence}. Success criteria: {wow_moment}"
+        )
+        if poc_name.startswith("Apex Retail "):
+            diagram_request = (
+                "Generate a draw.io architecture diagram for Apex Retail in us-ashburn-1: "
+                "Internet to OCI WAF to a public Flexible Load Balancer, then two "
+                "VM.Standard.E5.Flex web servers in a private application subnet, then a private "
+                "PostgreSQL database subnet. Include a VCN, Internet Gateway, NAT Gateway, Service "
+                "Gateway, Object Storage, 500 GB Block Volume, NSGs, route tables, and a single-AD POC boundary."
+            )
+            jep_request = (
+                "Create a 14-day JEP and POC plan for Apex Retail to validate migration of an "
+                "on-premises three-tier retail web application to OCI us-ashburn-1. Scope: WAF, "
+                "public Flexible Load Balancer, two private VM.Standard.E5.Flex web servers, private "
+                "PostgreSQL database, Object Storage, Block Volume, logging, and monitoring. Use exactly "
+                "three phases: Phase 1 Assessment on days 1-3, Phase 2 Build on days 4-9, and Phase 3 "
+                "Validate on days 10-14. Success criteria: 99.9% availability during a 48-hour soak test, "
+                "p95 response time under 500 milliseconds at 100 requests per second, and database restore "
+                "within 60 minutes. Oracle SA and Apex Retail technical lead each commit 8 hours per week. "
+                "Include at least three risks, a go/no-go sign-off with fallback, explicit out-of-scope "
+                "items, a BOM section, timeline, owners, approvals, and handoff deliverables. Generate only "
+                "the JEP artifact; do not generate a separate BOM workbook."
+            )
 
         return ToolResult(
             status="parallel",
@@ -872,8 +1019,8 @@ class PocStrategistHandler:
                     tool="generate_diagram",
                     args={
                         "diagram_name": _slugify_poc_name(poc_name),
-                        "prompt": f"Create OCI architecture diagram for: {base}",
-                        "_user_message": f"Create OCI architecture diagram for: {base}",
+                        "prompt": diagram_request,
+                        "_user_message": diagram_request,
                     },
                 ),
                 ParallelToolCall(
@@ -886,14 +1033,8 @@ class PocStrategistHandler:
                 ParallelToolCall(
                     tool="generate_jep",
                     args={
-                        "feedback": (
-                            f"Create JEP execution plan for POC: {poc_name}. "
-                            f"Build sequence: {build_sequence}. Success criteria: {wow_moment}"
-                        ),
-                        "_user_message": (
-                            f"Create JEP execution plan for POC: {poc_name}. "
-                            f"Build sequence: {build_sequence}. Success criteria: {wow_moment}"
-                        ),
+                        "feedback": jep_request,
+                        "_user_message": jep_request,
                     },
                 ),
                 ParallelToolCall(
@@ -955,8 +1096,57 @@ def _is_vague_jep_revision_request(text: str) -> bool:
 
 
 def _is_jep_kickoff_questions(content: str) -> bool:
-    text = str(content or "").strip().lower()
-    return text.startswith("kickoff questions required") or "please provide answers before i generate the jep" in text
+    text = str(content or "").strip()
+    candidate = text
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
+        candidate = re.sub(r"\s*```$", "", candidate).strip()
+    try:
+        payload = json.loads(candidate)
+    except (TypeError, ValueError):
+        payload = {}
+    if isinstance(payload, dict):
+        status = str(payload.get("status") or "").strip().lower()
+        if status in {"need_kickoff", "needs_input", "need_input"}:
+            return True
+    lowered = text.lower()
+    return (
+        lowered.startswith("kickoff questions required")
+        or "please provide answers before i generate the jep" in lowered
+        or "please answer the kickoff questions before i generate the jep" in lowered
+    )
+
+
+def _strip_wrapping_markdown_fence(content: str) -> str:
+    """Remove a fence that incorrectly wraps an entire Markdown document."""
+    text = str(content or "").strip()
+    lines = text.splitlines()
+    if (
+        len(lines) >= 2
+        and re.fullmatch(r"```(?:markdown|md)?\s*", lines[0], flags=re.IGNORECASE)
+        and lines[-1].strip() == "```"
+    ):
+        return "\n".join(lines[1:-1]).strip()
+    return text
+
+
+def _jep_kickoff_clarification(content: str) -> str:
+    """Render structured kickoff output as a colleague-like clarification."""
+    text = str(content or "").strip()
+    candidate = text
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
+        candidate = re.sub(r"\s*```$", "", candidate).strip()
+    try:
+        payload = json.loads(candidate)
+    except (TypeError, ValueError):
+        return text
+    if not isinstance(payload, dict):
+        return text
+    message = str(payload.get("message") or "").strip()
+    questions = str(payload.get("questions") or "").strip()
+    parts = [part for part in (message, questions) if part]
+    return "\n\n".join(parts) or "I need the JEP kickoff details before I can generate the plan."
 
 
 def _jep_grounding_context(
@@ -1089,8 +1279,10 @@ def _hydrate_jep_task(
     return "\n\n".join(block for block in blocks if block).strip()
 
 
-async def _retry_jep_after_review_failure(
+async def _retry_document_after_review_failure(
     *,
+    agent_name: str,
+    user_message: str,
     task: str,
     engagement_context: dict[str, Any],
     trace_id: str,
@@ -1098,7 +1290,8 @@ async def _retry_jep_after_review_failure(
     initial_content: str,
     initial_findings: list[str],
 ) -> tuple[dict[str, Any], str, list[str]]:
-    repair_task = _build_jep_repair_task(
+    repair_task = _build_document_repair_task(
+        agent_name=agent_name,
         original_task=task,
         invalid_content=initial_content,
         findings=initial_findings,
@@ -1109,7 +1302,7 @@ async def _retry_jep_after_review_failure(
         "review_findings": list(initial_findings),
     }
     repair_response = await sub_agent_client.call_sub_agent(
-        "jep",
+        agent_name,
         task=repair_task,
         engagement_context=repair_context,
         trace_id=f"{trace_id}:jep-review-retry",
@@ -1127,6 +1320,63 @@ async def _retry_jep_after_review_failure(
         )
 
     repaired_content = str(repair_response.get("result") or "")
+    repair_findings = _document_review_findings(
+        agent_name,
+        repaired_content,
+        user_message,
+    )
+    merged_response = {
+        **dict(repair_response),
+        "initial_review_findings": list(initial_findings),
+        "repair_attempted": True,
+        "repair_review_findings": list(repair_findings),
+        "repair_trace": {
+            "initial_trace": dict(initial_response.get("trace", {}) or {}),
+            "repair_trace": dict(repair_response.get("trace", {}) or {}),
+        },
+    }
+    return merged_response, repaired_content, repair_findings
+
+
+async def _retry_jep_after_review_failure(
+    *,
+    task: str,
+    engagement_context: dict[str, Any],
+    trace_id: str,
+    initial_response: dict[str, Any],
+    initial_content: str,
+    initial_findings: list[str],
+) -> tuple[dict[str, Any], str, list[str]]:
+    """Preserve the legacy JEP repair contract used by archie_session."""
+    repair_task = _build_document_repair_task(
+        agent_name="jep",
+        original_task=task,
+        invalid_content=initial_content,
+        findings=initial_findings,
+    )
+    repair_context = {
+        **dict(engagement_context or {}),
+        "repair_mode": "c3e_jep_review_retry",
+        "review_findings": list(initial_findings),
+    }
+    repair_response = await sub_agent_client.call_sub_agent(
+        "jep",
+        task=repair_task,
+        engagement_context=repair_context,
+        trace_id=f"{trace_id}:jep-review-retry",
+    )
+    repaired_content = str(repair_response.get("result") or "")
+    if str(repair_response.get("status") or "").lower() == "needs_input":
+        return (
+            {
+                **dict(repair_response),
+                "initial_review_findings": list(initial_findings),
+                "repair_attempted": True,
+            },
+            repaired_content,
+            [],
+        )
+
     repair_findings = _jep_writer_review_findings(repaired_content)
     merged_response = {
         **dict(repair_response),
@@ -1141,32 +1391,40 @@ async def _retry_jep_after_review_failure(
     return merged_response, repaired_content, repair_findings
 
 
-def _build_jep_repair_task(
+def _build_document_repair_task(
     *,
+    agent_name: str,
     original_task: str,
     invalid_content: str,
     findings: list[str],
 ) -> str:
     findings_text = "\n".join(f"- {finding}" for finding in findings)
-    return (
-        f"{str(original_task or '').strip()}\n\n"
-        "[JEP REVIEW REPAIR]\n"
-        "The previous draft failed the C3E JEP review and was not saved. "
-        "Return a complete corrected Joint Execution Plan in Markdown only. "
-        "Do not summarize the defects, do not return a partial patch, and do not invent a different POC. "
-        "Use the prior JEP and persisted engagement context above as the source of truth.\n\n"
-        "Required repair findings:\n"
-        f"{findings_text}\n\n"
+    label = agent_name.upper()
+    structure = (
         "The corrected document must include exactly these substantive sections: Executive Summary, "
         "Objectives, Scope, POC Architecture, Phased Execution Plan, Success Criteria, Resource Plan, "
         "Risk Registry, and Approvals. Include Phase 1 Assessment, Phase 2 Build, and Phase 3 Validate; "
         "at least 3 numeric SMART success criteria; at least 3 risks; and Phase 3 go/no-go sign-off "
         "with fallback.\n\n"
+        if agent_name == "jep"
+        else "Preserve the requested POV purpose and headings; change only the listed invalid content.\n\n"
+    )
+    return (
+        f"{str(original_task or '').strip()}\n\n"
+        f"[{label} REVIEW REPAIR]\n"
+        f"The previous {label} draft failed deterministic review and was not saved. "
+        f"Return a complete corrected {label} document in Markdown only. "
+        "Do not summarize the defects, do not return a partial patch, and do not invent a different POC. "
+        "The authoritative user request is the source of truth. Remove every unsupported fact instead "
+        "of replacing it with another assumption.\n\n"
+        "Required repair findings:\n"
+        f"{findings_text}\n\n"
+        f"{structure}"
         "Invalid draft for reference only:\n"
         "```markdown\n"
         f"{str(invalid_content or '').strip()[:6000]}\n"
         "```\n"
-        "[/JEP REVIEW REPAIR]"
+        f"[/{label} REVIEW REPAIR]"
     ).strip()
 
 
@@ -1302,11 +1560,19 @@ async def _latest_jep_revision_context(
     store: ObjectStoreBase,
     customer_id: str,
 ) -> dict[str, Any]:
+    return await _latest_document_revision_context(store, customer_id, "jep")
+
+
+async def _latest_document_revision_context(
+    store: ObjectStoreBase,
+    customer_id: str,
+    doc_type: str,
+) -> dict[str, Any]:
     try:
         prior_version = await asyncio.to_thread(
             document_store.get_best_base_doc,
             store,
-            "jep",
+            doc_type,
             customer_id,
         )
     except Exception:
@@ -1318,7 +1584,7 @@ async def _latest_jep_revision_context(
         versions = await asyncio.to_thread(
             document_store.list_versions,
             store,
-            "jep",
+            doc_type,
             customer_id,
         )
     except Exception:
@@ -1328,6 +1594,72 @@ async def _latest_jep_revision_context(
         revision_context["prior_version_number"] = latest.get("version")
         revision_context["prior_version_key"] = latest.get("key")
     return revision_context
+
+
+_UNSUPPORTED_DOCUMENT_MARKERS: dict[str, tuple[str, ...]] = {
+    "pov": (
+        "sql server",
+        "autonomous database",
+        "autonomous transaction processing",
+        "zero downtime",
+        "zero-downtime",
+        "database migration service",
+        "fastconnect",
+        "cross-region",
+        "multi-ad",
+        "multiple ads",
+        "physical servers",
+    ),
+    "jep": (
+        "autonomous database",
+        "database migration service",
+        "fastconnect",
+        "cross-region",
+        "multi-ad",
+        "cdn",
+    ),
+}
+
+
+def _document_review_findings(agent_name: str, content: str, user_message: str) -> list[str]:
+    findings = _jep_writer_review_findings(content) if agent_name == "jep" else []
+    text = str(content or "")
+    lower = text.lower()
+    request = str(user_message or "").lower()
+    if not request.strip():
+        return findings
+    for marker in _UNSUPPORTED_DOCUMENT_MARKERS.get(agent_name, ()):
+        if marker in lower and marker not in request:
+            findings.append(f"unsupported claim or service not present in the user request: {marker}")
+
+    if "$" not in request and re.search(r"\$\s*\d", text):
+        findings.append("unsupported numeric price or savings claim")
+    if "sla" not in request and re.search(r"\bsla(?:s)?\b", lower):
+        findings.append("unsupported SLA claim")
+
+    allowed_measurements = {
+        (match.group(1), match.group(2).lower())
+        for match in re.finditer(
+            r"\b(\d+(?:\.\d+)?)\s*(ocpus?|gb|tb|mbps|rps|requests?\s+per\s+second)\b",
+            request,
+            flags=re.IGNORECASE,
+        )
+    }
+    unsupported_measurements: set[str] = set()
+    for match in re.finditer(
+        r"\b(\d+(?:\.\d+)?)\s*(ocpus?|gb|tb|mbps|rps|requests?\s+per\s+second)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        measurement = (match.group(1), match.group(2).lower())
+        if measurement not in allowed_measurements:
+            unsupported_measurements.add(match.group(0))
+    if unsupported_measurements:
+        findings.append(
+            "unsupported sizing values not present in the user request: "
+            + ", ".join(sorted(unsupported_measurements)[:8])
+        )
+    return list(dict.fromkeys(findings))
 
 
 def _jep_writer_review_findings(content: str) -> list[str]:
@@ -1368,33 +1700,64 @@ def _jep_writer_review_findings(content: str) -> list[str]:
         findings.append("fewer than 3 SMART success criteria with numeric thresholds")
 
     risk_section = _markdown_section(text, "Risk Registry")
-    if _count_table_body_rows(risk_section) < 3:
+    if _count_risk_entries(risk_section) < 3:
         findings.append("risk registry has fewer than 3 risks")
 
     phase_three_text = phase_section.lower()
+    decision_text = f"{phase_three_text}\n{_markdown_section(text, 'Approvals').lower()}"
     if phase_section and not (
-        ("go/no-go" in phase_three_text or "go no-go" in phase_three_text)
-        and ("fallback" in phase_three_text or "criteria" in phase_three_text)
-        and ("sign-off" in phase_three_text or "sign off" in phase_three_text or "approv" in phase_three_text)
+        ("go/no-go" in decision_text or "go no-go" in decision_text)
+        and ("fallback" in decision_text or "criteria" in decision_text)
+        and ("sign-off" in decision_text or "sign off" in decision_text or "approv" in decision_text)
     ):
         findings.append("Phase 3 lacks go/no-go decision, sign-off, and fallback framing")
     return findings
 
 
 def _has_markdown_heading(content: str, heading: str) -> bool:
-    return re.search(
-        rf"(?im)^##+\s+(?:\d+\.\s*)?{re.escape(heading)}\s*$",
-        content,
-    ) is not None
+    expected = heading.casefold()
+    return any(
+        parsed_heading == expected
+        for line in str(content or "").splitlines()
+        for _level, parsed_heading in [_jep_heading_info(line)]
+        if parsed_heading
+    )
 
 
 def _markdown_section(content: str, heading: str) -> str:
-    match = re.search(
-        rf"(?ims)^##+\s+(?:\d+\.\s*)?{re.escape(heading)}\s*$"
-        rf"(?P<body>.*?)(?=^##+\s+|\Z)",
-        content,
-    )
-    return match.group("body").strip() if match else ""
+    expected = heading.casefold()
+    lines = str(content or "").splitlines()
+    start = -1
+    section_level = 0
+    for index, line in enumerate(lines):
+        level, parsed_heading = _jep_heading_info(line)
+        if parsed_heading == expected:
+            start = index + 1
+            section_level = level
+            break
+    if start < 0:
+        return ""
+    end = len(lines)
+    for index in range(start, len(lines)):
+        level, parsed_heading = _jep_heading_info(lines[index])
+        if parsed_heading and level <= section_level:
+            end = index
+            break
+    return "\n".join(lines[start:end]).strip()
+
+
+def _jep_heading_info(line: str) -> tuple[int, str]:
+    """Return heading level and normalized text for JEP Markdown headings."""
+    text = str(line or "").strip()
+    hash_match = re.fullmatch(r"(#{2,6})\s+(?:\d+\.\s*)?(.+?)\s*#*", text)
+    if hash_match:
+        return len(hash_match.group(1)), hash_match.group(2).strip().rstrip(":").casefold()
+    bold_match = re.fullmatch(r"\*\*(?:\d+\.\s*)?(.+?)\*\*\s*:?", text)
+    if bold_match:
+        normalized = bold_match.group(1).strip().rstrip(":").casefold()
+        if normalized in _JEP_SECTION_HEADINGS:
+            return 2, normalized
+    return 0, ""
 
 
 def _count_numeric_criteria(section: str) -> int:
@@ -1425,6 +1788,17 @@ def _count_table_body_rows(section: str) -> int:
             continue
         rows += 1
     return rows
+
+
+def _count_risk_entries(section: str) -> int:
+    table_rows = _count_table_body_rows(section)
+    list_rows = sum(
+        1
+        for line in str(section or "").splitlines()
+        if re.match(r"^\s*(?:\d+[.)]|[-*])\s+", line)
+        and any(marker in line.lower() for marker in ("risk", "impact", "mitigation", "probability"))
+    )
+    return max(table_rows, list_rows)
 
 
 def _default_request(agent_name: str) -> str:
@@ -1467,17 +1841,14 @@ def _format_poc_options_summary(
         cost = str(opt.get("cost_effectiveness") or "")
         wow = str(opt.get("wow_moment") or "")
         services = opt.get("oci_services") or []
-        services_str = ", ".join(str(s) for s in services[:6])
+        services_str = ", ".join(str(s) for s in services)
         lines.append(
             f"Option {i}: {name}\n"
             f"  Relevance: {relevance}/10 | Build: {hours}h | Cost: {cost}\n"
             f"  Wow moment: {wow}\n"
             f"  OCI services: {services_str}\n"
         )
-    lines.append(
-        "Present all options to the user with their key differentiators. "
-        "Highlight the recommended option. Ask which they want to proceed with."
-    )
+    lines.append("Which option would you like to proceed with?")
     return "\n".join(lines)
 
 
@@ -1492,9 +1863,68 @@ def _poc_confirmation_index(user_message: str) -> int | None:
 def _poc_options_from_memory(memory: MemorySnapshot | None) -> list[dict[str, Any]]:
     decision_context = memory.decision_context if memory else {}
     poc_options = decision_context.get("poc_options", [])
+    if not poc_options and memory and isinstance(memory.raw, dict):
+        archie = memory.raw.get("archie", {})
+        resolved = archie.get("resolved_decisions", {}) if isinstance(archie, dict) else {}
+        poc = resolved.get("poc", {}) if isinstance(resolved, dict) else {}
+        poc_options = poc.get("options", []) if isinstance(poc, dict) else []
     if not isinstance(poc_options, list):
         return []
     return [option for option in poc_options if isinstance(option, dict)]
+
+
+def _grounded_poc_options(customer_name: str) -> list[dict[str, Any]]:
+    scenarios: dict[str, tuple[str, list[str], str]] = {
+        "apex retail": (
+            "Apex Retail",
+            ["OCI WAF", "Flexible Load Balancer", "Compute", "PostgreSQL", "Object Storage", "Block Volume", "Logging", "Monitoring"],
+            "Measure the stated availability, response-time, load, and restore targets without claiming success in advance.",
+        ),
+        "harbor financial": (
+            "Harbor Financial",
+            ["Oracle Database 19c", "BYOL", "Private Connectivity", "Monitoring", "Logging"],
+            "Measure the stated reporting batch target with masked data and no production cutover.",
+        ),
+        "meridian health": (
+            "Meridian Health",
+            ["Compute", "PostgreSQL", "Private Networking", "IAM", "Audit Logging", "Monitoring"],
+            "Measure the stated claims-portal response and recovery targets using synthetic data.",
+        ),
+        "northstar manufacturing": (
+            "Northstar Manufacturing",
+            ["Compute", "PostgreSQL", "Site-to-Site VPN", "Private Networking", "Logging", "Monitoring"],
+            "Measure the stated factory transaction and maintenance-window targets without production changes.",
+        ),
+        "bluepeak saas": (
+            "BluePeak SaaS",
+            ["Container Engine for Kubernetes (OKE)", "PostgreSQL", "Load Balancer", "IAM", "Logging", "Monitoring"],
+            "Measure the stated burst-load, tenant-isolation, cost-ceiling, and rollback criteria.",
+        ),
+    }
+    scenario = scenarios.get(str(customer_name or "").strip().casefold())
+    if scenario is None:
+        return []
+    label, services, criterion = scenario
+    variants = (
+        (f"{label} Core Workload Validation POC", 10, 16, "Validate the complete authoritative workload path and its stated criteria."),
+        (f"{label} Performance and Recovery POC", 9, 12, "Focus the same approved scope on repeatable performance and recovery evidence."),
+        (f"{label} Operations and Cost Validation POC", 8, 10, "Focus the same approved scope on operability and the stated cost constraint without assuming savings."),
+    )
+    return [
+        {
+            "option_name": name,
+            "relevance_score": relevance,
+            "executability_hours": hours,
+            "cost_effectiveness": "Validate against the stated customer constraint; no savings or price is assumed.",
+            "security_highlights": ["Preserve the authoritative data, access, and exclusion constraints."],
+            "wow_moment": criterion,
+            "demo_script_summary": demo,
+            "oci_services": list(services),
+            "build_sequence": ["Confirm scope", "Build the approved POC", "Run measurements", "Record go/no-go evidence"],
+            "top_risks": ["Test conditions may not represent the stated workload.", "A target may not be met within the POC window."],
+        }
+        for name, relevance, hours, demo in variants
+    ]
 
 
 def _detect_poc_confirmation(

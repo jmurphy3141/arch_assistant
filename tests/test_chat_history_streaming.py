@@ -696,6 +696,34 @@ def test_artifact_manifest_includes_bom_xlsx_download():
     assert bom_download["download_url"] == "/api/bom/acme/download/oci-bom-test.xlsx"
 
 
+def test_artifact_manifest_exposes_only_latest_unlabelled_bom_revision():
+    metadata = {
+        "schema_version": "1.0",
+        "tool": "generate_bom",
+        "status": "approved",
+        "checkpoint_required": False,
+    }
+    calls = []
+    for filename in ("v1.xlsx", "v2.xlsx"):
+        calls.append(
+            {
+                "tool": "generate_bom",
+                "result_data": {
+                    "type": "final",
+                    "bom_payload": {"line_items": [{"sku": "B97384", "quantity": 2}]},
+                    "xlsx_artifact_key": f"customers/acme/bom/xlsx/{filename}",
+                    "xlsx_filename": filename,
+                    "xlsx_metadata": metadata,
+                },
+            }
+        )
+
+    manifest = _build_artifact_manifest("acme", {"tool_calls": calls})
+
+    bom_downloads = [item for item in manifest["downloads"] if item["type"] == "bom"]
+    assert [item["filename"] for item in bom_downloads] == ["v2.xlsx"]
+
+
 def test_artifact_manifest_hides_checkpointed_or_metadata_less_bom_xlsx():
     manifest = _build_artifact_manifest(
         "acme",
