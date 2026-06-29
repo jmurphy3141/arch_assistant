@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from drawing_agent_server import app, _build_artifact_manifest
 from agent.persistence_objectstore import InMemoryObjectStore
-from agent.context_store import read_context, write_context
+from agent.context_store import latest_bom_work_product, read_context, write_context
 from agent.document_store import (
     list_notes,
     load_conversation_history,
@@ -524,6 +524,10 @@ def test_api_chat_includes_artifact_manifest(monkeypatch, client):
     assert saved_bom_download["key"] == bom_download["key"]
     assert assistant_turn["tool_calls"][0]["result_data"]["xlsx_artifact_key"] == bom_download["key"]
     assert bom_download["download_url"] in assistant_turn["content"]
+    canonical = latest_bom_work_product(read_context(store, "acme"))
+    assert canonical is not None
+    assert canonical["version"] == 1
+    assert canonical["xlsx"]["key"] == bom_download["key"]
 
 
 def test_api_chat_does_not_persist_checkpointed_bom_xlsx(monkeypatch, client):

@@ -9,7 +9,7 @@ import pytest
 import agent.orchestrator_agent as orchestrator_agent
 import agent.archie_session as archie_session
 import agent.archie_memory as archie_memory
-from agent import context_store
+from agent import context_store, jep_lifecycle
 from agent.tools import specialists as specialists_module
 from agent import sub_agent_client
 from agent.persistence_objectstore import InMemoryObjectStore
@@ -103,7 +103,6 @@ RGA will validate a RAG and GenAI assistant for telemetry questions using OCI se
 """,
         {"source": "test"},
     )
-
     def _text_runner(prompt: str, system_message: str) -> str:
         _ = (prompt, system_message)
         raise AssertionError("POC recall should not call the LLM")
@@ -120,7 +119,7 @@ RGA will validate a RAG and GenAI assistant for telemetry questions using OCI se
     )
 
     assert result["tool_calls"] == []
-    assert "verified POC" in result["reply"]
+    assert "We're working on" in result["reply"]
     assert "generate_poc_plan" not in result["reply"]
     assert "AskRGA RAG + GenAI PoC" in result["reply"]
     assert "diagrams/active-poc/askrga/v4/diagram.drawio" in result["reply"]
@@ -288,6 +287,13 @@ def test_legacy_jep_update_uses_prior_jep_and_artifact_context(monkeypatch) -> N
         "# Joint Execution Plan - AskRGA RAG + GenAI PoC\n\n## Executive Summary\nExisting base.",
         {"source": "test"},
     )
+    archie_session.document_store.save_approved_doc(
+        store,
+        "jep",
+        "legacy-jep",
+        "# Joint Execution Plan - AskRGA RAG + GenAI PoC\n\n## Executive Summary\nExisting base.",
+    )
+    jep_lifecycle.request_revision(store, "legacy-jep", "Update requested")
     ctx = context_store.read_context(store, "legacy-jep", "RGA")
     context_store.set_resolved_decisions(
         ctx,
@@ -339,7 +345,7 @@ def test_legacy_jep_update_uses_prior_jep_and_artifact_context(monkeypatch) -> N
     assert captured["engagement_context"]["artifact_context"]["diagram"]["diagram_name"] == "askrga-rag-genai"
 
 
-def test_legacy_jep_review_failure_repairs_before_save(monkeypatch) -> None:
+def test_legacy_jep_review_failure_does_not_use_prose_repair(monkeypatch) -> None:
     store = InMemoryObjectStore()
     archie_session.document_store.save_doc(
         store,
@@ -348,16 +354,20 @@ def test_legacy_jep_review_failure_repairs_before_save(monkeypatch) -> None:
         "# Joint Execution Plan - AskRGA RAG + GenAI PoC\n\n## Executive Summary\nExisting base.",
         {"source": "test"},
     )
+    archie_session.document_store.save_approved_doc(
+        store,
+        "jep",
+        "legacy-jep-repair",
+        "# Joint Execution Plan - AskRGA RAG + GenAI PoC\n\n## Executive Summary\nExisting base.",
+    )
+    jep_lifecycle.request_revision(store, "legacy-jep-repair", "Update requested")
     calls: list[str] = []
 
     async def _fake_call_sub_agent(name, task, engagement_context, trace_id):
         _ = (engagement_context, trace_id)
         assert name == "jep"
         calls.append(task)
-        if len(calls) == 1:
-            return {"status": "ok", "result": "# Joint Execution Plan\n\n## Executive Summary\npartial"}
-        assert "JEP REVIEW REPAIR" in task
-        return {"status": "ok", "result": "# Joint Execution Plan\n\n## Executive Summary\nrepaired"}
+        return {"status": "ok", "result": "# Joint Execution Plan\n\n## Executive Summary\npartial"}
 
     monkeypatch.setattr(archie_session.sub_agent_client, "call_sub_agent", _fake_call_sub_agent)
     monkeypatch.setattr(
@@ -378,11 +388,11 @@ def test_legacy_jep_review_failure_repairs_before_save(monkeypatch) -> None:
         )
     )
 
-    assert summary.startswith("JEP v2 saved.")
-    assert key == "jep/legacy-jep-repair/v2.md"
-    assert data["repair_attempted"] is True
-    assert data["initial_review_findings"] == ["missing required sections"]
-    assert len(calls) == 2
+    assert "couldn't save the JEP update" in summary
+    assert key == ""
+    assert data["repair_attempted"] is False
+    assert data["review_findings"] == ["missing required sections"]
+    assert len(calls) == 1
 
 
 def test_bom_parallel_fast_path_returns_tool_summary_without_llm_freewrite(monkeypatch) -> None:

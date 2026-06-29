@@ -314,6 +314,16 @@ def test_jep_evidence_review_allows_only_requested_sizing():
     assert not any("500 GB" in finding for finding in findings)
 
 
+def test_pov_evidence_review_treats_rps_as_requests_per_second():
+    findings = specialists_module._document_review_findings(
+        "pov",
+        "The proposed validation target is 220 RPS.",
+        "Validate at 220 requests per second.",
+    )
+
+    assert not any("unsupported sizing values" in finding for finding in findings)
+
+
 async def test_pov_insufficient_context(monkeypatch):
     called = False
 
@@ -363,6 +373,69 @@ async def test_jep_ok(monkeypatch):
     assert result.data["docx_key"] == "docs/jep_v1.docx"
 
 
+async def test_jep_renders_docx_before_saving_either_artifact(monkeypatch):
+    install_jep_lifecycle_stub(
+        monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
+    )
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        return {"status": "ok", "result": valid_jep_markdown()}
+
+    saved = False
+
+    def fail_save(*_args, **_kwargs):
+        nonlocal saved
+        saved = True
+        raise AssertionError("Markdown must not be saved after DOCX rendering fails")
+
+    monkeypatch.setattr(specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent)
+    monkeypatch.setattr(
+        specialists_module,
+        "render_jep_docx",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("template failure")),
+    )
+    monkeypatch.setattr(specialists_module.document_store, "save_doc", fail_save)
+
+    result = await JepHandler(object(), "cust-1", "ACME")(
+        {}, memory=make_memory(), context={"agents": {}}, trace_id="trace-1"
+    )
+
+    assert result.status == "blocked"
+    assert result.data["persistence_stage"] == "docx_render"
+    assert saved is False
+
+
+async def test_jep_docx_persistence_failure_restores_prior_latest(monkeypatch):
+    install_jep_lifecycle_stub(
+        monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
+    )
+    store = InMemoryObjectStore()
+    prior = specialists_module.document_store.save_doc(
+        store, "jep", "cust-1", "# Prior approved JEP", {"source": "test"}
+    )
+    specialists_module.document_store.save_jep_docx(
+        store, "cust-1", prior["version"], b"prior-docx", {"source": "test"}
+    )
+    prior_markdown = store.get("jep/cust-1/LATEST.md")
+    prior_docx = store.get("jep/cust-1/LATEST.docx")
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        return {"status": "ok", "result": valid_jep_markdown()}
+
+    monkeypatch.setattr(specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent)
+    monkeypatch.setattr(specialists_module, "render_jep_docx", lambda *_args, **_kwargs: b"new-docx")
+    store.inject_put_failure("v2.docx")
+
+    result = await JepHandler(store, "cust-1", "ACME")(
+        {}, memory=make_memory(), context={"agents": {}}, trace_id="trace-1"
+    )
+
+    assert result.status == "blocked"
+    assert result.data["persistence_stage"] == "docx"
+    assert store.get("jep/cust-1/LATEST.md") == prior_markdown
+    assert store.get("jep/cust-1/LATEST.docx") == prior_docx
+
+
 async def test_jep_vague_update_without_existing_jep_needs_input(monkeypatch):
     install_jep_lifecycle_stub(
         monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
@@ -390,6 +463,33 @@ async def test_jep_vague_update_without_existing_jep_needs_input(monkeypatch):
     assert called is False
 
 
+async def test_jep_revision_does_not_use_unapproved_latest_version(monkeypatch):
+    install_jep_lifecycle_stub(
+        monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
+    )
+    store = InMemoryObjectStore()
+    specialists_module.document_store.save_doc(
+        store, "jep", "cust-1", "# Unapproved draft", {"source": "test"}
+    )
+    called = False
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        nonlocal called
+        called = True
+        return {"status": "ok", "result": valid_jep_markdown()}
+
+    monkeypatch.setattr(specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent)
+    result = await JepHandler(store, "cust-1", "ACME")(
+        {"feedback": "Please update the JEP"},
+        memory=make_memory(),
+        context={"agents": {}},
+        trace_id="trace-1",
+    )
+
+    assert result.status == "needs_input"
+    assert called is False
+
+
 async def test_jep_revision_passes_latest_prior_version(monkeypatch):
     install_jep_lifecycle_stub(
         monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
@@ -401,6 +501,12 @@ async def test_jep_revision_passes_latest_prior_version(monkeypatch):
         "cust-1",
         "# Existing JEP v3\n\n## Executive Summary\nUse this as the base.",
         {"source": "test"},
+    )
+    specialists_module.document_store.save_approved_doc(
+        store,
+        "jep",
+        "cust-1",
+        "# Existing JEP v3\n\n## Executive Summary\nUse this as the base.",
     )
     captured_context = {}
     captured_task = {"value": ""}
@@ -448,7 +554,8 @@ async def test_jep_revision_passes_latest_prior_version(monkeypatch):
 
     assert result.status == "ok"
     assert "Existing JEP v3" in captured_context["prior_version"]
-    assert captured_context["prior_version_key"] == "jep/cust-1/v1.md"
+    assert captured_context["prior_version_key"] == "approved/cust-1/jep.md"
+    assert captured_context["prior_version_approved"] is True
     assert captured_context["feedback"] == "Please update the JEP"
     assert captured_context["artifact_context"]["diagram"]["diagram_name"] == "askrga-rag-genai"
     assert "JEP REVISION GROUNDING" in captured_task["value"]
@@ -456,7 +563,7 @@ async def test_jep_revision_passes_latest_prior_version(monkeypatch):
     assert "AskRGA RAG + GenAI PoC" in captured_task["value"]
 
 
-async def test_jep_review_failure_repairs_before_save(monkeypatch):
+async def test_jep_review_failure_is_not_sent_back_for_prose_repair(monkeypatch):
     install_jep_lifecycle_stub(
         monkeypatch, policy_block=None, generated_state={"jep_state": "generated"}
     )
@@ -468,18 +575,21 @@ async def test_jep_review_failure_repairs_before_save(monkeypatch):
         "# Existing JEP\n\n## Executive Summary\nUse this as the base.",
         {"source": "test"},
     )
+    specialists_module.document_store.save_approved_doc(
+        store,
+        "jep",
+        "cust-1",
+        "# Existing JEP\n\n## Executive Summary\nUse this as the base.",
+    )
     calls: list[str] = []
 
     async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
         assert name == "jep"
         calls.append(task)
-        if len(calls) == 1:
-            return {
-                "status": "ok",
-                "result": "# Joint Execution Plan - ACME\n\n## Executive Summary\nPartial update only.",
-            }
-        assert "JEP REVIEW REPAIR" in task
-        return {"status": "ok", "result": valid_jep_markdown()}
+        return {
+            "status": "ok",
+            "result": "# Joint Execution Plan - ACME\n\n## Executive Summary\nPartial update only.",
+        }
 
     monkeypatch.setattr(
         specialists_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent
@@ -494,11 +604,11 @@ async def test_jep_review_failure_repairs_before_save(monkeypatch):
         trace_id="trace-1",
     )
 
-    assert result.status == "ok"
-    assert result.artifact_key == "docs/jep_v2.md"
-    assert result.data["repair_attempted"] is True
-    assert result.data["initial_review_findings"]
-    assert len(calls) == 2
+    assert result.status == "blocked"
+    assert result.data["repair_attempted"] is False
+    assert result.data["repair_mode"] == "structured_fields_only"
+    assert result.data["review_findings"]
+    assert len(calls) == 1
 
 
 async def test_jep_blocks_self_referential_revision_before_save(monkeypatch):
@@ -512,6 +622,12 @@ async def test_jep_blocks_self_referential_revision_before_save(monkeypatch):
         "cust-1",
         "# Existing JEP\n\n## Executive Summary\nUse this as the base.",
         {"source": "test"},
+    )
+    specialists_module.document_store.save_approved_doc(
+        store,
+        "jep",
+        "cust-1",
+        "# Existing JEP\n\n## Executive Summary\nUse this as the base.",
     )
     saved = False
     call_count = 0
@@ -555,7 +671,7 @@ Generate and maintain an iterative Job Execution Plan.
     assert result.status == "blocked"
     assert "couldn't save the JEP update" in result.summary
     assert "Job Execution Plan" in result.data["review_findings"][0]
-    assert call_count == 2
+    assert call_count == 1
     assert saved is False
 
 

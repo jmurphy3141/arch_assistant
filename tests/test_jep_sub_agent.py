@@ -31,7 +31,19 @@ async def test_explicit_jep_uses_grounded_path_without_inference(monkeypatch):
         "items, a BOM section, timeline, owners, approvals, and handoff deliverables. Generate only "
         "the JEP artifact; do not generate a separate BOM workbook."
     )
-    response = await handle(A2ARequest(task=task, trace_id="jep-fast"))
+    response = await handle(A2ARequest(
+        task=task,
+        trace_id="jep-fast",
+        engagement_context={
+            "customer_name": "Apex Retail",
+            "artifact_context": {
+                "poc": {
+                    "selected_option_name": "Apex Retail Core Workload Validation POC",
+                    "oci_services": ["OCI WAF", "Flexible Load Balancer", "VM.Standard.E5.Flex"],
+                }
+            },
+        },
+    ))
 
     assert response.status == "ok"
     assert response.trace["generation_mode"] == "deterministic_grounded_brief"

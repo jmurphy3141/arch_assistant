@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from agent import archie_memory, context_store, document_store, sub_agent_client
+from agent import archie_memory, context_store, document_store, poc_composer, sub_agent_client
 from agent.jep_docx_renderer import render_jep_docx
 from agent.persistence_objectstore import ObjectStoreBase
 from agent.sub_agent_client import SubAgentError
@@ -177,7 +177,7 @@ class _SpecialistHandler:
             if self._agent_name in {"pov", "jep"} and user_message
             else feedback or _default_request(self._agent_name)
         )
-        if self._agent_name in {"pov", "jep"} and user_message:
+        if self._agent_name == "pov" and user_message:
             raw_request = (
                 f"{raw_request}\n\n"
                 "[CURRENT USER REQUEST - AUTHORITATIVE]\n"
@@ -250,6 +250,11 @@ class _SpecialistHandler:
                 memory_raw=memory.raw if memory else {},
             )
 
+        jep_pointer_snapshot = (
+            await asyncio.to_thread(_snapshot_jep_pointers, self._store, self._customer_id)
+            if self._agent_name == "jep"
+            else {}
+        )
         try:
             response = await sub_agent_client.call_sub_agent(
                 self._agent_name,
@@ -301,6 +306,18 @@ class _SpecialistHandler:
                 content,
                 user_message,
             )
+            if review_findings and self._agent_name == "jep":
+                return ToolResult(
+                    summary=_jep_review_blocked_summary(review_findings),
+                    status="blocked",
+                    data={
+                        **response,
+                        "review_verdict": "blocked",
+                        "review_findings": review_findings,
+                        "repair_attempted": False,
+                        "repair_mode": "structured_fields_only",
+                    },
+                )
             if review_findings:
                 try:
                     response, content, review_findings = await _retry_document_after_review_failure(
@@ -358,23 +375,46 @@ class _SpecialistHandler:
                 )
 
         metadata = {"trace": response.get("trace", {}), "source": "sub_agent_client"}
-        if self._agent_name == "sales_deck":
-            saved = await asyncio.to_thread(
-                _save_json_doc,
-                self._store,
-                self._doc_type,
-                self._customer_id,
-                content,
-                metadata,
-            )
-        else:
-            saved = await asyncio.to_thread(
-                document_store.save_doc,
-                self._store,
-                self._doc_type,
-                self._customer_id,
-                content,
-                metadata,
+        jep_docx_bytes: bytes | None = None
+        if self._agent_name == "jep":
+            try:
+                jep_docx_bytes = await asyncio.to_thread(
+                    render_jep_docx,
+                    content,
+                    customer_name=self._customer_name,
+                )
+            except Exception as exc:
+                return ToolResult(
+                    summary=f"JEP Word document rendering failed: {exc}",
+                    status="blocked",
+                    data={**response, "persistence_stage": "docx_render"},
+                )
+        try:
+            if self._agent_name == "sales_deck":
+                saved = await asyncio.to_thread(
+                    _save_json_doc,
+                    self._store,
+                    self._doc_type,
+                    self._customer_id,
+                    content,
+                    metadata,
+                )
+            else:
+                saved = await asyncio.to_thread(
+                    document_store.save_doc,
+                    self._store,
+                    self._doc_type,
+                    self._customer_id,
+                    content,
+                    metadata,
+                )
+        except Exception as exc:
+            if self._agent_name == "jep":
+                await asyncio.to_thread(_restore_jep_pointers, self._store, jep_pointer_snapshot)
+            return ToolResult(
+                summary=f"{self._agent_name.upper()} persistence failed: {exc}",
+                status="blocked",
+                data={**response, "persistence_stage": "markdown"},
             )
         response["result_length"] = len(content)
         if self._agent_name == "pov":
@@ -397,20 +437,25 @@ class _SpecialistHandler:
             import agent.jep_lifecycle as jep_lifecycle
 
             try:
-                docx_bytes = render_jep_docx(content, customer_name=self._customer_name)
+                assert jep_docx_bytes is not None
                 docx = await asyncio.to_thread(
                     document_store.save_jep_docx,
                     self._store,
                     self._customer_id,
                     int(saved.get("version") or 1),
-                    docx_bytes,
+                    jep_docx_bytes,
                     {"customer_name": self._customer_name, "source": "jep_specialist"},
                 )
             except Exception as exc:
+                await asyncio.to_thread(
+                    _restore_jep_pointers,
+                    self._store,
+                    jep_pointer_snapshot,
+                )
                 return ToolResult(
-                    summary=f"JEP Word document rendering failed: {exc}",
+                    summary=f"JEP persistence failed: {exc}",
                     status="blocked",
-                    data=response,
+                    data={**response, "persistence_stage": "docx"},
                 )
 
             jep_state = await asyncio.to_thread(
@@ -507,6 +552,47 @@ class JepHandler(_SpecialistHandler):
 class WafHandler(_SpecialistHandler):
     def __init__(self, store, customer_id, customer_name):
         super().__init__("waf", "waf", store, customer_id, customer_name)
+
+
+def _snapshot_jep_pointers(store: Any, customer_id: str) -> dict[str, bytes | None]:
+    """Capture canonical JEP pointers so a multi-artifact save can roll back."""
+    if not all(hasattr(store, method) for method in ("head", "get", "put")):
+        return {}
+    keys = (
+        f"jep/{customer_id}/LATEST.md",
+        f"customers/{customer_id}/jep/LATEST.md",
+        f"jep/{customer_id}/LATEST.docx",
+        f"customers/{customer_id}/jep/LATEST.docx",
+        f"jep/{customer_id}/MANIFEST.json",
+        f"customers/{customer_id}/jep/MANIFEST.json",
+    )
+    snapshot: dict[str, bytes | None] = {}
+    for key in keys:
+        try:
+            snapshot[key] = store.get(key) if store.head(key) else None
+        except Exception:
+            snapshot[key] = None
+    return snapshot
+
+
+def _restore_jep_pointers(store: Any, snapshot: dict[str, bytes | None]) -> None:
+    """Best-effort rollback; versioned orphan objects are never exposed as latest."""
+    for key, previous in snapshot.items():
+        try:
+            if previous is None:
+                if hasattr(store, "delete"):
+                    store.delete(key)
+                continue
+            content_type = (
+                document_store.JEP_DOCX_CONTENT_TYPE
+                if key.endswith(".docx")
+                else "application/json" if key.endswith(".json") else "text/markdown"
+            )
+            store.put(key, previous, content_type)
+        except Exception:
+            # Preserve the original persistence error for the caller. A failed
+            # rollback cannot safely advance lifecycle state.
+            continue
 
 
 class TechResearchHandler(_SpecialistHandler):
@@ -762,18 +848,39 @@ class PocStrategistHandler:
             if not poc_options:
                 clarification = "No POC options in memory yet. Call generate_poc_plan with action='explore' first."
                 return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
-            # Match by name, fall back to first option
-            matched = next(
-                (o for o in poc_options if str(o.get("option_name", "")).lower() == confirmed_option_name.lower()),
-                poc_options[0],
+            confirmation_index = _poc_confirmation_index(
+                " ".join(part for part in (confirmed_option_name, user_message) if part)
             )
-            return self._build_fanout_result(matched, memory)
+            matched = (
+                poc_options[confirmation_index]
+                if confirmation_index is not None and confirmation_index < len(poc_options)
+                else None
+            )
+            matched = matched or next(
+                (
+                    option
+                    for option in poc_options
+                    if confirmed_option_name
+                    and str(option.get("option_name", "")).casefold()
+                    == confirmed_option_name.casefold()
+                ),
+                None,
+            )
+            if matched is None:
+                names = ", ".join(str(option.get("option_name") or "") for option in poc_options)
+                clarification = f"Select one of the grounded POC options by its exact name: {names}."
+                return ToolResult(
+                    status="needs_input",
+                    summary=clarification,
+                    clarification=clarification,
+                )
+            return self._save_selection_result(matched, context)
 
         # Legacy: confirmation detected from _user_message (fallback for non-action calls)
         if action != "explore":
             confirmed_option = _detect_poc_confirmation(user_message, memory)
             if confirmed_option is not None:
-                return self._build_fanout_result(confirmed_option, memory)
+                return self._save_selection_result(confirmed_option, context)
             if _poc_confirmation_index(user_message) is not None and not _poc_options_from_memory(memory):
                 clarification = "No POC options yet. Call generate_poc_plan with action='explore' first."
                 return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
@@ -792,7 +899,46 @@ class PocStrategistHandler:
             clarification = "NEEDS_CLARIFICATION: What is the customer's primary pain?"
             return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
 
-        grounded_options = _grounded_poc_options(self._customer_name)
+        brief = poc_composer.build_poc_brief(
+            customer_name=self._customer_name,
+            user_message=user_message or pain,
+            decision_context=decision_context,
+        )
+        if brief is None:
+            clarification = (
+                "I need the grounded workload, pain, OCI region, in-scope services, POC duration, "
+                "owner commitment, and at least one measurable success criterion before creating POC options."
+            )
+            return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
+
+        grounded_options = poc_composer.compose_grounded_options(brief)
+        polish_status = "deterministic"
+        try:
+            polish_response = await sub_agent_client.call_sub_agent(
+                "poc_strategist",
+                task=json.dumps(
+                    {
+                        "customer": self._customer_name,
+                        "options": grounded_options,
+                    },
+                    sort_keys=True,
+                ),
+                engagement_context={
+                    "mode": "polish_options",
+                    "customer_id": self._customer_id,
+                },
+                trace_id=trace_id,
+            )
+            polished_raw = polish_response.get("result")
+            polished_payload = json.loads(polished_raw) if isinstance(polished_raw, str) else polished_raw
+            grounded_options, polish_status = poc_composer.apply_presentation_polish(
+                grounded_options,
+                polished_payload,
+                brief=brief,
+            )
+        except Exception as exc:
+            polish_status = f"fallback_error:{type(exc).__name__}"
+
         if grounded_options:
             recommendation = grounded_options[0]
             recommended_name = str(recommendation["option_name"])
@@ -816,7 +962,12 @@ class PocStrategistHandler:
                 "poc_plan",
                 self._customer_id,
                 json.dumps(payload, indent=2),
-                {"trace_id": trace_id, "generation_mode": "deterministic_grounded_options"},
+                {
+                    "trace_id": trace_id,
+                    "generation_mode": "grounded_hybrid_options",
+                    "polish_status": polish_status,
+                },
+                trace_id,
             )
             from agent import context_store as _cs
 
@@ -829,6 +980,9 @@ class PocStrategistHandler:
                 "build_hours": hours,
                 "relevance_score": relevance,
                 "options": grounded_options,
+                "artifact_key": str(saved.get("key", "") or ""),
+                "generation_mode": "grounded_hybrid_options",
+                "polish_status": polish_status,
             })
             return ToolResult(
                 status="ok",
@@ -838,220 +992,31 @@ class PocStrategistHandler:
                     f"the authoritative {self._customer_name} fact sheet",
                 ),
                 artifact_key=str(saved.get("key", "") or ""),
-                data={**payload, "generation_mode": "deterministic_grounded_options"},
+                data={
+                    **payload,
+                    "generation_mode": "grounded_hybrid_options",
+                    "polish_status": polish_status,
+                },
             )
 
-        customer_context = {
-            "customer_id": self._customer_id,
-            "customer_name": self._customer_name,
-            "pain_statement": pain,
-            "current_platform": platform,
-            "decision_context": decision_context,
-        }
-        base_task = (
-            f"Customer: {self._customer_name}\n"
-            f"Context: {user_message}\n\n"
-            f"Decision context:\n{json.dumps(decision_context, indent=2, sort_keys=True)}"
-        )
-        angles = [
-            "migration_modernization",
-            "performance_scale_ai",
-            "cost_optimization_tco",
-        ]
+        return ToolResult(status="blocked", summary="Unable to compose grounded POC options.")
 
-        async def _call_angle(angle: str, delay: float) -> tuple[str, Any]:
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                response = await sub_agent_client.call_sub_agent(
-                    "poc_strategist",
-                    task=base_task,
-                    engagement_context={
-                        "angle": angle,
-                        "customer_id": self._customer_id,
-                        "customer_context": customer_context,
-                    },
-                    trace_id=trace_id,
-                )
-                return angle, response
-            except Exception as exc:
-                return angle, exc
-
-        results = await asyncio.gather(
-            *[_call_angle(angle, delay) for angle, delay in zip(angles, [0, 1.5, 3.0])],
-        )
-
-        options: list[dict[str, Any]] = []
-        failures: list[str] = []
-        for angle, response in results:
-            if isinstance(response, Exception):
-                failures.append(f"{angle}: {response}")
-                continue
-            if str(response.get("status") or "").lower() != "ok":
-                failures.append(f"{angle}: status={response.get('status')}")
-                continue
-            raw = str(response.get("result") or "")
-            try:
-                option = json.loads(raw)
-            except json.JSONDecodeError:
-                # Fallback: extract first {...} block in case the LLM added preamble
-                m = re.search(r'\{.*\}', raw, re.DOTALL)
-                if m:
-                    try:
-                        option = json.loads(m.group(0))
-                    except json.JSONDecodeError as exc2:
-                        failures.append(f"{angle}: invalid_json={exc2}")
-                        continue
-                else:
-                    failures.append(f"{angle}: no_json_found in result")
-                    continue
-            if isinstance(option, dict):
-                option.setdefault("angle", angle)
-                options.append(option)
-
-        if not options:
-            return ToolResult(
-                status="blocked",
-                summary="All 3 POC exploration angles failed.",
-                data={"failures": failures},
-            )
-
-        options.sort(key=_poc_option_score, reverse=True)
-        recommendation = options[0]
-        recommended_name = str(recommendation.get("option_name") or "recommended POC")
-        relevance = recommendation.get("relevance_score", 0)
-        hours = recommendation.get("executability_hours", 0)
-        payload = {
-            "poc_options": options,
-            "recommendation": {
-                "poc_name": recommended_name,
-                "rationale": (
-                    f"Best fit for the stated pain '{pain}': highest relevance "
-                    f"({relevance}/10) with {hours}h build time."
-                ),
-                "build_sequence": [],
-                "success_criteria": str(recommendation.get("wow_moment") or ""),
-            },
-        }
-
-        saved = await asyncio.to_thread(
-            _save_json_doc,
-            self._store,
-            "poc_plan",
-            self._customer_id,
-            json.dumps(payload, indent=2),
-            {"trace_id": trace_id, "failures": failures},
-        )
-
-        from agent import context_store as _cs
-        latest = context.setdefault("latest_decision_context", {})
-        latest["poc_options"] = options
-        latest["poc_recommendation"] = dict(payload["recommendation"])
-        _cs.set_resolved_decisions(context, poc={
-            "recommended_option": recommended_name,
-            "success_criteria": str(recommendation.get("wow_moment") or ""),
-            "build_hours": hours,
-            "relevance_score": relevance,
-            "options": options,
-        })
-
-        return ToolResult(
-            status="ok",
-            summary=_format_poc_options_summary(options, recommended_name, pain),
-            artifact_key=str(saved.get("key", "") or ""),
-            data=payload,
-        )
-
-    def _build_fanout_result(
+    def _save_selection_result(
         self,
         option: dict[str, Any],
-        memory: MemorySnapshot | None,
+        context: dict[str, Any],
     ) -> ToolResult:
         poc_name = str(option.get("option_name") or "POC")
-        services = [
-            str(service)
-            for service in option.get("oci_services", [])
-            if str(service).strip()
-        ]
-        service_text = ", ".join(services)
-        dc = memory.decision_context if memory else {}
-        region = str(dc.get("region") or "us-chicago-1")
-        build_sequence = option.get("build_sequence", [])
-        demo_summary = str(option.get("demo_script_summary") or "")
-        wow_moment = str(option.get("wow_moment") or "")
-        base = (
-            f"POC: {poc_name}. "
-            f"Services: {service_text or 'use the confirmed POC option services'}. "
-            f"Demo: {demo_summary or wow_moment}"
-        ).strip()
-        diagram_request = f"Create OCI architecture diagram for: {base}"
-        jep_request = (
-            f"Create JEP execution plan for POC: {poc_name}. "
-            f"Build sequence: {build_sequence}. Success criteria: {wow_moment}"
-        )
-        if poc_name.startswith("Apex Retail "):
-            diagram_request = (
-                "Generate a draw.io architecture diagram for Apex Retail in us-ashburn-1: "
-                "Internet to OCI WAF to a public Flexible Load Balancer, then two "
-                "VM.Standard.E5.Flex web servers in a private application subnet, then a private "
-                "PostgreSQL database subnet. Include a VCN, Internet Gateway, NAT Gateway, Service "
-                "Gateway, Object Storage, 500 GB Block Volume, NSGs, route tables, and a single-AD POC boundary."
-            )
-            jep_request = (
-                "Create a 14-day JEP and POC plan for Apex Retail to validate migration of an "
-                "on-premises three-tier retail web application to OCI us-ashburn-1. Scope: WAF, "
-                "public Flexible Load Balancer, two private VM.Standard.E5.Flex web servers, private "
-                "PostgreSQL database, Object Storage, Block Volume, logging, and monitoring. Use exactly "
-                "three phases: Phase 1 Assessment on days 1-3, Phase 2 Build on days 4-9, and Phase 3 "
-                "Validate on days 10-14. Success criteria: 99.9% availability during a 48-hour soak test, "
-                "p95 response time under 500 milliseconds at 100 requests per second, and database restore "
-                "within 60 minutes. Oracle SA and Apex Retail technical lead each commit 8 hours per week. "
-                "Include at least three risks, a go/no-go sign-off with fallback, explicit out-of-scope "
-                "items, a BOM section, timeline, owners, approvals, and handoff deliverables. Generate only "
-                "the JEP artifact; do not generate a separate BOM workbook."
-            )
-
+        archie = context_store.get_archie_state(context)
+        resolved = dict(archie.get("resolved_decisions", {}) or {})
+        poc = dict(resolved.get("poc", {}) or {})
+        poc["selected_option"] = dict(option)
+        poc["selected_option_name"] = poc_name
+        context_store.set_resolved_decisions(context, poc=poc)
         return ToolResult(
-            status="parallel",
-            summary=f"POC confirmed: {poc_name}. Generating all artifacts in parallel...",
-            parallel_tools=[
-                ParallelToolCall(
-                    tool="generate_diagram",
-                    args={
-                        "diagram_name": _slugify_poc_name(poc_name),
-                        "prompt": diagram_request,
-                        "_user_message": diagram_request,
-                    },
-                ),
-                ParallelToolCall(
-                    tool="generate_bom",
-                    args={
-                        "prompt": f"Generate BOM for POC: {base}. Region: {region}",
-                        "_user_message": f"Generate BOM for POC: {base}. Region: {region}",
-                    },
-                ),
-                ParallelToolCall(
-                    tool="generate_jep",
-                    args={
-                        "feedback": jep_request,
-                        "_user_message": jep_request,
-                    },
-                ),
-                ParallelToolCall(
-                    tool="generate_terraform",
-                    args={
-                        "prompt": f"Generate Terraform for: {base}. Region: {region}",
-                        "_user_message": f"Generate Terraform for: {base}. Region: {region}",
-                    },
-                ),
-                ParallelToolCall(
-                    tool="generate_presentation",
-                    args={
-                        "_user_message": f"Create client PowerPoint deck for POC: {base}",
-                        "poc_option": option,
-                    },
-                ),
-            ],
+            status="ok",
+            summary=f"POC confirmed: {poc_name}. Downstream artifacts will be generated only when requested.",
+            data={"selected_option": dict(option), "selected_option_name": poc_name},
         )
 
 
@@ -1190,6 +1155,19 @@ def _jep_artifact_context(context: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(agents, dict):
         return {}
     artifacts: dict[str, Any] = {}
+    archie = context_store.get_archie_state(context) if isinstance(context, dict) else {}
+    resolved = archie.get("resolved_decisions", {}) if isinstance(archie, dict) else {}
+    poc = resolved.get("poc", {}) if isinstance(resolved, dict) else {}
+    if isinstance(poc, dict):
+        selected = poc.get("selected_option") if isinstance(poc.get("selected_option"), dict) else {}
+        if selected:
+            artifacts["poc"] = {
+                "selected_option_name": str(poc.get("selected_option_name") or selected.get("option_name") or ""),
+                "artifact_key": str(poc.get("artifact_key") or ""),
+                "oci_services": list(selected.get("oci_services", []) or []),
+                "success_criteria": str(selected.get("wow_moment") or ""),
+                "grounding": dict(selected.get("grounding", {}) or {}),
+            }
     diagram = agents.get("diagram", {}) if isinstance(agents.get("diagram"), dict) else {}
     if diagram:
         artifacts["diagram"] = {
@@ -1220,6 +1198,15 @@ def _jep_artifact_context(context: dict[str, Any]) -> dict[str, Any]:
             )
             if bom.get(key) not in (None, "", [], {})
         }
+    latest_bom = context_store.latest_bom_work_product(context) if isinstance(context, dict) else None
+    if isinstance(latest_bom, dict) and isinstance(latest_bom.get("xlsx"), dict):
+        artifacts.setdefault("bom", {})
+        artifacts["bom"].update({
+            "version": latest_bom.get("version"),
+            "xlsx_artifact_key": latest_bom["xlsx"].get("key"),
+            "xlsx_filename": latest_bom["xlsx"].get("filename"),
+            "baseline": latest_bom.get("baseline", {}),
+        })
     pov = agents.get("pov", {}) if isinstance(agents.get("pov"), dict) else {}
     if pov:
         artifacts["pov"] = {
@@ -1338,59 +1325,6 @@ async def _retry_document_after_review_failure(
     return merged_response, repaired_content, repair_findings
 
 
-async def _retry_jep_after_review_failure(
-    *,
-    task: str,
-    engagement_context: dict[str, Any],
-    trace_id: str,
-    initial_response: dict[str, Any],
-    initial_content: str,
-    initial_findings: list[str],
-) -> tuple[dict[str, Any], str, list[str]]:
-    """Preserve the legacy JEP repair contract used by archie_session."""
-    repair_task = _build_document_repair_task(
-        agent_name="jep",
-        original_task=task,
-        invalid_content=initial_content,
-        findings=initial_findings,
-    )
-    repair_context = {
-        **dict(engagement_context or {}),
-        "repair_mode": "c3e_jep_review_retry",
-        "review_findings": list(initial_findings),
-    }
-    repair_response = await sub_agent_client.call_sub_agent(
-        "jep",
-        task=repair_task,
-        engagement_context=repair_context,
-        trace_id=f"{trace_id}:jep-review-retry",
-    )
-    repaired_content = str(repair_response.get("result") or "")
-    if str(repair_response.get("status") or "").lower() == "needs_input":
-        return (
-            {
-                **dict(repair_response),
-                "initial_review_findings": list(initial_findings),
-                "repair_attempted": True,
-            },
-            repaired_content,
-            [],
-        )
-
-    repair_findings = _jep_writer_review_findings(repaired_content)
-    merged_response = {
-        **dict(repair_response),
-        "initial_review_findings": list(initial_findings),
-        "repair_attempted": True,
-        "repair_review_findings": list(repair_findings),
-        "repair_trace": {
-            "initial_trace": dict(initial_response.get("trace", {}) or {}),
-            "repair_trace": dict(repair_response.get("trace", {}) or {}),
-        },
-    }
-    return merged_response, repaired_content, repair_findings
-
-
 def _build_document_repair_task(
     *,
     agent_name: str,
@@ -1398,17 +1332,11 @@ def _build_document_repair_task(
     invalid_content: str,
     findings: list[str],
 ) -> str:
+    if agent_name == "jep":
+        raise ValueError("JEP repair accepts structured grounded fields only")
     findings_text = "\n".join(f"- {finding}" for finding in findings)
     label = agent_name.upper()
-    structure = (
-        "The corrected document must include exactly these substantive sections: Executive Summary, "
-        "Objectives, Scope, POC Architecture, Phased Execution Plan, Success Criteria, Resource Plan, "
-        "Risk Registry, and Approvals. Include Phase 1 Assessment, Phase 2 Build, and Phase 3 Validate; "
-        "at least 3 numeric SMART success criteria; at least 3 risks; and Phase 3 go/no-go sign-off "
-        "with fallback.\n\n"
-        if agent_name == "jep"
-        else "Preserve the requested POV purpose and headings; change only the listed invalid content.\n\n"
-    )
+    structure = "Preserve the requested POV purpose and headings; change only the listed invalid content.\n\n"
     return (
         f"{str(original_task or '').strip()}\n\n"
         f"[{label} REVIEW REPAIR]\n"
@@ -1560,7 +1488,22 @@ async def _latest_jep_revision_context(
     store: ObjectStoreBase,
     customer_id: str,
 ) -> dict[str, Any]:
-    return await _latest_document_revision_context(store, customer_id, "jep")
+    try:
+        approved = await asyncio.to_thread(
+            document_store.get_approved_doc,
+            store,
+            "jep",
+            customer_id,
+        )
+    except Exception:
+        return {}
+    if not approved:
+        return {}
+    return {
+        "prior_version": approved,
+        "prior_version_key": f"approved/{customer_id}/jep.md",
+        "prior_version_approved": True,
+    }
 
 
 async def _latest_document_revision_context(
@@ -1638,7 +1581,7 @@ def _document_review_findings(agent_name: str, content: str, user_message: str) 
         findings.append("unsupported SLA claim")
 
     allowed_measurements = {
-        (match.group(1), match.group(2).lower())
+        _canonical_measurement(match.group(1), match.group(2))
         for match in re.finditer(
             r"\b(\d+(?:\.\d+)?)\s*(ocpus?|gb|tb|mbps|rps|requests?\s+per\s+second)\b",
             request,
@@ -1651,7 +1594,7 @@ def _document_review_findings(agent_name: str, content: str, user_message: str) 
         text,
         flags=re.IGNORECASE,
     ):
-        measurement = (match.group(1), match.group(2).lower())
+        measurement = _canonical_measurement(match.group(1), match.group(2))
         if measurement not in allowed_measurements:
             unsupported_measurements.add(match.group(0))
     if unsupported_measurements:
@@ -1660,6 +1603,13 @@ def _document_review_findings(agent_name: str, content: str, user_message: str) 
             + ", ".join(sorted(unsupported_measurements)[:8])
         )
     return list(dict.fromkeys(findings))
+
+
+def _canonical_measurement(value: str, unit: str) -> tuple[str, str]:
+    normalized_unit = re.sub(r"\s+", " ", str(unit or "").strip().lower())
+    if normalized_unit == "rps" or "request" in normalized_unit:
+        normalized_unit = "rps"
+    return str(value), normalized_unit
 
 
 def _jep_writer_review_findings(content: str) -> list[str]:
@@ -1965,7 +1915,25 @@ def _save_json_doc(
     customer_id: str,
     content: str,
     metadata: dict[str, Any],
+    idempotency_key: str = "",
 ) -> dict[str, Any]:
+    manifest_key = document_store._doc_key(doc_type, customer_id, "MANIFEST.json", customer_first=False)
+    manifest_customer_key = document_store._doc_key(doc_type, customer_id, "MANIFEST.json", customer_first=True)
+    manifest = document_store._get_first_json(
+        store,
+        [manifest_customer_key, manifest_key],
+        {"versions": []},
+    )
+    if idempotency_key:
+        for item in reversed(manifest.get("versions", []) or []):
+            item_metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
+            if str(item_metadata.get("trace_id") or "") == idempotency_key:
+                version = int(item.get("version") or 1)
+                return {
+                    "version": version,
+                    "key": str(item.get("key") or document_store._doc_key(doc_type, customer_id, f"v{version}.json", customer_first=False)),
+                    "latest_key": document_store._doc_key(doc_type, customer_id, "LATEST.json", customer_first=False),
+                }
     version = document_store._get_next_version(store, doc_type, customer_id)
     try:
         parsed = json.loads(content)
@@ -1978,8 +1946,6 @@ def _save_json_doc(
     version_customer_key = document_store._doc_key(doc_type, customer_id, f"v{version}.json", customer_first=True)
     latest_key = document_store._doc_key(doc_type, customer_id, "LATEST.json", customer_first=False)
     latest_customer_key = document_store._doc_key(doc_type, customer_id, "LATEST.json", customer_first=True)
-    manifest_key = document_store._doc_key(doc_type, customer_id, "MANIFEST.json", customer_first=False)
-    manifest_customer_key = document_store._doc_key(doc_type, customer_id, "MANIFEST.json", customer_first=True)
 
     document_store._put_dual(
         store,
@@ -1996,11 +1962,6 @@ def _save_json_doc(
         content_type="application/json",
     )
 
-    manifest = document_store._get_first_json(
-        store,
-        [manifest_customer_key, manifest_key],
-        {"versions": []},
-    )
     manifest["versions"].append({
         "version": version,
         "key": version_key,

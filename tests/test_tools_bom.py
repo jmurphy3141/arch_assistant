@@ -102,8 +102,7 @@ async def test_bom_ok(monkeypatch):
 
     assert result.status == "ok"
     assert result.data["bom_payload"]["line_items"][0]["sku"] == "B12345"
-    latest = context_store.latest_bom_work_product(context)
-    assert latest["baseline"]["line_items"][0]["sku"] == "B12345"
+    assert context_store.latest_bom_work_product(context) is None
 
 
 async def test_bom_injects_confirmed_context_before_scoped_correction(monkeypatch):
@@ -231,6 +230,47 @@ async def test_bom_accepts_correct_line_item_arithmetic(monkeypatch):
     )
 
     assert result.status == "ok"
+
+
+async def test_bom_repairs_explicit_aggregate_sizing_before_success(monkeypatch):
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        rows = [
+            {"sku": "B97384", "description": "E5 OCPU", "metric": "OCPU Per Hour", "quantity": 4, "unit_price": 0.03, "instance_count": 1},
+            {"sku": "B97385", "description": "E5 Memory", "metric": "Gigabytes Per Hour", "quantity": 32, "unit_price": 0.002, "instance_count": 1},
+            {"sku": "B91961", "description": "Block Storage", "metric": "GB Per Month", "quantity": 2048, "unit_price": 0.0255},
+            {"sku": "B91628", "description": "Object Storage", "metric": "GB Per Month", "quantity": 5120, "unit_price": 0.0255},
+        ]
+        monthly = sum(row["quantity"] * row["unit_price"] * (730 if row["sku"] in {"B97384", "B97385"} else 1) for row in rows)
+        return {
+            "status": "ok",
+            "result": json.dumps({
+                "bom_payload": {
+                    "region": "us-phoenix-1",
+                    "line_items": rows,
+                    "monthly_total": monthly,
+                }
+            }),
+        }
+
+    monkeypatch.setattr(bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent)
+    request = (
+        "Create a BOM in us-phoenix-1 for three private VM.Standard.E5.Flex application "
+        "servers at 4 OCPUs and 32 GB RAM each, 2 TB Block Volume, and 5 TB Object Storage."
+    )
+    result = await make_handler()(
+        {"prompt": request, "_user_message": request},
+        memory=make_memory(), context={}, trace_id="trace-mismatch",
+    )
+
+    assert result.status == "ok"
+    assert result.data["structured_inputs"]["memory"]["gb"] == 96
+    assert result.data["sizing_repair"] == "deterministic_explicit_fields"
+    assert result.data["bom_payload"]["region"] == "us-phoenix-1"
+    by_sku = {row["sku"]: row for row in result.data["bom_payload"]["line_items"]}
+    assert by_sku["B97384"]["quantity"] == 12
+    assert by_sku["B97385"]["quantity"] == 96
+    assert by_sku["B97384"]["instance_count"] == 3
+    assert by_sku["B97385"]["instance_count"] == 3
 
 
 async def test_bom_accepts_valid_payload_before_xlsx_artifact_is_persisted(monkeypatch):

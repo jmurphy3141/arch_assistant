@@ -48,9 +48,9 @@ not.
 pain. Do not inflate. A migration option for a customer who has already
 migrated their DB scores low — say so.
 
-**Cost defensibility.** `cost_effectiveness` must reference specific OCI pricing
-levers: BYOL if applicable, committed vs. on-demand pricing, OCPU-hour estimates
-for the POC window. "Competitive pricing" is not a cost assessment.
+**Cost grounding.** Never invent prices, savings, discounts, or TCO outcomes.
+Only repeat a cost value when it is present in the supplied customer context.
+Otherwise state that cost must be measured against the confirmed constraint.
 
 **Security highlights are OCI controls.** Name specific services: OCI IAM,
 OCI Vault KMS, OCI Cloud Guard, OCI Security Zones, OCI WAF, NSGs, private
@@ -67,18 +67,13 @@ automated DB upgrade with performance comparison. Anchor the build plan on
 Oracle Database Migration Service or Zero Downtime Migration (ZDM).
 
 **performance_scale_ai:**
-Prove performance headroom, autoscaling, analytics throughput, AI inference
-capability, or data platform value. Ideal wow moment: live load test hitting
-autoscaling threshold, or AI inference benchmark vs. customer's on-premises
-GPU. Name the specific compute shape (A100 bare metal, BM.GPU4.8) and the OCI
-service (OCI Generative AI, OCI Data Science).
+Prove only the performance or scale capability explicitly present in customer
+scope. Do not introduce AI/ML, autoscaling, GPUs, or analytics services unless
+the supplied context already includes them.
 
 **cost_optimization_tco:**
-Prove spend reduction, BYOL licensing value, operational efficiency, or TCO
-improvement. Ideal wow moment: live cost comparison using OCI Cost Estimator
-with customer's actual SKUs, or BYOL recalculation showing Oracle License
-mobility savings. Anchor on Universal Credits committed use discount and
-annual savings estimate vs. current provider.
+Define how the team will measure the customer's stated cost constraint. Never
+invent a price, discount, savings percentage, or annual estimate.
 
 ---
 

@@ -67,6 +67,24 @@ def test_extract_missing_fields_with_tbd_override() -> None:
     assert "success_criteria" not in missing
 
 
+def test_extract_missing_fields_recognizes_hyphenated_duration_and_day_ranges() -> None:
+    content = """# JEP
+
+## Scope
+In scope: application validation. Out of scope: production cutover.
+
+## Phased Execution Plan
+This is a 14-day POC. Phase 1 uses Days 1-3, Phase 2 uses Days 4-9, and Phase 3 uses Days 10-14.
+
+## Success Criteria
+Metric: under 500 milliseconds.
+
+## Resource Plan
+Owner: Oracle and customer teams.
+"""
+    assert "duration" not in jep_lifecycle.extract_missing_fields(content)
+
+
 def test_jep_api_lock_and_revision_flow(monkeypatch) -> None:
     store = InMemoryObjectStore()
     srv.app.state.object_store = store

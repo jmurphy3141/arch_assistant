@@ -119,6 +119,20 @@ class OciObjectStore(ObjectStoreBase):
         logger.info("OCI get  ok key=%s size=%d", key, len(data))
         return data
 
+    def delete(self, key: str) -> None:
+        """Delete *key*; a missing object is already the desired state."""
+        import oci  # type: ignore
+
+        try:
+            self._client.delete_object(
+                namespace_name=self._namespace,
+                bucket_name=self._bucket_name,
+                object_name=key,
+            )
+        except oci.exceptions.ServiceError as exc:
+            if exc.status != 404:
+                raise
+
     def head(self, key: str) -> bool:
         """Return True if *key* exists, False if 404."""
         import oci  # type: ignore

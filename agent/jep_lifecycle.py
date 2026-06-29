@@ -133,7 +133,10 @@ def extract_missing_fields(content: str, qa_answers: dict[str, Any] | None = Non
     duration_present, duration_tbd = _field_present(
         doc,
         (r"\bduration\b", r"\btimeline\b", r"\bphase\b"),
-        (r"\b\d+\s*(day|days|week|weeks|month|months)\b",),
+        (
+            r"\b\d+\s*[- ]\s*(day|days|week|weeks|month|months)\b",
+            r"\b(days?|weeks?)\s+\d+\s*(?:-|–|to)\s*\d+\b",
+        ),
     )
     if (not duration_present or duration_tbd) and not _has_non_tbd_answer(answers, ("duration", "timeline", "week", "day")):
         missing.append("duration")

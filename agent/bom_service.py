@@ -860,9 +860,7 @@ class BomService:
         table_signals = self._extract_table_signals(user_text)
 
         # Detect instance count ("2 servers", "3 nodes", etc.) from user text only.
-        _server_count = max(1, int(self._extract_number(
-            r"(\d+)\s*(?:server|instance|vm|node|host)s?\b", user_text, default=1.0
-        )))
+        _server_count = self._extract_server_count(user_text)
 
         ocpu = float(table_signals.get("ocpu") or 0.0)
         if ocpu <= 0:
@@ -922,13 +920,7 @@ class BomService:
         block_notes = str(table_signals.get("block_notes") or "Block storage capacity")
 
         # Detect "N servers/instances/nodes" and multiply per-server sizing
-        _server_count = max(1, int(
-            self._extract_number(
-                r"(\d+)\s*(?:server|instance|vm|node)s?\b",
-                user_text,
-                default=1.0,
-            )
-        ))
+        _server_count = self._extract_server_count(user_text)
         if _server_count > 1:
             _per_ocpu = ocpu
             _per_mem  = mem_gb
@@ -1040,6 +1032,7 @@ class BomService:
 
         return {
             "currency": "USD",
+            "region": self._extract_region(user_text),
             "line_items": line_items,
             "assumptions": assumptions,
             "_shape_catalog": shape_catalog,
@@ -1054,6 +1047,31 @@ class BomService:
             return float(match.group(1))
         except Exception:
             return default
+
+    @staticmethod
+    def _extract_server_count(text: str) -> int:
+        descriptor = r"(?:(?:vm\.[a-z0-9_.-]+|compute|application|app|web|worker|database)\s+){0,4}"
+        match = re.search(
+            rf"\b(\d+)\s+(?:private\s+|public\s+)?{descriptor}(?:server|instance|vm|node|host)s?\b",
+            text,
+        )
+        if match:
+            return max(1, int(match.group(1)))
+        word_values = {
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        }
+        word_match = re.search(
+            r"\b(one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+            rf"(?:private\s+|public\s+)?{descriptor}(?:server|instance|vm|node|host)s?\b",
+            text,
+        )
+        return word_values.get(word_match.group(1), 1) if word_match else 1
+
+    @staticmethod
+    def _extract_region(text: str) -> str:
+        match = re.search(r"\b[a-z]{2,}-[a-z]+-\d+\b", text, re.IGNORECASE)
+        return match.group(0) if match else ""
 
     @staticmethod
     def _build_line(

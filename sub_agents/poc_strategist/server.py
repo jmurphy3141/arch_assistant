@@ -104,6 +104,16 @@ card = AgentCard(
 
 def _build_prompt(req: A2ARequest) -> str:
     context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
+    if str(context.get("mode") or "") == "polish_options":
+        return (
+            f"{req.task}\n\n"
+            "PRESENTATION-ONLY POLISH. Return one JSON object shaped as "
+            '{"options":[{"option_name":"...","demo_script_summary":"..."}]}. '
+            "Return exactly one entry for each supplied option in the same order. "
+            "You may improve only option_name and demo_script_summary. Do not add or change "
+            "services, numbers, prices, savings, targets, outcomes, scope, owners, dates, or evidence. "
+            "Do not claim that a target has been achieved. Output JSON only."
+        )
     angle = str(context.get("angle") or "").strip()
     customer_context = context.get("customer_context")
     parts = [req.task]

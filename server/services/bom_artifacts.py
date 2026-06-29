@@ -12,7 +12,7 @@ from typing import Any, Callable
 import anyio
 from fastapi import HTTPException
 
-from agent.context_store import attach_bom_xlsx_to_latest, read_context, record_agent_run, write_context
+from agent.context_store import read_context, record_agent_run, record_bom_work_product, write_context
 
 
 BOM_XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -259,15 +259,20 @@ def structured_bom_result_uses_default_sizing(result_data: dict) -> bool:
     required = {
         "ocpu": positive_float(compute.get("ocpu")),
         "ram_gb": positive_float(memory.get("gb")),
-        "storage_gb": (positive_float(storage.get("block_tb")) or 0.0) * 1024.0
-        if positive_float(storage.get("block_tb"))
-        else None,
+        "storage_gb": positive_float(storage.get("block_gb"))
+        or ((positive_float(storage.get("block_tb")) or 0.0) * 1024.0 if positive_float(storage.get("block_tb")) else None),
+        "object_storage_gb": positive_float(storage.get("object_gb"))
+        or ((positive_float(storage.get("object_tb")) or 0.0) * 1024.0 if positive_float(storage.get("object_tb")) else None),
     }
     for key, value in required.items():
         if value is None:
             continue
-        if float(produced.get(key, 0.0) or 0.0) + 0.0001 < value:
+        if abs(float(produced.get(key, 0.0) or 0.0) - value) > 0.0001:
             return True
+    required_region = str(structured.get("region") or "")
+    payload = result_data.get("bom_payload") if isinstance(result_data.get("bom_payload"), dict) else {}
+    if required_region and str(payload.get("region") or "").casefold() != required_region.casefold():
+        return True
     return False
 
 
@@ -287,7 +292,12 @@ def positive_float(value: Any) -> float | None:
 def bom_payload_sizing(payload: dict) -> dict[str, float]:
     cpu_skus = {"B93113", "B97384", "B111129", "B94176", "B93297"}
     mem_skus = {"B93114", "B97385", "B111130", "B94177", "B93298"}
-    produced = {"ocpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0}
+    produced = {
+        "ocpu": 0.0,
+        "ram_gb": 0.0,
+        "storage_gb": 0.0,
+        "object_storage_gb": 0.0,
+    }
     for row in payload.get("line_items", []) or []:
         if not isinstance(row, dict):
             continue
@@ -299,8 +309,13 @@ def bom_payload_sizing(payload: dict) -> dict[str, float]:
             produced["ocpu"] += qty
         elif sku in mem_skus or ("memory" in desc and category == "compute"):
             produced["ram_gb"] += qty
-        elif category == "storage" or "storage" in desc or "volume" in desc:
+        elif sku == "B91961" or (
+            "performance" not in desc
+            and ("block volume" in desc or "block storage" in desc)
+        ):
             produced["storage_gb"] += qty
+        elif sku == "B91628" or "object storage" in desc:
+            produced["object_storage_gb"] += qty
     return produced
 
 
@@ -397,12 +412,21 @@ async def persist_bom_xlsx_downloads(
         filename = f"oci-bom-{time.strftime('%Y%m%d-%H%M%S')}-{index + 1}-{uuid.uuid4().hex[:8]}.xlsx"
         key = bom_xlsx_key(customer_id, filename)
         metadata = bom_xlsx_metadata(filename, key, result_data)
-        store.put(key, workbook_bytes, BOM_XLSX_CONTENT_TYPE)
-        store.put(
-            bom_xlsx_metadata_key(key),
-            json.dumps(metadata, sort_keys=True).encode("utf-8"),
-            "application/json",
-        )
+        metadata_key = bom_xlsx_metadata_key(key)
+        try:
+            store.put(key, workbook_bytes, BOM_XLSX_CONTENT_TYPE)
+            store.put(
+                metadata_key,
+                json.dumps(metadata, sort_keys=True).encode("utf-8"),
+                "application/json",
+            )
+        except Exception:
+            try:
+                store.delete(key)
+                store.delete(metadata_key)
+            except Exception:
+                pass
+            raise
         result_data["xlsx_artifact_key"] = key
         result_data["xlsx_filename"] = filename
         result_data["xlsx_metadata"] = metadata
@@ -415,6 +439,13 @@ async def persist_bom_xlsx_downloads(
         result_data["trace"] = trace
         try:
             context = read_context(store, customer_id)
+            record_bom_work_product(
+                context,
+                bom_payload=payload,
+                context_source=str(result_data.get("bom_context_source") or "direct_request"),
+                grounding=str(metadata.get("grounding") or ""),
+                xlsx={"key": key, "filename": filename, "metadata": metadata},
+            )
             record_agent_run(
                 context,
                 "bom",
@@ -426,7 +457,6 @@ async def persist_bom_xlsx_downloads(
                     "bom_xlsx": {"key": key, "filename": filename, "metadata": metadata},
                 },
             )
-            attach_bom_xlsx_to_latest(context, {"key": key, "filename": filename, "metadata": metadata})
             write_context(store, customer_id, context)
         except Exception as exc:
             logger.warning("Could not record BOM XLSX artifact in context: %s", exc)
