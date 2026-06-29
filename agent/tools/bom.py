@@ -64,6 +64,7 @@ class BomHandler:
         # Forge's ToolHandler signature does not include the user turn text.
         # archie_wiring.py will inject it into tool args before this handler runs.
         user_message = str(args.get("_user_message", "") or "")
+        explicit_request = user_message or str(args.get("prompt") or "")
         if user_message:
             args = {**args, "prompt": user_message}
 
@@ -129,6 +130,7 @@ class BomHandler:
         if direct_sized_request:
             prompt = user_message
             engagement_context = {}
+        structured_inputs = _extract_explicit_bom_inputs(explicit_request)
         parsed: dict[str, Any] = {}
         bom_payload: dict[str, Any] = {}
         validation_error = ""
@@ -146,6 +148,7 @@ class BomHandler:
                     args=args,
                     trace_id=trace_id,
                     reason=f"BOM sub-agent failed: {exc}",
+                    explicit_structured_inputs=structured_inputs,
                 )
 
             if body.get("status") == "needs_input":
@@ -171,6 +174,7 @@ class BomHandler:
                     args=args,
                     trace_id=trace_id,
                     reason=f"BOM sub-agent returned invalid JSON: {exc}",
+                    explicit_structured_inputs=structured_inputs,
                 )
             bom_payload = _flag_unverified_skus(_extract_bom_payload(parsed))
             validation_error = _validate_bom_result(parsed, bom_payload)
@@ -183,6 +187,7 @@ class BomHandler:
                     trace_id=trace_id,
                     reason=f"BOM validation failed: {validation_error}",
                     incomplete_status="blocked",
+                    explicit_structured_inputs=structured_inputs,
                 )
             prompt = (
                 "[CORRECTION FROM PYTHON VALIDATION]\n"
@@ -197,6 +202,7 @@ class BomHandler:
                 trace_id=trace_id,
                 reason=f"BOM validation failed: {validation_error}",
                 incomplete_status="blocked",
+                explicit_structured_inputs=structured_inputs,
             )
         bom_payload = _enrich_bom_payload_for_prompt(
             bom_payload,
@@ -210,6 +216,23 @@ class BomHandler:
             ),
         )
         bom_payload = _flag_unverified_skus(bom_payload)
+        sizing_repaired = False
+        sizing_error = _validate_explicit_bom_inputs(bom_payload, structured_inputs)
+        if sizing_error:
+            bom_payload = _repair_explicit_bom_inputs(bom_payload, structured_inputs)
+            sizing_repaired = True
+            sizing_error = _validate_explicit_bom_inputs(bom_payload, structured_inputs)
+        if sizing_error:
+            return ToolResult(
+                summary=f"BOM explicit sizing mismatch: {sizing_error}",
+                status="blocked",
+                data={
+                    "validation_error": sizing_error,
+                    "structured_inputs": structured_inputs,
+                    "bom_payload": bom_payload,
+                    "trace_id": trace_id,
+                },
+            )
         prices_from = str(parsed.get("prices_from") or bom_payload.get("prices_from") or "fallback_cache")
         bom_payload["prices_from"] = prices_from
         line_items = bom_payload.get("line_items") or []
@@ -228,25 +251,6 @@ class BomHandler:
             f"BOM generated ({service_count} services, ${monthly:,.2f}/mo)."
         )
 
-        from agent import context_store as _cs
-        assumptions_text = " ".join(str(a) for a in (bom_payload.get("assumptions") or []))
-        first_compute = next(
-            (item for item in line_items if "ocpu" in str(item.get("description", "")).lower()),
-            {},
-        )
-        _cs.set_resolved_decisions(ctx, sizing={
-            "shape_family": str(args.get("compute_shape") or first_compute.get("sku") or "E5.Flex"),
-            "ha_multiplier_applied": "active-active" in str(args.get("ha_dr_mode", "")).lower(),
-            "byol_confirmed": "byol" in assumptions_text.lower(),
-            "monthly_total": monthly,
-            "region": str(bom_payload.get("region") or "us-chicago-1"),
-        })
-        _cs.record_bom_work_product(
-            ctx,
-            bom_payload=bom_payload,
-            context_source=str(args.get("_bom_context_source") or "direct_request"),
-        )
-
         return ToolResult(
             summary=bom_summary,
             status="ok",
@@ -255,6 +259,10 @@ class BomHandler:
                 "prices_from": prices_from,
                 "bom_context_source": str(
                     args.get("_bom_context_source") or "direct_request"
+                ),
+                "structured_inputs": structured_inputs,
+                "sizing_repair": (
+                    "deterministic_explicit_fields" if sizing_repaired else "not_required"
                 ),
             },
             artifact_key=str(parsed.get("artifact_key") or bom_payload.get("artifact_key") or bom_payload.get("xlsx_key") or ""),
@@ -268,6 +276,119 @@ def _extract_bom_payload(parsed: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         return payload
     return parsed
+
+
+def _extract_explicit_bom_inputs(text: str) -> dict[str, Any]:
+    source = str(text or "")
+    lower = source.lower()
+    instance_count = BomService._extract_server_count(lower)
+    ocpu_match = re.search(r"\b(\d+(?:\.\d+)?)\s*ocpus?\b", lower)
+    memory_match = re.search(r"\b(\d+(?:\.\d+)?)\s*gb\s*(?:ram|memory)\b", lower)
+    region_match = re.search(r"\b[a-z]{2,}-[a-z]+-\d+\b", source, re.IGNORECASE)
+    block_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(gb|tb)\s*(?:balanced\s+)?block\s+(?:volume|storage)\b", lower)
+    object_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(gb|tb)\s*(?:standard\s+)?object\s+storage\b", lower)
+
+    def capacity(match: re.Match[str] | None) -> float | None:
+        if not match:
+            return None
+        value = float(match.group(1))
+        return value * 1024.0 if match.group(2).lower() == "tb" else value
+
+    per_ocpu = float(ocpu_match.group(1)) if ocpu_match else None
+    per_memory = float(memory_match.group(1)) if memory_match else None
+    return {
+        "region": region_match.group(0) if region_match else "",
+        "compute": {
+            "instance_count": instance_count,
+            "ocpu_per_instance": per_ocpu,
+            "ocpu": per_ocpu * instance_count if per_ocpu else None,
+        },
+        "memory": {
+            "gb_per_instance": per_memory,
+            "gb": per_memory * instance_count if per_memory else None,
+        },
+        "storage": {
+            "block_gb": capacity(block_match),
+            "object_gb": capacity(object_match),
+        },
+    }
+
+
+def _validate_explicit_bom_inputs(payload: dict[str, Any], structured: dict[str, Any]) -> str:
+    if not structured:
+        return ""
+    rows = [row for row in payload.get("line_items", []) or [] if isinstance(row, dict)]
+
+    def total_for(skus: set[str]) -> float:
+        return sum(float(row.get("quantity") or 0) for row in rows if str(row.get("sku") or "").upper() in skus)
+
+    expected = {
+        "ocpu": ((structured.get("compute") or {}).get("ocpu")),
+        "memory_gb": ((structured.get("memory") or {}).get("gb")),
+        "block_gb": ((structured.get("storage") or {}).get("block_gb")),
+        "object_gb": ((structured.get("storage") or {}).get("object_gb")),
+    }
+    produced = {
+        "ocpu": total_for({"B93113", "B97384", "B111129", "B94176", "B93297"}),
+        "memory_gb": total_for({"B93114", "B97385", "B111130", "B94177", "B93298"}),
+        "block_gb": total_for({"B91961"}),
+        "object_gb": total_for({"B91628"}),
+    }
+    for key, required in expected.items():
+        if required is None:
+            continue
+        if abs(float(produced[key]) - float(required)) > 0.0001:
+            return f"{key} requested={float(required):g}, produced={float(produced[key]):g}"
+    requested_region = str(structured.get("region") or "")
+    produced_region = str(payload.get("region") or "")
+    if requested_region and produced_region.casefold() != requested_region.casefold():
+        return f"region requested={requested_region}, produced={produced_region or 'missing'}"
+    expected_count = int(((structured.get("compute") or {}).get("instance_count")) or 1)
+    compute_rows = [row for row in rows if str(row.get("sku") or "").upper() in {"B93113", "B97384", "B111129", "B94176", "B93297"}]
+    if compute_rows and int(compute_rows[0].get("instance_count") or 1) != expected_count:
+        return f"instance_count requested={expected_count}, produced={int(compute_rows[0].get('instance_count') or 1)}"
+    return ""
+
+
+def _repair_explicit_bom_inputs(
+    payload: dict[str, Any],
+    structured: dict[str, Any],
+) -> dict[str, Any]:
+    """Repair only quantities and region explicitly supplied by the customer."""
+    repaired = copy.deepcopy(payload)
+    compute = structured.get("compute") if isinstance(structured.get("compute"), dict) else {}
+    memory = structured.get("memory") if isinstance(structured.get("memory"), dict) else {}
+    storage = structured.get("storage") if isinstance(structured.get("storage"), dict) else {}
+    required_by_sku_group = (
+        ({"B93113", "B97384", "B111129", "B94176", "B93297"}, compute.get("ocpu")),
+        ({"B93114", "B97385", "B111130", "B94177", "B93298"}, memory.get("gb")),
+        ({"B91961"}, storage.get("block_gb")),
+        ({"B91628"}, storage.get("object_gb")),
+    )
+    instance_count = int(compute.get("instance_count") or 1)
+    for sku_group, required in required_by_sku_group:
+        if required is None:
+            continue
+        matching = [
+            row
+            for row in repaired.get("line_items", []) or []
+            if isinstance(row, dict)
+            and str(row.get("sku") or "").upper() in sku_group
+        ]
+        if not matching:
+            continue
+        matching[0]["quantity"] = float(required)
+        for duplicate in matching[1:]:
+            repaired["line_items"].remove(duplicate)
+        if sku_group & {
+            "B93113", "B97384", "B111129", "B94176", "B93297",
+            "B93114", "B97385", "B111130", "B94177", "B93298",
+        }:
+            matching[0]["instance_count"] = instance_count
+    region = str(structured.get("region") or "").strip()
+    if region:
+        repaired["region"] = region
+    return BomService()._normalize_payload(repaired)
 
 
 def _hydrate_bom_task(
@@ -439,6 +560,7 @@ def _fallback_bom_result(
     trace_id: str,
     reason: str,
     incomplete_status: str = "needs_input",
+    explicit_structured_inputs: dict[str, Any] | None = None,
 ) -> ToolResult:
     service = BomService()
     service._cache = CacheSnapshot(  # local deterministic fallback; avoids network during recovery
@@ -449,10 +571,10 @@ def _fallback_bom_result(
         source="fallback_local",
     )
     try:
-        structured_inputs = _structured_bom_inputs_from_args(args)
-        if structured_inputs:
+        fallback_inputs = _structured_bom_inputs_from_args(args)
+        if fallback_inputs:
             response = service.generate_from_inputs(
-                inputs=structured_inputs,
+                inputs=fallback_inputs,
                 trace_id=trace_id,
                 model_id="local-fallback",
             )
@@ -490,6 +612,8 @@ def _fallback_bom_result(
     data["trace"] = trace
     data["fallback_reason"] = reason
     data["prices_from"] = "fallback_local"
+    if explicit_structured_inputs:
+        data["structured_inputs"] = copy.deepcopy(explicit_structured_inputs)
 
     if str(data.get("type", "") or "").lower() == "final" and payload:
         return ToolResult(

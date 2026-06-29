@@ -71,6 +71,10 @@ with `PLAN.md`, stop and flag it — do not improvise.
   constraint tags, and deterministic summaries.
 - `agent/bom_service.py`: BOM parsing, validation, readiness, and repair flows.
 - `agent/jep_lifecycle.py`: JEP draft/review lifecycle state.
+- `agent/jep_composer.py`: validated grounded JEP brief extraction, canonical
+  Markdown composition, revision handling, and deterministic validation.
+- `agent/poc_composer.py`: grounded POC brief extraction and deterministic
+  three-option composition with presentation-only LLM polishing.
 - `ui/src/App.tsx`: tab shell and top-level UI state.
 - `ui/src/components/ChatInterface.tsx`: chat experience and Agent 0 surface.
 - `ui/src/api/client.ts`: browser API client and endpoint contracts.
@@ -101,6 +105,12 @@ with `PLAN.md`, stop and flag it — do not improvise.
   safety review, tradeoffs, artifact refs, and checkpoint status.
 - Safety enforcement applies deterministic hard-block rules before artifact
   exposure.
+- JEP generation is deterministic and grounded: incomplete briefs return
+  kickoff questions, complete briefs render canonical Markdown and DOCX, and
+  lifecycle state advances only after both artifacts persist.
+- POC exploration composes three grounded options, confirmation records only
+  the selected option, and downstream POV/BOM/JEP artifacts run only when the
+  user explicitly requests them.
 - Archie expert review wraps shared tool calls after specialist execution and
   before artifact exposure. It records the selected lens, sanitized specialist
   input, review verdict/findings, and retry history in

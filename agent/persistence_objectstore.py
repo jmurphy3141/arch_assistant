@@ -42,6 +42,10 @@ class ObjectStoreBase(ABC):
         """Return object keys matching the provided prefix."""
         ...
 
+    def delete(self, key: str) -> None:
+        """Delete an object when rollback support is required."""
+        raise NotImplementedError("Object store does not support delete")
+
 
 # ── In-memory fake (used in tests + default when no OCI available) ─────────────
 
@@ -75,6 +79,9 @@ class InMemoryObjectStore(ObjectStoreBase):
         if not prefix:
             return list(self._store.keys())
         return [key for key in self._store.keys() if key.startswith(prefix)]
+
+    def delete(self, key: str) -> None:
+        self._store.pop(key, None)
 
     # ── Test helpers ───────────────────────────────────────────────────────────
 

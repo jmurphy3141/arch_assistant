@@ -703,20 +703,6 @@ async def run_turn(
                 "artifact_key": direct_result.artifact_key or "",
             }
             direct_calls.append(call)
-            if tool_name == "generate_bom":
-                bom_payload = call["result_data"].get("bom_payload")
-                if isinstance(bom_payload, dict) and bom_payload:
-                    context_store.record_bom_work_product(
-                        context,
-                        bom_payload=bom_payload,
-                        context_source=str(call["result_data"].get("bom_context_source") or "direct_request"),
-                    )
-                    await asyncio.to_thread(
-                        context_store.write_context,
-                        store,
-                        customer_id,
-                        context,
-                    )
             if direct_result.artifact_key:
                 direct_artifacts[tool_name] = direct_result.artifact_key
             prior_summaries.append(f"{tool_name}: {direct_result.summary}")
@@ -3105,7 +3091,7 @@ def _build_architecture_why_reply() -> str:
 
 def _is_change_update_intent(user_message: str) -> bool:
     msg = (user_message or "").lower()
-    if _requested_generation_tools(user_message):
+    if _requested_generation_tools(user_message) or _is_poc_exploration_confirmation_request(user_message):
         return False
     has_change = any(token in msg for token in ("forgot", "missing", "add", "update", "change", "modify", "we learned", "learned that"))
     has_scope = any(token in msg for token in ("element", "component", "application", "system", "architecture"))
@@ -3202,6 +3188,8 @@ def _is_active_poc_recall_intent(user_message: str) -> bool:
 
 def _is_poc_recommendation_offer_request(user_message: str) -> bool:
     msg = str(user_message or "").lower()
+    if _is_poc_exploration_confirmation_request(user_message):
+        return False
     asks_for_recommendation = bool(
         re.search(r"\bwhat\s+poc\b.{0,80}\brecommend", msg)
         or re.search(r"\brecommend(?:ed)?\s+(?:a\s+|the\s+)?poc\b", msg)
@@ -3214,6 +3202,12 @@ def _is_poc_recommendation_offer_request(user_message: str) -> bool:
 
 def _is_poc_exploration_confirmation_request(user_message: str) -> bool:
     msg = str(user_message or "").lower()
+    if re.search(
+        r"\b(?:build|create|generate|run)\b.{0,40}\b(?:poc|proof of concept)\s+"
+        r"(?:ideas?|options?|directions?|plan)\b",
+        msg,
+    ):
+        return True
     if "explore" not in msg or "poc" not in msg:
         return False
     return any(term in msg for term in ("yes", "go explore", "run it", "go ahead"))
@@ -3221,8 +3215,6 @@ def _is_poc_exploration_confirmation_request(user_message: str) -> bool:
 
 def _confirmed_poc_option_name(user_message: str, context: dict[str, Any]) -> str:
     msg = str(user_message or "").casefold()
-    if not re.search(r"\b(?:proceed|confirm|select)\b|\bgo\s+with\b", msg):
-        return ""
     decision_context = context.get("latest_decision_context", {}) if isinstance(context, dict) else {}
     options = decision_context.get("poc_options", []) if isinstance(decision_context, dict) else []
     if not options and isinstance(context, dict):
@@ -3230,6 +3222,13 @@ def _confirmed_poc_option_name(user_message: str, context: dict[str, Any]) -> st
         resolved = archie.get("resolved_decisions", {}) if isinstance(archie, dict) else {}
         poc = resolved.get("poc", {}) if isinstance(resolved, dict) else {}
         options = poc.get("options", []) if isinstance(poc, dict) else []
+    option_number = re.search(r"\boption\s*([1-9])\b", msg)
+    if option_number and isinstance(options, list):
+        index = int(option_number.group(1)) - 1
+        if 0 <= index < len(options) and isinstance(options[index], dict):
+            return str(options[index].get("option_name", "") or "").strip()
+    if not re.search(r"\b(?:proceed|confirm|select)\b|\bgo\s+with\b", msg):
+        return ""
     for option in options if isinstance(options, list) else []:
         name = str(option.get("option_name", "") or "").strip() if isinstance(option, dict) else ""
         if name and name.casefold() in msg:
@@ -3804,35 +3803,6 @@ async def _legacy_tool_core_compat(
                 )
             review_findings = _specialist_helpers._jep_writer_review_findings(content)
             if review_findings:
-                try:
-                    response, content, review_findings = await _specialist_helpers._retry_jep_after_review_failure(
-                        task=task,
-                        engagement_context=engagement_context,
-                        trace_id=str(uuid.uuid4()),
-                        initial_response=response,
-                        initial_content=content,
-                        initial_findings=review_findings,
-                    )
-                except sub_agent_client.SubAgentError as exc:
-                    return (
-                        _specialist_helpers._jep_review_blocked_summary(review_findings),
-                        "",
-                        {
-                            **response,
-                            "review_verdict": "blocked",
-                            "review_findings": review_findings,
-                            "repair_error": str(exc),
-                        },
-                    )
-                if str(response.get("status") or "").lower() == "needs_input":
-                    return str(response.get("result") or content or "JEP needs more input before it can be repaired."), "", response
-                if _specialist_helpers._is_jep_kickoff_questions(content):
-                    return (
-                        _specialist_helpers._jep_kickoff_clarification(content),
-                        "",
-                        {"status": "needs_input", **response},
-                    )
-            if review_findings:
                 return (
                     _specialist_helpers._jep_review_blocked_summary(review_findings),
                     "",
@@ -3840,32 +3810,87 @@ async def _legacy_tool_core_compat(
                         **response,
                         "review_verdict": "blocked",
                         "review_findings": review_findings,
+                        "repair_attempted": False,
+                        "repair_mode": "structured_fields_only",
                     },
                 )
-        saved = await asyncio.to_thread(
-            document_store.save_doc,
-            store,
-            agent_name,
-            customer_id,
-            content,
-            {"trace": response.get("trace", {}), "source": "sub_agent_client"},
-        )
+        docx_bytes = None
+        jep_pointer_snapshot = {}
+        if tool_name == "generate_jep":
+            from agent.jep_docx_renderer import render_jep_docx
+            from agent.tools import specialists as _specialist_helpers
+
+            try:
+                docx_bytes = await asyncio.to_thread(
+                    render_jep_docx,
+                    content,
+                    customer_name=customer_name,
+                )
+            except Exception as exc:
+                return f"JEP Word document rendering failed: {exc}", "", {
+                    **response,
+                    "status": "blocked",
+                    "persistence_stage": "docx_render",
+                }
+            jep_pointer_snapshot = await asyncio.to_thread(
+                _specialist_helpers._snapshot_jep_pointers,
+                store,
+                customer_id,
+            )
+        try:
+            saved = await asyncio.to_thread(
+                document_store.save_doc,
+                store,
+                agent_name,
+                customer_id,
+                content,
+                {"trace": response.get("trace", {}), "source": "sub_agent_client"},
+            )
+        except Exception as exc:
+            if tool_name == "generate_jep":
+                await asyncio.to_thread(
+                    _specialist_helpers._restore_jep_pointers,
+                    store,
+                    jep_pointer_snapshot,
+                )
+            return f"{agent_name.upper()} persistence failed: {exc}", "", {
+                **response,
+                "status": "blocked",
+                "persistence_stage": "markdown",
+            }
         response["result_length"] = len(content)
         response.pop("result", None)
         key = str(saved.get("key", "") or "")
         if tool_name == "generate_jep":
-            from agent.jep_docx_renderer import render_jep_docx
+            import agent.jep_lifecycle as jep_lifecycle
 
-            docx_bytes = render_jep_docx(content, customer_name=customer_name)
-            docx = await asyncio.to_thread(
-                document_store.save_jep_docx,
+            try:
+                assert docx_bytes is not None
+                docx = await asyncio.to_thread(
+                    document_store.save_jep_docx,
+                    store,
+                    customer_id,
+                    int(saved.get("version") or 1),
+                    docx_bytes,
+                    {"customer_name": customer_name, "source": "legacy_tool_core"},
+                )
+            except Exception as exc:
+                await asyncio.to_thread(
+                    _specialist_helpers._restore_jep_pointers,
+                    store,
+                    jep_pointer_snapshot,
+                )
+                return f"JEP persistence failed: {exc}", "", {
+                    **response,
+                    "status": "blocked",
+                    "persistence_stage": "docx",
+                }
+            jep_state = await asyncio.to_thread(
+                jep_lifecycle.mark_generated,
                 store,
                 customer_id,
-                int(saved.get("version") or 1),
-                docx_bytes,
-                {"customer_name": customer_name, "source": "legacy_tool_core"},
             )
-            response.update(docx)
+            response.update({**docx, "jep_state": jep_state})
         return f"{agent_name.upper()} v{saved.get('version')} saved. Key: {key}", key, response
     if tool_name == "generate_bom":
         response = await sub_agent_client.call_sub_agent("bom", str(args.get("prompt") or ""), {}, str(uuid.uuid4()))

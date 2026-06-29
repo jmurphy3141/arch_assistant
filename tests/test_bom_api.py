@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import drawing_agent_server
 from drawing_agent_server import app, require_user
 from agent.bom_service import BomService
+from server.services.bom_artifacts import structured_bom_result_uses_default_sizing
 
 
 def _setup() -> None:
@@ -70,6 +71,31 @@ def test_bom_xlsx_metadata_includes_resolved_input_count() -> None:
     )
 
     assert metadata["resolved_input_count"] == 2
+
+
+def test_structured_bom_guard_checks_block_and_object_storage_independently() -> None:
+    result = {
+        "structured_inputs": {
+            "compute": {"ocpu": 12},
+            "memory": {"gb": 96},
+            "storage": {"block_gb": 2048, "object_gb": 5120},
+            "region": "us-phoenix-1",
+        },
+        "bom_payload": {
+            "region": "us-phoenix-1",
+            "line_items": [
+                {"sku": "B97384", "description": "E5 OCPU", "category": "compute", "quantity": 12},
+                {"sku": "B97385", "description": "E5 Memory", "category": "compute", "quantity": 96},
+                {"sku": "B91961", "description": "Block Volume Storage", "category": "storage", "quantity": 2048},
+                {"sku": "B91962", "description": "Block Volume Performance Units", "category": "storage", "quantity": 20480},
+                {"sku": "B91628", "description": "Object Storage", "category": "storage", "quantity": 5120},
+            ],
+        },
+    }
+
+    assert structured_bom_result_uses_default_sizing(result) is False
+    result["bom_payload"]["line_items"][-1]["quantity"] = 1024
+    assert structured_bom_result_uses_default_sizing(result) is True
 
 
 def test_bom_refresh_requires_admin_group_when_auth_enabled(monkeypatch) -> None:

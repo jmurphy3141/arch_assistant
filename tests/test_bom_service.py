@@ -113,6 +113,23 @@ def test_bom_fast_path_keeps_block_and_object_storage_quantities_distinct() -> N
     assert by_sku["B91628"]["quantity"] == 1024.0
 
 
+def test_bom_fast_path_aggregates_word_form_server_count_and_preserves_region() -> None:
+    svc = BomService()
+    payload = svc._draft_bom_payload(
+        "Create a BOM in us-phoenix-1 for three private VM.Standard.E5.Flex application "
+        "servers at 4 OCPUs and 32 GB RAM each, with 2 TB Block Volume and 5 TB Object Storage.",
+        dict(DEFAULT_PRICE_TABLE),
+    )
+
+    by_sku = {row["sku"]: row for row in payload["line_items"]}
+    assert payload["region"] == "us-phoenix-1"
+    assert by_sku["B97384"]["quantity"] == 12.0
+    assert by_sku["B97384"]["instance_count"] == 3
+    assert by_sku["B97385"]["quantity"] == 96.0
+    assert by_sku["B91961"]["quantity"] == 2048.0
+    assert by_sku["B91628"]["quantity"] == 5120.0
+
+
 def test_bom_fast_path_ignores_memory_table_sizing_before_user_request() -> None:
     svc = BomService()
     payload = svc._draft_bom_payload(
