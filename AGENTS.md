@@ -107,9 +107,10 @@ with `PLAN.md`, stop and flag it — do not improvise.
   safety review, tradeoffs, artifact refs, and checkpoint status.
 - Safety enforcement applies deterministic hard-block rules before artifact
   exposure.
-- JEP generation is deterministic and grounded: incomplete briefs return
-  kickoff questions, complete briefs render canonical Markdown and DOCX, and
-  lifecycle state advances only after both artifacts persist.
+- JEP and POV generation use deterministic grounded briefs, constrained LLM
+  prose rendering, a one-retry deterministic grounding guard, and canonical
+  template fallback. JEP lifecycle state advances only after both Markdown and
+  DOCX artifacts persist.
 - POC exploration composes three grounded options, confirmation records only
   the selected option, and downstream POV/BOM/JEP artifacts run only when the
   user explicitly requests them.

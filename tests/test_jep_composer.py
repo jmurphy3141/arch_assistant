@@ -8,6 +8,9 @@ from agent.jep_composer import (
     CORE_SECTIONS,
     compose_jep,
     extract_jep_brief,
+    jep_grounding_findings,
+    render_jep_markdown,
+    render_jep_with_inference,
     validate_jep_markdown,
 )
 from agent.jep_docx_renderer import render_jep_docx
@@ -115,7 +118,7 @@ def test_canonical_order_optional_sections_and_approvals_last() -> None:
     assert validate_jep_markdown(result.markdown, result.brief) == []
 
 
-def test_exact_same_engagement_artifact_references_are_preserved() -> None:
+def test_exact_same_engagement_artifact_references_are_preserved_without_internal_keys() -> None:
     result = compose_jep(
         QUALIFIED,
         {
@@ -126,9 +129,10 @@ def test_exact_same_engagement_artifact_references_are_preserved() -> None:
         },
     )
     assert result.status == "ok"
-    assert "Diagram: diagram/apex/v4.drawio" in result.markdown
-    assert "BOM: bom/apex/v2.xlsx" in result.markdown
-    assert "Line Item Count: 8" in result.markdown
+    assert "approved same-engagement diagram" in result.markdown
+    assert "finalized same-engagement BOM" in result.markdown
+    assert "diagram/apex/v4.drawio" not in result.markdown
+    assert "bom/apex/v2.xlsx" not in result.markdown
 
 
 def test_revision_changes_only_explicit_grounded_value() -> None:
@@ -197,8 +201,10 @@ def test_jep_requires_and_references_selected_poc_and_finalized_bom() -> None:
         },
     )
     assert result.status == "ok"
-    assert "Selected POC: Apex Retail Core Workload Validation POC (poc_plan/apex/v1.json)" in result.markdown
-    assert "BOM: bom/apex/final.xlsx" in result.markdown
+    assert "confirmed same-engagement POC" in result.markdown
+    assert "finalized same-engagement BOM" in result.markdown
+    assert "poc_plan/" not in result.markdown
+    assert ".xlsx" not in result.markdown
     assert "Site-to-Site VPN" in result.markdown
 
 
@@ -234,7 +240,79 @@ def test_selected_poc_jep_accepts_two_exact_criteria_and_natural_owner_role() ->
     assert "p95 under 500 milliseconds" in result.markdown
     assert "restore within 60 minutes" in result.markdown
     assert "HarborStone lead" in result.markdown
-    assert "diagram/harbor/final.drawio" in result.markdown
+    assert "approved same-engagement diagram" in result.markdown
+    assert "diagram/harbor/final.drawio" not in result.markdown
+
+
+def test_generative_jep_prose_passes_grounding_guard() -> None:
+    composition = compose_jep(QUALIFIED)
+    assert composition.brief is not None
+    polished = render_jep_markdown(composition.brief).replace(
+        "Results are validation evidence, not claims of achieved production outcomes.",
+        "The joint team will use the resulting evidence to make the agreed decision. "
+        "Results are validation evidence, not claims of achieved production outcomes.",
+    ).replace(
+        "In scope: WAF, public Flexible Load Balancer, two private VM.Standard.E5.Flex web servers, private PostgreSQL database, Object Storage, Block Volume, logging, monitoring.",
+        "The agreed scope brings WAF, public Flexible Load Balancer, two private VM.Standard.E5.Flex web servers, private PostgreSQL database, Object Storage, Block Volume, logging, and monitoring into one focused validation effort.",
+    )
+
+    result = render_jep_with_inference(composition.brief, lambda _prompt, _system: polished)
+
+    assert result.generation_mode == "generative_grounded_prose"
+    assert result.attempts == 1
+    assert jep_grounding_findings(result.markdown, composition.brief) == []
+
+
+def test_fabricated_number_sla_and_internal_key_retry_then_fallback() -> None:
+    composition = compose_jep(QUALIFIED)
+    assert composition.brief is not None
+    calls: list[str] = []
+
+    def bad_runner(prompt: str, _system: str) -> str:
+        calls.append(prompt)
+        return render_jep_markdown(composition.brief).replace(
+            "## Approvals",
+            "A 99.99% SLA is recorded at customers/apex/bom/final.xlsx.\n\n## Approvals",
+        )
+
+    result = render_jep_with_inference(composition.brief, bad_runner)
+
+    assert result.generation_mode == "deterministic_grounded_fallback"
+    assert result.markdown == render_jep_markdown(composition.brief)
+    assert len(calls) == 2
+    assert "unsupported numeric tokens" in calls[1]
+    assert "internal artifact references" in calls[1]
+
+
+def test_grounding_guard_requires_owners_phases_and_criteria() -> None:
+    composition = compose_jep(QUALIFIED)
+    assert composition.brief is not None
+    broken = render_jep_markdown(composition.brief)
+    broken = broken.replace("Apex Retail technical lead", "technical team")
+    broken = broken.replace("Days 4-9", "the build window")
+    broken = broken.replace("database restore within 60 minutes", "database restore target")
+
+    findings = jep_grounding_findings(broken, composition.brief)
+
+    assert any("Apex Retail technical lead" in finding for finding in findings)
+    assert any("Days 4-9" in finding for finding in findings)
+    assert any("database restore within 60 minutes" in finding for finding in findings)
+
+
+def test_grounding_guard_rejects_fences_duplicate_sections_and_new_claims() -> None:
+    composition = compose_jep(QUALIFIED)
+    assert composition.brief is not None
+    broken = (
+        "```markdown\n"
+        + render_jep_markdown(composition.brief)
+        + "\n```\n## Approvals\nThis design guarantees performance isolation."
+    )
+
+    findings = jep_grounding_findings(broken, composition.brief)
+
+    assert "Markdown fence leaked into JEP output" in findings
+    assert any("Approvals (found 2)" in finding for finding in findings)
+    assert any("unsupported outcome or benefit claims" in finding for finding in findings)
 
 
 def test_selected_poc_jep_splits_process_and_recover_criteria() -> None:

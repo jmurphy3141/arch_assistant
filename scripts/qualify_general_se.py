@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from agent import consistency_contract, context_store
+from agent.grounded_prose import factual_token_findings, has_readable_prose, leaks_internal_artifacts
 from agent.tools.bom import _extract_explicit_bom_inputs
 from agent.object_store_oci import OciObjectStore
 
@@ -263,12 +264,19 @@ def _turns(profile: Profile) -> list[tuple[str, str]]:
         ("criteria", f"In-scope services are {services}. Required topology: {profile.tier_layout or 'use the confirmed workload topology'}. Success criteria: {criteria}. Out of scope: {', '.join(profile.forbidden) or 'production cutover'}."),
         ("correction", profile.correction + " Treat this as the current authoritative fact."),
         ("recall", "Recall the current workload, region, services, exclusions, owners, duration, and success criteria. Do not generate anything."),
+        (
+            "pov",
+            "Generate only the internal POV artifact from the accumulated engagement facts. "
+            f"Use these proposed validation targets exactly: {criteria}. In-scope services: {services}. "
+            "Treat every outcome as proposed and unproven; do not add case studies, benchmarks, SLAs, "
+            "customer evidence, services, sizes, dates, or numbers.",
+        ),
         ("poc", "Create three POC options now using the accumulated engagement context; do not ask me to restate the fact sheet."),
         ("selection", f"Option {profile.selection}"),
         ("bom", f"Build only the BOM/XLSX for the selected POC. Sizing: {profile.sizing}. Use {profile.region}. Do not generate a diagram or JEP."),
         ("bom_discussion", "Explain one important sizing or cost decision in that BOM. Do not regenerate or create another artifact."),
         ("diagram", "Generate only the draw.io Diagram from the selected POC and finalized BOM. Do not generate Terraform, WAF, or JEP."),
-        ("jep", f"Generate only the JEP artifact for the selected POC, finalized BOM, and Diagram. Use {profile.duration} days: Phase 1 Assessment days 1-3, Phase 2 Build days 4-{profile.duration - 4}, Phase 3 Validate days {profile.duration - 3}-{profile.duration}. Preserve the authoritative owners and success criteria; include at least three risks. The named Oracle SA and customer application owner jointly approve go/no-go. If no-go, stop testing, export the evidence, and remove POC resources without production cutover."),
+        ("jep", f"Generate only the JEP artifact for the selected POC, finalized BOM, and Diagram. Use {profile.duration} days: Phase 1 Assessment days 1-3, Phase 2 Build days 4-{profile.duration - 4}, Phase 3 Validate days {profile.duration - 3}-{profile.duration}. Owners and commitments: {profile.owners}. Preserve every authoritative success criterion; include at least three risks. The named Oracle SA and customer owners jointly approve go/no-go. If no-go, stop testing, export the evidence, and remove POC resources without production cutover."),
     ]
 
 
@@ -402,18 +410,63 @@ def _jep_text(content: bytes, suffix: str) -> str:
     document = Document(BytesIO(content))
     paragraphs = [paragraph.text for paragraph in document.paragraphs]
     cells = [cell.text for table in document.tables for row in table.rows for cell in row.cells]
-    return "\n".join(paragraphs + cells)
+    return "\n\n".join(paragraphs) + "\n\n" + "\n".join(cells)
+
+
+def _profile_grounding_text(profile: Profile) -> str:
+    grounded = json.dumps(asdict(profile), default=str) + " " + " ".join(
+        message for _, message in _turns(profile)
+    )
+    for family in re.findall(r"\b(E[56])(?:\.Flex|\s+Flex)\b", grounded, re.IGNORECASE):
+        grounded += f" VM.Standard.{family.upper()}.Flex"
+    return grounded
 
 
 def _assert_jep_content(content: bytes, suffix: str, profile: Profile) -> list[str]:
-    text = re.sub(r"\s+", " ", _jep_text(content, suffix).replace("–", "-").replace("—", "-")).lower()
+    raw_text = _jep_text(content, suffix)
+    text = re.sub(r"\s+", " ", raw_text.replace("–", "-").replace("—", "-")).lower()
     owner_clause = re.split(r"\beach commit\b", profile.owners, flags=re.IGNORECASE)[0]
     owners = [part.strip(" ,.") for part in re.split(r",|\band\b", owner_clause, flags=re.IGNORECASE) if part.strip(" ,.")]
     windows = ("days 1-3", f"days 4-{profile.duration - 4}", f"days {profile.duration - 3}-{profile.duration}")
     errors = [f"owner missing: {owner}" for owner in owners if owner.lower() not in text]
     errors.extend(f"phase window missing: {window}" for window in windows if window.lower() not in text)
     errors.extend(f"success criterion missing: {criterion}" for criterion in profile.criteria if criterion.lower() not in text)
+    grounded = _profile_grounding_text(profile)
+    errors.extend(factual_token_findings(raw_text, grounded))
+    if leaks_internal_artifacts(raw_text):
+        errors.append("internal artifact key or file path present")
+    if not has_readable_prose(raw_text):
+        errors.append("JEP lacks substantive prose paragraphs")
+    for forbidden in profile.forbidden:
+        if _service_present(forbidden, text):
+            errors.append(f"forbidden service present: {forbidden}")
     return errors
+
+
+def _assert_pov_content(content: bytes, profile: Profile) -> list[str]:
+    raw_text = content.decode("utf-8", errors="replace")
+    text = re.sub(r"\s+", " ", raw_text).lower()
+    errors = factual_token_findings(
+        raw_text,
+        _profile_grounding_text(profile),
+        allowed_format_numbers=("1", "2", "3"),
+    )
+    if leaks_internal_artifacts(raw_text):
+        errors.append("internal artifact key or file path present")
+    if not has_readable_prose(raw_text):
+        errors.append("POV lacks substantive prose paragraphs")
+    errors.extend(
+        f"success criterion missing: {criterion}"
+        for criterion in profile.criteria
+        if criterion.lower() not in text
+    )
+    for service in profile.services:
+        if not _service_present(service, text):
+            errors.append(f"required service missing: {service}")
+    for forbidden in profile.forbidden:
+        if _service_present(forbidden, text):
+            errors.append(f"forbidden service present: {forbidden}")
+    return list(dict.fromkeys(errors))
 
 
 def _reply_grounding_errors(reply: str, engagement_context: str) -> list[str]:
@@ -491,7 +544,7 @@ def run_profile(base_url: str, store: OciObjectStore, profile: Profile, run_id: 
         if elapsed > 60:
             evidence["failures"].append({"stage": stage, "cause": f"elapsed {elapsed:.3f}s exceeds 60s"})
         allowed = {
-            "note": {"save_notes"}, "poc": {"generate_poc_plan"},
+            "note": {"save_notes"}, "pov": {"generate_pov"}, "poc": {"generate_poc_plan"},
             "selection": {"generate_poc_plan"}, "bom": {"generate_bom"},
             "diagram": {"generate_diagram"}, "jep": {"generate_jep"},
         }.get(stage, set())
@@ -537,6 +590,7 @@ def run_profile(base_url: str, store: OciObjectStore, profile: Profile, run_id: 
 
     artifact_checks: list[dict[str, Any]] = []
     for stage, tool, suffixes in (
+        ("pov", "generate_pov", (".md",)),
         ("bom", "generate_bom", (".xlsx",)),
         ("diagram", "generate_diagram", (".drawio",)),
         ("jep", "generate_jep", (".md", ".docx")),
@@ -555,6 +609,8 @@ def run_profile(base_url: str, store: OciObjectStore, profile: Profile, run_id: 
                         content_errors = _assert_bom_content(content, profile)
                     elif suffix == ".drawio":
                         content_errors = _assert_diagram_content(content, profile)
+                    elif stage == "pov":
+                        content_errors = _assert_pov_content(content, profile)
                     else:
                         content_errors = _assert_jep_content(content, suffix, profile)
                 except Exception as exc:
@@ -578,16 +634,55 @@ def run_profile(base_url: str, store: OciObjectStore, profile: Profile, run_id: 
 
 
 def main() -> int:
+    global _post_json, _upload_note
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:18080")
     parser.add_argument("--suite", choices=("general", "complex-three-tier"), default="general")
     parser.add_argument("--report", type=Path)
+    parser.add_argument(
+        "--in-process",
+        action="store_true",
+        help="Run against an in-memory TestClient store so qualification cannot write synthetic data to OCI.",
+    )
     args = parser.parse_args()
     profiles = COMPLEX_PROFILES if args.suite == "complex-three-tier" else PROFILES
     if args.report is None:
         args.report = COMPLEX_REPORT if args.suite == "complex-three-tier" else DEFAULT_REPORT
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    store = _store_from_config()
+    client_context = None
+    if args.in_process:
+        from fastapi.testclient import TestClient
+
+        import drawing_agent_server
+        from agent.persistence_objectstore import InMemoryObjectStore
+
+        store = InMemoryObjectStore()
+        drawing_agent_server.app.state.object_store = store
+        drawing_agent_server.app.state.persistence_config = {"prefix": "agent3"}
+        client_context = TestClient(drawing_agent_server.app)
+        client = client_context.__enter__()
+
+        def _client_post_json(_base_url: str, path: str, payload: dict[str, Any]) -> tuple[dict[str, Any], float]:
+            started = time.monotonic()
+            response = client.post(path, json=payload)
+            response.raise_for_status()
+            return response.json(), time.monotonic() - started
+
+        def _client_upload_note(_base_url: str, customer_id: str, text: str) -> dict[str, Any]:
+            response = client.post(
+                "/api/notes/upload",
+                data={"customer_id": customer_id, "note_name": "discovery-note.txt"},
+                files={"file": ("discovery-note.txt", text.encode(), "text/plain")},
+            )
+            response.raise_for_status()
+            return response.json()
+
+        _post_json = _client_post_json
+        _upload_note = _client_upload_note
+        args.base_url = "in-process://isolated-current-source"
+    else:
+        store = _store_from_config()
     retained_failures: list[dict[str, Any]] = []
     if args.report.exists():
         try:
@@ -609,18 +704,22 @@ def main() -> int:
         "retained_failures": retained_failures,
         "consecutive_passes": 0,
     }
-    for profile in profiles:
-        result = run_profile(args.base_url, store, profile, run_id)
-        report["engagements"].append(result)
-        report["consecutive_passes"] = report["consecutive_passes"] + 1 if result["passed"] else 0
+    try:
+        for profile in profiles:
+            result = run_profile(args.base_url, store, profile, run_id)
+            report["engagements"].append(result)
+            report["consecutive_passes"] = report["consecutive_passes"] + 1 if result["passed"] else 0
+            args.report.write_text(json.dumps(report, indent=2, default=str) + "\n")
+            print(f"{profile.name}: {'PASS' if result['passed'] else 'FAIL'}; streak={report['consecutive_passes']}", flush=True)
+            for failure in result["failures"]:
+                print(f"  {failure['stage']}: {failure['cause']}", flush=True)
+        report["completed_at"] = datetime.now(timezone.utc).isoformat()
+        report["qualified"] = report["consecutive_passes"] >= 5
         args.report.write_text(json.dumps(report, indent=2, default=str) + "\n")
-        print(f"{profile.name}: {'PASS' if result['passed'] else 'FAIL'}; streak={report['consecutive_passes']}", flush=True)
-        for failure in result["failures"]:
-            print(f"  {failure['stage']}: {failure['cause']}", flush=True)
-    report["completed_at"] = datetime.now(timezone.utc).isoformat()
-    report["qualified"] = report["consecutive_passes"] >= 5
-    args.report.write_text(json.dumps(report, indent=2, default=str) + "\n")
-    return 0 if report["qualified"] else 1
+        return 0 if report["qualified"] else 1
+    finally:
+        if client_context is not None:
+            client_context.__exit__(None, None, None)
 
 
 if __name__ == "__main__":

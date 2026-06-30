@@ -7,10 +7,12 @@ returns targeted kickoff questions.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import json
 import re
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
+
+from agent.grounded_prose import factual_token_findings, has_material_prose_revision, missing_exact_facts
 
 
 CORE_SECTIONS = (
@@ -83,6 +85,14 @@ class JepComposition:
     questions: tuple[str, ...] = ()
     missing_fields: tuple[str, ...] = ()
     brief: JepBrief | None = None
+
+
+@dataclass(frozen=True)
+class JepRenderResult:
+    markdown: str
+    generation_mode: str
+    attempts: int
+    findings: tuple[str, ...] = ()
 
 
 _QUESTIONS = {
@@ -241,7 +251,16 @@ def render_jep_markdown(brief: JepBrief) -> str:
         out_of_scope += " A separate BOM artifact is also out of scope."
     refs = ""
     if brief.artifact_references:
-        refs = " Same-engagement references: " + "; ".join(brief.artifact_references) + "."
+        reference_labels = []
+        reference_text = " ".join(brief.artifact_references).lower()
+        if "diagram" in reference_text or ".drawio" in reference_text:
+            reference_labels.append("approved same-engagement diagram")
+        if "bom" in reference_text or ".xlsx" in reference_text:
+            reference_labels.append("finalized same-engagement BOM")
+        if "selected poc" in reference_text or "poc_plan/" in reference_text:
+            reference_labels.append("confirmed same-engagement POC")
+        if reference_labels:
+            refs = " It uses the " + ", ".join(reference_labels) + " as controlled inputs."
     lines = [
         f"# Joint Execution Plan — {brief.customer}", "",
         "## Executive Summary", "",
@@ -279,13 +298,123 @@ def render_jep_markdown(brief: JepBrief) -> str:
         lines.append(f"| {risk} | Preserve evidence and apply the agreed fallback if the criterion is not met. | {owner_label} |")
     if brief.include_bom:
         lines += ["", "## Bill of Materials (BOM)", "", "The JEP references only this approved scope:", ""]
-        lines.extend(f"- {item}" for item in brief.bom_scope)
+        public_bom_scope = [
+            item for item in brief.bom_scope
+            if not re.search(r"(?i)(?:agent3|poc_plan|customers)/|\.(?:drawio|xlsx|json)\b", item)
+        ]
+        lines.extend(f"- {item}" for item in public_bom_scope or brief.scope)
         lines += ["", "This section does not create or authorize a separate BOM workbook."]
     if brief.include_handoff:
         lines += ["", "## Handoff Deliverables", ""]
         lines.extend(f"- {item}" for item in brief.handoff_requirements)
     lines += ["", "## Approvals", "", brief.approvals, ""]
     return "\n".join(lines)
+
+
+_JEP_RENDER_SYSTEM = """You render a Joint Execution Plan from a locked, validated brief.
+Write a polished, professional JEP from ONLY the facts in this brief. You may rephrase,
+reorder, and add connective prose for readability. You may NOT introduce any number,
+percentage, service, shape, date, SLA, owner, or claim that is not present in the brief.
+Do not include internal object-storage keys or file paths. Preserve the three phase
+windows, all owner roles and commitments, and all success criteria exactly. Use the
+canonical nine Markdown sections in their supplied order, keep Approvals last, and
+represent the three phases in a Markdown table with rows beginning "Phase 1 Assessment",
+"Phase 2 Build", and "Phase 3 Validate". Return only Markdown."""
+
+
+def render_jep_with_inference(
+    brief: JepBrief,
+    runner: Callable[[str, str], str],
+) -> JepRenderResult:
+    """Try constrained prose twice, then return the deterministic safe template."""
+    payload = jep_brief_payload(brief)
+    fallback = render_jep_markdown(brief)
+    payload_json = json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2)
+    allowed_numbers = sorted(set(re.findall(r"(?<![A-Za-z0-9])\d+(?:[.,]\d+)?%?", payload_json)))
+    prompt = "Validated JEP brief (the complete fact set):\n```json\n" + payload_json
+    prompt += (
+        "\n```\n\nAllowed factual numeric tokens (no others): " + ", ".join(allowed_numbers) +
+        "\nAllowed OCI services (no others): " + ", ".join(brief.scope) +
+        "\nDo not add customary milestones, durations, availability values, or examples."
+        "\n\nSafe deterministic draft to polish without changing its facts or headings:\n```markdown\n"
+        + fallback + "\n```\nRework the connective prose materially: add or rewrite at least two substantive "
+        "narrative paragraphs. Do not return the deterministic draft unchanged."
+    )
+    latest_findings: list[str] = []
+    for attempt in (1, 2):
+        attempt_prompt = prompt
+        if latest_findings:
+            attempt_prompt += (
+                "\n\nThe prior rendering was rejected. Regenerate from the brief and correct exactly "
+                "these violations:\n- " + "\n- ".join(latest_findings)
+            )
+        try:
+            markdown = _strip_markdown_fence(str(runner(attempt_prompt, _JEP_RENDER_SYSTEM) or ""))
+            latest_findings = jep_grounding_findings(markdown, brief)
+            if not latest_findings and not has_material_prose_revision(markdown, fallback):
+                latest_findings = ["prose repeats the deterministic template without material improvement"]
+        except Exception as exc:
+            markdown = ""
+            latest_findings = [f"renderer error: {type(exc).__name__}: {exc}"]
+        if not latest_findings:
+            return JepRenderResult(markdown, "generative_grounded_prose", attempt)
+
+    fallback_findings = jep_grounding_findings(fallback, brief)
+    if fallback_findings:
+        raise ValueError("deterministic JEP fallback failed grounding: " + "; ".join(fallback_findings))
+    return JepRenderResult(
+        fallback,
+        "deterministic_grounded_fallback",
+        2,
+        tuple(latest_findings),
+    )
+
+
+def jep_brief_payload(brief: JepBrief) -> dict[str, Any]:
+    payload = asdict(brief)
+    payload.pop("grounded_source", None)
+    public_refs: list[str] = []
+    for reference in brief.artifact_references:
+        cleaned = re.sub(r"\s*\([^)]*(?:/|\.json|\.xlsx|\.drawio)[^)]*\)", "", reference, flags=re.IGNORECASE)
+        cleaned = re.sub(r"(?i)(?:agent3|poc_plan|customers)/\S+|\S+\.(?:drawio|xlsx|json)", "approved artifact", cleaned)
+        cleaned = _clean(cleaned)
+        if cleaned and cleaned not in public_refs:
+            public_refs.append(cleaned)
+    payload["artifact_references"] = public_refs
+    payload["bom_scope"] = [
+        item for item in brief.bom_scope
+        if not re.search(r"(?i)(?:agent3|poc_plan|customers)/|\.(?:drawio|xlsx|json)\b", item)
+    ]
+    return payload
+
+
+def jep_grounding_findings(markdown: str, brief: JepBrief) -> list[str]:
+    """Enforce fact-token grounding and exact preservation of locked JEP fields."""
+    payload_text = json.dumps(jep_brief_payload(brief), ensure_ascii=True, sort_keys=True)
+    findings = factual_token_findings(markdown, payload_text)
+    if "```" in markdown:
+        findings.append("Markdown fence leaked into JEP output")
+    for section in CORE_SECTIONS:
+        count = len(re.findall(rf"^##\s+{re.escape(section)}\s*$", markdown, re.MULTILINE))
+        if count != 1:
+            findings.append(f"required section must appear exactly once: {section} (found {count})")
+    required: list[str] = []
+    for phase in brief.phases:
+        required.extend((f"Phase {phase.number} {phase.name}", phase.window))
+    for owner in brief.owners:
+        required.extend((owner.role, owner.commitment))
+    required.extend(brief.criteria)
+    missing = missing_exact_facts(markdown, required)
+    if missing:
+        findings.append("missing required brief facts: " + "; ".join(missing))
+    findings.extend(validate_jep_markdown(markdown, brief))
+    return list(dict.fromkeys(findings))
+
+
+def _strip_markdown_fence(text: str) -> str:
+    stripped = str(text or "").strip()
+    match = re.fullmatch(r"```(?:markdown)?\s*(.*?)\s*```", stripped, re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else stripped
 
 
 def validate_jep_markdown(
@@ -439,7 +568,7 @@ def _extract_architecture(text: str, context: dict[str, Any]) -> str:
                 return summary
             key = _clean(str(diagram.get("diagram_key") or diagram.get("artifact_ref") or ""))
             if key:
-                return f"The POC architecture is the finalized same-engagement Diagram: {key}"
+                return "The POC architecture is the finalized same-engagement diagram"
     match = re.search(r"\b(?:validate\s+)?migration of\s+(.+?)\s+to\s+OCI\s+([a-z]{2,}-[a-z]+-\d+)", text, re.IGNORECASE)
     if match:
         return f"The POC architecture covers {match.group(1)} in OCI {match.group(2)}"
