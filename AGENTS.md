@@ -182,6 +182,10 @@ AGENT_BASE_URL=http://127.0.0.1:8080 pytest tests/test_server_live.py -v -s
 # General SE qualification (point only at an isolated current-source stack)
 python3.11 scripts/qualify_general_se.py --base-url http://127.0.0.1:18080
 python3.11 scripts/qualify_general_se.py --suite complex-three-tier --base-url http://127.0.0.1:18080
+
+# Engagement purge is dry-run by default. Supply explicit keep IDs, review all
+# three reports, and never run qualification against the purged environment.
+python3.11 scripts/purge_engagements.py --keep-customer-id <real-customer-id>
 ```
 
 ## Run And Health Check
