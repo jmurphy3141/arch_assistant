@@ -21,6 +21,7 @@ exists = store.head("agent3/c1/diag/LATEST.json")
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Optional
 
 from agent.persistence_objectstore import ObjectStoreBase
@@ -28,6 +29,14 @@ from agent.persistence_objectstore import ObjectStoreBase
 logger = logging.getLogger(__name__)
 
 _OCI_ENDPOINT_TPL = "https://objectstorage.{region}.oraclecloud.com"
+
+
+@dataclass(frozen=True)
+class ObjectSummary:
+    """The metadata needed to audit an object before destructive operations."""
+
+    key: str
+    size: int
 
 
 class OciObjectStore(ObjectStoreBase):
@@ -121,6 +130,14 @@ class OciObjectStore(ObjectStoreBase):
 
     def delete(self, key: str) -> None:
         """Delete *key*; a missing object is already the desired state."""
+        self.delete_object(key)
+
+    def delete_object(self, key: str) -> None:
+        """Delete *key* from the configured bucket.
+
+        A missing object is treated as success so destructive maintenance jobs
+        can be resumed safely.
+        """
         import oci  # type: ignore
 
         try:
@@ -151,21 +168,29 @@ class OciObjectStore(ObjectStoreBase):
 
     def list(self, prefix: str = "") -> list[str]:
         """Return object names under prefix, transparently handling pagination."""
+        return [item.key for item in self.list_objects(prefix)]
+
+    def list_objects(self, prefix: str = "") -> list[ObjectSummary]:
+        """Return names and sizes under *prefix*, handling every OCI page."""
         start = None
-        keys: list[str] = []
+        objects: list[ObjectSummary] = []
         while True:
             response = self._client.list_objects(
                 namespace_name=self._namespace,
                 bucket_name=self._bucket_name,
                 prefix=prefix or None,
+                fields="name,size",
                 start=start,
             )
             data = response.data
-            keys.extend([obj.name for obj in data.objects])
+            objects.extend(
+                ObjectSummary(key=str(obj.name), size=int(getattr(obj, "size", 0) or 0))
+                for obj in data.objects
+            )
             if not data.next_start_with:
                 break
             start = data.next_start_with
-        return keys
+        return objects
 
     # ── Repr ─────────────────────────────────────────────────────────────────
 

@@ -210,6 +210,63 @@ class TestHead:
             store.head("forbidden/key")
 
 
+class TestDestructiveMaintenancePrimitives:
+    def test_list_objects_paginates_and_preserves_sizes(self, store_and_client):
+        store, mock_client, _ = store_and_client
+        kept = MagicMock()
+        kept.name = "customers/kept/context.json"
+        kept.size = 12
+        purge = MagicMock()
+        purge.name = "customers/purge/context.json"
+        purge.size = 34
+        first = MagicMock()
+        first.data.objects = [kept]
+        first.data.next_start_with = "next-page"
+        second = MagicMock()
+        second.data.objects = [purge]
+        second.data.next_start_with = None
+        mock_client.list_objects.side_effect = [first, second]
+
+        objects = store.list_objects("customers/")
+
+        assert [(item.key, item.size) for item in objects] == [
+            ("customers/kept/context.json", 12),
+            ("customers/purge/context.json", 34),
+        ]
+        assert mock_client.list_objects.call_args_list[0].kwargs["start"] is None
+        assert mock_client.list_objects.call_args_list[0].kwargs["fields"] == "name,size"
+        assert mock_client.list_objects.call_args_list[1].kwargs["start"] == "next-page"
+
+        one_page = MagicMock()
+        one_page.data.objects = [kept]
+        one_page.data.next_start_with = None
+        mock_client.list_objects.side_effect = None
+        mock_client.list_objects.return_value = one_page
+        assert store.list("customers/") == ["customers/kept/context.json"]
+
+    def test_delete_object_forwards_identity_and_key(self, store_and_client):
+        store, mock_client, _ = store_and_client
+
+        store.delete_object("customers/purge/context.json")
+
+        mock_client.delete_object.assert_called_once_with(
+            namespace_name="oraclejamescalise",
+            bucket_name="agent_assistante",
+            object_name="customers/purge/context.json",
+        )
+
+    def test_delete_object_treats_404_as_success(self, store_and_client):
+        store, mock_client, ServiceError = store_and_client
+        mock_client.delete_object.side_effect = ServiceError(404)
+        store.delete_object("already/gone")
+
+    def test_delete_object_reraises_non_404(self, store_and_client):
+        store, mock_client, ServiceError = store_and_client
+        mock_client.delete_object.side_effect = ServiceError(403)
+        with pytest.raises(ServiceError):
+            store.delete_object("forbidden/key")
+
+
 # ---------------------------------------------------------------------------
 # 5. Key formatting — prefix/client_id/diagram_name/v{N}/filename
 # ---------------------------------------------------------------------------
