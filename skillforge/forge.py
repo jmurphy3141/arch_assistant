@@ -2036,8 +2036,10 @@ def _tool_display_name(tool_name: str) -> str:
 
 
 def _reply_leaks_internal_artifacts(reply: str) -> bool:
+    from agent.grounded_prose import leaks_internal_artifacts
+
     text = str(reply or "")
-    if any(marker in text for marker in _INTERNAL_RESPONSE_MARKERS):
+    if any(marker in text for marker in _INTERNAL_RESPONSE_MARKERS) or leaks_internal_artifacts(text):
         return True
     return bool(re.search(r"(?im)^Management Summary\s*$", text))
 

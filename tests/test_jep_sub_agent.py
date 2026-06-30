@@ -13,10 +13,10 @@ def anyio_backend():
     return "asyncio"
 
 
-async def test_explicit_jep_uses_grounded_path_without_inference(monkeypatch):
+async def test_explicit_jep_falls_back_safely_when_inference_is_unavailable(monkeypatch):
     monkeypatch.setattr(
         "sub_agents.jep.server.run_inference",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not infer")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("inference unavailable")),
     )
     task = (
         "Using the persisted POV and confirmed POC, create the final 14-day JEP and POC plan for Apex Retail to validate migration of an "
@@ -46,7 +46,8 @@ async def test_explicit_jep_uses_grounded_path_without_inference(monkeypatch):
     ))
 
     assert response.status == "ok"
-    assert response.trace["generation_mode"] == "deterministic_grounded_brief"
+    assert response.trace["generation_mode"] == "deterministic_grounded_fallback"
+    assert response.trace["render_attempts"] == 2
     assert "## Handoff Deliverables" in response.result
     assert "Phase 1 Assessment" in response.result
     assert "Phase 2 Build" in response.result

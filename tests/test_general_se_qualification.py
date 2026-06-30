@@ -6,6 +6,7 @@ from scripts.qualify_general_se import (
     _assert_bom_content,
     _assert_diagram_content,
     _assert_jep_content,
+    _assert_pov_content,
     _reply_grounding_errors,
 )
 
@@ -78,3 +79,17 @@ def test_harness_jep_assertions_require_owners_windows_and_success_criteria() ->
     assert any("owner missing: Meridian security lead" in error for error in errors)
     assert any("phase window missing: days 4-21" in error for error in errors)
     assert any("success criterion missing: support 400 concurrent portal sessions" in error for error in errors)
+
+
+def test_harness_document_assertions_reject_internal_keys_and_unreadable_pov() -> None:
+    pov = (
+        "# POV\n\n## 1. Internal Press Release\n\n"
+        "customers/fake/bom/result.xlsx\n\n"
+        "## 2. External Customer FAQ\n\n## 3. Internal Oracle Questions\n\n"
+        "### Recommended Next Steps\n"
+    ).encode()
+
+    errors = _assert_pov_content(pov, MERIDIAN)
+
+    assert "internal artifact key or file path present" in errors
+    assert "POV lacks substantive prose paragraphs" in errors
