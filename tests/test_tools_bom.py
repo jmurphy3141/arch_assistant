@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from agent import context_store, sub_agent_client
+from agent import consistency_contract, context_store, sub_agent_client
 from agent.tools import bom as bom_module
 from agent.tools.bom import BomHandler
 from skillforge.types import MemorySnapshot
@@ -171,7 +171,7 @@ async def test_bom_correction_preserves_authoritative_user_request(monkeypatch):
                     "artifact_key": "bom.xlsx",
                     "bom_payload": {
                         "line_items": [
-                            {"sku": "B1", "description": "Block", "quantity": 500, "unit_price": 1}
+                            {"sku": "B91961", "description": "Block", "quantity": 500, "unit_price": 1}
                         ],
                         "monthly_total": 500,
                         "totals": {"estimated_monthly_cost": 500},
@@ -271,6 +271,119 @@ async def test_bom_repairs_explicit_aggregate_sizing_before_success(monkeypatch)
     assert by_sku["B97385"]["quantity"] == 96
     assert by_sku["B97384"]["instance_count"] == 3
     assert by_sku["B97385"]["instance_count"] == 3
+
+
+async def test_selected_poc_services_survive_direct_sizing_and_cover_skyline_bom(monkeypatch):
+    captured = {}
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        captured["task"] = task
+        captured["engagement_context"] = engagement_context
+        rows = [
+            {"sku": "B97384", "description": "Compute - Standard - E5 - OCPU", "metric": "OCPU Per Hour", "quantity": 15, "unit_price": 0.03, "instance_count": 3},
+            {"sku": "B97385", "description": "Compute - Standard - E5 - Memory", "metric": "Gigabytes Per Hour", "quantity": 120, "unit_price": 0.002, "instance_count": 3},
+            {"sku": "B91961", "description": "Storage - Block Volume - Storage", "metric": "GB Per Month", "quantity": 2048, "unit_price": 0.0255},
+            {"sku": "B91962", "description": "Storage - Block Volume - Performance Units", "metric": "VPU Per Month", "quantity": 20480, "unit_price": 0.0017},
+            {"sku": "B91628", "description": "Object Storage - Storage", "metric": "GB Per Month", "quantity": 6144, "unit_price": 0.0255},
+        ]
+        monthly = sum(
+            row["quantity"] * row["unit_price"] * (730 if "Hour" in row["metric"] else 1)
+            for row in rows
+        )
+        return {
+            "status": "ok",
+            "result": json.dumps({
+                "bom_payload": {
+                    "region": "uk-london-1",
+                    "line_items": rows,
+                    "monthly_total": monthly,
+                }
+            }),
+        }
+
+    monkeypatch.setattr(bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent)
+    context = {}
+    consistency_contract.record_selected_poc(context, {
+        "option_name": "Skyline Operational Readiness POC",
+        "oci_services": [
+            "Flexible Load Balancer", "VM.Standard.E5.Flex", "PostgreSQL DB System",
+            "Object Storage", "Block Volume", "Site-to-Site VPN", "Logging", "Monitoring",
+        ],
+        "grounding": {"region": "uk-london-1"},
+    })
+    request = (
+        "Create the XLSX BOM for the selected POC in uk-london-1 with three private "
+        "VM.Standard.E5.Flex application servers at 5 OCPUs and 40 GB RAM each, "
+        "2 TB Block Volume, and 6 TB Object Storage."
+    )
+
+    result = await make_handler()(
+        {"prompt": request, "_user_message": request},
+        memory=make_memory_with_raw({"customer_id": "cust-1"}),
+        context=context,
+        trace_id="skyline",
+    )
+
+    assert result.status == "ok"
+    assert captured["task"] == request
+    handoff = captured["engagement_context"]["structured_inputs"]
+    assert handoff["compute"]["ocpu"] == 15
+    assert "PostgreSQL" in handoff["target_services"]
+    assert result.data["consistency_report"]["verdict"] == "pass"
+    coverage = {
+        item["canonical_service_id"]
+        for item in result.data["bom_payload"]["scope_items"]
+    }
+    assert {
+        "database.postgresql", "network.vpn.site_to_site",
+        "observability.logging", "observability.monitoring",
+    } <= coverage
+    assert "database.autonomous" not in result.data["consistency_report"]["represented_components"]
+    assert any(
+        row.get("canonical_service_id") == "database.postgresql"
+        for row in result.data["bom_payload"]["line_items"]
+    )
+
+
+async def test_selected_poc_handoff_uses_contract_region_scope_and_poc_defaults(monkeypatch):
+    captured = {}
+
+    async def fake_call_sub_agent(name, task, engagement_context={}, trace_id=""):
+        captured.update(engagement_context["structured_inputs"])
+        rows = [
+            {"sku": "B97384", "description": "E5 OCPU", "metric": "OCPU Per Hour", "quantity": 4, "unit_price": 0.03, "canonical_service_id": "compute.vm.standard.e5.flex"},
+            {"sku": "B97385", "description": "E5 Memory", "metric": "Gigabytes Per Hour", "quantity": 32, "unit_price": 0.002, "canonical_service_id": "compute.vm.standard.e5.flex"},
+            {"sku": "B91628", "description": "Object Storage", "metric": "GB Per Month", "quantity": 1024, "unit_price": 0.0255, "canonical_service_id": "storage.object"},
+        ]
+        total = sum(row["quantity"] * row["unit_price"] * (730 if "Hour" in row["metric"] else 1) for row in rows)
+        return {"status": "ok", "result": json.dumps({"bom_payload": {
+            "region": captured["region"], "line_items": rows, "monthly_total": total,
+        }})}
+
+    monkeypatch.setattr(bom_module.sub_agent_client, "call_sub_agent", fake_call_sub_agent)
+    context = {}
+    consistency_contract.record_selected_poc(context, {
+        "option_name": "Strict E5 POC",
+        "oci_services": ["VM.Standard.E5.Flex", "Object Storage", "Logging"],
+        "grounding": {"region": "us-phoenix-1"},
+    })
+
+    result = await make_handler()(
+        {"prompt": "Create the selected POC BOM and use assumptions for missing sizing."},
+        memory=make_memory_with_raw({"customer_id": "cust-1"}),
+        context=context,
+        trace_id="strict-handoff",
+    )
+
+    assert result.status == "ok"
+    assert captured["region"] == "us-phoenix-1"
+    assert captured["compute"]["shape"] == "VM.Standard.E5.Flex"
+    assert captured["compute"]["ocpu"] == 4
+    assert captured["memory"]["gb"] == 32
+    assert captured["storage"]["object_gb"] == 1024
+    assert set(captured["target_service_ids"]) == {
+        "compute.vm.standard.e5.flex", "storage.object", "observability.logging",
+    }
 
 
 async def test_bom_accepts_valid_payload_before_xlsx_artifact_is_persisted(monkeypatch):

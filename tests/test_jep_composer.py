@@ -39,12 +39,69 @@ def test_extracts_validated_brief() -> None:
     assert len(brief.risks) == 3
 
 
+def test_extracts_three_named_owners_with_shared_commitment() -> None:
+    request = QUALIFIED.replace(
+        "Oracle SA and Apex Retail technical lead each commit 8 hours per week.",
+        "Oracle SA, Apex Retail application lead, and Apex Retail network engineer each commit 8 hours per week.",
+    )
+    brief, missing = extract_jep_brief(request, {})
+
+    assert missing == []
+    assert brief is not None
+    assert [owner.role for owner in brief.owners] == [
+        "Oracle SA",
+        "Apex Retail application lead",
+        "Apex Retail network engineer",
+    ]
+    assert all(owner.commitment == "8 hours per week" for owner in brief.owners)
+
+
+def test_preserves_realistic_order_rate_and_concurrent_user_criteria() -> None:
+    order_request = QUALIFIED.replace(
+        "99.9% availability during a 48-hour soak test",
+        "sustain 750 orders per minute",
+    )
+    order_brief, order_missing = extract_jep_brief(order_request, {})
+    assert order_missing == []
+    assert order_brief is not None
+    assert "sustain 750 orders per minute" in order_brief.criteria
+
+    user_request = QUALIFIED.replace(
+        "99.9% availability during a 48-hour soak test",
+        "support 1200 concurrent enrollment users",
+    )
+    user_brief, user_missing = extract_jep_brief(user_request, {})
+    assert user_missing == []
+    assert user_brief is not None
+    assert "support 1200 concurrent enrollment users" in user_brief.criteria
+
+    qualified_rate_request = QUALIFIED.replace(
+        "99.9% availability during a 48-hour soak test",
+        "process 250 supplier orders per minute",
+    )
+    qualified_brief, qualified_missing = extract_jep_brief(qualified_rate_request, {})
+    assert qualified_missing == []
+    assert qualified_brief is not None
+    assert "process 250 supplier orders per minute" in qualified_brief.criteria
+
+
 def test_incomplete_request_returns_targeted_questions_without_artifact() -> None:
     result = compose_jep("Create a JEP for ACME", {"customer_name": "ACME"})
     assert result.status == "needs_input"
     assert result.markdown == ""
     assert "region" in result.missing_fields
     assert any("OCI region" in question for question in result.questions)
+
+
+def test_general_jep_requires_three_measurable_criteria() -> None:
+    result = compose_jep(
+        QUALIFIED.replace(
+            ", and database restore within 60 minutes",
+            "",
+        )
+    )
+    assert result.status == "needs_input"
+    assert "criteria" in result.missing_fields
 
 
 def test_canonical_order_optional_sections_and_approvals_last() -> None:
@@ -129,6 +186,7 @@ def test_jep_requires_and_references_selected_poc_and_finalized_bom() -> None:
                 "poc": {
                     "selected_option_name": "Apex Retail Core Workload Validation POC",
                     "artifact_key": "poc_plan/apex/v1.json",
+                    "oci_services": ["PostgreSQL DB System", "Site-to-Site VPN"],
                 },
                 "bom": {
                     "xlsx_artifact_key": "bom/apex/final.xlsx",
@@ -141,3 +199,71 @@ def test_jep_requires_and_references_selected_poc_and_finalized_bom() -> None:
     assert result.status == "ok"
     assert "Selected POC: Apex Retail Core Workload Validation POC (poc_plan/apex/v1.json)" in result.markdown
     assert "BOM: bom/apex/final.xlsx" in result.markdown
+    assert "Site-to-Site VPN" in result.markdown
+
+
+def test_selected_poc_jep_accepts_two_exact_criteria_and_natural_owner_role() -> None:
+    request = (
+        "Generate only the JEP artifact for HarborStone's selected POC in us-ashburn-1. "
+        "Use a 15-day duration with Phase 1 Assessment on days 1-3, Phase 2 Build on "
+        "days 4-10, and Phase 3 Validate on days 11-15. Success criteria: p95 under "
+        "500 milliseconds, restore within 60 minutes. Oracle SA and HarborStone lead "
+        "each commit 10 hours per week. Include at least three risks and a go/no-go "
+        "sign-off with fallback."
+    )
+    result = compose_jep(request, {
+        "customer_name": "HarborStone",
+        "artifact_context": {
+            "poc": {
+                "selected_option_name": "HarborStone Core Workload Validation POC",
+                "artifact_key": "poc_plan/harbor/v1.json",
+                "oci_services": ["VM.Standard.E5.Flex", "PostgreSQL DB System"],
+                "grounding": {
+                    "success_criteria": [
+                        "p95 under 500 milliseconds",
+                        "restore within 60 minutes",
+                    ]
+                },
+            },
+            "bom": {"xlsx_artifact_key": "bom/harbor/final.xlsx"},
+            "diagram": {"diagram_key": "diagram/harbor/final.drawio"},
+        },
+    })
+
+    assert result.status == "ok"
+    assert "p95 under 500 milliseconds" in result.markdown
+    assert "restore within 60 minutes" in result.markdown
+    assert "HarborStone lead" in result.markdown
+    assert "diagram/harbor/final.drawio" in result.markdown
+
+
+def test_selected_poc_jep_splits_process_and_recover_criteria() -> None:
+    request = (
+        "Generate only the JEP artifact for NovaGrid's selected POC in us-phoenix-1. "
+        "Use a 15-day duration with Phase 1 Assessment on days 1-3, Phase 2 Build on "
+        "days 4-10, and Phase 3 Validate on days 11-15. Success criteria: process 300 "
+        "requests per second, recover within 30 minutes. Oracle SA and NovaGrid engineer "
+        "each commit 8 hours per week. Include at least three risks and a go/no-go sign-off "
+        "with fallback."
+    )
+    result = compose_jep(request, {
+        "customer_name": "NovaGrid",
+        "artifact_context": {
+            "poc": {
+                "selected_option_name": "NovaGrid Performance Validation POC",
+                "oci_services": ["VM.Standard.E5.Flex"],
+                "grounding": {
+                    "success_criteria": [
+                        "process 300 requests per second",
+                        "recover within 30 minutes",
+                    ]
+                },
+            },
+            "bom": {"xlsx_artifact_key": "bom/nova.xlsx"},
+            "diagram": {"diagram_key": "diagram/nova.drawio"},
+        },
+    })
+
+    assert result.status == "ok"
+    assert "process 300 requests per second" in result.markdown
+    assert "recover within 30 minutes" in result.markdown

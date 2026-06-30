@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
+import pytest
 
 import drawing_agent_server
 from drawing_agent_server import app, require_user
 from agent.bom_service import BomService
+from agent.persistence_objectstore import InMemoryObjectStore
+from server.services import bom_artifacts
 from server.services.bom_artifacts import structured_bom_result_uses_default_sizing
 
 
@@ -96,6 +100,46 @@ def test_structured_bom_guard_checks_block_and_object_storage_independently() ->
     assert structured_bom_result_uses_default_sizing(result) is False
     result["bom_payload"]["line_items"][-1]["quantity"] = 1024
     assert structured_bom_result_uses_default_sizing(result) is True
+
+
+def test_bom_xlsx_and_metadata_roll_back_when_consistency_writeback_fails(monkeypatch) -> None:
+    class FakeService:
+        def generate_xlsx(self, payload):
+            return b"xlsx"
+
+    store = InMemoryObjectStore()
+    result = {
+        "tool_calls": [{
+            "tool": "generate_bom",
+            "result_data": {
+                "type": "final",
+                "consistency_report": {"verdict": "pass"},
+                "bom_payload": {
+                    "line_items": [{
+                        "sku": "B97384", "description": "E5 OCPU", "quantity": 4,
+                        "unit_price": 0.03,
+                    }]
+                },
+            },
+        }]
+    }
+    monkeypatch.setattr(
+        bom_artifacts,
+        "write_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("context write failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="context write failed"):
+        asyncio.run(bom_artifacts.persist_bom_xlsx_downloads(
+            "acme",
+            store,
+            result,
+            bom_service_factory=FakeService,
+            logger=__import__("logging").getLogger("test"),
+        ))
+
+    assert store.list("customers/acme/bom/xlsx/") == []
+    assert "xlsx_artifact_key" not in result["tool_calls"][0]["result_data"]
 
 
 def test_bom_refresh_requires_admin_group_when_auth_enabled(monkeypatch) -> None:

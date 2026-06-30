@@ -12,6 +12,7 @@ from typing import Any, Callable
 import anyio
 from fastapi import HTTPException
 
+from agent import consistency_contract
 from agent.context_store import read_context, record_agent_run, record_bom_work_product, write_context
 
 
@@ -242,6 +243,9 @@ def bom_result_is_exportable(result_data: dict) -> bool:
         return False
     if structured_bom_result_uses_default_sizing(result_data):
         return False
+    consistency = result_data.get("consistency_report")
+    if isinstance(consistency, dict) and str(consistency.get("verdict") or "").lower() != "pass":
+        return False
     return True
 
 
@@ -446,6 +450,11 @@ async def persist_bom_xlsx_downloads(
                 grounding=str(metadata.get("grounding") or ""),
                 xlsx={"key": key, "filename": filename, "metadata": metadata},
             )
+            consistency_contract.record_final_bom(
+                context,
+                payload,
+                artifact_key=key,
+            )
             record_agent_run(
                 context,
                 "bom",
@@ -459,5 +468,14 @@ async def persist_bom_xlsx_downloads(
             )
             write_context(store, customer_id, context)
         except Exception as exc:
-            logger.warning("Could not record BOM XLSX artifact in context: %s", exc)
+            logger.error("Could not commit BOM XLSX and consistency state: %s", exc)
+            try:
+                store.delete(key)
+                store.delete(metadata_key)
+            finally:
+                for field in (
+                    "xlsx_artifact_key", "xlsx_filename", "xlsx_metadata", "bom_xlsx",
+                ):
+                    result_data.pop(field, None)
+            raise
     return result

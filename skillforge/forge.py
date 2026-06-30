@@ -88,7 +88,9 @@ _FINAL_SYNTHESIS_SYSTEM = (
     "Markdown. Be concise, natural, and direct. Remove precise benchmarks, prices, "
     "percentages, customer examples, and citations unless they are explicitly present "
     "in the tool outcomes supplied for this synthesis. Never turn an assumption or "
-    "illustrative target into an achieved fact."
+    "illustrative target into an achieved fact. VM.Standard.E5.Flex is AMD Genoa "
+    "x86 and VM.Standard.E6.Flex is AMD Turin x86; only A1.Flex is Ampere/Arm. "
+    "Never invent a customer, case study, SLA, benchmark, cost, or savings claim."
 )
 _ARTIFACT_GENERATION_TOOLS = frozenset(
     {
@@ -1068,7 +1070,10 @@ class Forge:
             reply=cleaned,
             tool_calls=tool_calls,
         ):
-            return _clean_simple_question_claims(user_message, cleaned)
+            return _ground_conversational_reply(
+                _clean_simple_question_claims(user_message, cleaned),
+                user_message,
+            )
 
         fallback = _deterministic_clean_reply(
             user_message=user_message,
@@ -1084,14 +1089,17 @@ class Forge:
             raw = await self._text_runner(prompt, _FINAL_SYNTHESIS_SYSTEM, "final_synthesis")
         except Exception as exc:
             logger.warning("Final synthesis failed session=%s: %s", session_id, exc)
-            return fallback
+            return _ground_conversational_reply(fallback, user_message)
 
         if _parse_tool_call(raw) is not _NO_TOOL:
-            return fallback
+            return _ground_conversational_reply(fallback, user_message)
         synthesized = _strip_internal_response_artifacts(str(raw or ""))
         if not synthesized or _reply_leaks_internal_artifacts(synthesized):
-            return fallback
-        return _clean_simple_question_claims(user_message, synthesized)
+            return _ground_conversational_reply(fallback, user_message)
+        return _ground_conversational_reply(
+            _clean_simple_question_claims(user_message, synthesized),
+            user_message,
+        )
 
     async def run_turn_background(
         self,
@@ -2149,6 +2157,8 @@ def _build_final_synthesis_prompt(
         "- If something failed or needs input, say that clearly and give the next useful step.\n"
         "- Do not include headings, tables, Management Summary, tool traces, or internal reasoning.\n"
         "- Use bullets only if they make the answer materially easier to scan.\n\n"
+        "- E5.Flex and E6.Flex are AMD x86, never Ampere/Arm; A1.Flex is Ampere/Arm.\n"
+        "- Do not add customer examples, benchmarks, SLAs, prices, costs, or savings absent from the supplied text.\n\n"
         f"User message:\n{user_message}\n\n"
         f"Tool outcomes:\n{tool_block}\n\n"
         f"Current assistant draft:\n{current_reply}\n\n"
@@ -2228,6 +2238,12 @@ def _direct_tool_outcome_reply(
 def _clean_simple_question_claims(user_message: str, reply: str) -> str:
     """Remove unsupported precision from colleague-style conversational replies."""
     text = str(reply or "").strip()
+    text = re.sub(
+        r"\b(?:VM\.Standard\.)?(E5|E6)\.Flex\b[^.!?\n]{0,100}\b(?:Ampere|Arm)\b[^.!?\n]*[.!?]?",
+        lambda match: f"VM.Standard.{match.group(1).upper()}.Flex uses AMD x86.",
+        text,
+        flags=re.IGNORECASE,
+    )
     if not text or not _is_simple_conversation_question(user_message):
         return text
     paragraphs: list[str] = []
@@ -2240,6 +2256,33 @@ def _clean_simple_question_claims(user_message: str, reply: str) -> str:
         if paragraph and not unsupported_precision.search(paragraph):
             paragraphs.append(paragraph)
     return "\n\n".join(paragraphs).strip() or _first_plain_sentence(text)
+
+
+def _ground_conversational_reply(reply: str, grounding_text: str) -> str:
+    """Fail closed on unsupported conversational precision and silicon claims."""
+    text = str(reply or "").strip()
+    grounding = str(grounding_text or "").lower().replace(" ", "")
+    if not text:
+        return text
+    text = re.sub(
+        r"\b(?:VM\.Standard\.)?(E5|E6)\.Flex\b[^.!?\n]{0,100}\b(?:Ampere|Arm)\b[^.!?\n]*[.!?]?",
+        lambda match: f"VM.Standard.{match.group(1).upper()}.Flex uses AMD x86.",
+        text,
+        flags=re.IGNORECASE,
+    )
+    grounded_lines: list[str] = []
+    for line in text.splitlines():
+        percentages = re.findall(r"\b\d+(?:\.\d+)?\s*%", line)
+        currencies = re.findall(r"[$€£]\s*\d+(?:\.\d+)?", line)
+        unsupported = [
+            token for token in (*percentages, *currencies)
+            if token.lower().replace(" ", "") not in grounding
+        ]
+        if unsupported:
+            continue
+        grounded_lines.append(line)
+    cleaned = "\n".join(grounded_lines).strip()
+    return cleaned or "I don't have grounded evidence for a numeric claim yet."
 
 
 def _synthesize_reply_from_tool_calls(tool_calls: list[ToolCall]) -> str:

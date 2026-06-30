@@ -45,6 +45,17 @@ TOOL_TO_ARTIFACT: dict[str, tuple[str, str]] = {
     "generate_terraform":          ("Deploy",   "terraform"),
 }
 
+ARTIFACT_DISPLAY_NAMES = {
+    "pov": "point of view",
+    "sta": "Strategic Technical Approach",
+    "diagram": "architecture diagram",
+    "bom": "bill of materials",
+    "jep": "joint execution plan",
+    "waf": "WAF assessment",
+    "technical_proposal": "technical proposal",
+    "terraform": "Terraform package",
+}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -272,9 +283,11 @@ class EngagementMission:
                     None,
                 )
                 if tool_name:
-                    tool_label = tool_name.replace("generate_", "").replace("_", " ")
+                    tool_label = ARTIFACT_DISPLAY_NAMES.get(artifact)
+                    if not tool_label:
+                        return None
                     nudge = (
-                        f"You're in {phase} phase — {artifact} is the next required artifact. "
+                        f"You're in {phase} phase — {tool_label} is the next required artifact. "
                         f"Want me to generate the {tool_label}?"
                     )
 

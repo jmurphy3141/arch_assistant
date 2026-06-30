@@ -303,6 +303,7 @@ async def run_turn(
     reply = ""
 
     def _finalize_turn(reply_text: str) -> dict:
+        reply_text = _bound_user_questions(reply_text)
         assistant_turn = {
             "role": "assistant",
             "content": reply_text,
@@ -404,6 +405,7 @@ async def run_turn(
     )
     archie_memory._record_region_constraint_if_present(context, decision_context)
     archie_memory._record_infrastructure_profile_if_present(context, user_message)
+    archie_memory._record_poc_discovery_context(context, user_message)
     context_store.set_latest_decision_context(context, decision_context)
     context_store.set_archie_decision_state(
         context,
@@ -412,6 +414,28 @@ async def run_turn(
     )
     context_store.refresh_archie_memory(context)
     await asyncio.to_thread(context_store.write_context, store, customer_id, context)
+
+    explicit_note_capture = bool(
+        re.search(r"\b(?:save|record|capture)\b.{0,30}\b(?:note|notes)\b", user_message, re.IGNORECASE)
+        and not requested_tools
+    )
+    if explicit_note_capture:
+        note_result = await forge.invoke_tool(
+            "save_notes",
+            {"text": user_message},
+            session_id=customer_id,
+            context=context,
+        )
+        tool_calls.append({
+            "tool": "save_notes",
+            "args": {"text": user_message},
+            "result_summary": note_result.summary,
+            "result_status": note_result.status,
+            "result_data": dict(note_result.data or {}),
+            "artifact_key": note_result.artifact_key or "",
+        })
+        await asyncio.to_thread(context_store.write_context, store, customer_id, context)
+        return _finalize_turn(note_result.summary)
 
     turn_intent = _classify_turn_intent(
         user_message=user_message,
@@ -496,78 +520,8 @@ async def run_turn(
             "result_data": dict(confirm_result.data or {}),
             "artifact_key": confirm_result.artifact_key or "",
         })
-        parallel_calls = list(confirm_result.parallel_tools or [])
-        if confirm_result.status != "parallel" or len(parallel_calls) != 5:
-            return _finalize_turn(confirm_result.summary)
-
-        async def _run_confirmed_poc_tool(parallel_call):
-            result = await forge.invoke_tool(
-                parallel_call.tool,
-                dict(parallel_call.args or {}),
-                session_id=customer_id,
-                context=context,
-            )
-            return parallel_call, result
-
-        fanout_results = await asyncio.gather(
-            *[_run_confirmed_poc_tool(call) for call in parallel_calls]
-        )
-        failed: list[str] = []
-        ready: list[str] = []
-        for parallel_call, result in fanout_results:
-            call = {
-                "tool": parallel_call.tool,
-                "args": dict(parallel_call.args or {}),
-                "result_summary": result.summary,
-                "result_data": dict(result.data or {}),
-                "artifact_key": result.artifact_key or "",
-            }
-            tool_calls.append(call)
-            if result.artifact_key:
-                artifacts[parallel_call.tool] = result.artifact_key
-            deferred_bom_artifact = (
-                parallel_call.tool == "generate_bom"
-                and isinstance((result.data or {}).get("bom_payload"), dict)
-                and bool((result.data or {}).get("bom_payload"))
-            )
-            if result.status != "ok" or (not result.artifact_key and not deferred_bom_artifact):
-                failed.append(f"{parallel_call.tool}: {result.summary}")
-            else:
-                ready.append(f"{parallel_call.tool}: {result.summary}")
         await asyncio.to_thread(context_store.write_context, store, customer_id, context)
-        if failed:
-            details = "\n".join(f"- {item}" for item in failed)
-            return _finalize_turn(
-                f"POC confirmation for {confirmed_poc_name} did not complete all required artifacts.\n{details}"
-            )
-        details = "\n".join(f"- {item}" for item in ready)
-        return _finalize_turn(f"POC kit for {confirmed_poc_name} is ready.\n{details}")
-
-    architecture_followup = str(user_message or "").strip().lower().startswith(
-        ("why", "can you explain", "explain why")
-    )
-    if (
-        architecture_followup
-        and not requested_tools
-        and any(
-            turn.get("role") == "assistant"
-            and "architecture discussion first" in str(turn.get("content", "")).lower()
-            for turn in history
-            if isinstance(turn, dict)
-        )
-    ):
-        return _finalize_turn(_build_architecture_why_reply())
-    if (
-        decision_context.get("conversational_architecture")
-        and not requested_tools
-        and not architecture_followup
-    ):
-        return _finalize_turn(
-            _build_architecture_chat_reply(
-                user_message=user_message,
-                decision_context=decision_context,
-            )
-        )
+        return _finalize_turn(confirm_result.summary)
 
     prompt = _build_prompt(
         history,
@@ -699,6 +653,7 @@ async def run_turn(
                 "tool": tool_name,
                 "args": direct_args,
                 "result_summary": direct_result.summary,
+                "result_status": direct_result.status,
                 "result_data": dict(direct_result.data or {}),
                 "artifact_key": direct_result.artifact_key or "",
             }
@@ -708,6 +663,7 @@ async def run_turn(
             prior_summaries.append(f"{tool_name}: {direct_result.summary}")
         tool_calls.extend(direct_calls)
         artifacts.update(direct_artifacts)
+        await asyncio.to_thread(context_store.write_context, store, customer_id, context)
         return _finalize_turn(
             _build_generation_fallback_reply(direct_calls, decision_context=decision_context)
         )
@@ -718,14 +674,29 @@ async def run_turn(
     if enrichment:
         context.setdefault("archie", {})["_enrichment"] = enrichment
 
-    forge_result = await forge.run_turn(
-        session_id=customer_id,
-        user_message=user_message,
-        context=context,
-        history=history,
-        reasoning_sink=reasoning_sink,
-    )
+    original_step3 = getattr(forge, "_step3_planning", None)
+    original_tool_runner = getattr(forge, "_tool_runner", None)
+    if not requested_tools and original_step3 is not None:
+        forge._step3_planning = False
+    if not requested_tools and original_tool_runner is not None:
+        async def _conversation_tool_runner(prompt, system_message, _schemas, label):
+            return await original_tool_runner(prompt, system_message, [], label)
+        forge._tool_runner = _conversation_tool_runner
+    try:
+        forge_result = await forge.run_turn(
+            session_id=customer_id,
+            user_message=user_message,
+            context=context,
+            history=history,
+            reasoning_sink=reasoning_sink,
+        )
+    finally:
+        if original_step3 is not None:
+            forge._step3_planning = original_step3
+        if original_tool_runner is not None:
+            forge._tool_runner = original_tool_runner
     reply = forge_result.reply
+    reply = _bound_user_questions(reply)
     forge_events = forge_result.events if isinstance(forge_result.events, list) else []
     turn_events.extend(
         {
@@ -917,7 +888,7 @@ def _build_generation_fallback_reply(
             return _build_single_diagram_reply(call, decision_context=decision_context)
         lines = [str(call.get("result_summary", "") or "").strip()]
         result_data = call.get("result_data", {}) if isinstance(call.get("result_data"), dict) else {}
-        if call.get("tool") == "generate_bom":
+        if call.get("tool") == "generate_bom" and str(call.get("result_status") or "ok") == "ok":
             payload = result_data.get("bom_payload") if isinstance(result_data.get("bom_payload"), dict) else {}
             line_items = payload.get("line_items") if isinstance(payload.get("line_items"), list) else []
             total = payload.get("monthly_total") or (payload.get("totals") or {}).get("estimated_monthly_cost")
@@ -972,6 +943,30 @@ def _build_generation_fallback_reply(
         lines.append("Missing inputs to tighten the next pass:")
         lines.extend(f"- {item}" for item in list(dict.fromkeys(missing_inputs))[:4])
     return "\n".join(lines).strip()
+
+
+def _bound_user_questions(reply: str, *, limit: int = 3) -> str:
+    """Keep conversational discovery to one bounded batch of questions."""
+    kept: list[str] = []
+    questions = 0
+    for line in str(reply or "").splitlines():
+        count = line.count("?")
+        if not count:
+            kept.append(line)
+            continue
+        remaining = limit - questions
+        if remaining <= 0:
+            continue
+        if count <= remaining:
+            kept.append(line)
+            questions += count
+            continue
+        end = 0
+        for _ in range(remaining):
+            end = line.find("?", end) + 1
+        kept.append(line[:end].rstrip())
+        questions = limit
+    return "\n".join(kept).strip()
 
 # ── Tool dispatch ─────────────────────────────────────────────────────────────
 
@@ -2930,16 +2925,71 @@ def _requested_generation_tools(user_message: str) -> set[str]:
         requested.add("generate_jep")
     if _message_requests_waf_review(msg):
         requested.add("generate_waf")
+    explicit_diagram_action = bool(re.search(
+        r"\b(?:build|create|generate|draw|make|update|revise)\s+"
+        r"(?:an?\s+|the\s+)?(?:architecture\s+)?diagram\b|"
+        r"(?:,|\band\b)\s+(?:(?:build|create|generate|draw|make|update|revise)\s+)?"
+        r"(?:an?\s+|the\s+)?(?:architecture\s+)?diagram\b",
+        msg,
+    ))
+    diagram_is_reference = bool(
+        requested.intersection({"generate_terraform", "generate_jep", "generate_pov", "generate_waf"})
+        and "generate_diagram" in requested
+        and not explicit_diagram_action
+    )
+    if diagram_is_reference:
+        requested.discard("generate_diagram")
+    if "generate_bom" in requested and "diagram" not in msg and "drawio" not in msg and "draw.io" not in msg:
+        requested.discard("generate_diagram")
     if (
         "generate_jep" in requested
-        and re.search(r"\bgenerate\s+only\s+the\s+jep\b", msg)
-        and re.search(r"\bdo\s+not\s+generate\s+(?:a\s+)?separate\s+bom\b", msg)
+        and re.search(r"\bgenerate\s+only\s+the\s+jep(?:\s+artifact)?\b", msg)
     ):
-        requested.discard("generate_bom")
+        requested = {"generate_jep"}
+    only_patterns = {
+        "generate_bom": r"\b(?:build|create|generate)\s+only\s+(?:the\s+)?(?:bom|xlsx|bill of materials)\b",
+        "generate_diagram": r"\b(?:build|create|generate|draw)\s+only\s+(?:the\s+)?(?:draw\.io\s+)?diagram\b",
+        "generate_terraform": r"\b(?:build|create|generate)\s+only\s+(?:the\s+)?terraform\b",
+        "generate_pov": r"\b(?:build|create|generate|draft)\s+only\s+(?:the\s+)?pov\b",
+        "generate_jep": r"\b(?:build|create|generate|draft)\s+only\s+(?:the\s+)?jep\b",
+        "generate_waf": r"\b(?:build|create|generate|run)\s+only\s+(?:the\s+)?waf\b",
+    }
+    for tool, pattern in only_patterns.items():
+        if re.search(pattern, msg):
+            requested = {tool}
+            break
+    negative_terms = {
+        "generate_bom": r"\b(?:bom|xlsx|bill of materials)\b",
+        "generate_diagram": r"\b(?:diagram|draw\.io|drawio)\b",
+        "generate_terraform": r"\bterraform\b",
+        "generate_pov": r"\b(?:pov|point of view)\b",
+        "generate_jep": r"\b(?:jep|joint execution plan)\b",
+        "generate_waf": r"\b(?:waf|well[- ]architected)\b",
+    }
+    for tool, term in negative_terms.items():
+        if re.search(rf"\b(?:do not|don't|without)\b.{{0,100}}{term}", msg):
+            requested.discard(tool)
     return requested
 
 def _message_requests_bom_generation(msg: str) -> bool:
-    generation_or_export = any(token in msg for token in ("build", "create", "generate", "draft", "make", "export", "download", "need"))
+    if re.search(r"\b(?:explain|discuss|review)\b.{0,80}\bbom\b", msg) and re.search(
+        r"\b(?:do not|don't)\s+(?:re)?generate\b", msg
+    ):
+        return False
+    generation_or_export = bool(re.search(
+        r"\b(?:build|create|generate|draft|make|export|download|need)\b",
+        msg,
+    ))
+    diagram_as_primary_output = bool(
+        re.search(r"\b(?:build|create|generate|draw|make)\b.{0,35}\bdiagram\b", msg)
+    )
+    direct_bom_generation = bool(re.search(
+        r"\b(?:build|create|generate|draft|make|export|download)\b\s+"
+        r"(?:an?\s+|the\s+)?(?:final\s+|oci\s+|xlsx\s+|priced\s+|ballpark\s+)*\b(?:bom|bill of materials)\b",
+        msg,
+    ))
+    if diagram_as_primary_output and not direct_bom_generation:
+        return False
     if any(term in msg for term in ("xlsx", "xlxs", "xlsc", "excel", "spreadsheet", "workbook")):
         return True
     if "bom" in msg:
@@ -3202,6 +3252,10 @@ def _is_poc_recommendation_offer_request(user_message: str) -> bool:
 
 def _is_poc_exploration_confirmation_request(user_message: str) -> bool:
     msg = str(user_message or "").lower()
+    if ("jep" in msg or "joint execution plan" in msg) and not any(
+        term in msg for term in ("poc ideas", "poc options", "poc directions")
+    ):
+        return False
     if re.search(
         r"\b(?:build|create|generate|run)\b.{0,40}\b(?:poc|proof of concept)\s+"
         r"(?:ideas?|options?|directions?|plan)\b",
@@ -3214,7 +3268,9 @@ def _is_poc_exploration_confirmation_request(user_message: str) -> bool:
 
 
 def _confirmed_poc_option_name(user_message: str, context: dict[str, Any]) -> str:
-    msg = str(user_message or "").casefold()
+    raw_message = str(user_message or "").strip()
+    msg = raw_message.casefold()
+    normalized_msg = msg.strip(" \t\r\n.!?\"'")
     decision_context = context.get("latest_decision_context", {}) if isinstance(context, dict) else {}
     options = decision_context.get("poc_options", []) if isinstance(decision_context, dict) else []
     if not options and isinstance(context, dict):
@@ -3227,13 +3283,13 @@ def _confirmed_poc_option_name(user_message: str, context: dict[str, Any]) -> st
         index = int(option_number.group(1)) - 1
         if 0 <= index < len(options) and isinstance(options[index], dict):
             return str(options[index].get("option_name", "") or "").strip()
-    if not re.search(r"\b(?:proceed|confirm|select)\b|\bgo\s+with\b", msg):
-        return ""
+        return option_number.group(0)
+    selection_phrase = bool(re.search(r"\b(?:proceed|confirm|select)\b|\bgo\s+with\b", msg))
     for option in options if isinstance(options, list) else []:
         name = str(option.get("option_name", "") or "").strip() if isinstance(option, dict) else ""
-        if name and name.casefold() in msg:
+        if name and (name.casefold() == normalized_msg or (selection_phrase and name.casefold() in msg)):
             return name
-    return ""
+    return raw_message if selection_phrase else ""
 
 
 def _build_poc_recommendation_offer_reply(customer_name: str) -> str:

@@ -845,12 +845,19 @@ def _compact_bom_baseline(payload: dict[str, Any]) -> dict[str, Any]:
                 "quantity": item.get("quantity"),
                 "metric": item.get("metric"),
                 "notes": item.get("notes"),
+                "instance_count": item.get("instance_count"),
+                "canonical_service_id": item.get("canonical_service_id"),
             }
         )
     return {
         "currency": payload.get("currency", "USD"),
         "region": payload.get("region") or payload.get("oci_region"),
         "line_items": line_items,
+        "scope_items": [
+            dict(item)
+            for item in list(payload.get("scope_items", []) or [])[:80]
+            if isinstance(item, dict)
+        ],
         "totals": dict(payload.get("totals", {}) or {}) if isinstance(payload.get("totals"), dict) else {},
         "assumptions": list(payload.get("assumptions", []) or [])[:20],
         "resolved_inputs": list(payload.get("resolved_inputs", []) or [])[:30]

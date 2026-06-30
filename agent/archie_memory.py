@@ -242,9 +242,9 @@ def _is_bom_revision_request(prompt: str, user_message: str, context: dict[str, 
         " regenerate", " rebuild", " revise", " revision", " incorrect", " wrong", " not correct",
         " fix the bom", " replace the bom",
     )
-    if any(marker in msg for marker in revision_markers):
-        return True
     latest = context_store.latest_bom_work_product(context or {}) if isinstance(context, dict) else None
+    if any(marker in msg for marker in revision_markers):
+        return latest is not None
     return latest is not None and _latest_bom_fact_mismatches(context)
 
 def _mentions_bom_work_product(text: str) -> bool:
@@ -433,6 +433,34 @@ def _record_saved_note_context(
     )
     context_store.refresh_archie_memory(context)
     context_store.write_context(store, customer_id, context)
+
+
+def _record_poc_discovery_context(context: dict[str, Any], user_message: str) -> None:
+    """Persist only POC-relevant facts from gradual discovery, newest facts first."""
+    text = re.sub(r"\s+", " ", str(user_message or "")).strip()
+    if not text:
+        return
+    markers = (
+        "workload", "runs ", "application", "service", "platform", "pain", "goal",
+        "risk", "region", "duration", "days", "weeks", "owner", "commit", "hours",
+        "scope", "success criteria", "target", "ocpu", "memory", "storage", "vpn",
+        "fastconnect", "load balancer", "postgresql", "database", "compute", "logging",
+        "monitoring", "correction", "authoritative", "out of scope", "exclude",
+    )
+    if not any(marker in text.casefold() for marker in markers):
+        return
+    archie = context_store.get_archie_state(context)
+    prior = str(archie.get("engagement_summary", "") or "").strip()
+    if text.casefold() in prior.casefold():
+        return
+    # Newest-first ordering makes an explicit correction override an older
+    # tentative statement when targeted briefs extract the first grounded value.
+    merged = f"{text} {prior}".strip()
+    context_store.set_archie_engagement_summary(
+        context,
+        merged[:2000],
+        note_summary=str(archie.get("latest_notes_summary", "") or ""),
+    )
 
 def _build_archie_specialist_context(
     context: dict[str, Any] | None,

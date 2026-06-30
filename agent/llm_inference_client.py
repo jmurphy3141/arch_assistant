@@ -16,9 +16,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _read_timeout_seconds() -> int:
+    value = int(os.environ.get("ARCHIE_INFERENCE_READ_TIMEOUT_SECONDS", "180") or 180)
+    return max(10, min(value, 180))
 
 
 def run_inference(
@@ -72,7 +78,8 @@ def run_inference(
         config={},
         signer=signer,
         service_endpoint=endpoint,
-        timeout=(10, 180),
+        timeout=(10, _read_timeout_seconds()),
+        retry_strategy=oci.retry.NoneRetryStrategy(),
     )
 
     # ── Request objects (canonical structure from reference snippet) ─────────
@@ -152,7 +159,8 @@ def run_inference_with_tools(
         config={},
         signer=signer,
         service_endpoint=endpoint,
-        timeout=(10, 180),
+        timeout=(10, _read_timeout_seconds()),
+        retry_strategy=oci.retry.NoneRetryStrategy(),
     )
 
     oci_tools = []

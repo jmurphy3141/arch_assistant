@@ -26,6 +26,7 @@ from tests.archie_prompt_file_cases import (
     expected_tool_call,
     manifest_download,
 )
+from tests.scenarios.fakes import FakeLLMRunner, MINIMAL_SPEC
 
 pytestmark = [pytest.mark.e2e, pytest.mark.system]
 
@@ -33,6 +34,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.system]
 @pytest.fixture
 def deterministic_client(monkeypatch):
     store = InMemoryObjectStore()
+    app.state.llm_runner = FakeLLMRunner(MINIMAL_SPEC)
     app.state.object_store = store
     app.state.bom_service = BomService()
 
@@ -91,10 +93,15 @@ def deterministic_client(monkeypatch):
             content = {"pov": DETERMINISTIC_POV, "jep": DETERMINISTIC_JEP, "waf": DETERMINISTIC_WAF}[agent_name]
             return {"status": "ok", "result": content}
         if agent_name == "terraform":
+            files = {
+                "main_tf": DETERMINISTIC_TERRAFORM_FILES["main.tf"],
+                "variables_tf": DETERMINISTIC_TERRAFORM_FILES["variables.tf"],
+                "outputs_tf": DETERMINISTIC_TERRAFORM_FILES["outputs.tf"],
+                "readme_md": "# Apex Retail OCI Terraform bundle\n",
+            }
             return {
                 "status": "ok",
-                "result": json.dumps({"files": DETERMINISTIC_TERRAFORM_FILES}),
-                "terraform_files": DETERMINISTIC_TERRAFORM_FILES,
+                "result": json.dumps({"files": files, "artifact_key": "fixture/main.tf"}),
             }
         raise AssertionError(f"unexpected sub-agent {agent_name!r}")
 
@@ -117,6 +124,7 @@ def deterministic_client(monkeypatch):
 
     app.state.object_store = None
     app.state.bom_service = None
+    app.state.llm_runner = None
 
 
 def _seed_architecture_context(store: InMemoryObjectStore, customer_id: str, customer_name: str) -> None:
@@ -141,7 +149,16 @@ def _seed_architecture_context(store: InMemoryObjectStore, customer_id: str, cus
     context_store.write_context(store, customer_id, context)
 
 
-@pytest.mark.parametrize("case", ARCHIE_PROMPT_FILE_CASES, ids=[case.case_id for case in ARCHIE_PROMPT_FILE_CASES])
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(case, marks=pytest.mark.live)
+        if case.case_id == "waf"
+        else pytest.param(case)
+        for case in ARCHIE_PROMPT_FILE_CASES
+    ],
+    ids=[case.case_id for case in ARCHIE_PROMPT_FILE_CASES],
+)
 def test_archie_prompt_to_output_file_e2e(case, deterministic_client):
     test_client, store = deterministic_client
     customer_id = f"prompt_file_{case.case_id}"
@@ -187,7 +204,11 @@ def test_archie_prompt_to_output_file_e2e(case, deterministic_client):
     elif case.case_id == "terraform":
         key = call["artifact_key"]
         assert key and store.head(key)
-        main_download = manifest_download(body, "terraform")
+        main_download = next(
+            item
+            for item in body["artifact_manifest"]["downloads"]
+            if item.get("type") == "terraform" and item.get("filename") == "main.tf"
+        )
         assert main_download["filename"] == "main.tf"
         assert_terraform_files(
             {

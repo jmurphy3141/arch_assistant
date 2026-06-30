@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import time
+from io import BytesIO
+
+from openpyxl import load_workbook
 
 from agent.bom_service import BomService, DEFAULT_PRICE_TABLE, CacheSnapshot
+from agent.tools.bom import _extract_explicit_bom_inputs
 
 
 def _ready_service() -> BomService:
@@ -95,8 +99,8 @@ def test_bom_fast_path_honors_explicit_large_sizing() -> None:
     )
 
     by_sku = {row["sku"]: row for row in payload["line_items"]}
-    assert by_sku["B97384"]["quantity"] == 48.0
-    assert by_sku["B97385"]["quantity"] == 768.0
+    assert by_sku["B111129"]["quantity"] == 48.0
+    assert by_sku["B111130"]["quantity"] == 768.0
     assert by_sku["B91961"]["quantity"] == 43008.0
 
 
@@ -143,7 +147,7 @@ Create an OCI BOM for 2 servers, each with 2 OCPU and 16 GB memory, with 500 GB 
     )
 
     by_sku = {row["sku"]: row for row in payload["line_items"]}
-    assert by_sku["B97385"]["quantity"] == 32.0
+    assert by_sku["B111130"]["quantity"] == 32.0
     assert by_sku["B91961"]["quantity"] == 500.0
     assert by_sku["B91628"]["quantity"] == 1024.0
 
@@ -170,7 +174,7 @@ def test_structured_bom_inputs_drive_explicit_line_item_quantities() -> None:
             "architecture_option": "OCI Dedicated VMware Solution",
             "compute": {"ocpu": 64, "gpu": False},
             "memory": {"gb": 1146.88},
-            "storage": {"block_tb": 44},
+            "storage": {"block_tb": 44, "object_tb": 5},
             "connectivity": {"internet_mbps": 100, "mpls": True, "sd_wan": True},
             "dr": {"rto_hours": 24, "cross_region_restore": True},
             "workloads": ["SQL Server", "Oracle databases", "Linux servers"],
@@ -184,11 +188,12 @@ def test_structured_bom_inputs_drive_explicit_line_item_quantities() -> None:
     assert result["type"] == "final"
     payload = result["bom_payload"]
     by_sku = {row["sku"]: row for row in payload["line_items"]}
-    assert by_sku["B97384"]["quantity"] == 64.0
-    assert by_sku["B97385"]["quantity"] == 1146.88
+    assert by_sku["B111129"]["quantity"] == 64.0
+    assert by_sku["B111130"]["quantity"] == 1146.88
     assert by_sku["B91961"]["quantity"] == 45056.0
-    assert by_sku["B97384"]["quantity"] != 4.0
-    assert by_sku["B97385"]["quantity"] != 64.0
+    assert by_sku["B91628"]["quantity"] == 5120.0
+    assert by_sku["B111129"]["quantity"] != 4.0
+    assert by_sku["B111130"]["quantity"] != 64.0
     assert by_sku["B91961"]["quantity"] != 1024.0
     assert payload["region"] == "af-johannesburg-1"
     assert payload["architecture_option"] == "OCI Dedicated VMware Solution"
@@ -277,11 +282,11 @@ migration-equivalent sizing values, not the raw on-prem inventory values.
     )
 
     by_sku = {row["sku"]: row for row in payload["line_items"]}
-    assert by_sku["B97384"]["quantity"] == 48.0
-    assert by_sku["B97385"]["quantity"] == 768.0
+    assert by_sku["B111129"]["quantity"] == 48.0
+    assert by_sku["B111130"]["quantity"] == 768.0
     assert by_sku["B91961"]["quantity"] == 43520.0
-    assert "source VxRail RAM 655 GB" in by_sku["B97385"]["notes"]
-    assert "target OCI-equivalent RAM 768 GB" in by_sku["B97385"]["notes"]
+    assert "source VxRail RAM 655 GB" in by_sku["B111130"]["notes"]
+    assert "target OCI-equivalent RAM 768 GB" in by_sku["B111130"]["notes"]
 
 
 def test_bom_validation_rejects_non_oci_provider_references_in_line_items() -> None:
@@ -353,3 +358,109 @@ def test_bom_pricing_parser_uses_oracle_usd_price_tiers() -> None:
     assert table["BTEST1"]["unit_price"] == 0.25
     assert table["BTEST1"]["metric"] == "Unit Per Hour"
     assert table["BTEST1"]["source"] == "oracle_price_list_api"
+
+
+def test_bom_xlsx_contains_scope_coverage_and_assumptions() -> None:
+    payload = {
+        "line_items": [
+            {
+                "sku": "B97384", "description": "E5 OCPU", "category": "compute",
+                "metric": "OCPU Per Hour", "quantity": 4, "monthly_multiplier": 730,
+                "unit_price": 0.03,
+            }
+        ],
+        "scope_items": [
+            {
+                "canonical_service_id": "database.postgresql",
+                "description": "PostgreSQL",
+                "quantity": 1,
+                "pricing_status": "authoritative_sku_required",
+                "assumed_sizing": {"ocpu": 2, "memory_gb": 32, "storage_gb": 100},
+                "assumptions": ["Assumed one PostgreSQL system for the POC."],
+                "source": "selected_poc",
+            }
+        ],
+    }
+
+    workbook = load_workbook(BytesIO(BomService().generate_xlsx(payload)), data_only=False)
+
+    assert workbook.sheetnames == ["BOM", "Scope Coverage"]
+    scope = workbook["Scope Coverage"]
+    assert scope["A2"].value == "database.postgresql"
+    assert scope["B2"].value == "PostgreSQL"
+    assert '"ocpu": 2' in scope["E2"].value
+    assert "Assumed one PostgreSQL" in scope["F2"].value
+
+
+def test_missing_public_price_stays_unpriced_and_out_of_total() -> None:
+    service = BomService()
+    table = service._parse_pricing_payload({"items": []})
+    payload = service._normalize_payload({
+        "line_items": [service._build_line(
+            "BWAF01", 1, table, "security", "Selected WAF policy",
+        )],
+    })
+
+    assert payload["line_items"][0]["unit_price"] is None
+    assert payload["line_items"][0]["extended_price"] is None
+    assert payload["line_items"][0]["pricing_status"] == "unpriced"
+    assert payload["monthly_total"] == 0
+    assert payload["pricing_status"] == "unpriced"
+
+
+def test_strict_poc_inputs_preserve_selected_e5_and_exclude_unselected_services() -> None:
+    service = _ready_service()
+    result = service.generate_from_inputs(
+        inputs={
+            "region": "us-phoenix-1",
+            "strict_scope": True,
+            "scope": "poc",
+            "target_service_ids": [
+                "compute.vm.standard.e5.flex",
+                "storage.object",
+                "observability.logging",
+            ],
+            "compute": {"ocpu": 4, "instance_count": 1},
+            "memory": {"gb": 32},
+            "storage": {"object_tb": 1},
+        },
+        trace_id="strict-poc",
+        model_id="test-bom",
+    )
+
+    payload = result["bom_payload"]
+    assert payload["region"] == "us-phoenix-1"
+    assert {row["sku"] for row in payload["line_items"]} == {"B97384", "B97385", "B91628"}
+
+
+def test_multi_tier_explicit_sizing_emits_per_tier_rows_and_sums_totals() -> None:
+    sizing = _extract_explicit_bom_inputs(
+        "2 E5 IIS web servers at 2 OCPU and 16 GB each; "
+        "3 E5 claims application servers at 4 OCPU and 32 GB each; "
+        "HA Oracle Base Database Service at 4 OCPU; 1 TB File Storage"
+    )
+
+    assert sizing["compute"]["instance_count"] == 5
+    assert sizing["compute"]["ocpu"] == 16
+    assert sizing["memory"]["gb"] == 128
+    assert len(sizing["compute"]["tiers"]) == 2
+    assert sizing["database"]["service_id"] == "database.oracle"
+    assert sizing["database"]["ocpu"] == 4
+    assert sizing["storage"]["file_gb"] == 1024
+
+    sizing.update({
+        "strict_scope": True,
+        "target_service_ids": [
+            "compute.vm.standard.e5.flex", "database.oracle", "storage.file",
+        ],
+    })
+    payload = _ready_service().generate_from_inputs(
+        inputs=sizing, trace_id="multi-tier", model_id="test-bom",
+    )["bom_payload"]
+    cpu_rows = [row for row in payload["line_items"] if row["sku"] == "B97384"]
+    memory_rows = [row for row in payload["line_items"] if row["sku"] == "B97385"]
+    assert [row["quantity"] for row in cpu_rows] == [4, 12]
+    assert [row["instance_count"] for row in cpu_rows] == [2, 3]
+    assert [row["quantity"] for row in memory_rows] == [32, 96]
+    assert next(row for row in payload["line_items"] if row["canonical_service_id"] == "database.oracle")["quantity"] == 4
+    assert next(row for row in payload["line_items"] if row["canonical_service_id"] == "storage.file")["quantity"] == 1024

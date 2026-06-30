@@ -134,8 +134,8 @@ These surface without being asked — they are second-order effects worth raisin
 Prices come from the live OCI Pricing API cache — never from this hat. The BOM service fetches current prices at generation time. Any price embedded in a hat or system prompt will drift. What the hat knows: shape selection rules, BYOL rules, HA multipliers, and which SKU families belong to which service types.
 
 OCI compute shape families (structural facts, not prices):
-- **VM.Standard.E5.Flex** — AMD Genoa, 1–64 OCPU, up to 1,024 GB RAM. The deployment default. SKUs B97384 (OCPU) / B97385 (memory).
-- **VM.Standard.E6.Flex** — AMD Turin (2× E5 performance per Oracle 2024 announcement), 1–126 OCPU, up to 1,454 GB RAM. Same price per OCPU as E5. Use when the customer explicitly asks for E6 or "latest gen" — do not substitute silently.
+- **VM.Standard.E5.Flex** — AMD Genoa, 1–64 OCPU, up to 1,024 GB RAM. Preserve it when an approved POC or customer request pins E5. SKUs B97384 (OCPU) / B97385 (memory).
+- **VM.Standard.E6.Flex** — AMD Turin, 1–126 OCPU, up to 1,454 GB RAM. The deployment default for unspecified compute. SKUs B111129 / B111130. Never replace an explicitly selected E5 shape silently.
 - **VM.Standard.E4.Flex** — AMD Milan, legacy. Only when customer explicitly requests it. SKUs B93113 / B93114.
 - **VM.Standard.A1.Flex** — Ampere Altra, 1–80 OCPU, 512 GB RAM. OCI free-tier eligible. Best for Arm-native or cost-sensitive containerized workloads. SKUs B93297 / B93298.
 - **VM.Standard3.Flex** — Intel Ice Lake, 1–32 OCPU, 512 GB RAM. Only when Intel compatibility is explicitly required. SKUs B94176 / B94177.
@@ -155,13 +155,11 @@ A POC BOM and a production BOM are different documents. POC: minimum shapes, no 
 
 ## Core Principles
 
-- **Shape selection hierarchy:** Default to E5.Flex (AMD, B97384 OCPU / B97385
-  memory) unless the customer specifies otherwise. Use A1.Flex (B93297/B93298)
-  for Ampere workloads, E6.Flex (B111129/B111130) only when the customer
-  explicitly requests it by name, X9 (B94176/B94177) only when Intel
-  compatibility is explicitly required, and BM.GPU4.8 or BM.GPU.A10 shapes
-  only after explicit GPU confirmation. E6 is NOT a default — always start
-  with E5.Flex unless the customer explicitly names E6.
+- **Shape selection hierarchy:** Default to E6.Flex (AMD, B111129 OCPU / B111130
+  memory) when compute is unspecified. Preserve E5.Flex (B97384/B97385) when
+  the selected POC or customer request pins E5. Use A1.Flex for Arm-native
+  workloads, X9 only for Intel compatibility, and GPU shapes only after
+  explicit GPU confirmation.
 
 - **Quantity discipline:** OCPUs and memory are always separate line items.
   Standard monthly multiplier is 730 hours. For HA configurations (active-active
@@ -216,17 +214,17 @@ A POC BOM and a production BOM are different documents. POC: minimum shapes, no 
   "bom_payload": {
     "line_items": [
       {
-        "sku": "B97384",
-        "description": "Compute - E5.Flex OCPU",
+        "sku": "B111129",
+        "description": "Compute - E6.Flex OCPU",
         "quantity": 16,
         "unit": "OCPU Per Hour",
         "unit_price": 0.03,
         "monthly_cost": 350.4,
-        "notes": "4 × E5.Flex VMs, 4 OCPU each, active-active HA (×2 ADs)"
+        "notes": "4 × E6.Flex VMs, 4 OCPU each, active-active HA (×2 ADs)"
       }
     ],
     "assumptions": [
-      "E5.Flex selected as default general-purpose shape",
+      "E6.Flex selected as default general-purpose shape",
       "730 hours/month standard billing period",
       "Block Volume: Balanced tier (10 VPU/GB)"
     ],
@@ -252,8 +250,8 @@ A POC BOM and a production BOM are different documents. POC: minimum shapes, no 
 
 ## Failure Questions
 
-- "What compute shape did you intend — E5.Flex (AMD general-purpose, default),
-   A1.Flex (Ampere/Graviton-equivalent), X9 (Intel-compatible), BM.GPU.A10,
+- "What compute shape did you intend — E6.Flex (AMD general-purpose, default),
+   E5.Flex (when pinned), A1.Flex (Ampere/Graviton-equivalent), X9 (Intel-compatible), BM.GPU.A10,
    or another?"
 - "Is the storage Block Volume (boot + data disks), Object Storage (unstructured
    data), File Storage (NFS mount), or a combination?"
@@ -281,13 +279,13 @@ These are YOUR checks as the expert — not validation rules for the sub-agent.
 - Read any `[CONFIRMED CONTEXT]` block before presenting assumptions. If the
   handler injected `[CONFIRMED CONTEXT]`, do not present an
   `[ASSUMPTION REVIEW]` for any field that appears in that block.
-- Compute shape family: E5.Flex (AMD, default), A1.Flex (Ampere), X9 (Intel), GPU, or custom?
-  Default is E5.Flex unless the customer specifies otherwise.
+- Compute shape family: E6.Flex (AMD, default), E5.Flex (when pinned), A1.Flex (Ampere), X9 (Intel), GPU, or custom?
+  Default is E6.Flex unless the customer or selected POC specifies otherwise.
 - State the selected shape and reason before calling, in an auditable form:
-  "Shape selected: E5.Flex (AMD, default — customer did not specify a shape).
+  "Shape selected: E6.Flex (AMD, default — customer did not specify a shape).
   Reason: no shape preference captured."
 - OCPU count and memory GB: stated, or can I default with documented justification?
-- Region: confirmed? (default: us-chicago-1)
+- Region: confirmed in the selected POC or current request? Do not invent a region.
 - Storage: type (Block Volume / Object Storage / File Storage), tier, size in GB/TB?
 - HA mode: single-AD or active-active across ADs? (active-active doubles compute quantity)
 - Managed services: OKE, Autonomous DB, OpenSearch — in scope? BYOL DB licences?
@@ -299,10 +297,10 @@ any pricing call unless the request already contains explicit sizing numbers
 or confirmed context for the fields.
 
 Defaults when not stated by the customer:
-- Compute shape: E5.Flex (AMD, B97384/B97385)
+- Compute shape: E6.Flex (AMD, B111129/B111130), unless the selected POC pins another shape
 - OCPU per server: 4 OCPU
 - Memory per server: 32 GB (8 GB/OCPU)
-- Region: us-chicago-1
+- Region: selected POC region; otherwise ask
 - Block Volume: 500 GB Balanced tier
 - HA mode: single-AD (do not double compute unless customer says HA)
 
@@ -311,8 +309,8 @@ exactly this format so the user can approve or correct before you call the
 sub-agent:
 
 [ASSUMPTION REVIEW — Please confirm or correct]
-Region: us-chicago-1
-Compute shape: E5.Flex
+Region: [selected or confirmed OCI region]
+Compute shape: E6.Flex
 Server count: 1
 OCPU per server: 4
 Total OCPU: 4
@@ -352,10 +350,9 @@ Mandatory checks (every BOM):
   "Note: unit prices came from the fallback price cache (last updated:
   [timestamp]). Prices may be stale — recommend confirming before sharing with
   the customer."
-- E6.Flex exclusion is enforced. If the BOM contains B111129 or B111130 and no
-  explicit E6 confirmation was in the task, reject with:
-  "E6.Flex was selected but was not explicitly requested. Replace with E5.Flex
-  (B97384/B97385) unless the customer confirms E6."
+- Shape parity is enforced. E6 is valid by default only when compute was
+  unspecified; an approved E5 POC must remain E5 unless an impact update is
+  explicitly confirmed.
 
 XLSX quality checks:
 - Freeze panes applied to header row (row 1)

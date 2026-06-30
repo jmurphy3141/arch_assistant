@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any
 
-from agent import archie_memory
+from agent import archie_memory, consistency_contract
 from agent.persistence_objectstore import ObjectStoreBase, persist_artifacts
 from skillforge.types import MemorySnapshot, ToolResult
 
@@ -84,6 +84,21 @@ class DiagramHandler:
         ctx = context
         decision_context = memory.decision_context if memory else {}
         user_message = str(args.get("_user_message", "") or "")
+        conflicts = consistency_contract.request_conflicts(user_message, ctx)
+        if conflicts:
+            clarification = (
+                "The Diagram request conflicts with an approved upstream decision. "
+                "Confirm an impact update before changing dependent artifacts."
+            )
+            return ToolResult(
+                summary=clarification,
+                status="needs_input",
+                clarification=clarification,
+                data={
+                    "consistency_conflicts": conflicts,
+                    "required_next_step": "confirm update all",
+                },
+            )
         if user_message:
             args = {**args, "prompt": user_message}
         args = archie_memory._hydrate_tool_args_from_context(
@@ -167,6 +182,22 @@ class DiagramHandler:
                     summary=f"Diagram generation failed: {exc}",
                     status="blocked",
                 )
+            if (
+                artifact_key
+                and args.get("_consistency_requirements")
+                and not str(result_data.get("drawio_xml") or "").strip()
+            ):
+                try:
+                    result_data["drawio_xml"] = self._store.get(artifact_key).decode("utf-8")
+                except Exception as exc:
+                    return ToolResult(
+                        summary=f"Diagram consistency validation could not read the persisted artifact: {exc}",
+                        status="blocked",
+                        data={
+                            "validation_stage": "cross_artifact_artifact_read",
+                            "artifact_key": artifact_key,
+                        },
+                    )
             validation_error = _validate_diagram_result(result_data)
             if validation_error:
                 return _validation_blocked("diagram", validation_error)
@@ -179,6 +210,13 @@ class DiagramHandler:
                 or _diagram_bom_coverage_error(
                     list(args.get("_bom_line_items", []) or []),
                     str(result_data.get("drawio_xml") or ""),
+                )
+                or _diagram_consistency_error(
+                    list(args.get("_consistency_requirements", []) or []),
+                    str(args.get("_consistency_ha_mode") or ""),
+                    str(result_data.get("drawio_xml") or ""),
+                    expected_region=str(args.get("_consistency_region") or ""),
+                    required_private_tiers=list(args.get("_required_private_tiers", []) or []),
                 )
             )
             if not diagram_error:
@@ -243,6 +281,23 @@ class DiagramHandler:
             "gateways": args.get("gateways") or [],
             "diagram_key": artifact_key or "",
         })
+        contract_report = _diagram_consistency_report(
+            list(args.get("_consistency_requirements", []) or []),
+            str(args.get("_consistency_ha_mode") or ""),
+            str(xml or ""),
+            expected_region=str(args.get("_consistency_region") or ""),
+            required_private_tiers=list(args.get("_required_private_tiers", []) or []),
+        )
+        consistency_contract.record_final_diagram(
+            context,
+            artifact_key=artifact_key,
+            represented_components=list(contract_report.get("represented_components", []) or []),
+            ha_mode=str(args.get("_consistency_ha_mode") or args.get("ha_dr_mode") or ""),
+        )
+        result_data["consistency_report"] = contract_report
+        result_data["consistency_contract_revision"] = int(
+            consistency_contract.get_contract(context).get("revision", 0) or 0
+        )
 
         return ToolResult(
             summary=full_summary,
@@ -300,17 +355,59 @@ def _hydrate_diagram_args(
     line_items = [dict(item) for item in line_items if isinstance(item, dict)]
     if line_items:
         hydrated["_bom_line_items"] = line_items
+    scope_items = baseline.get("scope_items", []) if isinstance(baseline, dict) else []
+    scope_items = [dict(item) for item in scope_items if isinstance(item, dict)]
+    contract = consistency_contract.get_contract(context)
+    required_private_tiers = _required_private_tiers(args, context, memory_raw)
+    if required_private_tiers:
+        hydrated["_required_private_tiers"] = required_private_tiers
+    requirements = consistency_contract.required_components(context)
+    scope_by_id = {
+        str(item.get("canonical_service_id") or ""): item
+        for item in scope_items
+        if item.get("canonical_service_id")
+    }
+    for requirement in requirements:
+        scope = scope_by_id.get(str(requirement.get("service_id") or ""))
+        if scope and isinstance(scope.get("assumed_sizing"), dict):
+            requirement["assumed_sizing"] = dict(scope["assumed_sizing"])
+    if requirements:
+        hydrated["_consistency_requirements"] = requirements
+        hydrated["_consistency_ha_mode"] = str(contract.get("ha_mode") or "")
+        hydrated["_consistency_region"] = str(contract.get("region") or "")
     block = _build_diagram_confirmed_context(
         args=args,
         context=context,
         memory_raw=memory_raw,
         artifact_key=prior_diagram_key,
     )
-    bom_block = _diagram_bom_context_block(line_items)
+    bom_block = _diagram_bom_context_block(line_items, scope_items=scope_items)
+    contract_block = ""
+    if requirements:
+        contract_block = (
+            "[AUTHORITATIVE CROSS-ARTIFACT REQUIREMENTS]\n"
+            "Include and label every component exactly; preserve database and connectivity identity.\n"
+            f"HA mode: {contract.get('ha_mode') or 'not stated'}\n"
+            + "\n".join(
+                f"- {item.get('display_name')} ({item.get('service_id')})"
+                for item in requirements
+            )
+            + "\n[/AUTHORITATIVE CROSS-ARTIFACT REQUIREMENTS]"
+        )
+    tier_block = ""
+    if required_private_tiers:
+        tier_block = (
+            "[REQUIRED PRIVATE TIERS]\n"
+            "Render one distinct private subnet for each tier below; do not merge tiers.\n"
+            + "\n".join(f"- {tier}" for tier in required_private_tiers)
+            + "\n[/REQUIRED PRIVATE TIERS]"
+        )
     revision = ""
     if prior_diagram_key and not _requests_full_redraw(task):
         revision = "[UPDATE REQUEST - PRESERVE ALL EXISTING NODES EXCEPT: changes explicitly requested by the user]"
-    hydrated_task = "\n\n".join(part for part in (block, bom_block, revision, task) if part).strip()
+    hydrated_task = "\n\n".join(
+        part for part in (block, contract_block, tier_block, bom_block, revision, task) if part
+    ).strip()
     hydrated["prompt"] = hydrated_task
     hydrated["bom_text"] = hydrated_task
     brief = dict(hydrated.get("_architect_brief", {}) or {})
@@ -319,8 +416,46 @@ def _hydrate_diagram_args(
     return hydrated
 
 
-def _diagram_bom_context_block(line_items: list[dict[str, Any]]) -> str:
-    if not line_items:
+def _required_private_tiers(*sources: Any) -> list[str]:
+    """Extract explicit private tier separation from engagement scope."""
+    text = " ".join(json.dumps(source, default=str) for source in sources).lower()
+    explicit: list[str] = []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ("subnet_tiers", "tiers"):
+            values = source.get(key)
+            if isinstance(values, list):
+                explicit.extend(str(value).lower() for value in values)
+    if explicit:
+        return list(dict.fromkeys(
+            "application" if "app" in value else "database" if "db" in value or "data" in value else "web"
+            for value in explicit
+            if any(token in value for token in ("web", "app", "database", "db", "data"))
+        ))
+    separation = any(phrase in text for phrase in (
+        "separate private subnet", "distinct private subnet", "three private tiers",
+        "separate private tiers", "three separate private subnet",
+    ))
+    if not separation:
+        return []
+    tiers = []
+    if "web" in text or "iis" in text or "apache" in text or "storefront" in text:
+        tiers.append("web")
+    if "application" in text or " app " in text or "claims-service" in text or "claims application" in text:
+        tiers.append("application")
+    if "database" in text or "postgresql" in text or "oracle" in text:
+        tiers.append("database")
+    return tiers
+
+
+def _diagram_bom_context_block(
+    line_items: list[dict[str, Any]],
+    *,
+    scope_items: list[dict[str, Any]] | None = None,
+) -> str:
+    scope_items = scope_items or []
+    if not line_items and not scope_items:
         return ""
     rows = []
     for item in line_items:
@@ -329,17 +464,44 @@ def _diagram_bom_context_block(line_items: list[dict[str, Any]]) -> str:
         metric = str(item.get("metric") or "").strip()
         notes = str(item.get("notes") or "").strip()
         lowered = description.lower()
+        is_compute = (
+            str(item.get("canonical_service_id") or "").startswith("compute.")
+            or str(item.get("sku") or "").upper() in {
+                "B93113", "B97384", "B111129", "B94176", "B93297",
+                "B93114", "B97385", "B111130", "B94177", "B93298",
+            }
+            or "compute" in lowered
+        )
         if isinstance(quantity, (int, float)) and "performance units" in lowered:
             rendered = f"{quantity:g} Performance Units for Block Volume"
+        elif isinstance(quantity, (int, float)) and is_compute and "ocpu" in lowered:
+            count = int(item.get("instance_count") or 1)
+            rendered = (
+                f"{description}: {quantity:g} OCPU total across {count} instances "
+                f"({quantity / max(count, 1):g} OCPU each)"
+            )
+        elif isinstance(quantity, (int, float)) and is_compute and "memory" in lowered:
+            count = int(item.get("instance_count") or 1)
+            rendered = (
+                f"{description}: {quantity:g} GB memory total across {count} instances "
+                f"({quantity / max(count, 1):g} GB each)"
+            )
         elif isinstance(quantity, (int, float)) and "block volume" in lowered and "storage" in lowered:
             rendered = f"{quantity:g} GB Balanced Block Volume"
         elif isinstance(quantity, (int, float)) and "object storage" in lowered:
             rendered = f"{quantity:g} GB Object Storage"
+        elif isinstance(quantity, (int, float)) and "file storage" in lowered:
+            rendered = f"{quantity:g} GB File Storage"
         elif "web application firewall" in lowered:
             rendered = "OCI WAF Policy ×1"
         else:
             rendered = f"{description}: {quantity:g} {metric}" if isinstance(quantity, (int, float)) else description
         rows.append(f"- {rendered}. {notes}")
+    for item in scope_items:
+        description = str(item.get("description") or item.get("canonical_service_id") or "").strip()
+        sizing = item.get("assumed_sizing") if isinstance(item.get("assumed_sizing"), dict) else {}
+        sizing_text = json.dumps(sizing, sort_keys=True) if sizing else "no quantitative sizing"
+        rows.append(f"- {description}: {sizing_text}. Scope coverage from selected POC.")
     return (
         "[AUTHORITATIVE BOM PARITY REQUIREMENTS]\n"
         "Include and explicitly label every BOM element and quantitative attribute below.\n"
@@ -454,14 +616,29 @@ def _diagram_bom_coverage_error(line_items: list[dict[str, Any]], drawio_xml: st
     for item in line_items:
         description = str(item.get("description") or "").lower()
         quantity = float(item.get("quantity") or 0)
+        is_compute = (
+            str(item.get("canonical_service_id") or "").startswith("compute.")
+            or str(item.get("sku") or "").upper() in {
+                "B93113", "B97384", "B111129", "B94176", "B93297",
+                "B93114", "B97385", "B111130", "B94177", "B93298",
+            }
+            or "compute" in description
+        )
         if "performance units" in description:
             if not (f"{quantity:g} performance units" in labels or f"{quantity:g} vpu" in labels):
                 missing.append(f"Block Volume {quantity:g} performance units")
             continue
-        if "compute" in description and "ocpu" in description and f"{quantity:g} ocpu" not in labels and "2 ocpu" not in labels:
+        if is_compute and "ocpu" in description and f"{quantity:g} ocpu" not in labels and "2 ocpu" not in labels:
             missing.append(f"compute {quantity:g} OCPU total")
-        elif "compute" in description and "memory" in description and not re.search(r"(?:16 gb each|32 gb total)", labels):
-            missing.append(f"compute {quantity:g} GB memory total")
+        elif is_compute and "memory" in description:
+            instance_count = int(item.get("instance_count") or 1)
+            per_instance = quantity / max(instance_count, 1)
+            if not (
+                f"{quantity:g} gb" in labels
+                or f"{per_instance:g} gb each" in labels
+                or f"{per_instance:g} gb ram" in labels
+            ):
+                missing.append(f"compute {quantity:g} GB memory total")
         elif "block volume" in description and "storage" in description and f"{quantity:g} gb" not in labels:
             missing.append(f"Block Volume {quantity:g} GB")
         elif "load balancer" in description and "load balancer" not in labels:
@@ -470,12 +647,165 @@ def _diagram_bom_coverage_error(line_items: list[dict[str, Any]], drawio_xml: st
             missing.append("WAF policy")
         elif "postgresql" in description and not ("postgresql" in labels and f"{quantity:g} ocpu" in labels):
             missing.append(f"PostgreSQL {quantity:g} OCPU")
+        elif "oracle base database" in description and not (
+            "oracle base database" in labels and f"{quantity:g} ocpu" in labels
+        ):
+            missing.append(f"Oracle Base Database Service {quantity:g} OCPU")
         elif "object storage" in description and not (
             f"{quantity:g} gb object storage" in labels
             or (quantity == 1024 and "1 tb object storage" in labels)
         ):
             missing.append(f"Object Storage {quantity:g} GB")
+        elif "file storage" in description and not (
+            f"{quantity:g} gb file storage" in labels
+            or f"file storage {quantity:g} gb" in labels
+            or (quantity == 1024 and "1 tb file storage" in labels)
+        ):
+            missing.append(f"File Storage {quantity:g} GB")
     return "missing BOM diagram coverage: " + ", ".join(missing) if missing else ""
+
+
+def _diagram_consistency_report(
+    requirements: list[dict[str, Any]],
+    ha_mode: str,
+    drawio_xml: str,
+    *,
+    expected_region: str = "",
+    required_private_tiers: list[str] | None = None,
+) -> dict[str, Any]:
+    labels = _diagram_labels(drawio_xml)
+    required_ids = [
+        str(item.get("service_id") or "")
+        for item in requirements
+        if isinstance(item, dict) and item.get("service_id")
+    ]
+    represented = [service_id for service_id in required_ids if _diagram_represents(service_id, labels)]
+    missing = sorted(set(required_ids) - set(represented))
+    detected = {
+        service_id
+        for service_id in _DIAGRAM_COMPONENT_TOKENS
+        if _diagram_represents(service_id, labels)
+    }
+    if any(service_id.startswith("compute.vm.standard.") for service_id in detected):
+        detected.discard("compute.vm")
+    unexpected = sorted(detected - set(required_ids))
+    topology_findings: list[str] = []
+    sizing_findings: list[str] = []
+    for requirement in requirements:
+        if not isinstance(requirement, dict):
+            continue
+        service_id = str(requirement.get("service_id") or "")
+        sizing = requirement.get("assumed_sizing") if isinstance(requirement.get("assumed_sizing"), dict) else {}
+        if service_id == "database.postgresql" and sizing.get("ocpu"):
+            expected = float(sizing["ocpu"])
+            if f"{expected:g} ocpu" not in labels:
+                sizing_findings.append(f"PostgreSQL assumed sizing {expected:g} OCPU is not represented")
+    normalized_ha = str(ha_mode or "").lower()
+    if "single-ad" in normalized_ha and not re.search(r"single[- ]ad|availability domain\s*1", labels):
+        topology_findings.append("single-AD POC boundary is not explicitly represented")
+    if ("multi-ad" in normalized_ha or "high availability" in normalized_ha) and not re.search(
+        r"multi[- ]ad|availability domain\s*2|ad-2|standby", labels
+    ):
+        topology_findings.append("multi-AD/HA topology is not explicitly represented")
+    if expected_region and expected_region.lower() not in labels:
+        topology_findings.append(f"region {expected_region} is not explicitly represented")
+    required_private_tiers = required_private_tiers or []
+    private_subnet_count = _private_subnet_count(drawio_xml)
+    if required_private_tiers and private_subnet_count < len(required_private_tiers):
+        topology_findings.append(
+            f"private subnet count {private_subnet_count} is fewer than required tiers {len(required_private_tiers)} "
+            f"({', '.join(required_private_tiers)})"
+        )
+    return {
+        "verdict": (
+            "pass"
+            if not missing and not unexpected and not topology_findings and not sizing_findings
+            else "blocked"
+        ),
+        "required_components": sorted(set(required_ids)),
+        "represented_components": sorted(set(represented)),
+        "missing_components": missing,
+        "unexpected_components": unexpected,
+        "topology_findings": topology_findings,
+        "sizing_findings": sizing_findings,
+        "required_private_tiers": required_private_tiers,
+        "private_subnet_count": private_subnet_count,
+    }
+
+
+def _diagram_consistency_error(
+    requirements: list[dict[str, Any]],
+    ha_mode: str,
+    drawio_xml: str,
+    *,
+    expected_region: str = "",
+    required_private_tiers: list[str] | None = None,
+) -> str:
+    if not requirements:
+        return ""
+    report = _diagram_consistency_report(
+        requirements,
+        ha_mode,
+        drawio_xml,
+        expected_region=expected_region,
+        required_private_tiers=required_private_tiers,
+    )
+    if report["verdict"] == "pass":
+        return ""
+    findings = [
+        *(f"missing {consistency_contract.display_name(service_id)}" for service_id in report["missing_components"]),
+        *(f"unexpected {consistency_contract.display_name(service_id)}" for service_id in report["unexpected_components"]),
+        *report["topology_findings"],
+        *report["sizing_findings"],
+    ]
+    return "cross-artifact diagram inconsistency: " + ", ".join(findings)
+
+
+def _diagram_labels(drawio_xml: str) -> str:
+    values = re.findall(r'\bvalue=["\']([^"\']*)["\']', str(drawio_xml or ""), flags=re.IGNORECASE)
+    labels = " ".join(html.unescape(value).replace("&#xa;", " ") for value in values)
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", labels)).lower()
+
+
+_DIAGRAM_COMPONENT_TOKENS = {
+        "database.postgresql": ("postgresql", "postgres"),
+        "database.autonomous": ("autonomous database", "adb"),
+        "database.mysql": ("mysql",),
+        "database.oracle": ("oracle database", "base database"),
+        "network.load_balancer.flexible": ("flexible load balancer", "load balancer"),
+        "security.waf": ("waf", "web application firewall"),
+        "security.iam": ("oci iam", "identity and access management", "iam policy"),
+        "compute.vm.standard.e5.flex": ("vm.standard.e5.flex", "e5.flex", "standard e5"),
+        "compute.vm.standard.e6.flex": ("vm.standard.e6.flex", "e6.flex", "standard e6"),
+        "compute.vm": ("compute", "application server", "web server"),
+        "storage.object": ("object storage",),
+        "storage.block": ("block volume", "block storage"),
+        "storage.file": ("file storage", "fss", "nfs"),
+        "network.vpn.site_to_site": ("site-to-site vpn", "site to site vpn", "ipsec"),
+        "network.fastconnect": ("fastconnect",),
+        "observability.logging": ("logging",),
+        "observability.monitoring": ("monitoring", "apm"),
+        "container.oke": ("oke", "container engine for kubernetes"),
+}
+
+
+def _private_subnet_count(drawio_xml: str) -> int:
+    values = re.findall(r'\bvalue=["\']([^"\']*)["\']', str(drawio_xml or ""), flags=re.IGNORECASE)
+    return sum(
+        1
+        for value in values
+        if re.search(r"\bprivate\b.*\bsubnet\b|\bsubnet\b.*\bprivate\b", html.unescape(value), re.IGNORECASE)
+    )
+
+
+def _diagram_represents(service_id: str, labels: str) -> bool:
+    return any(
+        token in labels
+        for token in _DIAGRAM_COMPONENT_TOKENS.get(
+            service_id,
+            (consistency_contract.display_name(service_id).lower(),),
+        )
+    )
 
 
 def _requested_service_type_count(args: dict[str, Any]) -> int:

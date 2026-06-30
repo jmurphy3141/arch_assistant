@@ -11,7 +11,14 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from agent import archie_memory, context_store, document_store, poc_composer, sub_agent_client
+from agent import (
+    archie_memory,
+    consistency_contract,
+    context_store,
+    document_store,
+    poc_composer,
+    sub_agent_client,
+)
 from agent.jep_docx_renderer import render_jep_docx
 from agent.persistence_objectstore import ObjectStoreBase
 from agent.sub_agent_client import SubAgentError
@@ -48,7 +55,9 @@ _JEP_NUMERIC_THRESHOLD_RE = re.compile(
     r"[$€£]\s*\d+(?:[.,]\d+)?|"
     r"\b\d+(?:[.,]\d+)?\s*"
     r"(?:%|ms|milliseconds?|s|seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|"
-    r"rps|qps|tps|gb/s|mb/s|gb|tb|ocpu|ocpus|users?|requests?|queries?|usd|dollars?)"
+    r"rps|qps|tps|gb/s|mb/s|gb|tb|ocpu|ocpus|users?|requests?|queries?|orders?|"
+    r"bookings?|transactions?|(?:[a-z]+\s+){0,2}(?:requests?|orders?|bookings?|transactions?)|"
+    r"concurrent(?:\s+[a-z]+){0,2}\s+(?:sessions?|users?)|usd|dollars?)"
     r"(?:\b|(?<=%))"
     r")",
     flags=re.IGNORECASE,
@@ -136,6 +145,22 @@ class _SpecialistHandler:
         ctx = context
         decision_context = memory.decision_context if memory else {}
         user_message = str(args.get("_user_message", "") or "")
+        if self._agent_name == "jep":
+            conflicts = consistency_contract.request_conflicts(user_message, ctx)
+            if conflicts:
+                clarification = (
+                    "The JEP request conflicts with an approved upstream decision. "
+                    "Confirm an impact update before changing dependent artifacts."
+                )
+                return ToolResult(
+                    summary=clarification,
+                    status="needs_input",
+                    clarification=clarification,
+                    data={
+                        "consistency_conflicts": conflicts,
+                        "required_next_step": "confirm update all",
+                    },
+                )
         args = archie_memory._hydrate_tool_args_from_context(
             tool_name=f"generate_{self._agent_name}",
             args=args,
@@ -238,6 +263,9 @@ class _SpecialistHandler:
                     memory_raw=memory.raw if memory else {},
                 )
             )
+            engagement_context["expected_success_criteria_count"] = (
+                _jep_expected_success_criteria_count(engagement_context)
+            )
             raw_request = _hydrate_jep_task(
                 raw_request,
                 engagement_context=engagement_context,
@@ -301,10 +329,24 @@ class _SpecialistHandler:
             response["result"] = content
 
         if self._agent_name in {"jep", "pov"}:
+            review_request = user_message
+            if self._agent_name == "jep":
+                artifact_context = engagement_context.get("artifact_context")
+                poc_context = artifact_context.get("poc") if isinstance(artifact_context, dict) else None
+                if isinstance(poc_context, dict) and poc_context.get("selected_option_name"):
+                    review_request = (
+                        f"{review_request}\nAuthoritative selected POC services: "
+                        f"{_compact_jsonable(poc_context.get('oci_services') or [], limit=1200)}\n"
+                        "Authoritative selected POC criteria: "
+                        f"{_compact_jsonable(poc_context.get('grounding') or poc_context.get('success_criteria'), limit=1200)}"
+                    ).strip()
             review_findings = _document_review_findings(
                 self._agent_name,
                 content,
-                user_message,
+                review_request,
+                expected_jep_criteria=int(
+                    engagement_context.get("expected_success_criteria_count") or 3
+                ),
             )
             if review_findings and self._agent_name == "jep":
                 return ToolResult(
@@ -468,6 +510,7 @@ class _SpecialistHandler:
                 "lock_outcome": "allowed",
                 **docx,
             })
+            consistency_contract.bind_artifact(context, "jep", key)
 
         findings_summary = ""
         if self._agent_name == "waf":
@@ -844,13 +887,12 @@ class PocStrategistHandler:
 
         # action="confirm" with confirmed_option_name takes priority
         if action == "confirm" or confirmed_option_name:
-            poc_options = _poc_options_from_memory(memory)
+            poc_options = _poc_options_from_context(context)
             if not poc_options:
-                clarification = "No POC options in memory yet. Call generate_poc_plan with action='explore' first."
+                clarification = "No persisted POC options are available. Explore three POC options first."
                 return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
-            confirmation_index = _poc_confirmation_index(
-                " ".join(part for part in (confirmed_option_name, user_message) if part)
-            )
+            selection_text = " ".join(part for part in (confirmed_option_name, user_message) if part)
+            confirmation_index = _poc_confirmation_index(selection_text)
             matched = (
                 poc_options[confirmation_index]
                 if confirmation_index is not None and confirmation_index < len(poc_options)
@@ -860,9 +902,8 @@ class PocStrategistHandler:
                 (
                     option
                     for option in poc_options
-                    if confirmed_option_name
-                    and str(option.get("option_name", "")).casefold()
-                    == confirmed_option_name.casefold()
+                    if str(option.get("option_name", "")).strip()
+                    and str(option.get("option_name", "")).casefold() in selection_text.casefold()
                 ),
                 None,
             )
@@ -878,10 +919,10 @@ class PocStrategistHandler:
 
         # Legacy: confirmation detected from _user_message (fallback for non-action calls)
         if action != "explore":
-            confirmed_option = _detect_poc_confirmation(user_message, memory)
+            confirmed_option = _detect_poc_confirmation(user_message, context)
             if confirmed_option is not None:
                 return self._save_selection_result(confirmed_option, context)
-            if _poc_confirmation_index(user_message) is not None and not _poc_options_from_memory(memory):
+            if _poc_confirmation_index(user_message) is not None and not _poc_options_from_context(context):
                 clarification = "No POC options yet. Call generate_poc_plan with action='explore' first."
                 return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
 
@@ -899,35 +940,44 @@ class PocStrategistHandler:
             clarification = "NEEDS_CLARIFICATION: What is the customer's primary pain?"
             return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
 
-        brief = poc_composer.build_poc_brief(
+        brief, missing_fields = poc_composer.assess_poc_brief(
             customer_name=self._customer_name,
             user_message=user_message or pain,
             decision_context=decision_context,
+            engagement_context=context,
         )
         if brief is None:
-            clarification = (
-                "I need the grounded workload, pain, OCI region, in-scope services, POC duration, "
-                "owner commitment, and at least one measurable success criterion before creating POC options."
+            questions = poc_composer.poc_brief_questions(missing_fields)
+            clarification = "I need a few grounded details before creating POC options:\n" + "\n".join(
+                f"- {question}" for question in questions
             )
-            return ToolResult(status="needs_input", summary=clarification, clarification=clarification)
+            return ToolResult(
+                status="needs_input",
+                summary=clarification,
+                clarification=clarification,
+                data={"questions": list(questions), "missing_fields": list(missing_fields)},
+            )
 
         grounded_options = poc_composer.compose_grounded_options(brief)
         polish_status = "deterministic"
         try:
-            polish_response = await sub_agent_client.call_sub_agent(
-                "poc_strategist",
-                task=json.dumps(
-                    {
-                        "customer": self._customer_name,
-                        "options": grounded_options,
+            polish_response = await asyncio.wait_for(
+                sub_agent_client.call_sub_agent(
+                    "poc_strategist",
+                    task=json.dumps(
+                        {
+                            "customer": self._customer_name,
+                            "options": grounded_options,
+                        },
+                        sort_keys=True,
+                    ),
+                    engagement_context={
+                        "mode": "polish_options",
+                        "customer_id": self._customer_id,
                     },
-                    sort_keys=True,
+                    trace_id=trace_id,
                 ),
-                engagement_context={
-                    "mode": "polish_options",
-                    "customer_id": self._customer_id,
-                },
-                trace_id=trace_id,
+                timeout=15,
             )
             polished_raw = polish_response.get("result")
             polished_payload = json.loads(polished_raw) if isinstance(polished_raw, str) else polished_raw
@@ -1013,6 +1063,11 @@ class PocStrategistHandler:
         poc["selected_option"] = dict(option)
         poc["selected_option_name"] = poc_name
         context_store.set_resolved_decisions(context, poc=poc)
+        consistency_contract.record_selected_poc(
+            context,
+            option,
+            artifact_key=str(poc.get("artifact_key") or ""),
+        )
         return ToolResult(
             status="ok",
             summary=f"POC confirmed: {poc_name}. Downstream artifacts will be generated only when requested.",
@@ -1222,6 +1277,21 @@ def _jep_artifact_context(context: dict[str, Any]) -> dict[str, Any]:
             if jep.get(key) not in (None, "", [], {})
         }
     return artifacts
+
+
+def _jep_expected_success_criteria_count(engagement_context: dict[str, Any]) -> int:
+    """Return the selected POC's authoritative criterion count, else the global bar."""
+    artifacts = engagement_context.get("artifact_context")
+    poc = artifacts.get("poc") if isinstance(artifacts, dict) else None
+    if not isinstance(poc, dict) or not poc.get("selected_option_name"):
+        return 3
+    grounding = poc.get("grounding") if isinstance(poc.get("grounding"), dict) else {}
+    raw = grounding.get("success_criteria") or poc.get("success_criteria")
+    if isinstance(raw, (list, tuple)):
+        count = len([item for item in raw if re.search(r"\d", str(item))])
+    else:
+        count = _count_numeric_criteria(str(raw or ""))
+    return count if 0 < count < 3 else 3
 
 
 def _compact_jsonable(value: Any, *, limit: int) -> str:
@@ -1564,8 +1634,18 @@ _UNSUPPORTED_DOCUMENT_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _document_review_findings(agent_name: str, content: str, user_message: str) -> list[str]:
-    findings = _jep_writer_review_findings(content) if agent_name == "jep" else []
+def _document_review_findings(
+    agent_name: str,
+    content: str,
+    user_message: str,
+    *,
+    expected_jep_criteria: int = 3,
+) -> list[str]:
+    findings = (
+        _jep_writer_review_findings(content, expected_criteria_count=expected_jep_criteria)
+        if agent_name == "jep"
+        else []
+    )
     text = str(content or "")
     lower = text.lower()
     request = str(user_message or "").lower()
@@ -1612,7 +1692,11 @@ def _canonical_measurement(value: str, unit: str) -> tuple[str, str]:
     return str(value), normalized_unit
 
 
-def _jep_writer_review_findings(content: str) -> list[str]:
+def _jep_writer_review_findings(
+    content: str,
+    *,
+    expected_criteria_count: int = 3,
+) -> list[str]:
     text = str(content or "").strip()
     lower = text.lower()
     findings: list[str] = []
@@ -1646,8 +1730,10 @@ def _jep_writer_review_findings(content: str) -> list[str]:
 
     success_section = _markdown_section(text, "Success Criteria")
     smart_count = _count_numeric_criteria(success_section)
-    if smart_count < 3:
-        findings.append("fewer than 3 SMART success criteria with numeric thresholds")
+    if smart_count < expected_criteria_count:
+        findings.append(
+            f"fewer than {expected_criteria_count} SMART success criteria with numeric thresholds"
+        )
 
     risk_section = _markdown_section(text, "Risk Registry")
     if _count_risk_entries(risk_section) < 3:
@@ -1767,11 +1853,6 @@ _CONFIRMATION_PATTERNS: tuple[tuple[str, int], ...] = (
     (r"\boption\s*1\b", 0),
     (r"\boption\s*2\b", 1),
     (r"\boption\s*3\b", 2),
-    (r"\bgo\s+with\b", 0),
-    (r"\bproceed\b", 0),
-    (r"\bproceed\s+with\b", 0),
-    (r"\bconfirm\b", 0),
-    (r"\blet'?s\s+do\b", 0),
 )
 
 
@@ -1810,14 +1891,18 @@ def _poc_confirmation_index(user_message: str) -> int | None:
     return None
 
 
-def _poc_options_from_memory(memory: MemorySnapshot | None) -> list[dict[str, Any]]:
-    decision_context = memory.decision_context if memory else {}
-    poc_options = decision_context.get("poc_options", [])
-    if not poc_options and memory and isinstance(memory.raw, dict):
-        archie = memory.raw.get("archie", {})
-        resolved = archie.get("resolved_decisions", {}) if isinstance(archie, dict) else {}
-        poc = resolved.get("poc", {}) if isinstance(resolved, dict) else {}
-        poc_options = poc.get("options", []) if isinstance(poc, dict) else []
+def _poc_options_from_context(context: dict[str, Any]) -> list[dict[str, Any]]:
+    archie = context_store.get_archie_state(context) if isinstance(context, dict) else {}
+    resolved = archie.get("resolved_decisions", {}) if isinstance(archie, dict) else {}
+    poc = resolved.get("poc", {}) if isinstance(resolved, dict) else {}
+    poc_options = poc.get("options", []) if isinstance(poc, dict) else []
+    if not poc_options and isinstance(context, dict):
+        decision_context = context.get("latest_decision_context", {})
+        poc_options = (
+            decision_context.get("poc_options", [])
+            if isinstance(decision_context, dict)
+            else []
+        )
     if not isinstance(poc_options, list):
         return []
     return [option for option in poc_options if isinstance(option, dict)]
@@ -1879,17 +1964,21 @@ def _grounded_poc_options(customer_name: str) -> list[dict[str, Any]]:
 
 def _detect_poc_confirmation(
     user_message: str,
-    memory: MemorySnapshot | None,
+    context: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Return the confirmed POC option dict, or None if no confirmation matched."""
     index = _poc_confirmation_index(user_message)
-    if index is None:
-        return None
-    poc_options = _poc_options_from_memory(memory)
+    poc_options = _poc_options_from_context(context)
     if not poc_options:
         return None
-    safe_index = min(index, len(poc_options) - 1)
-    return poc_options[safe_index]
+    if index is not None:
+        return poc_options[index] if index < len(poc_options) else None
+    text = str(user_message or "").casefold()
+    for option in poc_options:
+        name = str(option.get("option_name") or "").strip()
+        if name and name.casefold() in text:
+            return option
+    return None
 
 
 def _slugify_poc_name(value: str) -> str:

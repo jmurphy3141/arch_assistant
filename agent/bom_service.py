@@ -14,6 +14,8 @@ from typing import Any, Callable
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
+from agent import consistency_contract
+
 logger = logging.getLogger(__name__)
 
 OCI_PRICE_LIST_API_URL = "https://apexapps.oracle.com/pls/apex/cetools/api/v1/products/"
@@ -103,7 +105,7 @@ class BomService:
         except Exception as exc:
             logger.warning("BOM pricing refresh fallback: %s", exc)
             source = "fallback"
-            pricing_table = dict(DEFAULT_PRICE_TABLE)
+            pricing_table = self._unpriced_default_catalog()
 
         try:
             shapes_text = self._fetch_url(OCI_SHAPES_DOC_URL)
@@ -195,10 +197,27 @@ class BomService:
                 "source": "oracle_price_list_api",
             }
 
-        # Keep required fallback SKUs only when Oracle omits one of the deterministic fast-path SKUs.
+        # Keep catalog metadata for omitted SKUs, but never backfill a price
+        # that the current Oracle public price response did not provide.
         for sku, row in DEFAULT_PRICE_TABLE.items():
-            table.setdefault(sku, dict(row))
+            if sku not in table:
+                fallback = dict(row)
+                fallback["unit_price"] = None
+                fallback["source"] = "unpriced_catalog"
+                fallback["pricing_status"] = "unpriced"
+                table[sku] = fallback
         return table
+
+    @staticmethod
+    def _unpriced_default_catalog() -> dict[str, dict[str, Any]]:
+        output: dict[str, dict[str, Any]] = {}
+        for sku, row in DEFAULT_PRICE_TABLE.items():
+            item = dict(row)
+            item["unit_price"] = None
+            item["source"] = "unpriced_catalog"
+            item["pricing_status"] = "unpriced"
+            output[sku] = item
+        return output
 
     @classmethod
     def _extract_usd_unit_price(cls, row: dict[str, Any]) -> float | None:
@@ -307,11 +326,15 @@ class BomService:
                     mem_sku = CPU_SKU_TO_MEM_SKU.get(sku, "—")
                     mem_row = price_table.get(mem_sku, {})
                     lines.append(
-                        f"{label} | {sku} | ${row.get('unit_price', 0):.4f} "
-                        f"| {mem_sku} | ${mem_row.get('unit_price', 0):.4f}"
+                        f"{label} | {sku} | {self._format_catalog_price(row.get('unit_price'))} "
+                        f"| {mem_sku} | {self._format_catalog_price(mem_row.get('unit_price'))}"
                     )
                     break
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_catalog_price(value: Any) -> str:
+        return f"${float(value):.4f}" if value not in (None, "") else "TBD"
 
     def chat(
         self,
@@ -501,26 +524,44 @@ class BomService:
         compute = src.get("compute", {}) if isinstance(src.get("compute"), dict) else {}
         memory = src.get("memory", {}) if isinstance(src.get("memory"), dict) else {}
         storage = src.get("storage", {}) if isinstance(src.get("storage"), dict) else {}
+        database = src.get("database", {}) if isinstance(src.get("database"), dict) else {}
         connectivity = src.get("connectivity", {}) if isinstance(src.get("connectivity"), dict) else {}
         dr = src.get("dr", {}) if isinstance(src.get("dr"), dict) else {}
+        target_service_ids = [
+            str(item).strip()
+            for item in src.get("target_service_ids", []) or []
+            if str(item).strip()
+        ]
 
         ocpu = self._normalize_plain_number(compute.get("ocpu"))
         memory_gb = self._normalize_capacity_gb(memory.get("gb"), default_unit="gb")
         block_tb = self._normalize_capacity_tb(storage.get("block_tb"), default_unit="tb")
+        object_tb = self._normalize_capacity_tb(storage.get("object_tb"), default_unit="tb")
+        file_tb = self._normalize_capacity_tb(storage.get("file_tb"), default_unit="tb")
+        tiers = [
+            dict(item)
+            for item in compute.get("tiers", []) or []
+            if isinstance(item, dict)
+        ]
 
-        for label, value, normalized in (
-            ("compute.ocpu", compute.get("ocpu"), ocpu),
-            ("memory.gb", memory.get("gb"), memory_gb),
-            ("storage.block_tb", storage.get("block_tb"), block_tb),
-        ):
+        requirements = []
+        if not target_service_ids or any(item.startswith("compute.") for item in target_service_ids):
+            requirements.extend((
+                ("compute.ocpu", compute.get("ocpu"), ocpu),
+                ("memory.gb", memory.get("gb"), memory_gb),
+            ))
+        if not target_service_ids or "storage.block" in target_service_ids:
+            requirements.append(("storage.block_tb", storage.get("block_tb"), block_tb))
+        for label, value, normalized in requirements:
             if value not in (None, "", [], {}) and normalized is None:
                 blockers.append(f"{label}={value!r}")
 
-        for label, normalized in (
-            ("compute.ocpu", ocpu),
-            ("memory.gb", memory_gb),
-            ("storage.block_tb", block_tb),
-        ):
+        required_normalized = []
+        if not target_service_ids or any(item.startswith("compute.") for item in target_service_ids):
+            required_normalized.extend((("compute.ocpu", ocpu), ("memory.gb", memory_gb)))
+        if not target_service_ids or "storage.block" in target_service_ids:
+            required_normalized.append(("storage.block_tb", block_tb))
+        for label, normalized in required_normalized:
             if normalized is None or normalized <= 0:
                 blockers.append(f"missing required {label}")
 
@@ -533,6 +574,8 @@ class BomService:
             "compute": {
                 "ocpu": ocpu,
                 "gpu": bool(compute.get("gpu", False)),
+                "instance_count": int(compute.get("instance_count") or 0),
+                "tiers": tiers,
             },
             "memory": {"gb": memory_gb},
             "storage": {"block_tb": block_tb, "block_gb": (block_tb * 1024.0) if block_tb is not None else None},
@@ -548,13 +591,28 @@ class BomService:
             "workloads": [str(item).strip() for item in src.get("workloads", []) or [] if str(item).strip()],
             "os_mix": [str(item).strip() for item in src.get("os_mix", []) or [] if str(item).strip()],
             "target_services": [str(item).strip() for item in src.get("target_services", []) or [] if str(item).strip()],
+            "target_service_ids": target_service_ids,
+            "strict_scope": bool(src.get("strict_scope", False)),
+            "scope": str(src.get("scope", "") or "").strip(),
+            "assumptions": [str(item).strip() for item in src.get("assumptions", []) or [] if str(item).strip()],
             "workload_service_mapping": [
                 dict(item)
                 for item in src.get("workload_service_mapping", []) or []
                 if isinstance(item, dict)
             ],
             "output_format": str(src.get("output_format", "") or "xlsx").strip(),
+            "database": {
+                "service_id": str(database.get("service_id") or "").strip(),
+                "display_name": str(database.get("display_name") or "").strip(),
+                "ocpu": self._normalize_plain_number(database.get("ocpu")),
+                "instance_count": int(database.get("instance_count") or 1),
+                "ha": bool(database.get("ha", False)),
+            },
         }
+        normalized["storage"]["object_tb"] = object_tb
+        normalized["storage"]["object_gb"] = (object_tb * 1024.0) if object_tb is not None else None
+        normalized["storage"]["file_tb"] = file_tb
+        normalized["storage"]["file_gb"] = (file_tb * 1024.0) if file_tb is not None else None
         return normalized, list(dict.fromkeys(blockers))
 
     @classmethod
@@ -594,6 +652,8 @@ class BomService:
         normalized: dict[str, Any],
         price_table: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
+        if normalized.get("strict_scope") and normalized.get("target_service_ids"):
+            return self._draft_strict_poc_payload(normalized, price_table)
         compute = normalized.get("compute", {}) if isinstance(normalized.get("compute"), dict) else {}
         memory = normalized.get("memory", {}) if isinstance(normalized.get("memory"), dict) else {}
         storage = normalized.get("storage", {}) if isinstance(normalized.get("storage"), dict) else {}
@@ -608,24 +668,39 @@ class BomService:
         ocpu = float(compute.get("ocpu") or 0.0)
         mem_gb = float(memory.get("gb") or 0.0)
         block_gb = float(storage.get("block_gb") or 0.0)
-        cpu_sku = "B97384"   # E5.Flex default for all paths
+        object_gb = float(storage.get("object_gb") or 0.0)
+        cpu_sku = (
+            "B97384" if "e5.flex" in target_text or "standard.e5" in target_text
+            else "B111129"
+        )
         mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
 
         line_items = []
         cpu_line = self._build_line(cpu_sku, ocpu, price_table, "compute", "Structured input: compute.ocpu")
         if is_native:
-            cpu_line["description"] = "VM.Standard.E5.Flex compute VMs - OCPU"
-            cpu_line["notes"] = "OCI Native Services target: VM.Standard.E5.Flex compute VMs for application, SQL Server, and lift/shift workloads"
+            shape_label = "VM.Standard.E5.Flex" if cpu_sku == "B97384" else "VM.Standard.E6.Flex"
+            cpu_line["description"] = f"{shape_label} compute VMs - OCPU"
+            cpu_line["notes"] = f"OCI Native Services target: {shape_label} compute VMs for application, SQL Server, and lift/shift workloads"
         line_items.append(cpu_line)
         if not is_gpu:
             mem_line = self._build_line(mem_sku, mem_gb, price_table, "compute", "Structured input: memory.gb")
             if is_native:
-                mem_line["description"] = "VM.Standard.E5.Flex compute VMs - Memory"
-                mem_line["notes"] = "OCI Native Services target: VM.Standard.E5.Flex memory for compute VMs"
+                mem_line["description"] = f"{shape_label} compute VMs - Memory"
+                mem_line["notes"] = f"OCI Native Services target: {shape_label} memory for compute VMs"
             line_items.append(mem_line)
         line_items.append(
             self._build_line("B91961", block_gb, price_table, "storage", "Structured input: storage.block_tb")
         )
+        if object_gb > 0:
+            line_items.append(
+                self._build_line(
+                    "B91628",
+                    object_gb,
+                    price_table,
+                    "storage",
+                    "Structured input: storage.object_tb",
+                )
+            )
         line_items.append(
             self._build_line(
                 "B91962",
@@ -641,6 +716,7 @@ class BomService:
                     normalized=normalized,
                     price_table=price_table,
                     block_gb=block_gb,
+                    object_gb=object_gb,
                 )
             )
 
@@ -690,12 +766,111 @@ class BomService:
         }
         return payload
 
+    def _draft_strict_poc_payload(
+        self,
+        normalized: dict[str, Any],
+        price_table: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        service_ids = set(normalized.get("target_service_ids", []) or [])
+        compute = normalized.get("compute", {}) if isinstance(normalized.get("compute"), dict) else {}
+        memory = normalized.get("memory", {}) if isinstance(normalized.get("memory"), dict) else {}
+        storage = normalized.get("storage", {}) if isinstance(normalized.get("storage"), dict) else {}
+        rows: list[dict[str, Any]] = []
+
+        compute_id = next((item for item in service_ids if item.startswith("compute.")), "")
+        if compute_id:
+            cpu_sku = "B97384" if compute_id == "compute.vm.standard.e5.flex" else "B111129"
+            mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
+            tiers = [item for item in compute.get("tiers", []) or [] if isinstance(item, dict)]
+            if tiers:
+                for tier in tiers:
+                    tier_name = str(tier.get("name") or "compute tier").strip()
+                    count = int(tier.get("instance_count") or 1)
+                    for sku, quantity, resource in (
+                        (cpu_sku, float(tier.get("ocpu") or 0), "OCPU"),
+                        (mem_sku, float(tier.get("memory_gb") or 0), "Memory"),
+                    ):
+                        row = self._build_line(
+                            sku,
+                            quantity,
+                            price_table,
+                            "compute",
+                            f"Explicit {tier_name}: {count} servers; {resource} sized per tier",
+                        )
+                        row["description"] = f"{consistency_contract.display_name(compute_id)} {tier_name} tier - {resource}"
+                        row["canonical_service_id"] = compute_id
+                        row["instance_count"] = count
+                        rows.append(row)
+            else:
+                for sku, quantity, notes in (
+                    (cpu_sku, float(compute.get("ocpu") or 4.0), "Assumed minimum POC compute OCPU"),
+                    (mem_sku, float(memory.get("gb") or 32.0), "Assumed minimum POC compute memory"),
+                ):
+                    row = self._build_line(sku, quantity, price_table, "compute", notes)
+                    row["canonical_service_id"] = compute_id
+                    row["instance_count"] = int(compute.get("instance_count") or 1)
+                    rows.append(row)
+        if "storage.block" in service_ids:
+            block_gb = float(storage.get("block_gb") or 500.0)
+            for sku, quantity, notes in (
+                ("B91961", block_gb, "Assumed minimum POC Balanced Block Volume"),
+                ("B91962", self._block_volume_performance_units(block_gb), "Balanced 10 VPU/GB"),
+            ):
+                row = self._build_line(sku, quantity, price_table, "storage", notes)
+                row["canonical_service_id"] = "storage.block"
+                rows.append(row)
+        if "storage.object" in service_ids:
+            row = self._build_line(
+                "B91628", float(storage.get("object_gb") or 1024.0), price_table,
+                "storage", "Assumed minimum POC Object Storage",
+            )
+            row["canonical_service_id"] = "storage.object"
+            rows.append(row)
+        if "storage.file" in service_ids:
+            row = self._build_line(
+                "BFILE01", float(storage.get("file_gb") or 1024.0), price_table,
+                "storage", "Explicit or assumed File Storage capacity",
+            )
+            row["canonical_service_id"] = "storage.file"
+            rows.append(row)
+        if "network.load_balancer.flexible" in service_ids:
+            row = self._build_line("B93030", 1.0, price_table, "network", "One selected Flexible Load Balancer")
+            row["canonical_service_id"] = "network.load_balancer.flexible"
+            rows.append(row)
+        if "security.waf" in service_ids:
+            row = self._build_line("BWAF01", 1.0, price_table, "security", "Selected OCI WAF; authoritative price required")
+            row["canonical_service_id"] = "security.waf"
+            rows.append(row)
+        database = normalized.get("database", {}) if isinstance(normalized.get("database"), dict) else {}
+        database_id = str(database.get("service_id") or "")
+        selected_database_id = next((item for item in service_ids if item.startswith("database.")), "")
+        if selected_database_id:
+            database_ocpu = float(database.get("ocpu") or 2.0)
+            row = self._build_line(
+                "B99060", database_ocpu, price_table, "database",
+                f"{'Explicit HA' if database.get('ha') else 'Assumed'} {consistency_contract.display_name(selected_database_id)} sizing",
+            )
+            row["description"] = f"{consistency_contract.display_name(selected_database_id)} - OCPU"
+            row["canonical_service_id"] = selected_database_id
+            row["instance_count"] = 1
+            rows.append(row)
+
+        return {
+            "currency": "USD",
+            "region": str(normalized.get("region") or ""),
+            "architecture_option": str(normalized.get("architecture_option") or ""),
+            "line_items": rows,
+            "assumptions": list(normalized.get("assumptions", []) or []),
+            "structured_inputs": normalized,
+        }
+
     def _native_service_lines_from_inputs(
         self,
         *,
         normalized: dict[str, Any],
         price_table: dict[str, dict[str, Any]],
         block_gb: float,
+        object_gb: float,
     ) -> list[dict[str, Any]]:
         connectivity = normalized.get("connectivity", {}) if isinstance(normalized.get("connectivity"), dict) else {}
         dr = normalized.get("dr", {}) if isinstance(normalized.get("dr"), dict) else {}
@@ -748,7 +923,7 @@ class BomService:
                     "OCI Native Services target: WAF policy for protected ingress",
                 )
             )
-        if _has("object storage", "backup", "archive") or dr.get("rto_hours") or dr.get("cross_region_restore"):
+        if object_gb <= 0 and (_has("object storage", "backup", "archive") or dr.get("rto_hours") or dr.get("cross_region_restore")):
             rows.append(
                 self._build_line(
                     "B91628",
@@ -940,18 +1115,20 @@ class BomService:
             elif "e6" in user_text:
                 shape_hint = "e6"
 
-        # Determine CPU SKU from user request only; default to E5 (AMD general-purpose)
+        # Determine CPU SKU from user request only; default to E6 for unspecified compute.
         if shape_hint == "a1" or "ampere" in user_text:
             cpu_sku = "B93297"
         elif "e6" in user_text or shape_hint == "e6":
             cpu_sku = "B111129"
         elif "e4" in user_text or shape_hint == "e4":
             cpu_sku = "B93113"
+        elif "e5" in user_text or shape_hint == "e5":
+            cpu_sku = "B97384"
         elif "x9" in user_text or "intel" in user_text:
             x9_sku = "B94176"
             cpu_sku = x9_sku
         else:
-            cpu_sku = "B97384"   # E5.Flex — OCI default general-purpose VM
+            cpu_sku = "B111129"   # E6.Flex — OCI default general-purpose VM
         mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
         shape_catalog = self._build_shape_catalog(price_table)
 
@@ -1081,8 +1258,9 @@ class BomService:
         category: str,
         notes: str,
     ) -> dict[str, Any]:
-        row = price_table.get(sku, {"description": sku, "unit_price": 0.0})
-        unit_price = float(row.get("unit_price", 0.0) or 0.0)
+        row = price_table.get(sku, {"description": sku, "unit_price": None, "source": "unpriced_catalog"})
+        raw_price = row.get("unit_price")
+        unit_price = float(raw_price) if raw_price not in (None, "") else None
         qty = float(quantity)
         metric = str(row.get("metric") or "")
         monthly_multiplier = BomService._monthly_multiplier_for_metric(metric)
@@ -1094,7 +1272,9 @@ class BomService:
             "quantity": qty,
             "unit_price": unit_price,
             "monthly_multiplier": monthly_multiplier,
-            "extended_price": round(qty * unit_price * monthly_multiplier, 4),
+            "extended_price": round(qty * unit_price * monthly_multiplier, 4) if unit_price is not None else None,
+            "price_source": str(row.get("source") or "unpriced_catalog"),
+            "pricing_status": "priced" if unit_price is not None else "unpriced",
             "notes": notes,
         }
 
@@ -1402,17 +1582,18 @@ class BomService:
                 errors.append(f"line_items[{idx}] unknown SKU: {sku}")
                 continue
             ref = pricing_table[sku]
-            try:
-                unit_price = float(row.get("unit_price"))
-            except Exception:
-                unit_price = -1
-            ref_price = float(ref.get("unit_price", 0.0) or 0.0)
-            if unit_price <= 0 < ref_price:
+            raw_ref_price = ref.get("unit_price")
+            ref_price = float(raw_ref_price) if raw_ref_price not in (None, "") else None
+            raw_unit_price = row.get("unit_price")
+            unit_price = float(raw_unit_price) if raw_unit_price not in (None, "") else None
+            if ref_price is None:
+                if unit_price is not None or str(row.get("pricing_status") or "") != "unpriced":
+                    errors.append(f"line_items[{idx}] unverified price for SKU {sku} must remain unpriced")
+            elif unit_price is None or unit_price <= 0:
                 errors.append(f"line_items[{idx}] non-positive unit_price for SKU {sku}")
-            if unit_price != ref_price:
-                if abs(unit_price - ref_price) > 0.000001:
-                    errors.append(f"line_items[{idx}] unit_price for SKU {sku} does not match authoritative price")
-            if ref_price < 0:
+            elif abs(unit_price - ref_price) > 0.000001:
+                errors.append(f"line_items[{idx}] unit_price for SKU {sku} does not match authoritative price")
+            if ref_price is not None and ref_price < 0:
                 errors.append(f"line_items[{idx}] negative authoritative unit_price for SKU {sku}")
             category = str(row.get("category") or "").lower()
             desc = str(row.get("description") or "").lower()
@@ -1458,10 +1639,16 @@ class BomService:
             if quantity <= 0:
                 quantity = 1.0
             row["quantity"] = quantity
-            unit_price = float(ref.get("unit_price", 0.0) or 0.0)
+            raw_price = ref.get("unit_price")
+            unit_price = float(raw_price) if raw_price not in (None, "") else None
             row["unit_price"] = unit_price
             row["monthly_multiplier"] = self._monthly_multiplier_for_metric(str(row.get("metric") or ""))
-            row["extended_price"] = round(quantity * unit_price * float(row["monthly_multiplier"]), 4)
+            row["extended_price"] = (
+                round(quantity * unit_price * float(row["monthly_multiplier"]), 4)
+                if unit_price is not None else None
+            )
+            row["price_source"] = str(ref.get("source") or "unpriced_catalog")
+            row["pricing_status"] = "priced" if unit_price is not None else "unpriced"
             output.append(row)
 
         sku_set = {str(row.get("sku") or "").strip().upper() for row in output}
@@ -1477,14 +1664,16 @@ class BomService:
                         "category": "compute",
                         "metric": str(mem_ref.get("metric") or ""),
                         "quantity": max(1.0, qty * 16.0),
-                        "unit_price": float(mem_ref.get("unit_price", 0.0) or 0.0),
+                        "unit_price": mem_ref.get("unit_price"),
                         "monthly_multiplier": self._monthly_multiplier_for_metric(str(mem_ref.get("metric") or "")),
                         "extended_price": round(
                             max(1.0, qty * 16.0)
-                            * float(mem_ref.get("unit_price", 0.0) or 0.0)
+                            * float(mem_ref.get("unit_price") or 0.0)
                             * self._monthly_multiplier_for_metric(str(mem_ref.get("metric") or "")),
                             4,
-                        ),
+                        ) if mem_ref.get("unit_price") is not None else None,
+                        "price_source": str(mem_ref.get("source") or "unpriced_catalog"),
+                        "pricing_status": "priced" if mem_ref.get("unit_price") is not None else "unpriced",
                         "notes": "Auto-repair: added memory SKU for non-GPU split rule",
                     }
                 )
@@ -1496,18 +1685,31 @@ class BomService:
         norm = json.loads(json.dumps(payload))
         line_items = norm.get("line_items") or []
         total = 0.0
+        priced_count = 0
+        unpriced_count = 0
         for row in line_items:
             qty = float(row.get("quantity") or 0)
-            price = float(row.get("unit_price") or 0)
+            raw_price = row.get("unit_price")
+            price = float(raw_price) if raw_price not in (None, "") else None
             multiplier = float(row.get("monthly_multiplier") or self._monthly_multiplier_for_metric(str(row.get("metric") or "")))
             row["quantity"] = round(qty, 4)
-            row["unit_price"] = round(price, 6)
+            row["unit_price"] = round(price, 6) if price is not None else None
             row["monthly_multiplier"] = int(multiplier) if multiplier.is_integer() else round(multiplier, 4)
-            row["extended_price"] = round(qty * price * multiplier, 4)
-            total += float(row["extended_price"])
+            row["extended_price"] = round(qty * price * multiplier, 4) if price is not None else None
+            row["pricing_status"] = "priced" if price is not None else "unpriced"
+            if price is None:
+                unpriced_count += 1
+            else:
+                priced_count += 1
+                total += float(row["extended_price"])
         norm["currency"] = str(norm.get("currency") or "USD")
         norm["monthly_total"] = round(total, 4)
         norm["totals"] = {"estimated_monthly_cost": round(total, 4)}
+        norm["pricing_status"] = (
+            "partially_priced" if priced_count and unpriced_count
+            else "priced" if priced_count
+            else "unpriced"
+        )
         assumptions = norm.get("assumptions")
         if not isinstance(assumptions, list):
             norm["assumptions"] = []
@@ -1541,6 +1743,7 @@ class BomService:
         for item in line_items:
             raw_count = item.get("instance_count")
             count_val = int(raw_count) if raw_count not in (None, "", 0) else ""
+            unit_price = item.get("unit_price")
             ws.append(
                 [
                     item.get("sku", ""),
@@ -1550,7 +1753,7 @@ class BomService:
                     item.get("metric", ""),
                     float(item.get("quantity") or 0),
                     float(item.get("monthly_multiplier") or 1),
-                    float(item.get("unit_price") or 0),
+                    float(unit_price) if unit_price not in (None, "") else "TBD",
                     None,  # formula column
                     item.get("notes", ""),
                 ]
@@ -1559,7 +1762,10 @@ class BomService:
         start_row = 2
         end_row = max(1, len(line_items) + 1)
         for row_idx in range(start_row, end_row + 1):
-            ws.cell(row=row_idx, column=9, value=f"=F{row_idx}*G{row_idx}*H{row_idx}")
+            if isinstance(ws.cell(row=row_idx, column=8).value, (int, float)):
+                ws.cell(row=row_idx, column=9, value=f"=F{row_idx}*G{row_idx}*H{row_idx}")
+            else:
+                ws.cell(row=row_idx, column=9, value="TBD")
 
         total_row = end_row + 2
         ws.cell(row=total_row, column=8, value="TOTAL")
@@ -1577,6 +1783,35 @@ class BomService:
         ws.column_dimensions["H"].width = 18
         ws.column_dimensions["I"].width = 20
         ws.column_dimensions["J"].width = 42
+
+        scope_items = [
+            item for item in payload.get("scope_items", []) or [] if isinstance(item, dict)
+        ]
+        if scope_items:
+            scope_ws = wb.create_sheet("Scope Coverage")
+            scope_ws.append([
+                "Canonical Service ID",
+                "Description",
+                "Quantity",
+                "Pricing Status",
+                "Assumed Sizing",
+                "Assumptions",
+                "Source",
+            ])
+            for cell in scope_ws[1]:
+                cell.font = Font(bold=True)
+            for item in scope_items:
+                scope_ws.append([
+                    item.get("canonical_service_id", ""),
+                    item.get("description", ""),
+                    item.get("quantity", ""),
+                    item.get("pricing_status", ""),
+                    json.dumps(item.get("assumed_sizing", {}), sort_keys=True),
+                    "; ".join(str(value) for value in item.get("assumptions", []) or []),
+                    item.get("source", ""),
+                ])
+            for column, width in zip("ABCDEFG", (34, 34, 12, 28, 42, 72, 20)):
+                scope_ws.column_dimensions[column].width = width
 
         output = io.BytesIO()
         wb.save(output)

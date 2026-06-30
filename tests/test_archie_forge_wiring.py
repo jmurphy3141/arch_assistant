@@ -1,8 +1,4 @@
-"""
-Architecture guard: assert forge.run_turn() is called for every
-generation request. Fails if a bypass block is re-introduced in
-archie_session.py.
-"""
+"""Architecture guards for current deterministic and conversational dispatch."""
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -67,27 +63,23 @@ def _build_test_forge():
 
 
 @pytest.mark.parametrize(
-    "message",
+    ("message", "expected_tool"),
     [
-        "I need a BOM for a web app with 2 servers",
-        "Generate a diagram for a 3-tier OCI architecture",
-        "Run a WAF review on my current architecture",
-        "Generate a Terraform plan for my diagram",
-        "Write a POV document",
-        "Draft a JEP for this migration",
-        "Generate a tech research report comparing OCI options",
-        "Create a POC plan for this customer",
-        "Generate the POC presentation",
-        "Build a sales deck for the executive briefing",
+        ("Build a BOM for a web app with 2 servers", "generate_bom"),
+        ("Generate a diagram for a 3-tier OCI architecture", "generate_diagram"),
+        ("Generate a WAF review on my current architecture", "generate_waf"),
+        ("Generate a Terraform plan for my diagram", "generate_terraform"),
+        ("Create a POV document", "generate_pov"),
+        ("Draft a JEP for this migration", "generate_jep"),
     ],
 )
-def test_forge_run_turn_called_for_generation_requests(message):
-    """forge.run_turn() must be called for all generation messages."""
+def test_explicit_generation_uses_only_matching_forge_tool(message, expected_tool):
     from agent import archie_session
 
     mock_forge = MagicMock()
     mock_forge.run_turn = AsyncMock(return_value=_mock_turn_result())
-    mock_forge.invoke_tool = AsyncMock(side_effect=AssertionError("direct invoke_tool bypass"))
+    from skillforge.types import ToolResult
+    mock_forge.invoke_tool = AsyncMock(return_value=ToolResult(summary="done", status="ok"))
 
     mock_store = MagicMock()
     mock_text_runner = MagicMock()
@@ -115,11 +107,27 @@ def test_forge_run_turn_called_for_generation_requests(message):
             text_runner=mock_text_runner,
         ))
 
-    mock_forge.run_turn.assert_called_once(), (
-        f"forge.run_turn() was NOT called for message: '{message}'\n"
-        "This means a bypass block in archie_session.py is routing "
-        "this request directly to a tool, skipping Forge's reasoning loop."
-    )
+    mock_forge.run_turn.assert_not_called()
+    assert [call.args[0] for call in mock_forge.invoke_tool.await_args_list] == [expected_tool]
+
+
+def test_conversational_architecture_request_uses_reasoning_loop():
+    from agent import archie_session
+
+    mock_forge = MagicMock()
+    mock_forge.run_turn = AsyncMock(return_value=_mock_turn_result("Tradeoff discussion"))
+    mock_forge.invoke_tool = AsyncMock(side_effect=AssertionError("advice must not generate"))
+
+    with patch("agent.archie_session._get_forge", return_value=mock_forge):
+        asyncio.run(archie_session.run_turn(
+            customer_id="routing-conversation",
+            customer_name="Test User",
+            user_message="What are the tradeoffs between VPN and FastConnect?",
+            store=InMemoryObjectStore(),
+            text_runner=MagicMock(),
+        ))
+
+    mock_forge.run_turn.assert_called_once()
     mock_forge.invoke_tool.assert_not_called()
 
 

@@ -49,6 +49,73 @@ def options_for_memory():
     return poc_composer.compose_grounded_options(brief)
 
 
+def context_with_options(options):
+    return {
+        "archie": {"resolved_decisions": {"poc": {"options": options}}},
+        "latest_decision_context": {"poc_options": options},
+    }
+
+
+@pytest.mark.parametrize(
+    ("customer_name", "prompt"),
+    [
+        (
+            "HarborStone",
+            "HarborStone is an on-premises Java payments application backed by PostgreSQL. "
+            "Goal: reduce release risk. Target OCI us-ashburn-1 with VM.Standard.E5.Flex, "
+            "PostgreSQL, Object Storage, Logging, and Site-to-Site VPN. The POC lasts 15 days. "
+            "Acceptance criteria: p95 under 500 milliseconds and restore within 60 minutes. "
+            "Oracle SA and HarborStone lead each own delivery and commit 10 hours per week.",
+        ),
+        (
+            "NovaGrid",
+            "Migration of NovaGrid's grid telemetry service from VMware to OCI us-phoenix-1. "
+            "Risks: unstable ingest latency. In scope: VM.Standard.E5.Flex, Object Storage, "
+            "Block Volume, Logging, and Monitoring. POC lasts 15 days. Measurable success criteria: "
+            "process 300 requests per second and recover within 30 minutes. Oracle SA and NovaGrid "
+            "engineer will each contribute 8 hours per week.",
+        ),
+        (
+            "Everwell",
+            "Everwell currently runs a patient scheduling API on private virtual machines backed by "
+            "PostgreSQL. It must prove predictable response time. Use OCI eu-frankfurt-1, a Flexible "
+            "Load Balancer, VM.Standard.E5.Flex, PostgreSQL, Logging, and Monitoring. Duration is 12 days. "
+            "Targets include p95 below 400 milliseconds and 99.9% availability. Delivery owners: "
+            "Oracle SA and Everwell platform lead; commitment: 10 hours per week.",
+        ),
+        (
+            "Argent",
+            "Argent is moving its legacy claims-processing application to OCI uk-london-1. "
+            "Objective: remove overnight batch overruns. Scope uses VM.Standard.E5.Flex, PostgreSQL, "
+            "Object Storage, Block Volume, and Logging. Run the POC for 10 days. Performance targets: "
+            "finish the batch within 2 hours and restore within 45 minutes. Oracle SA and Argent owner "
+            "commit 9 hours each per week.",
+        ),
+        (
+            "Pacifica",
+            "Pacifica hosts an on-prem order-routing service backed by PostgreSQL. At risk from peak-hour "
+            "timeouts. Validate in OCI ap-sydney-1 with a Flexible Load Balancer, VM.Standard.E5.Flex, "
+            "PostgreSQL, Object Storage, Logging, and Monitoring. This proof of concept runs for 15 days. "
+            "Desired outcomes: sustain 200 requests per second and keep p95 under 350 milliseconds. "
+            "Oracle SA and Pacifica technical lead each provide 10 hours per week.",
+        ),
+    ],
+)
+def test_brief_accepts_natural_fact_sheet_variants(customer_name, prompt):
+    brief = poc_composer.build_poc_brief(
+        customer_name=customer_name,
+        user_message=prompt,
+        decision_context={},
+    )
+
+    assert brief is not None
+    assert brief.workload
+    assert brief.pain
+    assert brief.duration_days > 0
+    assert brief.owner_count == 2
+    assert brief.success_criteria
+
+
 def test_brief_extracts_success_criteria_not_target_architecture():
     brief = poc_composer.build_poc_brief(
         customer_name="Redwood Logistics",
@@ -155,12 +222,93 @@ async def test_missing_grounded_brief_needs_input_without_inference(monkeypatch)
     )
     assert result.status == "needs_input"
     assert called is False
+    assert 1 <= len(result.data["questions"]) <= 3
+
+
+def test_gradual_context_builds_targeted_brief_and_current_correction_wins():
+    context = {
+        "archie": {
+            "engagement_summary": (
+                "HarborStone runs an on-premises Java payments application backed by PostgreSQL. "
+                "Goal: reduce release risk. Target OCI us-phoenix-1 with VM.Standard.E5.Flex, "
+                "PostgreSQL, Object Storage, Logging, and Site-to-Site VPN. The POC lasts 15 days. "
+                "Success criteria: p95 under 500 milliseconds and restore within 60 minutes. "
+                "Oracle SA and HarborStone lead each commit 10 hours per week."
+            ),
+            "resolved_questions": [{"question": "Connectivity?", "answer": "Site-to-Site VPN"}],
+            "latest_approved_constraints": {"public_edge": False},
+            "latest_approved_assumptions": [{"region": "us-phoenix-1"}],
+        },
+        "sessions": {
+            "ignored": {"history": [{"role": "user", "content": "Use Autonomous Database"}]}
+        },
+    }
+
+    brief = poc_composer.build_poc_brief(
+        customer_name="HarborStone",
+        user_message="Correction: use us-ashburn-1, not the earlier region.",
+        decision_context={},
+        engagement_context=context,
+    )
+
+    assert brief is not None
+    assert brief.region == "us-ashburn-1"
+    assert "PostgreSQL DB System" in brief.allowed_services
+    assert "Oracle Base Database Service" not in brief.allowed_services
+    assert "Autonomous Database" not in brief.grounded_source
+
+
+def test_gradual_discovery_summary_accumulates_without_raw_history():
+    from agent import archie_memory
+
+    context = {}
+    for message in (
+        "Workload: a VMware telemetry service with no database.",
+        "Region us-phoenix-1; POC duration 15 days; Oracle SA and VoltForge engineer each commit 8 hours per week.",
+        "In scope: Object Storage, Block Volume, Site-to-Site VPN, Logging, Monitoring, and E6 Flex compute. Success criteria: process 300 requests per second and recover within 30 minutes.",
+    ):
+        archie_memory._record_poc_discovery_context(context, message)
+
+    brief = poc_composer.build_poc_brief(
+        customer_name="VoltForge",
+        user_message="Create three POC options.",
+        decision_context={},
+        engagement_context=context,
+    )
+
+    assert brief is not None
+    assert brief.region == "us-phoenix-1"
+    assert "VM.Standard.E6.Flex" in brief.allowed_services
+    assert "PostgreSQL DB System" not in brief.allowed_services
+    assert brief.success_criteria == (
+        "process 300 requests per second",
+        "recover within 30 minutes",
+    )
+
+
+def test_excluded_and_negated_services_are_not_admitted_to_poc_scope():
+    prompt = (
+        "AeroSpan runs a public order-routing service backed by PostgreSQL. Goal: reduce timeouts. "
+        "Use OCI us-ashburn-1 with Flexible Load Balancer, E5 Flex, PostgreSQL, Object Storage, "
+        "and Monitoring. POC duration 15 days. Success criteria: sustain 200 requests per second. "
+        "Oracle SA and AeroSpan lead each commit 10 hours per week. Out of scope: OCI WAF. "
+        "Connectivity is not FastConnect."
+    )
+    brief = poc_composer.build_poc_brief(
+        customer_name="AeroSpan",
+        user_message=prompt,
+        decision_context={},
+    )
+
+    assert brief is not None
+    assert "OCI WAF" not in brief.allowed_services
+    assert "FastConnect" not in brief.allowed_services
 
 
 async def test_confirmation_saves_selection_without_fanout():
     options = options_for_memory()
-    memory = make_memory(poc_options=options)
-    context = {}
+    memory = make_memory()
+    context = context_with_options(options)
     result = await PocStrategistHandler(InMemoryObjectStore(), "cust-1", "Redwood Logistics")(
         {"action": "confirm", "confirmed_option_name": options[1]["option_name"]},
         memory=memory, context=context, trace_id="t1",
@@ -169,14 +317,21 @@ async def test_confirmation_saves_selection_without_fanout():
     assert result.parallel_tools is None
     assert result.data["selected_option_name"] == options[1]["option_name"]
     assert context["archie"]["resolved_decisions"]["poc"]["selected_option"] == options[1]
+    contract = context["archie"]["consistency_contract"]
+    assert contract["selected_poc"]["name"] == options[1]["option_name"]
+    assert {item["service_id"] for item in contract["components"]} >= {
+        "database.postgresql",
+        "compute.vm.standard.e5.flex",
+        "network.load_balancer.flexible",
+    }
 
 
 async def test_confirmation_accepts_option_number():
     options = options_for_memory()
-    context = {}
+    context = context_with_options(options)
     result = await PocStrategistHandler(InMemoryObjectStore(), "cust-1", "Redwood Logistics")(
         {"action": "confirm", "confirmed_option_name": "option 3"},
-        memory=make_memory(poc_options=options), context=context, trace_id="t1",
+        memory=make_memory(), context=context, trace_id="t1",
     )
 
     assert result.status == "ok"
@@ -195,11 +350,22 @@ async def test_confirmation_rejects_unknown_option_instead_of_selecting_first():
     options = options_for_memory()
     result = await PocStrategistHandler(InMemoryObjectStore(), "cust-1", "Redwood Logistics")(
         {"action": "confirm", "confirmed_option_name": "Unlisted AI Experiment"},
-        memory=make_memory(poc_options=options), context={}, trace_id="t1",
+        memory=make_memory(poc_options=[{"option_name": "transient wrong option"}]),
+        context=context_with_options(options), trace_id="t1",
     )
 
     assert result.status == "needs_input"
     assert "exact name" in result.clarification
+
+
+async def test_confirmation_rejects_out_of_range_option():
+    options = options_for_memory()
+    result = await PocStrategistHandler(InMemoryObjectStore(), "cust-1", "Redwood Logistics")(
+        {"action": "confirm", "confirmed_option_name": "Option 4"},
+        memory=make_memory(), context=context_with_options(options), trace_id="t1",
+    )
+
+    assert result.status == "needs_input"
 
 
 def test_full_fact_sheet_create_request_routes_directly_to_poc_exploration():

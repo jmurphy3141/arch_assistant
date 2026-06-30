@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import types
 
@@ -13,10 +14,24 @@ from agent import context_store, jep_lifecycle
 from agent.tools import specialists as specialists_module
 from agent import sub_agent_client
 from agent.persistence_objectstore import InMemoryObjectStore
-from skillforge.types import ParallelToolCall, ToolResult
+from skillforge.types import ToolResult
 
 
 pytestmark = pytest.mark.integration
+
+
+def _forge_with_executor(executor):
+    class _FakeForge:
+        async def invoke_tool(self, tool_name, args, **kwargs):
+            summary, artifact_key, data = await executor(tool_name, args, **kwargs)
+            return ToolResult(
+                summary=summary,
+                status="ok",
+                artifact_key=artifact_key,
+                data=data,
+            )
+
+    return _FakeForge()
 
 
 def test_simple_why_question_gets_clean_answer_without_mission_nudge() -> None:
@@ -199,59 +214,110 @@ def test_poc_exploration_confirmation_invokes_poc_plan_without_llm(monkeypatch) 
     assert [call["tool"] for call in result["tool_calls"]] == ["generate_poc_plan"]
 
 
-def test_exact_poc_confirmation_executes_five_tool_fanout(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("selection", "expected_index"),
+    [
+        ("Option 3", 2),
+        ("Redwood Logistics Core Workload Validation POC", 0),
+        ("select redwood logistics performance and recovery validation poc", 1),
+    ],
+)
+def test_poc_selection_reloads_persisted_options_without_fanout(
+    monkeypatch, selection, expected_index
+) -> None:
     invoked: list[str] = []
+    store = InMemoryObjectStore()
+    handler = specialists_module.PocStrategistHandler(store, "poc-confirm", "Redwood Logistics")
 
     class _FakeForge:
-        async def invoke_tool(self, tool_name, args, **_kwargs):
+        async def invoke_tool(self, tool_name, args, **kwargs):
             invoked.append(tool_name)
-            if tool_name == "generate_poc_plan":
-                assert args["action"] == "confirm"
-                return ToolResult(
-                    summary="confirmed",
-                    status="parallel",
-                    parallel_tools=[
-                        ParallelToolCall(tool=name, args={"prompt": name})
-                        for name in (
-                            "generate_diagram",
-                            "generate_bom",
-                            "generate_jep",
-                            "generate_terraform",
-                            "generate_presentation",
-                        )
-                    ],
-                )
-            return ToolResult(
-                summary=f"{tool_name} ready",
-                status="ok",
-                artifact_key=f"artifacts/{tool_name}/v1",
+            assert tool_name == "generate_poc_plan"
+            return await handler(
+                args,
+                memory=None,
+                context=kwargs["context"],
+                trace_id="poc-test",
             )
 
-    store = InMemoryObjectStore()
-    ctx = context_store.read_context(store, "poc-confirm", "Apex Retail")
-    context_store.set_resolved_decisions(
-        ctx,
-        poc={"options": [{"option_name": "Apex Retail Core Workload Validation POC"}]},
-    )
-    context_store.write_context(store, "poc-confirm", ctx)
+    async def fail_polish(*_args, **_kwargs):
+        raise RuntimeError("presentation service unavailable")
+
+    monkeypatch.setattr(specialists_module.sub_agent_client, "call_sub_agent", fail_polish)
     monkeypatch.setattr(archie_session, "_get_forge", lambda **_kwargs: _FakeForge())
-
-    result = asyncio.run(
-        orchestrator_agent.run_turn(
-            customer_id="poc-confirm",
-            customer_name="Apex Retail",
-            user_message="Proceed with the exact option: Apex Retail Core Workload Validation POC.",
-            store=store,
-            text_runner=lambda *_args: (_ for _ in ()).throw(AssertionError("must not infer")),
-        )
+    fact_sheet = (
+        "Create three POC options. Redwood Logistics runs an on-premises Java shipment platform "
+        "backed by PostgreSQL. Goal: reduce release risk. Target OCI us-phoenix-1 with a Flexible "
+        "Load Balancer, VM.Standard.E5.Flex, PostgreSQL, Object Storage, Logging, Monitoring, and "
+        "Site-to-Site VPN. The POC lasts 15 days. Success criteria: p95 under 400 milliseconds at "
+        "300 requests per second and restore within 60 minutes. Oracle SA and Redwood lead each own "
+        "delivery and commit 10 hours per week."
     )
 
-    assert invoked[0] == "generate_poc_plan"
-    assert set(invoked[1:]) == {
-        "generate_diagram", "generate_bom", "generate_jep", "generate_terraform", "generate_presentation"
-    }
-    assert len(result["artifacts"]) == 5
-    assert result["reply"].startswith("POC kit for Apex Retail Core Workload Validation POC is ready.")
+    explored = asyncio.run(orchestrator_agent.run_turn(
+        customer_id="poc-confirm",
+        customer_name="Redwood Logistics",
+        user_message=fact_sheet,
+        store=store,
+        text_runner=lambda *_args: (_ for _ in ()).throw(AssertionError("must not infer")),
+    ))
+    persisted = context_store.read_context(store, "poc-confirm", "Redwood Logistics")
+    options = persisted["archie"]["resolved_decisions"]["poc"]["options"]
+    assert explored["artifacts"]
+    assert len(options) == 3
+    artifact_key = explored["artifacts"]["generate_poc_plan"]
+    artifact_payload = json.loads(store.get(artifact_key).decode("utf-8"))
+    assert artifact_payload["poc_options"] == options
+    assert len(artifact_payload["poc_options"]) == 3
+
+    invoked.clear()
+    selected = asyncio.run(orchestrator_agent.run_turn(
+        customer_id="poc-confirm",
+        customer_name="Redwood Logistics",
+        user_message=selection,
+        store=store,
+        text_runner=lambda *_args: (_ for _ in ()).throw(AssertionError("must not infer")),
+    ))
+
+    reloaded = context_store.read_context(store, "poc-confirm", "Redwood Logistics")
+    chosen = reloaded["archie"]["resolved_decisions"]["poc"]["selected_option"]
+    assert chosen == options[expected_index]
+    assert reloaded["archie"]["consistency_contract"]["selected_poc"]["name"] == chosen["option_name"]
+    assert invoked == ["generate_poc_plan"]
+    assert selected["artifacts"] == {}
+    assert selected["reply"].startswith("POC confirmed:")
+
+
+@pytest.mark.parametrize("selection", ["Option 4", "select Unknown Experiment"])
+def test_poc_selection_rejects_unknown_or_out_of_range(monkeypatch, selection) -> None:
+    store = InMemoryObjectStore()
+    ctx = context_store.read_context(store, "poc-invalid", "Redwood Logistics")
+    options = [
+        {"option_name": f"Grounded Option {index}", "oci_services": ["Object Storage"]}
+        for index in range(1, 4)
+    ]
+    context_store.set_resolved_decisions(ctx, poc={"options": options})
+    context_store.write_context(store, "poc-invalid", ctx)
+    handler = specialists_module.PocStrategistHandler(store, "poc-invalid", "Redwood Logistics")
+
+    class _FakeForge:
+        async def invoke_tool(self, tool_name, args, **kwargs):
+            assert tool_name == "generate_poc_plan"
+            return await handler(args, memory=None, context=kwargs["context"], trace_id="invalid")
+
+    monkeypatch.setattr(archie_session, "_get_forge", lambda **_kwargs: _FakeForge())
+    result = asyncio.run(orchestrator_agent.run_turn(
+        customer_id="poc-invalid",
+        customer_name="Redwood Logistics",
+        user_message=selection,
+        store=store,
+        text_runner=lambda *_args: (_ for _ in ()).throw(AssertionError("must not infer")),
+    ))
+
+    reloaded = context_store.read_context(store, "poc-invalid", "Redwood Logistics")
+    assert "selected_option" not in reloaded["archie"]["resolved_decisions"]["poc"]
+    assert "Select one of" in result["reply"]
+    assert result["artifacts"] == {}
 
 
 def test_confirmed_poc_context_does_not_retrigger_confirmation() -> None:
@@ -273,9 +339,21 @@ def test_document_context_mentions_do_not_generate_obsolete_documents() -> None:
     final_bom = (
         "Using the confirmed POC and latest explicit JEP, create and export the final OCI BOM."
     )
+    jep_with_bom_section = (
+        "Create the JEP with a BOM section and generate only the JEP artifact."
+    )
+    diagram_from_bom = (
+        "Generate the Diagram for the selected POC and finalized BOM."
+    )
+    bom_with_missing_sizing_language = (
+        "Create the XLSX BOM for three servers and use assumptions for missing sizing."
+    )
 
     assert archie_session._requested_generation_tools(final_jep) == {"generate_jep"}
     assert archie_session._requested_generation_tools(final_bom) == {"generate_bom"}
+    assert archie_session._requested_generation_tools(jep_with_bom_section) == {"generate_jep"}
+    assert archie_session._requested_generation_tools(diagram_from_bom) == {"generate_diagram"}
+    assert archie_session._requested_generation_tools(bom_with_missing_sizing_language) == {"generate_bom"}
 
 
 def test_legacy_jep_update_uses_prior_jep_and_artifact_context(monkeypatch) -> None:
@@ -407,12 +485,22 @@ def test_bom_parallel_fast_path_returns_tool_summary_without_llm_freewrite(monke
         _ = args
         assert tool_name == "generate_bom"
         return (
-            "Final BOM prepared. Review line items, then export JSON or XLSX.",
+            "Final BOM prepared.",
             "",
-            {"trace": {"type": "final"}},
+            {
+                "bom_payload": {
+                    "line_items": [{"sku": "B111129"}, {"sku": "B111130"}],
+                    "monthly_total": 123.45,
+                },
+                "trace": {"type": "final"},
+            },
         )
 
-    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        archie_session,
+        "_get_forge",
+        lambda **_kwargs: _forge_with_executor(_fake_execute_tool),
+    )
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -425,10 +513,10 @@ def test_bom_parallel_fast_path_returns_tool_summary_without_llm_freewrite(monke
         )
     )
 
-    assert "Final BOM prepared. Review line items, then export JSON or XLSX." in result["reply"]
+    assert result["reply"] == "Done — BOM generated (2 services, $123.45/mo)."
     assert "Management Summary" not in result["reply"]
     assert [c["tool"] for c in result["tool_calls"]] == ["generate_bom"]
-    assert llm_calls["count"] >= 1
+    assert llm_calls["count"] == 0
 
 
 def test_parallel_pov_jep_fast_path_returns_deterministic_tool_summary(monkeypatch) -> None:
@@ -447,7 +535,11 @@ def test_parallel_pov_jep_fast_path_returns_deterministic_tool_summary(monkeypat
             return ("JEP v3 saved. Key: jep/acme/v3.md", "jep/acme/v3.md", {})
         raise AssertionError(f"unexpected tool {tool_name}")
 
-    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        archie_session,
+        "_get_forge",
+        lambda **_kwargs: _forge_with_executor(_fake_execute_tool),
+    )
     monkeypatch.setattr(
         archie_memory,
         "_build_context_summary_for_skills",
@@ -477,7 +569,7 @@ def test_parallel_pov_jep_fast_path_returns_deterministic_tool_summary(monkeypat
     assert "JEP: JEP v3 saved. Key: jep/acme/v3.md" in result["reply"]
     assert "Management Summary" not in result["reply"]
     assert [c["tool"] for c in result["tool_calls"]] == ["generate_pov", "generate_jep"]
-    assert llm_calls["count"] >= 1
+    assert llm_calls["count"] == 0
 
 
 def test_diagram_bom_fast_path_routes_without_llm(monkeypatch) -> None:
@@ -501,7 +593,11 @@ def test_diagram_bom_fast_path_routes_without_llm(monkeypatch) -> None:
             )
         raise AssertionError(f"unexpected tool {tool_name}")
 
-    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        archie_session,
+        "_get_forge",
+        lambda **_kwargs: _forge_with_executor(_fake_execute_tool),
+    )
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
@@ -519,10 +615,10 @@ def test_diagram_bom_fast_path_routes_without_llm(monkeypatch) -> None:
         )
     )
 
-    assert "Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio" in result["reply"]
+    assert result["reply"] == "Done — the diagram is ready."
     assert "Management Summary" not in result["reply"]
-    assert [c["tool"] for c in result["tool_calls"]] == ["generate_bom", "generate_diagram"]
-    assert llm_calls["count"] >= 1
+    assert [c["tool"] for c in result["tool_calls"]] == ["generate_diagram"]
+    assert llm_calls["count"] == 0
 
 
 def test_sparse_notes_bom_and_diagram_request_runs_both_and_merges_checkpoint(monkeypatch) -> None:
@@ -565,7 +661,11 @@ def test_sparse_notes_bom_and_diagram_request_runs_both_and_merges_checkpoint(mo
             )
         raise AssertionError(f"unexpected tool {tool_name}")
 
-    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        archie_session,
+        "_get_forge",
+        lambda **_kwargs: _forge_with_executor(_fake_execute_tool),
+    )
     monkeypatch.setattr(
         archie_memory,
         "_build_context_summary_for_skills",
@@ -596,7 +696,7 @@ def test_sparse_notes_bom_and_diagram_request_runs_both_and_merges_checkpoint(mo
     assert "Assumptions applied:" in result["reply"]
     assert "Missing inputs to tighten the next pass:" in result["reply"]
     assert "Management Summary" not in result["reply"]
-    assert llm_calls["count"] >= 1
+    assert llm_calls["count"] == 0
 
 
 def test_plain_bom_and_diagram_wording_still_triggers_parallel_fast_path(monkeypatch) -> None:
@@ -619,7 +719,11 @@ def test_plain_bom_and_diagram_wording_still_triggers_parallel_fast_path(monkeyp
             )
         raise AssertionError(f"unexpected tool {tool_name}")
 
-    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        archie_session,
+        "_get_forge",
+        lambda **_kwargs: _forge_with_executor(_fake_execute_tool),
+    )
     monkeypatch.setattr(
         archie_memory,
         "_build_context_summary_for_skills",
@@ -631,7 +735,7 @@ def test_plain_bom_and_diagram_wording_still_triggers_parallel_fast_path(monkeyp
             customer_id="notes-fast-plain",
             customer_name="Notes Fast Plain",
             user_message=(
-                "I only got a small set of notes from the client. Need a ballpark BOM and diagram "
+                "I only got a small set of notes from the client. Create a ballpark BOM and diagram "
                 "with standard safe assumptions for OCI."
             ),
             store=InMemoryObjectStore(),
@@ -642,7 +746,7 @@ def test_plain_bom_and_diagram_wording_still_triggers_parallel_fast_path(monkeyp
 
     assert [c["tool"] for c in result["tool_calls"]] == ["generate_bom", "generate_diagram"]
     assert "I generated the requested outputs:" in result["reply"]
-    assert llm_calls["count"] >= 1
+    assert llm_calls["count"] == 0
 
 
 def test_diagram_request_forces_tool_when_llm_freewrites_mermaid(monkeypatch) -> None:
@@ -662,23 +766,27 @@ def test_diagram_request_forces_tool_when_llm_freewrites_mermaid(monkeypatch) ->
             {},
         )
 
-    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        archie_session,
+        "_get_forge",
+        lambda **_kwargs: _forge_with_executor(_fake_execute_tool),
+    )
 
     result = asyncio.run(
         orchestrator_agent.run_turn(
             customer_id="diagram-mermaid-guard",
             customer_name="Diagram Mermaid Guard",
-            user_message="I need drawio XML for this architecture diagram, not mermaid.",
+            user_message="Generate drawio XML for this architecture diagram, not mermaid.",
             store=InMemoryObjectStore(),
             text_runner=_text_runner,
             specialist_mode="legacy",
         )
     )
 
-    assert "Diagram generated. Key: diagrams/acme/oci_architecture/v1/diagram.drawio" in result["reply"]
+    assert result["reply"] == "Done — the diagram is ready."
     assert "Management Summary" not in result["reply"]
     assert [c["tool"] for c in result["tool_calls"]] == ["generate_diagram"]
-    assert llm_calls["count"] >= 1
+    assert llm_calls["count"] == 0
 
 
 def test_call_generate_diagram_surfaces_clarification_questions(monkeypatch) -> None:
@@ -900,7 +1008,11 @@ def test_single_diagram_reply_includes_assumptions_from_result_data(monkeypatch)
             },
         )
 
-    monkeypatch.setattr(archie_session, "_execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        archie_session,
+        "_get_forge",
+        lambda **_kwargs: _forge_with_executor(_fake_execute_tool),
+    )
 
     result = asyncio.run(
         orchestrator_agent.run_turn(

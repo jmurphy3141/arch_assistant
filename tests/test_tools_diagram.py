@@ -3,6 +3,7 @@ import types
 
 import pytest
 
+from agent import consistency_contract
 from agent.tools import diagram as diagram_module
 from agent.tools.diagram import DiagramHandler
 from agent.archie_session import _build_single_diagram_reply
@@ -59,6 +60,81 @@ def test_bom_coverage_gate_requires_all_quantitative_labels():
     assert "Object Storage 1024 GB" in error
     assert "WAF policy" in error
     assert diagram_module._diagram_bom_coverage_error(line_items, complete) == ""
+
+
+def test_diagram_consistency_gate_requires_poc_services_database_sizing_and_ha():
+    requirements = [
+        {"service_id": "network.load_balancer.flexible"},
+        {"service_id": "compute.vm.standard.e5.flex"},
+        {"service_id": "database.postgresql", "assumed_sizing": {"ocpu": 2}},
+        {"service_id": "storage.object"},
+        {"service_id": "storage.block"},
+        {"service_id": "network.vpn.site_to_site"},
+        {"service_id": "observability.logging"},
+        {"service_id": "observability.monitoring"},
+    ]
+    incomplete = (
+        '<mxfile><mxCell value="VM.Standard.E5.Flex"/>'
+        '<mxCell value="Autonomous Database"/><mxCell value="Object Storage"/></mxfile>'
+    )
+    complete = (
+        '<mxfile><mxCell value="Single-AD POC Boundary"/>'
+        '<mxCell value="Flexible Load Balancer"/><mxCell value="VM.Standard.E5.Flex"/>'
+        '<mxCell value="PostgreSQL 2 OCPU"/><mxCell value="Object Storage"/>'
+        '<mxCell value="Block Volume"/><mxCell value="Site-to-Site VPN IPSec"/>'
+        '<mxCell value="OCI Logging"/><mxCell value="OCI Monitoring"/></mxfile>'
+    )
+
+    error = diagram_module._diagram_consistency_error(requirements, "single-AD POC", incomplete)
+    assert "missing PostgreSQL" in error
+    assert "Flexible Load Balancer" in error
+    assert "single-AD" in error
+    assert diagram_module._diagram_consistency_error(requirements, "single-AD POC", complete) == ""
+
+
+def test_diagram_consistency_gate_rejects_unselected_service_labels_and_wrong_region():
+    requirements = [
+        {"service_id": "compute.vm.standard.e5.flex"},
+        {"service_id": "database.postgresql"},
+    ]
+    xml = (
+        '<mxfile><mxCell value="Single-AD POC Boundary"/>'
+        '<mxCell value="eu-frankfurt-1"/><mxCell value="VM.Standard.E5.Flex"/>'
+        '<mxCell value="PostgreSQL"/><mxCell value="OCI WAF"/></mxfile>'
+    )
+
+    error = diagram_module._diagram_consistency_error(
+        requirements,
+        "single-AD POC",
+        xml,
+        expected_region="us-ashburn-1",
+    )
+
+    assert "unexpected OCI WAF" in error
+    assert "region us-ashburn-1 is not explicitly represented" in error
+
+
+def test_diagram_consistency_gate_requires_one_private_subnet_per_tier():
+    requirements = [{"service_id": "compute.vm.standard.e5.flex"}, {"service_id": "database.oracle"}]
+    merged = (
+        '<mxfile><mxCell value="VM.Standard.E5.Flex"/>'
+        '<mxCell value="Oracle Base Database Service"/>'
+        '<mxCell value="Private Web and Application and Database Subnet"/></mxfile>'
+    )
+    separated = (
+        '<mxfile><mxCell value="VM.Standard.E5.Flex"/>'
+        '<mxCell value="Oracle Base Database Service"/>'
+        '<mxCell value="Private Web Subnet"/><mxCell value="Private Application Subnet"/>'
+        '<mxCell value="Private Database Subnet"/></mxfile>'
+    )
+
+    error = diagram_module._diagram_consistency_error(
+        requirements, "", merged, required_private_tiers=["web", "application", "database"],
+    )
+    assert "private subnet count 1 is fewer than required tiers 3" in error
+    assert diagram_module._diagram_consistency_error(
+        requirements, "", separated, required_private_tiers=["web", "application", "database"],
+    ) == ""
 
 
 @pytest.fixture
@@ -137,6 +213,61 @@ async def test_diagram_ok(monkeypatch):
 
     assert result.status == "ok"
     assert result.artifact_key == "diagrams/foo.drawio"
+
+
+async def test_diagram_retries_then_persists_only_contract_consistent_output(monkeypatch):
+    calls = []
+    context = {}
+    consistency_contract.record_selected_poc(context, {
+        "option_name": "Skyline Operational Readiness POC",
+        "oci_services": [
+            "Flexible Load Balancer", "VM.Standard.E5.Flex", "PostgreSQL DB System",
+            "Object Storage", "Block Volume", "Site-to-Site VPN", "Logging", "Monitoring",
+        ],
+        "grounding": {"region": "uk-london-1"},
+    })
+    context["archie"]["work_products"] = {
+        "bom": {
+            "latest": {
+                "baseline": {
+                    "line_items": [],
+                    "scope_items": [{
+                        "canonical_service_id": "database.postgresql",
+                        "description": "PostgreSQL",
+                        "assumed_sizing": {"ocpu": 2},
+                    }],
+                }
+            }
+        }
+    }
+    incomplete = '<mxfile><mxCell value="VM.Standard.E5.Flex"/></mxfile>'
+    complete = (
+        '<mxfile><mxCell value="Single-AD POC Boundary"/>'
+        '<mxCell value="uk-london-1"/>'
+        '<mxCell value="Flexible Load Balancer"/><mxCell value="VM.Standard.E5.Flex"/>'
+        '<mxCell value="PostgreSQL 2 OCPU"/><mxCell value="Object Storage"/>'
+        '<mxCell value="Block Volume"/><mxCell value="Site-to-Site VPN IPSec"/>'
+        '<mxCell value="OCI Logging"/><mxCell value="OCI Monitoring"/></mxfile>'
+    )
+
+    async def fake_call_generate_diagram(args, customer_id, a2a_base_url):
+        calls.append(dict(args))
+        xml = incomplete if len(calls) == 1 else complete
+        return "Diagram generated.", "diagrams/skyline.drawio", {"drawio_xml": xml}
+
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
+    result = await make_handler()(
+        {"prompt": "Generate the Diagram for the selected POC and finalized BOM."},
+        memory=make_memory(),
+        context=context,
+        trace_id="skyline",
+    )
+
+    assert result.status == "ok"
+    assert len(calls) == 2
+    assert "CORRECTION FROM PYTHON VALIDATION" in calls[1]["prompt"]
+    assert result.data["consistency_report"]["verdict"] == "pass"
+    assert context["archie"]["consistency_contract"]["artifact_bindings"]["diagram"] == result.artifact_key
 
 
 async def test_diagram_correction_preserves_authoritative_user_request(monkeypatch):

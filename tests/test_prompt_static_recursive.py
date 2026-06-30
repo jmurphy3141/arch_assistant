@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import agent.bom_parser as bom_parser
-import agent.jep_agent as jep_agent
+import agent.jep_composer as jep_composer
 import agent.orchestrator_agent as orchestrator_agent
 import agent.pov_agent as pov_agent
 import agent.waf_agent as waf_agent
@@ -87,8 +87,21 @@ def test_recursive_prompt_static_contracts_cover_core_paths() -> None:
     rows.append(_row("pov", "pov", "generation_prompt", "required_sections", "Internal Visionary Press Release" in pov_agent._PROMPT_TEMPLATE and "External (Customer) Questions" in pov_agent._PROMPT_TEMPLATE and "Internal (Oracle) Questions" in pov_agent._PROMPT_TEMPLATE, "POV structure enforced"))
     rows.append(_row("pov", "pov", "generation_prompt", "required_context_fields", "{context_summary}" in pov_agent._PROMPT_TEMPLATE and "{new_notes_section}" in pov_agent._PROMPT_TEMPLATE and "{previous_pov_section}" in pov_agent._PROMPT_TEMPLATE, "POV prompt injects context/notes/base doc"))
 
-    rows.append(_row("jep", "jep", "generation_prompt", "required_sections", "## Overview" in jep_agent._PROMPT_TEMPLATE and "## POC Plan" in jep_agent._PROMPT_TEMPLATE and "## Bill of Materials" in jep_agent._PROMPT_TEMPLATE, "JEP structure enforced"))
-    rows.append(_row("jep", "jep", "generation_prompt", "required_context_fields", "{qa_section}" in jep_agent._PROMPT_TEMPLATE and "{diagram_ref}" in jep_agent._PROMPT_TEMPLATE and "{duration}" in jep_agent._PROMPT_TEMPLATE, "JEP prompt injects QA + diagram + duration"))
+    rows.append(_row(
+        "jep", "jep", "deterministic_composer", "required_sections",
+        jep_composer.CORE_SECTIONS == (
+            "Executive Summary", "Objectives", "Scope", "POC Architecture",
+            "Phased Execution Plan", "Success Criteria", "Resource Plan",
+            "Risk Registry", "Approvals",
+        ),
+        "JEP canonical section contract is enforced",
+    ))
+    rows.append(_row(
+        "jep", "jep", "deterministic_composer", "required_context_fields",
+        "artifact_context" in inspect.getsource(jep_composer.extract_jep_brief)
+        and "engagement_context_summary" in inspect.getsource(jep_composer._context_text),
+        "JEP composer hydrates persisted context and artifact references",
+    ))
 
     rows.append(_row("waf", "waf", "standalone_prompt", "required_sections", "## 1. Security and Compliance" in waf_agent._STANDALONE_PROMPT_TEMPLATE and "## 5. Distributed Cloud" in waf_agent._STANDALONE_PROMPT_TEMPLATE and "**Overall:**" in waf_agent._STANDALONE_PROMPT_TEMPLATE, "WAF standalone structure enforced"))
     rows.append(_row("waf", "waf", "orchestration_prompt", "handoff_consistency", "WAF_REFINEMENT_SUGGESTIONS" in waf_agent._ORCHESTRATION_PROMPT_TEMPLATE and "draw_instruction" in waf_agent._ORCHESTRATION_PROMPT_TEMPLATE, "WAF orchestration emits machine-readable downstream handoff"))
