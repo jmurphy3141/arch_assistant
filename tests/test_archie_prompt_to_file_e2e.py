@@ -149,7 +149,16 @@ def _seed_architecture_context(store: InMemoryObjectStore, customer_id: str, cus
     context_store.write_context(store, customer_id, context)
 
 
-@pytest.mark.parametrize("case", ARCHIE_PROMPT_FILE_CASES, ids=[case.case_id for case in ARCHIE_PROMPT_FILE_CASES])
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(case, marks=pytest.mark.live)
+        if case.case_id == "waf"
+        else pytest.param(case)
+        for case in ARCHIE_PROMPT_FILE_CASES
+    ],
+    ids=[case.case_id for case in ARCHIE_PROMPT_FILE_CASES],
+)
 def test_archie_prompt_to_output_file_e2e(case, deterministic_client):
     test_client, store = deterministic_client
     customer_id = f"prompt_file_{case.case_id}"
