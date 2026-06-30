@@ -26,6 +26,7 @@ from tests.archie_prompt_file_cases import (
     expected_tool_call,
     manifest_download,
 )
+from tests.scenarios.fakes import FakeLLMRunner, MINIMAL_SPEC
 
 pytestmark = [pytest.mark.e2e, pytest.mark.system]
 
@@ -33,6 +34,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.system]
 @pytest.fixture
 def deterministic_client(monkeypatch):
     store = InMemoryObjectStore()
+    app.state.llm_runner = FakeLLMRunner(MINIMAL_SPEC)
     app.state.object_store = store
     app.state.bom_service = BomService()
 
@@ -122,6 +124,7 @@ def deterministic_client(monkeypatch):
 
     app.state.object_store = None
     app.state.bom_service = None
+    app.state.llm_runner = None
 
 
 def _seed_architecture_context(store: InMemoryObjectStore, customer_id: str, customer_name: str) -> None:
