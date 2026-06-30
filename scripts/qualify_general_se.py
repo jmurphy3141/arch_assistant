@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any
 from urllib import request
@@ -14,11 +16,15 @@ import uuid
 import sys
 
 import yaml
+import openpyxl
+from docx import Document
+from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import context_store
+from agent import consistency_contract, context_store
+from agent.tools.bom import _extract_explicit_bom_inputs
 from agent.object_store_oci import OciObjectStore
 
 
@@ -266,6 +272,179 @@ def _turns(profile: Profile) -> list[tuple[str, str]]:
     ]
 
 
+_COMPUTE_OCPU_SKUS = {"B93113", "B97384", "B111129", "B94176", "B93297"}
+_COMPUTE_MEMORY_SKUS = {"B93114", "B97385", "B111130", "B94177", "B93298"}
+
+
+def _service_present(service: str, text: str) -> bool:
+    service_id = consistency_contract.canonical_service_id(service)
+    aliases = next((aliases for candidate, aliases in consistency_contract._SERVICE_ALIASES if candidate == service_id), ())
+    return any(alias in text.lower() for alias in aliases) if aliases else service.lower() in text.lower()
+
+
+def _xlsx_rows(content: bytes) -> tuple[list[dict[str, Any]], str]:
+    workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
+    sheet = workbook["BOM"]
+    headers = [str(cell.value or "").strip() for cell in sheet[1]]
+    rows = [
+        dict(zip(headers, values))
+        for values in sheet.iter_rows(min_row=2, values_only=True)
+        if any(value not in (None, "") for value in values)
+        and str(values[0] or "").strip().upper() != "TOTAL"
+    ]
+    scope_text = ""
+    if "Scope Coverage" in workbook.sheetnames:
+        scope_text = " ".join(
+            str(value or "")
+            for row in workbook["Scope Coverage"].iter_rows(values_only=True)
+            for value in row
+        )
+    return rows, scope_text
+
+
+def _assert_bom_content(content: bytes, profile: Profile) -> list[str]:
+    errors: list[str] = []
+    rows, scope_text = _xlsx_rows(content)
+    sizing = _extract_explicit_bom_inputs(profile.sizing)
+    expected_ocpu = float((sizing.get("compute") or {}).get("ocpu") or 0)
+    expected_memory = float((sizing.get("memory") or {}).get("gb") or 0)
+    produced_ocpu = sum(float(row.get("Quantity") or 0) for row in rows if str(row.get("SKU") or "").upper() in _COMPUTE_OCPU_SKUS)
+    produced_memory = sum(float(row.get("Quantity") or 0) for row in rows if str(row.get("SKU") or "").upper() in _COMPUTE_MEMORY_SKUS)
+    expected_instances = int((sizing.get("compute") or {}).get("instance_count") or 0)
+    produced_instances = sum(int(row.get("Instance Count") or 1) for row in rows if str(row.get("SKU") or "").upper() in _COMPUTE_OCPU_SKUS)
+    if abs(produced_ocpu - expected_ocpu) > 0.0001:
+        errors.append(f"compute OCPU expected {expected_ocpu:g}, got {produced_ocpu:g}")
+    if abs(produced_memory - expected_memory) > 0.0001:
+        errors.append(f"compute memory expected {expected_memory:g} GB, got {produced_memory:g} GB")
+    if expected_instances and produced_instances != expected_instances:
+        errors.append(f"compute instances expected {expected_instances}, got {produced_instances}")
+    workbook_text = " ".join(
+        " ".join(str(row.get(key) or "") for key in ("Description", "Notes", "SKU"))
+        for row in rows
+    ) + " " + scope_text
+    represented = {
+        service_id
+        for service_id, aliases in consistency_contract._SERVICE_ALIASES
+        if any(alias in workbook_text.lower() for alias in aliases)
+    }
+    for service in profile.services:
+        service_id = consistency_contract.canonical_service_id(service)
+        if service_id and service_id not in represented:
+            errors.append(f"required service missing: {service}")
+    database = sizing.get("database") or {}
+    if database:
+        database_id = str(database.get("service_id") or "")
+        sized_rows = [
+            row
+            for row in rows
+            if consistency_contract.canonical_service_id(f"{row.get('Description', '')} {row.get('Notes', '')}") == database_id
+            and "ocpu" in str(row.get("Metric") or row.get("Description") or "").lower()
+        ]
+        sized = any(
+            float(row.get("Quantity") or 0) > 0 for row in sized_rows
+        )
+        if not sized:
+            errors.append(f"database is not sized: {database_id or database.get('display_name')}")
+        else:
+            produced_db_ocpu = sum(float(row.get("Quantity") or 0) for row in sized_rows)
+            if abs(produced_db_ocpu - float(database.get("ocpu") or 0)) > 0.0001:
+                errors.append(f"database OCPU expected {float(database.get('ocpu')):g}, got {produced_db_ocpu:g}")
+    for field, sku, label in (
+        ("block_gb", "B91961", "Block Volume"),
+        ("object_gb", "B91628", "Object Storage"),
+        ("file_gb", "BFILE01", "File Storage"),
+    ):
+        expected = (sizing.get("storage") or {}).get(field)
+        if expected is None:
+            continue
+        produced = sum(float(row.get("Quantity") or 0) for row in rows if str(row.get("SKU") or "").upper() == sku)
+        if abs(produced - float(expected)) > 0.0001:
+            errors.append(f"{label} capacity expected {float(expected):g} GB, got {produced:g} GB")
+    for forbidden in profile.forbidden:
+        if _service_present(forbidden, workbook_text):
+            errors.append(f"forbidden service present: {forbidden}")
+    return errors
+
+
+def _required_private_tier_count(tier_layout: str) -> int:
+    text = str(tier_layout or "").lower()
+    if not any(phrase in text for phrase in ("separate private subnet", "three private", "distinct private")):
+        return 0
+    return sum(bool(re.search(pattern, text)) for pattern in (r"\bweb\b|iis|apache|storefront|presentation", r"\bapp(?:lication)?\b|claims|spring boot|reservation|enrollment", r"\bdatabase\b|postgresql|oracle"))
+
+
+def _drawio_labels(content: bytes) -> list[str]:
+    root = ElementTree.fromstring(content)
+    return [str(element.attrib.get("value") or "") for element in root.iter() if element.attrib.get("value")]
+
+
+def _assert_diagram_content(content: bytes, profile: Profile) -> list[str]:
+    labels = _drawio_labels(content)
+    text = " ".join(labels).lower()
+    private_subnets = sum(bool(re.search(r"\bprivate\b.*\bsubnet\b|\bsubnet\b.*\bprivate\b", label, re.IGNORECASE)) for label in labels)
+    required_tiers = _required_private_tier_count(profile.tier_layout)
+    errors = []
+    if private_subnets < required_tiers:
+        errors.append(f"private subnets expected at least {required_tiers}, got {private_subnets}")
+    for service in profile.services:
+        aliases = next((aliases for service_id, aliases in consistency_contract._SERVICE_ALIASES if service_id == consistency_contract.canonical_service_id(service)), ())
+        if aliases and not any(alias in text for alias in aliases):
+            errors.append(f"required service label missing: {service}")
+    for forbidden in profile.forbidden:
+        if _service_present(forbidden, text):
+            errors.append(f"forbidden service label present: {forbidden}")
+    return errors
+
+
+def _jep_text(content: bytes, suffix: str) -> str:
+    if suffix == ".md":
+        return content.decode("utf-8", errors="replace")
+    document = Document(BytesIO(content))
+    paragraphs = [paragraph.text for paragraph in document.paragraphs]
+    cells = [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+    return "\n".join(paragraphs + cells)
+
+
+def _assert_jep_content(content: bytes, suffix: str, profile: Profile) -> list[str]:
+    text = re.sub(r"\s+", " ", _jep_text(content, suffix).replace("–", "-").replace("—", "-")).lower()
+    owner_clause = re.split(r"\beach commit\b", profile.owners, flags=re.IGNORECASE)[0]
+    owners = [part.strip(" ,.") for part in re.split(r",|\band\b", owner_clause, flags=re.IGNORECASE) if part.strip(" ,.")]
+    windows = ("days 1-3", f"days 4-{profile.duration - 4}", f"days {profile.duration - 3}-{profile.duration}")
+    errors = [f"owner missing: {owner}" for owner in owners if owner.lower() not in text]
+    errors.extend(f"phase window missing: {window}" for window in windows if window.lower() not in text)
+    errors.extend(f"success criterion missing: {criterion}" for criterion in profile.criteria if criterion.lower() not in text)
+    return errors
+
+
+def _reply_grounding_errors(reply: str, engagement_context: str) -> list[str]:
+    text = str(reply or "")
+    grounded = str(engagement_context or "").lower()
+    errors: list[str] = []
+    if re.search(r"(?:e5|e6)(?:\.flex)?[^.!?\n]{0,60}\b(?:ampere|arm)\b|\b(?:ampere|arm)\b[^.!?\n]{0,60}(?:e5|e6)(?:\.flex)?", text, re.IGNORECASE):
+        errors.append("E5/E6 incorrectly described as Ampere/Arm")
+    for token in re.findall(r"\b\d+(?:\.\d+)?\s*%", text):
+        if token.lower().replace(" ", "") not in grounded.replace(" ", ""):
+            errors.append(f"unsupported percentage: {token}")
+    for match in re.finditer(
+        r"(?:[Cc]ustomer|[Cc]lient|[Cc]ase study|[Rr]eference)\s+(?:named\s+)?"
+        r"([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){1,3})\s+"
+        r"(?:achieved|reported|reduced|saved|improved|saw|demonstrated)",
+        text,
+    ):
+        if match.group(1).lower() not in grounded:
+            errors.append(f"unsupported customer evidence: {match.group(1)}")
+    for match in re.finditer(
+        r"\bsla\b[^.!?\n]{0,50}?\b(\d+(?:\.\d+)?%?)|"
+        r"\b(\d+(?:\.\d+)?%?)\b[^.!?\n]{0,30}?\bsla\b",
+        text,
+        re.IGNORECASE,
+    ):
+        token = next((group for group in match.groups() if group), "")
+        if token and token.lower().replace(" ", "") not in grounded.replace(" ", ""):
+            errors.append(f"unsupported SLA figure: {token}")
+    return list(dict.fromkeys(errors))
+
+
 def run_profile(base_url: str, store: OciObjectStore, profile: Profile, run_id: str) -> dict[str, Any]:
     customer_id = f"general-se-{run_id}-{profile.name.lower().replace(' ', '-')[:28]}"
     evidence: dict[str, Any] = {
@@ -285,6 +464,7 @@ def run_profile(base_url: str, store: OciObjectStore, profile: Profile, run_id: 
             evidence["failures"].append({"stage": "upload", "cause": upload})
 
     bodies: dict[str, dict[str, Any]] = {}
+    engagement_grounding = json.dumps(asdict(profile), default=str) + " " + " ".join(message for _, message in _turns(profile))
     for stage, message in _turns(profile):
         try:
             body, elapsed = _post_json(base_url, "/api/chat", {
@@ -321,6 +501,8 @@ def run_profile(base_url: str, store: OciObjectStore, profile: Profile, run_id: 
             question_count = str(body.get("reply") or "").count("?")
             if question_count > 3:
                 evidence["failures"].append({"stage": stage, "cause": f"unbounded questions: {question_count}"})
+        for error in _reply_grounding_errors(str(body.get("reply") or ""), engagement_grounding):
+            evidence["failures"].append({"stage": stage, "cause": error})
 
     try:
         context = context_store.read_context(store, customer_id, profile.name)
@@ -364,10 +546,32 @@ def run_profile(base_url: str, store: OciObjectStore, profile: Profile, run_id: 
         keys = [call.get("artifact_key"), data.get("docx_key"), (data.get("bom_xlsx") or {}).get("key")]
         for suffix in suffixes:
             key = next((str(item) for item in keys if item and str(item).endswith(suffix)), "")
-            ok = bool(key and store.head(key) and store.get(key))
-            artifact_checks.append({"stage": stage, "suffix": suffix, "key": key, "direct_reload": ok})
+            content = store.get(key) if key and store.head(key) else b""
+            ok = bool(content)
+            content_errors: list[str] = []
+            if content:
+                try:
+                    if suffix == ".xlsx":
+                        content_errors = _assert_bom_content(content, profile)
+                    elif suffix == ".drawio":
+                        content_errors = _assert_diagram_content(content, profile)
+                    else:
+                        content_errors = _assert_jep_content(content, suffix, profile)
+                except Exception as exc:
+                    content_errors = [f"content parse failed: {exc}"]
+            artifact_checks.append({
+                "stage": stage,
+                "suffix": suffix,
+                "key": key,
+                "direct_reload": ok,
+                "content_assertions_enabled": True,
+                "content_errors": content_errors,
+                "content_valid": ok and not content_errors,
+            })
             if not ok:
                 evidence["failures"].append({"stage": stage, "cause": f"{suffix} failed direct reload: {key}"})
+            for error in content_errors:
+                evidence["failures"].append({"stage": stage, "cause": f"{suffix} {error}"})
     evidence["artifact_checks"] = artifact_checks
     evidence["passed"] = not evidence["failures"]
     return evidence

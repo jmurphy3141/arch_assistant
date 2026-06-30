@@ -80,8 +80,10 @@ _CONTRACT_SERVICE_TYPES = {
     "database.oracle": "database",
     "network.load_balancer.flexible": "load balancer",
     "security.waf": "waf",
+    "security.iam": "iam",
     "storage.object": "object storage",
     "storage.block": "block volume",
+    "storage.file": "file storage",
     "network.vpn.site_to_site": "vpn",
     "network.fastconnect": "fastconnect",
     "observability.logging": "logging",
@@ -219,6 +221,12 @@ def _contract_layout_intent(task: str, items: list[Any]) -> dict[str, Any] | Non
     )
     contract_text = contract_match.group(1) if contract_match else ""
     required_ids = set(re.findall(r"\(([a-z0-9_.]+)\)", contract_text))
+    tier_match = re.search(
+        r"\[required private tiers\](.*?)\[/required private tiers\]",
+        lowered_task,
+        flags=re.DOTALL,
+    )
+    required_private_tiers = re.findall(r"^\s*-\s*(web|application|database)\s*$", tier_match.group(1), re.MULTILINE) if tier_match else []
     allowed_types = {
         _CONTRACT_SERVICE_TYPES[service_id]
         for service_id in required_ids
@@ -233,6 +241,14 @@ def _contract_layout_intent(task: str, items: list[Any]) -> dict[str, Any] | Non
         # generic DRG. Preserve the selected-POC identity explicitly so the
         # diagram cannot silently turn FastConnect into VPN or omit it.
         items.append(ServiceItem("fastconnect_1", "fastconnect", "FastConnect / DRG", "external"))
+    if "storage.file" in required_ids and not any(
+        str(getattr(item, "oci_type", "")).lower() == "file storage" for item in items
+    ):
+        items.append(ServiceItem("file_storage_1", "file storage", "File Storage", "data"))
+    if "security.iam" in required_ids and not any(
+        str(getattr(item, "oci_type", "")).lower() == "iam" for item in items
+    ):
+        items.append(ServiceItem("iam_1", "iam", "OCI IAM", "external"))
     if allowed_types:
         # The selected-POC contract is authoritative. The freeform parser's
         # generic best-practice additions must not introduce unselected WAF,
@@ -257,8 +273,46 @@ def _contract_layout_intent(task: str, items: list[Any]) -> dict[str, Any] | Non
         if "compute.vm.standard.e6.flex" in required_ids
         else "VM.Standard.E5.Flex"
     )
+    database_ocpu_match = re.search(
+        r"(?:oracle base database service|postgresql(?: db system)?)\s+-\s+ocpu:\s*"
+        r"(\d+(?:\.\d+)?)\s+ocpu",
+        lowered_task,
+    )
+    file_storage_match = re.search(r"(\d+(?:\.\d+)?)\s+gb\s+file storage", lowered_task)
+    tier_compute_matches = re.findall(
+        r"(?:vm\.standard\.e[56]\.flex\s+)?([^:\n]+?)\s+tier\s+-\s+ocpu:\s*"
+        r"(\d+(?:\.\d+)?)\s+ocpu total across\s+(\d+)\s+instances?\s+"
+        r"\((\d+(?:\.\d+)?)\s+ocpu each\)",
+        lowered_task,
+    )
+    tier_memory_matches = re.findall(
+        r"(?:vm\.standard\.e[56]\.flex\s+)?([^:\n]+?)\s+tier\s+-\s+memory:\s*"
+        r"(\d+(?:\.\d+)?)\s+gb memory total across\s+(\d+)\s+instances?\s+"
+        r"\((\d+(?:\.\d+)?)\s+gb each\)",
+        lowered_task,
+    )
+    memory_by_tier = {
+        ("web" if "web" in label or "iis" in label or "apache" in label else "application"): (total, per_instance)
+        for label, total, _count, per_instance in tier_memory_matches
+    }
+    if tier_compute_matches and required_private_tiers:
+        items[:] = [item for item in items if str(getattr(item, "oci_type", "")).lower() != "compute"]
+        for index, (tier_label, total_ocpu, count, per_ocpu) in enumerate(tier_compute_matches, start=1):
+            tier = "web" if "web" in tier_label or "iis" in tier_label or "apache" in tier_label else "application"
+            memory = memory_by_tier.get(tier)
+            memory_label = f" / {memory[0]} GB memory total / {memory[1]} GB each" if memory else ""
+            items.append(ServiceItem(
+                f"compute_{tier}_{index}",
+                "compute",
+                f"{compute_shape} {tier.title()} Tier ×{count}\n{total_ocpu} OCPU total / {per_ocpu} OCPU each{memory_label}",
+                "compute",
+            ))
     for item in items:
-        if str(getattr(item, "oci_type", "") or "").lower() == "compute" and compute_match:
+        if (
+            str(getattr(item, "oci_type", "") or "").lower() == "compute"
+            and compute_match
+            and not (tier_compute_matches and required_private_tiers)
+        ):
             memory_suffix = f" / {memory_match.group(3)} GB each" if memory_match else ""
             item.label = (
                 f"{compute_shape} ×{compute_match.group(2)}\n"
@@ -277,20 +331,34 @@ def _contract_layout_intent(task: str, items: list[Any]) -> dict[str, Any] | Non
                 "",
             )
             if authoritative_label:
-                item.label = authoritative_label
-    groups = [
-        {"id": "pub_sub_box", "label": "Public Ingress Subnet", "order": 1},
-        {"id": "app_sub_box", "label": "Private Application Subnet", "order": 2},
-        {"id": "db_sub_box", "label": "Private Database Subnet", "order": 3},
-    ]
+                item.label = (
+                    f"{authoritative_label}\n{database_ocpu_match.group(1)} OCPU"
+                    if database_ocpu_match
+                    else authoritative_label
+                )
+        if str(getattr(item, "oci_type", "") or "").lower() == "iam" and "security.iam" in required_ids:
+            item.label = "OCI IAM"
+        if str(getattr(item, "oci_type", "") or "").lower() == "file storage" and "storage.file" in required_ids:
+            item.label = (
+                f"{file_storage_match.group(1)} GB File Storage"
+                if file_storage_match
+                else "File Storage"
+            )
+    groups = [{"id": "pub_sub_box", "label": "Public Ingress Subnet", "order": 1}]
+    private_group_ids: dict[str, str] = {}
+    for order, tier in enumerate(required_private_tiers or ["application", "database"], start=2):
+        group_id = f"{tier}_sub_box"
+        private_group_ids[tier] = group_id
+        groups.append({"id": group_id, "label": f"Private {tier.title()} Subnet", "order": order})
     group_by_type = {
         "waf": "pub_sub_box",
         "load balancer": "pub_sub_box",
-        "compute": "app_sub_box",
-        "block volume": "app_sub_box",
-        "database": "db_sub_box",
-        "network security group": "app_sub_box",
-        "route table": "app_sub_box",
+        "compute": private_group_ids.get("application", private_group_ids.get("web", "")),
+        "block volume": private_group_ids.get("application", ""),
+        "file storage": private_group_ids.get("application", ""),
+        "database": private_group_ids.get("database", ""),
+        "network security group": private_group_ids.get("application", ""),
+        "route table": private_group_ids.get("application", ""),
     }
     placements = []
     ids_by_type: dict[str, str] = {}
@@ -304,8 +372,11 @@ def _contract_layout_intent(task: str, items: list[Any]) -> dict[str, Any] | Non
             "oci_type": oci_type,
             "layer": str(getattr(item, "layer", "data") or "data"),
         }
-        if group_by_type.get(oci_type):
-            placement["group"] = group_by_type[oci_type]
+        group = group_by_type.get(oci_type)
+        if oci_type == "compute" and private_group_ids.get("web") and "web" in str(getattr(item, "label", "")).lower():
+            group = private_group_ids["web"]
+        if group:
+            placement["group"] = group
         placements.append(placement)
         ids_by_type.setdefault(oci_type, item_id)
     flow_types = ("fastconnect", "internet", "waf", "load balancer", "compute", "database")

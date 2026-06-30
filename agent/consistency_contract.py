@@ -21,11 +21,13 @@ _SERVICE_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("database.oracle", ("base database service", "oracle database")),
     ("network.load_balancer.flexible", ("flexible load balancer", "load balancer")),
     ("security.waf", ("web application firewall", "oci waf", "waf policy")),
+    ("security.iam", ("oci iam", "identity and access management", "iam policy")),
     ("compute.vm.standard.e5.flex", ("vm.standard.e5.flex", "standard - e5", "e5.flex")),
     ("compute.vm.standard.e6.flex", ("vm.standard.e6.flex", "standard - e6", "e6.flex")),
     ("compute.vm", ("compute instance", "application server", "web server", "compute")),
     ("storage.object", ("object storage",)),
     ("storage.block", ("block volume", "block storage")),
+    ("storage.file", ("file storage", "fss", "nfs")),
     ("network.vpn.site_to_site", ("site-to-site vpn", "site to site vpn", "ipsec")),
     ("network.fastconnect", ("fastconnect",)),
     ("observability.logging", ("logging analytics", "oci logging", "audit logging", "logging")),
@@ -40,11 +42,13 @@ _DISPLAY_NAMES = {
     "database.oracle": "Oracle Base Database Service",
     "network.load_balancer.flexible": "Flexible Load Balancer",
     "security.waf": "OCI WAF",
+    "security.iam": "OCI IAM",
     "compute.vm.standard.e5.flex": "VM.Standard.E5.Flex",
     "compute.vm.standard.e6.flex": "VM.Standard.E6.Flex",
     "compute.vm": "OCI Compute",
     "storage.object": "Object Storage",
     "storage.block": "Block Volume",
+    "storage.file": "File Storage",
     "network.vpn.site_to_site": "Site-to-Site VPN",
     "network.fastconnect": "FastConnect",
     "observability.logging": "OCI Logging",
@@ -167,6 +171,10 @@ def ensure_bom_scope(payload: dict[str, Any], context: dict[str, Any]) -> dict[s
         service_id = str(component.get("service_id") or "")
         if not service_id or service_id in covered:
             continue
+        # File Storage is a capacity-bearing BOM resource. A scope-only marker
+        # would hide a missing line item and let an incomplete workbook pass.
+        if service_id == "storage.file":
+            continue
         assumptions: list[str] = []
         sizing: dict[str, Any] = {}
         pricing_status = "scope_only"
@@ -216,7 +224,12 @@ def ensure_bom_scope(payload: dict[str, Any], context: dict[str, Any]) -> dict[s
 def validate_bom(payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     required = {str(item.get("service_id") or "") for item in required_components(context)}
     represented = bom_coverage_ids(payload)
-    missing = sorted(required - represented)
+    line_item_ids = bom_coverage_ids({"line_items": payload.get("line_items", []) or []})
+    line_item_required = {
+        service_id for service_id in required
+        if service_id == "storage.file"
+    }
+    missing = sorted((required - represented) | (line_item_required - line_item_ids))
     unexpected = sorted(represented - required) if required else []
     contradictions: list[str] = []
     if "database.postgresql" in required and "database.autonomous" in represented:

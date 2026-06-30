@@ -845,6 +845,8 @@ def _compact_bom_baseline(payload: dict[str, Any]) -> dict[str, Any]:
                 "quantity": item.get("quantity"),
                 "metric": item.get("metric"),
                 "notes": item.get("notes"),
+                "instance_count": item.get("instance_count"),
+                "canonical_service_id": item.get("canonical_service_id"),
             }
         )
     return {

@@ -3,7 +3,7 @@ import warnings
 import pytest
 
 from skillforge import Forge, MemorySnapshot, ToolResult, TurnResult
-from skillforge.forge import _append_result_with_evidence, _clean_simple_question_claims
+from skillforge.forge import _append_result_with_evidence, _clean_simple_question_claims, _ground_conversational_reply
 
 
 warnings.filterwarnings(
@@ -383,6 +383,15 @@ def test_simple_question_claim_cleaner_drops_unsupported_precision():
     assert "70%" not in cleaned
     assert "$1,200" not in cleaned
     assert "Competitors are higher" not in cleaned
+
+
+def test_conversational_grounding_corrects_e5_silicon_and_drops_unsupported_percentages():
+    cleaned = _ground_conversational_reply(
+        "E5.Flex is Ampere Arm and a reference customer improved throughput by 37%.",
+        "Use VM.Standard.E5.Flex for this workload.",
+    )
+
+    assert cleaned == "VM.Standard.E5.Flex uses AMD x86."
 
 
 def test_response_cleaner_splits_inline_markdown_bullets():

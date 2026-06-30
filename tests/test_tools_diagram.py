@@ -114,6 +114,29 @@ def test_diagram_consistency_gate_rejects_unselected_service_labels_and_wrong_re
     assert "region us-ashburn-1 is not explicitly represented" in error
 
 
+def test_diagram_consistency_gate_requires_one_private_subnet_per_tier():
+    requirements = [{"service_id": "compute.vm.standard.e5.flex"}, {"service_id": "database.oracle"}]
+    merged = (
+        '<mxfile><mxCell value="VM.Standard.E5.Flex"/>'
+        '<mxCell value="Oracle Base Database Service"/>'
+        '<mxCell value="Private Web and Application and Database Subnet"/></mxfile>'
+    )
+    separated = (
+        '<mxfile><mxCell value="VM.Standard.E5.Flex"/>'
+        '<mxCell value="Oracle Base Database Service"/>'
+        '<mxCell value="Private Web Subnet"/><mxCell value="Private Application Subnet"/>'
+        '<mxCell value="Private Database Subnet"/></mxfile>'
+    )
+
+    error = diagram_module._diagram_consistency_error(
+        requirements, "", merged, required_private_tiers=["web", "application", "database"],
+    )
+    assert "private subnet count 1 is fewer than required tiers 3" in error
+    assert diagram_module._diagram_consistency_error(
+        requirements, "", separated, required_private_tiers=["web", "application", "database"],
+    ) == ""
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"

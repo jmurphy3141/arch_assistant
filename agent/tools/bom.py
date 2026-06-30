@@ -320,12 +320,43 @@ def _extract_bom_payload(parsed: Any) -> dict[str, Any]:
 def _extract_explicit_bom_inputs(text: str) -> dict[str, Any]:
     source = str(text or "")
     lower = source.lower()
-    instance_count = BomService._extract_server_count(lower)
-    ocpu_match = re.search(r"\b(\d+(?:\.\d+)?)\s*ocpus?\b", lower)
-    memory_match = re.search(r"\b(\d+(?:\.\d+)?)\s*gb\s*(?:ram|memory)\b", lower)
+    tier_pattern = re.compile(
+        r"\b(?P<count>\d+)\s+(?P<label>[^;,.]*?\bservers?)\s*(?:at|,)\s*"
+        r"(?P<ocpu>\d+(?:\.\d+)?)\s*ocpus?\s*(?:and|,)\s*"
+        r"(?P<memory>\d+(?:\.\d+)?)\s*gb(?:\s+(?:ram|memory))?\s*each\b",
+        re.IGNORECASE,
+    )
+    tiers: list[dict[str, Any]] = []
+    for match in tier_pattern.finditer(source):
+        count = int(match.group("count"))
+        ocpu_per_instance = float(match.group("ocpu"))
+        memory_per_instance = float(match.group("memory"))
+        raw_label = re.sub(r"\s+servers?$", "", match.group("label"), flags=re.IGNORECASE).strip()
+        shape_match = re.search(r"\b(E[56](?:\.Flex)?)\b", raw_label, re.IGNORECASE)
+        tier_name = re.sub(r"\bE[56](?:\.Flex)?\b", "", raw_label, flags=re.IGNORECASE).strip(" -")
+        tiers.append({
+            "name": tier_name or f"tier-{len(tiers) + 1}",
+            "shape": f"VM.Standard.{shape_match.group(1).upper().replace('.FLEX', '')}.Flex" if shape_match else "",
+            "instance_count": count,
+            "ocpu_per_instance": ocpu_per_instance,
+            "memory_gb_per_instance": memory_per_instance,
+            "ocpu": ocpu_per_instance * count,
+            "memory_gb": memory_per_instance * count,
+        })
+
+    instance_count = sum(int(tier["instance_count"]) for tier in tiers)
+    ocpu_match = re.search(r"\b(\d+(?:\.\d+)?)\s*ocpus?\b", lower) if not tiers else None
+    memory_match = re.search(r"\b(\d+(?:\.\d+)?)\s*gb\s*(?:ram|memory)\b", lower) if not tiers else None
     region_match = re.search(r"\b[a-z]{2,}-[a-z]+-\d+\b", source, re.IGNORECASE)
     block_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(gb|tb)\s*(?:balanced\s+)?block\s+(?:volume|storage)\b", lower)
     object_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(gb|tb)\s*(?:standard\s+)?object\s+storage\b", lower)
+    file_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(gb|tb)\s*(?:oci\s+)?(?:file\s+storage|fss|nfs)\b", lower)
+    database_match = re.search(
+        r"\b(?P<ha>ha\s+)?(?P<service>oracle\s+base\s+database\s+service|"
+        r"postgresql(?:\s+db\s+system)?|mysql\s+heatwave|autonomous\s+database)"
+        r"\s*(?:at|,)?\s*(?P<ocpu>\d+(?:\.\d+)?)\s*ocpus?\b",
+        lower,
+    )
 
     def capacity(match: re.Match[str] | None) -> float | None:
         if not match:
@@ -333,26 +364,50 @@ def _extract_explicit_bom_inputs(text: str) -> dict[str, Any]:
         value = float(match.group(1))
         return value * 1024.0 if match.group(2).lower() == "tb" else value
 
+    if not tiers and (ocpu_match or memory_match):
+        instance_count = BomService._extract_server_count(lower)
     per_ocpu = float(ocpu_match.group(1)) if ocpu_match else None
     per_memory = float(memory_match.group(1)) if memory_match else None
     block_gb = capacity(block_match)
     object_gb = capacity(object_match)
+    file_gb = capacity(file_match)
+    database: dict[str, Any] = {}
+    if database_match:
+        service_text = database_match.group("service")
+        database = {
+            "service_id": consistency_contract.canonical_service_id(service_text),
+            "display_name": service_text.title(),
+            "ocpu": float(database_match.group("ocpu")),
+            "instance_count": 1,
+            "ha": bool(database_match.group("ha")),
+        }
+    total_ocpu = sum(float(tier["ocpu"]) for tier in tiers) if tiers else (per_ocpu * instance_count if per_ocpu else None)
+    total_memory = sum(float(tier["memory_gb"]) for tier in tiers) if tiers else (per_memory * instance_count if per_memory else None)
+    explicit_sizing = any(
+        value is not None
+        for value in (total_ocpu, total_memory, block_gb, object_gb, file_gb)
+    ) or bool(database)
     return {
+        "explicit_sizing": explicit_sizing,
         "region": region_match.group(0) if region_match else "",
         "compute": {
             "instance_count": instance_count,
             "ocpu_per_instance": per_ocpu,
-            "ocpu": per_ocpu * instance_count if per_ocpu else None,
+            "ocpu": total_ocpu,
+            "tiers": tiers,
         },
         "memory": {
             "gb_per_instance": per_memory,
-            "gb": per_memory * instance_count if per_memory else None,
+            "gb": total_memory,
         },
+        "database": database,
         "storage": {
             "block_gb": block_gb,
             "block_tb": (block_gb / 1024.0) if block_gb is not None else None,
             "object_gb": object_gb,
             "object_tb": (object_gb / 1024.0) if object_gb is not None else None,
+            "file_gb": file_gb,
+            "file_tb": (file_gb / 1024.0) if file_gb is not None else None,
         },
     }
 
@@ -384,7 +439,7 @@ def _apply_selected_poc_defaults(
     compute = output.setdefault("compute", {})
     memory = output.setdefault("memory", {})
     storage = output.setdefault("storage", {})
-    if any(service_id.startswith("compute.") for service_id in service_ids):
+    if any(service_id.startswith("compute.") for service_id in service_ids) and not output.get("explicit_sizing"):
         instance_count = int(compute.get("instance_count") or 1)
         compute["instance_count"] = instance_count
         compute["ocpu"] = float(compute.get("ocpu") or 4.0)
@@ -406,6 +461,9 @@ def _apply_selected_poc_defaults(
     if "storage.object" in service_ids and not storage.get("object_gb"):
         storage["object_gb"] = 1024.0
         storage["object_tb"] = 1.0
+    if "storage.file" in service_ids and not storage.get("file_gb") and not output.get("explicit_sizing"):
+        storage["file_gb"] = 1024.0
+        storage["file_tb"] = 1.0
     output["assumptions"] = [
         "Single-AD minimum viable POC sizing.",
         "One compute VM at 4 OCPU and 32 GB when compute is selected and sizing is absent.",
@@ -427,12 +485,20 @@ def _validate_explicit_bom_inputs(payload: dict[str, Any], structured: dict[str,
         "memory_gb": ((structured.get("memory") or {}).get("gb")),
         "block_gb": ((structured.get("storage") or {}).get("block_gb")),
         "object_gb": ((structured.get("storage") or {}).get("object_gb")),
+        "file_gb": ((structured.get("storage") or {}).get("file_gb")),
+        "database_ocpu": ((structured.get("database") or {}).get("ocpu")),
     }
     produced = {
         "ocpu": total_for({"B93113", "B97384", "B111129", "B94176", "B93297"}),
         "memory_gb": total_for({"B93114", "B97385", "B111130", "B94177", "B93298"}),
         "block_gb": total_for({"B91961"}),
         "object_gb": total_for({"B91628"}),
+        "file_gb": total_for({"BFILE01"}),
+        "database_ocpu": sum(
+            float(row.get("quantity") or 0)
+            for row in rows
+            if str(row.get("canonical_service_id") or "").startswith("database.")
+        ),
     }
     for key, required in expected.items():
         if required is None:
@@ -443,10 +509,11 @@ def _validate_explicit_bom_inputs(payload: dict[str, Any], structured: dict[str,
     produced_region = str(payload.get("region") or "")
     if requested_region and produced_region.casefold() != requested_region.casefold():
         return f"region requested={requested_region}, produced={produced_region or 'missing'}"
-    expected_count = int(((structured.get("compute") or {}).get("instance_count")) or 1)
+    expected_count = int(((structured.get("compute") or {}).get("instance_count")) or 0)
     compute_rows = [row for row in rows if str(row.get("sku") or "").upper() in {"B93113", "B97384", "B111129", "B94176", "B93297"}]
-    if compute_rows and int(compute_rows[0].get("instance_count") or 1) != expected_count:
-        return f"instance_count requested={expected_count}, produced={int(compute_rows[0].get('instance_count') or 1)}"
+    produced_count = sum(int(row.get("instance_count") or 1) for row in compute_rows)
+    if compute_rows and expected_count and produced_count != expected_count:
+        return f"instance_count requested={expected_count}, produced={produced_count}"
     return ""
 
 
@@ -464,6 +531,7 @@ def _repair_explicit_bom_inputs(
         ({"B93114", "B97385", "B111130", "B94177", "B93298"}, memory.get("gb")),
         ({"B91961"}, storage.get("block_gb")),
         ({"B91628"}, storage.get("object_gb")),
+        ({"BFILE01"}, storage.get("file_gb")),
     )
     instance_count = int(compute.get("instance_count") or 1)
     for sku_group, required in required_by_sku_group:

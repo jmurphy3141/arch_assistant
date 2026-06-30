@@ -14,6 +14,8 @@ from typing import Any, Callable
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
+from agent import consistency_contract
+
 logger = logging.getLogger(__name__)
 
 OCI_PRICE_LIST_API_URL = "https://apexapps.oracle.com/pls/apex/cetools/api/v1/products/"
@@ -522,6 +524,7 @@ class BomService:
         compute = src.get("compute", {}) if isinstance(src.get("compute"), dict) else {}
         memory = src.get("memory", {}) if isinstance(src.get("memory"), dict) else {}
         storage = src.get("storage", {}) if isinstance(src.get("storage"), dict) else {}
+        database = src.get("database", {}) if isinstance(src.get("database"), dict) else {}
         connectivity = src.get("connectivity", {}) if isinstance(src.get("connectivity"), dict) else {}
         dr = src.get("dr", {}) if isinstance(src.get("dr"), dict) else {}
         target_service_ids = [
@@ -534,6 +537,12 @@ class BomService:
         memory_gb = self._normalize_capacity_gb(memory.get("gb"), default_unit="gb")
         block_tb = self._normalize_capacity_tb(storage.get("block_tb"), default_unit="tb")
         object_tb = self._normalize_capacity_tb(storage.get("object_tb"), default_unit="tb")
+        file_tb = self._normalize_capacity_tb(storage.get("file_tb"), default_unit="tb")
+        tiers = [
+            dict(item)
+            for item in compute.get("tiers", []) or []
+            if isinstance(item, dict)
+        ]
 
         requirements = []
         if not target_service_ids or any(item.startswith("compute.") for item in target_service_ids):
@@ -565,6 +574,8 @@ class BomService:
             "compute": {
                 "ocpu": ocpu,
                 "gpu": bool(compute.get("gpu", False)),
+                "instance_count": int(compute.get("instance_count") or 0),
+                "tiers": tiers,
             },
             "memory": {"gb": memory_gb},
             "storage": {"block_tb": block_tb, "block_gb": (block_tb * 1024.0) if block_tb is not None else None},
@@ -590,9 +601,18 @@ class BomService:
                 if isinstance(item, dict)
             ],
             "output_format": str(src.get("output_format", "") or "xlsx").strip(),
+            "database": {
+                "service_id": str(database.get("service_id") or "").strip(),
+                "display_name": str(database.get("display_name") or "").strip(),
+                "ocpu": self._normalize_plain_number(database.get("ocpu")),
+                "instance_count": int(database.get("instance_count") or 1),
+                "ha": bool(database.get("ha", False)),
+            },
         }
         normalized["storage"]["object_tb"] = object_tb
         normalized["storage"]["object_gb"] = (object_tb * 1024.0) if object_tb is not None else None
+        normalized["storage"]["file_tb"] = file_tb
+        normalized["storage"]["file_gb"] = (file_tb * 1024.0) if file_tb is not None else None
         return normalized, list(dict.fromkeys(blockers))
 
     @classmethod
@@ -761,14 +781,35 @@ class BomService:
         if compute_id:
             cpu_sku = "B97384" if compute_id == "compute.vm.standard.e5.flex" else "B111129"
             mem_sku = CPU_SKU_TO_MEM_SKU[cpu_sku]
-            for sku, quantity, notes in (
-                (cpu_sku, float(compute.get("ocpu") or 4.0), "Assumed minimum POC compute OCPU"),
-                (mem_sku, float(memory.get("gb") or 32.0), "Assumed minimum POC compute memory"),
-            ):
-                row = self._build_line(sku, quantity, price_table, "compute", notes)
-                row["canonical_service_id"] = compute_id
-                row["instance_count"] = int(compute.get("instance_count") or 1)
-                rows.append(row)
+            tiers = [item for item in compute.get("tiers", []) or [] if isinstance(item, dict)]
+            if tiers:
+                for tier in tiers:
+                    tier_name = str(tier.get("name") or "compute tier").strip()
+                    count = int(tier.get("instance_count") or 1)
+                    for sku, quantity, resource in (
+                        (cpu_sku, float(tier.get("ocpu") or 0), "OCPU"),
+                        (mem_sku, float(tier.get("memory_gb") or 0), "Memory"),
+                    ):
+                        row = self._build_line(
+                            sku,
+                            quantity,
+                            price_table,
+                            "compute",
+                            f"Explicit {tier_name}: {count} servers; {resource} sized per tier",
+                        )
+                        row["description"] = f"{consistency_contract.display_name(compute_id)} {tier_name} tier - {resource}"
+                        row["canonical_service_id"] = compute_id
+                        row["instance_count"] = count
+                        rows.append(row)
+            else:
+                for sku, quantity, notes in (
+                    (cpu_sku, float(compute.get("ocpu") or 4.0), "Assumed minimum POC compute OCPU"),
+                    (mem_sku, float(memory.get("gb") or 32.0), "Assumed minimum POC compute memory"),
+                ):
+                    row = self._build_line(sku, quantity, price_table, "compute", notes)
+                    row["canonical_service_id"] = compute_id
+                    row["instance_count"] = int(compute.get("instance_count") or 1)
+                    rows.append(row)
         if "storage.block" in service_ids:
             block_gb = float(storage.get("block_gb") or 500.0)
             for sku, quantity, notes in (
@@ -785,6 +826,13 @@ class BomService:
             )
             row["canonical_service_id"] = "storage.object"
             rows.append(row)
+        if "storage.file" in service_ids:
+            row = self._build_line(
+                "BFILE01", float(storage.get("file_gb") or 1024.0), price_table,
+                "storage", "Explicit or assumed File Storage capacity",
+            )
+            row["canonical_service_id"] = "storage.file"
+            rows.append(row)
         if "network.load_balancer.flexible" in service_ids:
             row = self._build_line("B93030", 1.0, price_table, "network", "One selected Flexible Load Balancer")
             row["canonical_service_id"] = "network.load_balancer.flexible"
@@ -793,9 +841,17 @@ class BomService:
             row = self._build_line("BWAF01", 1.0, price_table, "security", "Selected OCI WAF; authoritative price required")
             row["canonical_service_id"] = "security.waf"
             rows.append(row)
-        if "database.postgresql" in service_ids:
-            row = self._build_line("B99060", 2.0, price_table, "database", "Assumed one 2 OCPU PostgreSQL POC system")
-            row["canonical_service_id"] = "database.postgresql"
+        database = normalized.get("database", {}) if isinstance(normalized.get("database"), dict) else {}
+        database_id = str(database.get("service_id") or "")
+        selected_database_id = next((item for item in service_ids if item.startswith("database.")), "")
+        if selected_database_id:
+            database_ocpu = float(database.get("ocpu") or 2.0)
+            row = self._build_line(
+                "B99060", database_ocpu, price_table, "database",
+                f"{'Explicit HA' if database.get('ha') else 'Assumed'} {consistency_contract.display_name(selected_database_id)} sizing",
+            )
+            row["description"] = f"{consistency_contract.display_name(selected_database_id)} - OCPU"
+            row["canonical_service_id"] = selected_database_id
             row["instance_count"] = 1
             rows.append(row)
 

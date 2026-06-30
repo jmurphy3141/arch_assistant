@@ -126,3 +126,24 @@ def test_region_change_requires_confirmed_impact_update() -> None:
     )
 
     assert any(item["field"] == "region" for item in conflicts)
+
+
+def test_file_storage_requires_a_real_bom_line_item() -> None:
+    context: dict = {"archie": {}}
+    consistency_contract.record_selected_poc(context, {
+        "option_name": "Shared Files POC",
+        "oci_services": ["VM.Standard.E5.Flex", "File Storage"],
+    })
+
+    payload = consistency_contract.ensure_bom_scope({
+        "line_items": [
+            {"sku": "B97384", "description": "Compute - Standard - E5 - OCPU", "quantity": 4},
+        ],
+    }, context)
+    report = consistency_contract.validate_bom(payload, context)
+
+    assert consistency_contract.canonical_service_id("FSS NFS") == "storage.file"
+    assert consistency_contract.display_name("storage.file") == "File Storage"
+    assert report["verdict"] == "blocked"
+    assert report["missing_components"] == ["storage.file"]
+    assert not any(item.get("canonical_service_id") == "storage.file" for item in payload["scope_items"])

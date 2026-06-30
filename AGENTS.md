@@ -141,7 +141,8 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - React UI: `App.tsx` coordinates tabs; form components call typed helpers in
   `ui/src/api/client.ts`; chat lives in `ChatInterface.tsx`.
 - Tests: Python tests use `pytest.ini` markers; UI tests use Vitest,
-  Testing Library, and MSW handlers.
+  Testing Library, and MSW handlers. `.github/workflows/non-live-tests.yml`
+  runs `pytest -m "not live"` for pushes and pull requests.
 - Deployment: `Dockerfile` and `deploy/oci-agent.service` run
   `drawing_agent_server:app` with uvicorn on port `8080`.
 

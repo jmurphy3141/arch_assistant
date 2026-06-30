@@ -6,6 +6,7 @@ from io import BytesIO
 from openpyxl import load_workbook
 
 from agent.bom_service import BomService, DEFAULT_PRICE_TABLE, CacheSnapshot
+from agent.tools.bom import _extract_explicit_bom_inputs
 
 
 def _ready_service() -> BomService:
@@ -430,3 +431,36 @@ def test_strict_poc_inputs_preserve_selected_e5_and_exclude_unselected_services(
     payload = result["bom_payload"]
     assert payload["region"] == "us-phoenix-1"
     assert {row["sku"] for row in payload["line_items"]} == {"B97384", "B97385", "B91628"}
+
+
+def test_multi_tier_explicit_sizing_emits_per_tier_rows_and_sums_totals() -> None:
+    sizing = _extract_explicit_bom_inputs(
+        "2 E5 IIS web servers at 2 OCPU and 16 GB each; "
+        "3 E5 claims application servers at 4 OCPU and 32 GB each; "
+        "HA Oracle Base Database Service at 4 OCPU; 1 TB File Storage"
+    )
+
+    assert sizing["compute"]["instance_count"] == 5
+    assert sizing["compute"]["ocpu"] == 16
+    assert sizing["memory"]["gb"] == 128
+    assert len(sizing["compute"]["tiers"]) == 2
+    assert sizing["database"]["service_id"] == "database.oracle"
+    assert sizing["database"]["ocpu"] == 4
+    assert sizing["storage"]["file_gb"] == 1024
+
+    sizing.update({
+        "strict_scope": True,
+        "target_service_ids": [
+            "compute.vm.standard.e5.flex", "database.oracle", "storage.file",
+        ],
+    })
+    payload = _ready_service().generate_from_inputs(
+        inputs=sizing, trace_id="multi-tier", model_id="test-bom",
+    )["bom_payload"]
+    cpu_rows = [row for row in payload["line_items"] if row["sku"] == "B97384"]
+    memory_rows = [row for row in payload["line_items"] if row["sku"] == "B97385"]
+    assert [row["quantity"] for row in cpu_rows] == [4, 12]
+    assert [row["instance_count"] for row in cpu_rows] == [2, 3]
+    assert [row["quantity"] for row in memory_rows] == [32, 96]
+    assert next(row for row in payload["line_items"] if row["canonical_service_id"] == "database.oracle")["quantity"] == 4
+    assert next(row for row in payload["line_items"] if row["canonical_service_id"] == "storage.file")["quantity"] == 1024

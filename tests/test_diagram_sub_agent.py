@@ -3,6 +3,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
+from agent.bom_parser import ServiceItem
 from sub_agents.diagram.server import handle
 from sub_agents.diagram.server import _contract_layout_intent, _ground_layout_placement_layers
 from sub_agents.models import A2ARequest
@@ -127,6 +128,32 @@ def test_contract_layout_intent_preserves_authoritative_database_identity():
 
     assert spec is not None
     assert database.label == "Oracle Base Database Service"
+
+
+def test_contract_layout_intent_separates_web_application_and_database_subnets():
+    items = [
+        ServiceItem("compute_1", "compute", "Compute", "compute"),
+        ServiceItem("database_1", "database", "Oracle Database", "data"),
+    ]
+    spec = _contract_layout_intent(
+        (
+            "[AUTHORITATIVE CROSS-ARTIFACT REQUIREMENTS]\n"
+            "- VM.Standard.E5.Flex (compute.vm.standard.e5.flex)\n"
+            "- Oracle Base Database Service (database.oracle)\n"
+            "[/AUTHORITATIVE CROSS-ARTIFACT REQUIREMENTS]\n"
+            "[REQUIRED PRIVATE TIERS]\n- web\n- application\n- database\n[/REQUIRED PRIVATE TIERS]\n"
+            "- VM.Standard.E5.Flex IIS web tier - OCPU: 4 OCPU total across 2 instances (2 OCPU each)\n"
+            "- VM.Standard.E5.Flex claims application tier - OCPU: 12 OCPU total across 3 instances (4 OCPU each)"
+        ),
+        items,
+    )
+
+    labels = {group["label"] for group in spec["groups"]}
+    placements = {placement["id"]: placement.get("group") for placement in spec["placements"]}
+    assert {"Private Web Subnet", "Private Application Subnet", "Private Database Subnet"} <= labels
+    assert placements["compute_web_1"] == "web_sub_box"
+    assert placements["compute_application_2"] == "application_sub_box"
+    assert placements["database_1"] == "database_sub_box"
 
 
 async def test_contract_diagram_excludes_parser_defaults_and_labels_region(monkeypatch):
