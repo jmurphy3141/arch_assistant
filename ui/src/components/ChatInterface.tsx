@@ -935,6 +935,8 @@ export function ChatInterface({
   const [lastHat, setLastHat] = useState<string | null>(null);
   const [backgroundMode, setBackgroundMode] = useState(false);
   const [backgroundJobId, setBackgroundJobId] = useState<string | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const dragCounterRef = useRef(0);
   const threadRef = useRef<HTMLDivElement>(null);
   const bottomRef   = useRef<HTMLDivElement>(null);
   const inputRef    = useRef<HTMLTextAreaElement>(null);
@@ -1033,9 +1035,8 @@ export function ChatInterface({
     };
   }, [backgroundJobId]);
 
-  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file || !customerId.trim()) return;
+  async function uploadAttachedFile(file: File) {
+    if (!customerId.trim()) return;
     setAttachLoading(true);
     setError(null);
     try {
@@ -1051,6 +1052,37 @@ export function ChatInterface({
       setAttachLoading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  }
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await uploadAttachedFile(file);
+  }
+
+  function handleDragEnter(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    dragCounterRef.current += 1;
+    if (customerId.trim() && !attachLoading) setIsDraggingFile(true);
+  }
+
+  function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+  }
+
+  function handleDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setIsDraggingFile(false);
+  }
+
+  async function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDraggingFile(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file || !customerId.trim() || attachLoading) return;
+    await uploadAttachedFile(file);
   }
 
   async function sendMessage() {
@@ -1488,6 +1520,10 @@ export function ChatInterface({
 
       {/* Input bar */}
       <div
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
         style={{
           position: 'sticky',
           bottom: 0,
@@ -1495,8 +1531,10 @@ export function ChatInterface({
           flexDirection: 'column',
           gap: '0.65rem',
           background: 'linear-gradient(180deg, rgba(8,9,13,0.82) 0%, #0f1119 24%, #0f1119 100%)',
-          border: '1px solid #282d42',
-          boxShadow: '0 20px 45px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02) inset',
+          border: isDraggingFile ? '1px dashed rgba(0,229,255,0.7)' : '1px solid #282d42',
+          boxShadow: isDraggingFile
+            ? '0 20px 45px rgba(0,0,0,0.45), 0 0 0 2px rgba(0,229,255,0.25) inset'
+            : '0 20px 45px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02) inset',
           borderRadius: 20,
           padding: '0.95rem',
         }}
