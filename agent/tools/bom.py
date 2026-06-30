@@ -12,7 +12,7 @@ import re
 import time
 from typing import Any
 
-from agent import archie_memory, sub_agent_client
+from agent import archie_memory, consistency_contract, sub_agent_client
 from agent.bom_service import BomService, CacheSnapshot, DEFAULT_PRICE_TABLE
 from agent.persistence_objectstore import ObjectStoreBase
 from skillforge.types import MemorySnapshot, ToolResult
@@ -65,6 +65,21 @@ class BomHandler:
         # archie_wiring.py will inject it into tool args before this handler runs.
         user_message = str(args.get("_user_message", "") or "")
         explicit_request = user_message or str(args.get("prompt") or "")
+        conflicts = consistency_contract.request_conflicts(explicit_request, ctx)
+        if conflicts:
+            clarification = (
+                "The BOM request conflicts with an approved upstream decision. "
+                "Confirm an impact update before changing dependent artifacts."
+            )
+            return ToolResult(
+                summary=clarification,
+                status="needs_input",
+                clarification=clarification,
+                data={
+                    "consistency_conflicts": conflicts,
+                    "required_next_step": "confirm update all",
+                },
+            )
         if user_message:
             args = {**args, "prompt": user_message}
 
@@ -122,15 +137,20 @@ class BomHandler:
             context=ctx,
             memory_raw=engagement_context,
         )
+        structured_inputs = _extract_explicit_bom_inputs(explicit_request)
+        structured_inputs = _apply_selected_poc_defaults(structured_inputs, ctx)
         direct_sized_request = bool(
             user_message
             and re.search(r"\b\d+(?:\.\d+)?\s*ocpus?\b", user_message, re.IGNORECASE)
             and re.search(r"\b\d+(?:\.\d+)?\s*(?:gb|tb)\b", user_message, re.IGNORECASE)
         )
         if direct_sized_request:
+            # Preserve the selected POC contract even for a fully sized direct
+            # request.  The current turn controls quantities, while the
+            # engagement contract controls required service identity/scope.
             prompt = user_message
-            engagement_context = {}
-        structured_inputs = _extract_explicit_bom_inputs(explicit_request)
+        if structured_inputs.get("strict_scope"):
+            engagement_context = {"structured_inputs": structured_inputs}
         parsed: dict[str, Any] = {}
         bom_payload: dict[str, Any] = {}
         validation_error = ""
@@ -204,18 +224,32 @@ class BomHandler:
                 incomplete_status="blocked",
                 explicit_structured_inputs=structured_inputs,
             )
-        bom_payload = _enrich_bom_payload_for_prompt(
-            bom_payload,
-            prompt="\n".join(
-                part
-                for part in (
-                    prompt,
-                    user_message,
-                )
-                if part
-            ),
-        )
+        if not consistency_contract.required_components(ctx):
+            bom_payload = _enrich_bom_payload_for_prompt(
+                bom_payload,
+                prompt="\n".join(
+                    part
+                    for part in (
+                        prompt,
+                        user_message,
+                    )
+                    if part
+                ),
+            )
         bom_payload = _flag_unverified_skus(bom_payload)
+        bom_payload = consistency_contract.ensure_bom_scope(bom_payload, ctx)
+        consistency_report = consistency_contract.validate_bom(bom_payload, ctx)
+        if consistency_report["verdict"] != "pass":
+            return ToolResult(
+                summary="BOM cross-artifact consistency validation failed.",
+                status="blocked",
+                data={
+                    "bom_payload": bom_payload,
+                    "structured_inputs": structured_inputs,
+                    "consistency_report": consistency_report,
+                    "validation_stage": "cross_artifact_consistency",
+                },
+            )
         sizing_repaired = False
         sizing_error = _validate_explicit_bom_inputs(bom_payload, structured_inputs)
         if sizing_error:
@@ -244,8 +278,9 @@ class BomHandler:
         if len(line_items) > 6:
             service_names += f", +{len(line_items) - 6} more"
         monthly = bom_payload.get("monthly_total") or 0
+        pricing_status = str(bom_payload.get("pricing_status") or "priced")
         bom_summary = (
-            f"BOM generated ({service_count} services, ${monthly:,.2f}/mo): "
+            f"BOM generated ({service_count} services, ${monthly:,.2f}/mo priced subtotal, {pricing_status}): "
             f"{service_names}."
             if service_names else
             f"BOM generated ({service_count} services, ${monthly:,.2f}/mo)."
@@ -263,6 +298,10 @@ class BomHandler:
                 "structured_inputs": structured_inputs,
                 "sizing_repair": (
                     "deterministic_explicit_fields" if sizing_repaired else "not_required"
+                ),
+                "consistency_report": consistency_report,
+                "consistency_contract_revision": int(
+                    consistency_contract.get_contract(ctx).get("revision", 0) or 0
                 ),
             },
             artifact_key=str(parsed.get("artifact_key") or bom_payload.get("artifact_key") or bom_payload.get("xlsx_key") or ""),
@@ -296,6 +335,8 @@ def _extract_explicit_bom_inputs(text: str) -> dict[str, Any]:
 
     per_ocpu = float(ocpu_match.group(1)) if ocpu_match else None
     per_memory = float(memory_match.group(1)) if memory_match else None
+    block_gb = capacity(block_match)
+    object_gb = capacity(object_match)
     return {
         "region": region_match.group(0) if region_match else "",
         "compute": {
@@ -308,10 +349,69 @@ def _extract_explicit_bom_inputs(text: str) -> dict[str, Any]:
             "gb": per_memory * instance_count if per_memory else None,
         },
         "storage": {
-            "block_gb": capacity(block_match),
-            "object_gb": capacity(object_match),
+            "block_gb": block_gb,
+            "block_tb": (block_gb / 1024.0) if block_gb is not None else None,
+            "object_gb": object_gb,
+            "object_tb": (object_gb / 1024.0) if object_gb is not None else None,
         },
     }
+
+
+def _apply_selected_poc_defaults(
+    structured: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the exact structured POC handoff from the selected contract."""
+    components = consistency_contract.required_components(context)
+    service_ids = sorted(
+        str(item.get("service_id") or "") for item in components if item.get("service_id")
+    )
+    if not service_ids:
+        return structured
+
+    output = copy.deepcopy(structured)
+    contract = consistency_contract.get_contract(context)
+    output["region"] = str(output.get("region") or contract.get("region") or "").strip()
+    output["strict_scope"] = True
+    output["scope"] = "poc"
+    output["architecture_option"] = "selected POC consistency contract"
+    output["target_service_ids"] = service_ids
+    output["target_services"] = [
+        consistency_contract.display_name(service_id) for service_id in service_ids
+    ]
+    output["output_format"] = "xlsx"
+
+    compute = output.setdefault("compute", {})
+    memory = output.setdefault("memory", {})
+    storage = output.setdefault("storage", {})
+    if any(service_id.startswith("compute.") for service_id in service_ids):
+        instance_count = int(compute.get("instance_count") or 1)
+        compute["instance_count"] = instance_count
+        compute["ocpu"] = float(compute.get("ocpu") or 4.0)
+        compute["ocpu_per_instance"] = float(
+            compute.get("ocpu_per_instance") or compute["ocpu"] / instance_count
+        )
+        memory["gb"] = float(memory.get("gb") or 32.0)
+        memory["gb_per_instance"] = float(
+            memory.get("gb_per_instance") or memory["gb"] / instance_count
+        )
+        compute["shape"] = (
+            "VM.Standard.E5.Flex"
+            if "compute.vm.standard.e5.flex" in service_ids
+            else "VM.Standard.E6.Flex"
+        )
+    if "storage.block" in service_ids and not storage.get("block_gb"):
+        storage["block_gb"] = 500.0
+        storage["block_tb"] = 500.0 / 1024.0
+    if "storage.object" in service_ids and not storage.get("object_gb"):
+        storage["object_gb"] = 1024.0
+        storage["object_tb"] = 1.0
+    output["assumptions"] = [
+        "Single-AD minimum viable POC sizing.",
+        "One compute VM at 4 OCPU and 32 GB when compute is selected and sizing is absent.",
+        "500 GB Balanced Block Volume and 1 TB Object Storage only when selected and sizing is absent.",
+    ]
+    return output
 
 
 def _validate_explicit_bom_inputs(payload: dict[str, Any], structured: dict[str, Any]) -> str:
@@ -399,13 +499,22 @@ def _hydrate_bom_task(
     memory_raw: dict[str, Any],
 ) -> str:
     block = _build_bom_confirmed_context(args=args, context=context, memory_raw=memory_raw)
+    contract = consistency_contract.get_contract(context)
+    contract_block = ""
+    if contract:
+        contract_block = (
+            "[AUTHORITATIVE ENGAGEMENT CONSISTENCY CONTRACT]\n"
+            "Preserve every required service identity. Do not substitute database or connectivity products.\n"
+            f"{json.dumps(contract, ensure_ascii=True, sort_keys=True)}\n"
+            "[/AUTHORITATIVE ENGAGEMENT CONSISTENCY CONTRACT]"
+        )
     previous = _find_context_value(
         ("previous_bom_payload", "bom_payload", "bom"),
         args=args,
         context=context,
         memory_raw=memory_raw,
     )
-    parts = [block]
+    parts = [block, contract_block]
     if previous not in (None, "", [], {}):
         parts.append(
             "[PREVIOUS BOM - PRESERVE UNLESS CHANGING: "
@@ -434,7 +543,7 @@ def _build_bom_confirmed_context(
             f"Shape: {value('compute_shape', 'shape', 'shapes')}",
             f"OCPU: {value('ocpu_count', 'ocpus', 'cpu_count')}",
             f"Memory: {value('memory_gb')}",
-            f"Region: {value('region', default='us-chicago-1')}",
+            f"Region: {value('region')}",
             f"HA mode: {value('ha_mode', 'ha_dr_mode')}",
             f"Budget: {value('budget')}",
             f"Storage: {value('storage_requirements', 'storage_gb')}",
@@ -449,13 +558,19 @@ def _flag_unverified_skus(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
     payload = copy.deepcopy(payload)
+    changed = False
     for item in payload.get("line_items") or []:
         if not isinstance(item, dict):
             continue
         sku = str(item.get("sku") or "")
         if sku and not re.match(r"^B\d{4,6}$", sku):
+            changed = True
             item["sku_unverified"] = True
-    return payload
+            item["unit_price"] = None
+            item["extended_price"] = None
+            item["pricing_status"] = "unpriced"
+            item["price_source"] = "unpriced_catalog"
+    return BomService()._normalize_payload(payload) if changed else payload
 
 
 def _validate_bom_result(result: dict[str, Any], bom_payload: dict[str, Any]) -> str:
@@ -471,10 +586,13 @@ def _validate_bom_result(result: dict[str, Any], bom_payload: dict[str, Any]) ->
         if not sku:
             return f"line item missing sku: {item}"
         qty = float(item.get("quantity") or item.get("qty") or 0)
-        price = float(item.get("unit_price") or item.get("price") or 0)
+        raw_price = item.get("unit_price") if "unit_price" in item else item.get("price")
+        price = float(raw_price) if raw_price not in (None, "") else None
         if qty <= 0:
             return f"quantity <= 0 for {item.get('sku')}"
-        if price <= 0:
+        if price is None and str(item.get("pricing_status") or "") == "unpriced":
+            continue
+        if price is None or price <= 0:
             return f"unit_price <= 0 for {item.get('sku')}"
     def _monthly_multiplier(item: dict[str, Any]) -> float:
         billing = str(item.get("billing_unit") or item.get("metric") or "hour").lower()
@@ -485,6 +603,7 @@ def _validate_bom_result(result: dict[str, Any], bom_payload: dict[str, Any]) ->
         * float(i.get("unit_price") or i.get("price") or 0)
         * _monthly_multiplier(i)
         for i in line_items
+        if (i.get("unit_price") if "unit_price" in i else i.get("price")) not in (None, "")
     )
     stated = float(bom_payload.get("monthly_total") or 0)
     if abs(computed - stated) / max(computed, 1) >= 0.005:
@@ -564,7 +683,7 @@ def _fallback_bom_result(
 ) -> ToolResult:
     service = BomService()
     service._cache = CacheSnapshot(  # local deterministic fallback; avoids network during recovery
-        pricing_table=dict(DEFAULT_PRICE_TABLE),
+        pricing_table=service._unpriced_default_catalog(),
         shapes_text="OCI compute shapes catalog unavailable; using fallback guidance.",
         services_text="OCI services catalog unavailable; using fallback guidance.",
         refreshed_at=time.time(),
@@ -701,7 +820,11 @@ def _enrich_bom_payload_for_prompt(payload: dict[str, Any], *, prompt: str) -> d
 
     if "waf" in text or "web application firewall" in text:
         _append_missing("BWAF01", 1.0, "network", "Prompt requested WAF coverage")
-    if "database" in text or "data tier" in text or re.search(r"\bdb\b", text):
+    if (
+        ("database" in text or "data tier" in text or re.search(r"\bdb\b", text))
+        and "postgres" not in text
+        and "mysql" not in text
+    ):
         _append_missing("B99060", 2.0, "database", "Prompt requested database layer")
 
     payload["line_items"] = line_items

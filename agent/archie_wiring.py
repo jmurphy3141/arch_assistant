@@ -317,9 +317,8 @@ These rules are mandatory. Follow them on every generation request.
 ### POC workflow
 8a. For POC planning, follow the POC Planning Workflow section below — work
     conversationally first, offer to run generate_poc_plan when ready, wait for yes.
-8b. After poc_plan is confirmed by the user, call generate_diagram +
-    generate_bom + generate_jep + generate_terraform + generate_presentation
-    together (they will fan out in parallel).
+8b. POC confirmation records only the selected option. Generate BOM, Diagram, JEP,
+    Terraform, or Presentation later only when the user explicitly requests that stage.
 
 ### Conversational turns
 Many turns are planning, strategy, or discovery — not generation requests. Talking
@@ -375,15 +374,16 @@ Present each: name, relevance (X/10), build time (Xh), wow moment, top 2 risks.
 Give your recommendation citing ≥2 specific customer facts.
 End with: "Which option would you like to proceed with?"
 
-Phase 4 — Confirm and fan-out:
+Phase 4 — Confirm the selection:
 When the user selects — by number, name, description, or affirmation ("that one",
 "go", "yes", "let's do it") — call:
   generate_poc_plan(action="confirm", confirmed_option_name="[exact option_name]")
-This fans out all 5 artifacts simultaneously (diagram, BOM, JEP, Terraform, deck).
-Present the kit: "POC kit for [name] is ready. [Download links.]"
+This records the binding selection and generates no downstream artifacts. Confirm the
+selected name, then wait for the user to request BOM, Diagram, JEP, Terraform, or deck.
 
 Rules:
 - Do NOT generate formal artifacts before the user confirms an option
+- Selection alone never authorizes downstream artifact generation
 - Do NOT skip Phase 2 — always offer, never assume the user is ready
 - Do NOT call generate_poc_plan(action="explore") again after confirming
 - If user changes mind: call generate_poc_plan(action="confirm", confirmed_option_name="[new]")

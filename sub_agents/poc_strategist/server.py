@@ -155,6 +155,28 @@ async def _call_inference(prompt: str) -> str:
 
 
 async def handle(req: A2ARequest) -> A2AResponse:
+    context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
+    if str(context.get("mode") or "") == "polish_options":
+        # The grounded composer already owns facts and scoring. Keep this A2A
+        # stage deterministic so presentation polish cannot add latency or drift.
+        try:
+            supplied = _json_mod.loads(req.task)
+        except (TypeError, _json_mod.JSONDecodeError):
+            supplied = {}
+        options = supplied.get("options") if isinstance(supplied, dict) else []
+        polished = [
+            {
+                "option_name": str(option.get("option_name") or ""),
+                "demo_script_summary": str(option.get("demo_script_summary") or ""),
+            }
+            for option in options or []
+            if isinstance(option, dict)
+        ]
+        return A2AResponse(
+            result=_json_mod.dumps({"options": polished}),
+            status="ok",
+            trace={"agent": card.name, "trace_id": req.trace_id, "mode": "deterministic_polish"},
+        )
     prompt = _build_prompt(req)
     text = await _call_inference(prompt)
     text = _extract_json(text)

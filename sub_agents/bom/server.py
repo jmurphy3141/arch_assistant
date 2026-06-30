@@ -62,6 +62,34 @@ async def lifespan(app: FastAPI):
 
 async def handle(req: A2ARequest) -> A2AResponse:
     service = get_shared_bom_service()
+    structured_inputs = (
+        req.engagement_context.get("structured_inputs")
+        if isinstance(req.engagement_context, dict)
+        and isinstance(req.engagement_context.get("structured_inputs"), dict)
+        else None
+    )
+    if structured_inputs:
+        response = await anyio.to_thread.run_sync(
+            lambda: service.generate_from_inputs(
+                inputs=structured_inputs,
+                trace_id=req.trace_id,
+                model_id="deterministic-structured-inputs",
+            )
+        )
+        if str(response.get("type") or "").lower() != "final" or not isinstance(response.get("bom_payload"), dict):
+            return A2AResponse(
+                status="needs_input",
+                result=str(response.get("reply") or "Structured BOM inputs could not be normalized."),
+                trace=dict(response.get("trace", {}) or {}),
+            )
+        return A2AResponse(
+            status="ok",
+            result=json.dumps({
+                "bom_payload": response["bom_payload"],
+                "prices_from": (response.get("trace") or {}).get("cache_source", "pricing_cache"),
+            }, ensure_ascii=False),
+            trace=dict(response.get("trace", {}) or {}),
+        )
     task_msg = req.task
     if req.engagement_context:
         ctx_block = json.dumps(req.engagement_context, ensure_ascii=False, indent=2)

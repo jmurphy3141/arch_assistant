@@ -212,6 +212,19 @@ async def test_jep_review_accepts_numbered_risks_and_approval_decision_gate():
     assert specialists_module._jep_writer_review_findings(content) == []
 
 
+async def test_jep_review_accepts_two_selected_poc_criteria():
+    content = valid_jep_markdown().replace(
+        "| 3 | User acceptance test coverage | >= 50 users | Week 6 |\n",
+        "",
+    )
+
+    assert specialists_module._jep_writer_review_findings(content)
+    assert specialists_module._jep_writer_review_findings(
+        content,
+        expected_criteria_count=2,
+    ) == []
+
+
 async def test_jep_kickoff_json_is_rendered_as_clean_clarification():
     content = json.dumps(
         {
@@ -312,6 +325,34 @@ def test_jep_evidence_review_allows_only_requested_sizing():
 
     assert any("8 OCPU" in finding for finding in findings)
     assert not any("500 GB" in finding for finding in findings)
+
+
+def test_jep_evidence_review_allows_authoritative_selected_poc_fastconnect():
+    content = valid_jep_markdown().replace(
+        "The POC uses OCI Logging Analytics",
+        "The POC uses FastConnect and OCI Logging Analytics",
+    )
+    request = (
+        "Generate the JEP for the selected POC.\n"
+        'Authoritative selected POC services: ["FastConnect", "OCI Logging"]'
+    )
+
+    findings = specialists_module._document_review_findings("jep", content, request)
+
+    assert not any("fastconnect" in finding for finding in findings)
+
+
+def test_jep_numeric_review_counts_business_rate_and_concurrency_units():
+    section = """
+| Criterion | Evidence |
+|---|---|
+| sustain 750 orders per minute | measured result |
+| support 400 concurrent portal sessions | measured result |
+| keep p95 latency under 450 milliseconds | measured result |
+| process 250 supplier orders per minute | measured result |
+"""
+
+    assert specialists_module._count_numeric_criteria(section) == 4
 
 
 def test_pov_evidence_review_treats_rps_as_requests_per_second():

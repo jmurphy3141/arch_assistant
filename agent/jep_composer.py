@@ -34,7 +34,9 @@ _PHASE_RE = re.compile(
 )
 _NUMBER_RE = re.compile(
     r"(?:[<>]=?\s*)?\d+(?:\.\d+)?\s*(?:%|ms|milliseconds?|seconds?|minutes?|hours?|"
-    r"days?|weeks?|months?|requests?\s+per\s+second|rps|qps|tps)",
+    r"days?|weeks?|months?|(?:[a-z]+\s+){0,2}"
+    r"(?:requests?|orders?|bookings?|transactions?)\s+per\s+(?:second|minute|hour)|"
+    r"concurrent(?:\s+[a-z]+){0,2}\s+(?:sessions?|users?)|rps|qps|tps)",
     re.IGNORECASE,
 )
 
@@ -70,6 +72,7 @@ class JepBrief:
     handoff_requirements: tuple[str, ...] = ()
     include_bom: bool = False
     include_handoff: bool = False
+    expected_criteria_count: int = 3
     grounded_source: str = field(default="", repr=False)
 
 
@@ -110,7 +113,10 @@ def compose_jep(task: str, engagement_context: dict[str, Any] | None = None) -> 
             return _needs_input(("revision",), (
                 "State the exact grounded change to the approved JEP (for example, replace an existing value with a new value).",
             ))
-        findings = validate_jep_markdown(revised)
+        findings = validate_jep_markdown(
+            revised,
+            expected_criteria_count=_expected_success_criteria_count(context),
+        )
         if findings:
             return _needs_input(("revision",), (
                 "The requested revision would make the JEP incomplete: " + "; ".join(findings),
@@ -150,13 +156,20 @@ def extract_jep_brief(
     phases = tuple(phases_by_number.get(i) for i in (1, 2, 3))
 
     scope = _extract_scope(sources)
+    poc_scope = _selected_poc_scope(context)
+    if poc_scope:
+        scope = poc_scope
     architecture = _extract_architecture(sources, context)
     criteria = _extract_criteria(sources)
+    poc_criteria = _selected_poc_criteria(context)
+    if poc_criteria:
+        criteria = poc_criteria
     owners = _extract_owners(sources, customer)
     approvals = _extract_approvals(sources, owners)
     risks = _extract_risks(sources, criteria)
     artifact_references = _artifact_references(context)
     artifact_context = context.get("artifact_context") if isinstance(context.get("artifact_context"), dict) else {}
+    expected_criteria_count = _expected_success_criteria_count(context)
     require_selected_poc = bool(re.search(r"\b(?:selected|confirmed)\s+poc\b", current, re.IGNORECASE))
     require_finalized_bom = bool(re.search(r"\b(?:finalized|existing|latest)\s+bom\b", current, re.IGNORECASE))
 
@@ -180,7 +193,7 @@ def extract_jep_brief(
             missing.append(name)
     if any(phase is None for phase in phases) or len(phases_by_number) != 3:
         missing.append("phases")
-    if len(criteria) < 3 and "criteria" not in missing:
+    if len(criteria) < expected_criteria_count and "criteria" not in missing:
         missing.append("criteria")
     if len(owners) < 2 and "owners" not in missing:
         missing.append("owners")
@@ -214,6 +227,7 @@ def extract_jep_brief(
         handoff_requirements=handoff,
         include_bom=include_bom,
         include_handoff=include_handoff,
+        expected_criteria_count=expected_criteria_count,
         grounded_source=sources,
     )
     return brief, []
@@ -274,7 +288,12 @@ def render_jep_markdown(brief: JepBrief) -> str:
     return "\n".join(lines)
 
 
-def validate_jep_markdown(markdown: str, brief: JepBrief | None = None) -> list[str]:
+def validate_jep_markdown(
+    markdown: str,
+    brief: JepBrief | None = None,
+    *,
+    expected_criteria_count: int | None = None,
+) -> list[str]:
     """Validate canonical order, phase count, measurable criteria, and grounding."""
     text = str(markdown or "").strip()
     findings: list[str] = []
@@ -294,8 +313,13 @@ def validate_jep_markdown(markdown: str, brief: JepBrief | None = None) -> list[
     if phase_rows != [("1", "Assessment"), ("2", "Build"), ("3", "Validate")]:
         findings.append("execution plan must contain exactly Phase 1 Assessment, Phase 2 Build, and Phase 3 Validate")
     criteria_section = _section(text, "Success Criteria")
-    if len(_NUMBER_RE.findall(criteria_section)) < 3:
-        findings.append("success criteria require at least three grounded numeric targets")
+    required_criteria = expected_criteria_count or (
+        brief.expected_criteria_count if brief is not None else 3
+    )
+    if len(_NUMBER_RE.findall(criteria_section)) < required_criteria:
+        findings.append(
+            f"success criteria require at least {required_criteria} grounded numeric targets"
+        )
     risk_section = _section(text, "Risk Registry")
     if len([line for line in risk_section.splitlines() if line.startswith("|")]) < 5:
         findings.append("risk registry requires at least three entries")
@@ -358,6 +382,53 @@ def _extract_scope(text: str) -> tuple[str, ...]:
     return _split_items(match.group(1))
 
 
+def _selected_poc_scope(context: dict[str, Any]) -> tuple[str, ...]:
+    artifact = context.get("artifact_context")
+    if not isinstance(artifact, dict):
+        return ()
+    poc = artifact.get("poc")
+    if not isinstance(poc, dict):
+        return ()
+    return tuple(
+        str(item).strip()
+        for item in poc.get("oci_services", []) or []
+        if str(item).strip()
+    )
+
+
+def _selected_poc_criteria(context: dict[str, Any]) -> tuple[str, ...]:
+    artifact = context.get("artifact_context")
+    poc = artifact.get("poc") if isinstance(artifact, dict) else None
+    if not isinstance(poc, dict) or not poc.get("selected_option_name"):
+        return ()
+    grounding = poc.get("grounding") if isinstance(poc.get("grounding"), dict) else {}
+    raw = grounding.get("success_criteria") or poc.get("success_criteria")
+    if isinstance(raw, (list, tuple)):
+        return tuple(_clean(str(item)) for item in raw if _NUMBER_RE.search(str(item)))
+    return _extract_criteria(f"Success criteria: {raw}") if raw else ()
+
+
+def _expected_success_criteria_count(context: dict[str, Any]) -> int:
+    """Keep the general three-criterion bar unless a selected POC is authoritative.
+
+    A selected POC can intentionally carry one or two criteria.  In that case the
+    JEP must preserve that exact count instead of inventing another target.
+    """
+    artifact = context.get("artifact_context")
+    if not isinstance(artifact, dict):
+        return 3
+    poc = artifact.get("poc")
+    if not isinstance(poc, dict) or not poc.get("selected_option_name"):
+        return 3
+    grounding = poc.get("grounding") if isinstance(poc.get("grounding"), dict) else {}
+    raw = grounding.get("success_criteria") or poc.get("success_criteria")
+    if isinstance(raw, (list, tuple)):
+        count = len([item for item in raw if _NUMBER_RE.search(str(item))])
+    else:
+        count = len(_extract_criteria(f"Success criteria: {raw}")) if raw else 0
+    return count if 0 < count < 3 else 3
+
+
 def _extract_architecture(text: str, context: dict[str, Any]) -> str:
     artifact = context.get("artifact_context")
     if isinstance(artifact, dict):
@@ -366,6 +437,9 @@ def _extract_architecture(text: str, context: dict[str, Any]) -> str:
             summary = _clean(str(diagram.get("deployment_summary") or ""))
             if summary:
                 return summary
+            key = _clean(str(diagram.get("diagram_key") or diagram.get("artifact_ref") or ""))
+            if key:
+                return f"The POC architecture is the finalized same-engagement Diagram: {key}"
     match = re.search(r"\b(?:validate\s+)?migration of\s+(.+?)\s+to\s+OCI\s+([a-z]{2,}-[a-z]+-\d+)", text, re.IGNORECASE)
     if match:
         return f"The POC architecture covers {match.group(1)} in OCI {match.group(2)}"
@@ -378,12 +452,52 @@ def _extract_criteria(text: str) -> tuple[str, ...]:
     if not match:
         return ()
     raw = match.group(1).strip().rstrip(".")
-    parts = re.split(r",\s+(?=(?:p\d+|and\s+database|\d+(?:\.\d+)?%|restore|latency|availability|response))|;", raw, flags=re.IGNORECASE)
+    parts = re.split(
+        r",\s+(?=(?:p\d+|and\s+database|\d+(?:\.\d+)?%|restore|recover|process|"
+        r"sustain|keep|finish|latency|availability|response))|;",
+        raw,
+        flags=re.IGNORECASE,
+    )
     return tuple(_clean(re.sub(r"^and\s+", "", part, flags=re.IGNORECASE)).rstrip(".") for part in parts if _NUMBER_RE.search(part))
 
 
 def _extract_owners(text: str, customer: str) -> tuple[JepOwner, ...]:
-    match = re.search(r"(Oracle\s+(?:SA|Solutions Architect))\s+and\s+(.+?technical lead)\s+each\s+commit\s+([^.;]+)", text, re.IGNORECASE)
+    multi = re.search(
+        r"(Oracle\s+(?:SA|Solutions Architect)\s*,\s*[^.;]{2,100}?(?:\s*,\s*|\s+and\s+)[^.;]{2,100}?)\s+"
+        r"each\s+(?:own\s+delivery\s+and\s+)?(?:commit|contribute|provide)\s+"
+        r"(\d+\s*(?:hours?|hrs?)\s*(?:/|per)\s*week)",
+        text,
+        re.IGNORECASE,
+    )
+    if multi:
+        roles = [
+            _clean(role)
+            for role in re.split(r"\s*,\s*(?:and\s+)?|\s+and\s+", multi.group(1))
+            if _clean(role)
+        ]
+        commitment = _clean(multi.group(2))
+        return tuple(
+            JepOwner(
+                "Oracle" if re.match(r"Oracle\s+(?:SA|Solutions Architect)$", role, re.IGNORECASE) else customer,
+                role,
+                commitment,
+            )
+            for role in roles
+        )
+    match = re.search(
+        r"(Oracle\s+(?:SA|Solutions Architect))\s+and\s+([^.;]{2,100}?)\s+each\s+"
+        r"(?:own\s+delivery\s+and\s+)?(?:commit|contribute|provide)\s+"
+        r"(\d+\s*(?:hours?|hrs?)\s*(?:/|per)\s*week)",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        match = re.search(
+            r"(Oracle\s+(?:SA|Solutions Architect))\s+and\s+([^.;]{2,100}?)\s+"
+            r"(?:commit|contribute|provide)\s+(\d+\s*(?:hours?|hrs?))\s+each\s+per\s+week",
+            text,
+            re.IGNORECASE,
+        )
     if not match:
         return ()
     customer_role = _clean(match.group(2))
@@ -396,7 +510,9 @@ def _extract_owners(text: str, customer: str) -> tuple[JepOwner, ...]:
 
 
 def _extract_approvals(text: str, owners: tuple[JepOwner, ...]) -> str:
-    if not owners or not re.search(r"go/no-go\s+sign-off\s+with\s+fallback", text, re.IGNORECASE):
+    has_decision = re.search(r"go/no-go", text, re.IGNORECASE)
+    has_fallback = re.search(r"\bfallback\b|\bif\s+no-go\b", text, re.IGNORECASE)
+    if not owners or not has_decision or not has_fallback:
         return ""
     labels = " and ".join(owner.role for owner in owners)
     return f"{labels} approve the Phase 3 evidence and sign the go/no-go record. Go requires every stated success criterion to be met; no-go applies the agreed fallback without claiming success."
@@ -408,8 +524,12 @@ def _extract_risks(text: str, criteria: tuple[str, ...]) -> tuple[str, ...]:
         risks = _split_items(explicit.group(1))
         if len(risks) >= 3:
             return risks
-    if len(criteria) >= 3 and re.search(r"include at least three risks", text, re.IGNORECASE):
-        return tuple(f"The measured result may not meet: {criterion}" for criterion in criteria[:3])
+    if len(criteria) >= 2 and re.search(r"include at least three risks", text, re.IGNORECASE):
+        risks = [f"The measured result may not meet: {criterion}" for criterion in criteria]
+        risks.append(
+            "The joint team may not capture repeatable evidence for the stated success criteria within the POC window"
+        )
+        return tuple(risks[:3])
     return ()
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 import re
 from typing import Any
@@ -11,6 +12,7 @@ _SERVICE_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("OCI WAF", ("oci waf", "web application firewall", " waf")),
     ("Flexible Load Balancer", ("flexible load balancer", "public load balancer", "private load balancer")),
     ("VM.Standard.E5.Flex", ("vm.standard.e5.flex", "e5.flex")),
+    ("VM.Standard.E6.Flex", ("vm.standard.e6.flex", "e6.flex", "e6 flex")),
     ("Container Engine for Kubernetes (OKE)", ("container engine for kubernetes", " oke")),
     ("PostgreSQL DB System", ("postgresql db system", "private postgresql", "postgresql")),
     ("Oracle Base Database Service", ("base database service", "oracle database 19c")),
@@ -57,51 +59,75 @@ def build_poc_brief(
     customer_name: str,
     user_message: str,
     decision_context: dict[str, Any] | None = None,
+    engagement_context: dict[str, Any] | None = None,
 ) -> PocBrief | None:
-    source = re.sub(
-        r"\s+",
-        " ",
-        f"{user_message} {decision_context or {}}",
-    ).strip()
+    brief, _missing = assess_poc_brief(
+        customer_name=customer_name,
+        user_message=user_message,
+        decision_context=decision_context,
+        engagement_context=engagement_context,
+    )
+    return brief
+
+
+def assess_poc_brief(
+    *,
+    customer_name: str,
+    user_message: str,
+    decision_context: dict[str, Any] | None = None,
+    engagement_context: dict[str, Any] | None = None,
+) -> tuple[PocBrief | None, tuple[str, ...]]:
+    source = _targeted_poc_source(
+        user_message=user_message,
+        decision_context=decision_context or {},
+        engagement_context=engagement_context or {},
+    )
     lower = f" {source.lower()} "
+    exclusions_match = re.search(r"\b(?:exclude|excluded|out of scope)[: ]+(.+?)(?:\.|$)", source, re.IGNORECASE)
+    exclusions = _split_grounded_list(exclusions_match.group(1)) if exclusions_match else ()
+    exclusion_text = " ".join(exclusions).casefold()
     services = tuple(
         canonical
         for canonical, aliases in _SERVICE_ALIASES
         if any(alias in lower for alias in aliases)
+        and not any(alias.strip() and alias.strip() in exclusion_text for alias in aliases)
+        and not any(
+            re.search(rf"\b(?:not|no)\s+{re.escape(alias.strip())}\b", lower)
+            for alias in aliases
+            if alias.strip()
+        )
     )
     region_match = re.search(r"\b[a-z]{2,}-[a-z]+-\d+\b", source, re.IGNORECASE)
-    duration_match = re.search(r"\b(\d+)\s*[- ]day\b", source, re.IGNORECASE)
-    commitment_match = re.search(r"\b(\d+)\s*hours?\s*(?:/|per)\s*week\b", source, re.IGNORECASE)
-    owners_match = re.search(
-        r"(?:^|[.!?]\s+)([^.!?]{3,180}?)\s+each\s+commit\s+"
-        r"\d+\s*hours?\s*(?:/|per)\s*week\b",
+    duration_match = re.search(
+        r"\b(\d+)\s*(?:-\s*|calendar\s+)?days?\b",
         source,
         re.IGNORECASE,
     )
-    owner_count = _explicit_owner_count(owners_match.group(1)) if owners_match else 0
+    commitment_match = re.search(
+        r"\b(\d+)\s*(?:hours?|hrs?)\s*(?:each\s+)?(?:/|per)\s*week\b",
+        source,
+        re.IGNORECASE,
+    )
+    owners_text = _extract_owners_text(source)
+    owner_count = _explicit_owner_count(owners_text) if owners_text else 0
     criteria = _extract_success_criteria(source)
-    workload = _extract_labeled_value(source, ("workload", "current platform", "platform"))
-    if not workload:
-        match = re.search(r"(?:runs?|migrat(?:e|ion) of)\s+(.+?)(?:\. | to OCI| backed by)", source, re.IGNORECASE)
-        workload = match.group(1).strip() if match else ""
-    pain = _extract_labeled_value(source, ("pains", "pain"))
-    if not pain:
-        match = re.search(r"\b(?:pain is|pains are)\s+(.+?)(?:\. | Target| Desired)", source, re.IGNORECASE)
-        pain = match.group(1).strip() if match else ""
-    exclusions_match = re.search(r"\b(?:exclude|excluded|out of scope)[: ]+(.+?)(?:\.|$)", source, re.IGNORECASE)
-    exclusions = _split_grounded_list(exclusions_match.group(1)) if exclusions_match else ()
-    if not (
-        customer_name.strip()
-        and workload
-        and pain
-        and region_match
-        and duration_match
-        and commitment_match
-        and owner_count >= 2
-        and services
-        and len(criteria) >= 1
+    workload = _extract_workload(source)
+    pain = _extract_grounded_motivation(source, criteria)
+    missing: list[str] = []
+    for name, present in (
+        ("customer", bool(customer_name.strip())),
+        ("workload", bool(workload)),
+        ("pain", bool(pain)),
+        ("region", bool(region_match)),
+        ("duration", bool(duration_match)),
+        ("owners", bool(commitment_match and owner_count >= 2)),
+        ("services", bool(services)),
+        ("criteria", bool(criteria)),
     ):
-        return None
+        if not present:
+            missing.append(name)
+    if missing:
+        return None, tuple(missing)
     return PocBrief(
         customer_name=customer_name.strip(),
         workload=workload,
@@ -114,7 +140,61 @@ def build_poc_brief(
         success_criteria=criteria,
         exclusions=exclusions,
         grounded_source=source,
-    )
+    ), ()
+
+
+_POC_QUESTIONS = {
+    "customer": "Which customer is this POC for?",
+    "workload": "What workload and current platform are we validating?",
+    "pain": "What customer pain or business risk must this POC address?",
+    "region": "Which OCI region is approved?",
+    "duration": "How many calendar days are available for the POC?",
+    "owners": "Who are the Oracle and customer owners, and how many hours per week can each commit?",
+    "services": "Which OCI services are explicitly in scope?",
+    "criteria": "What measurable success criterion, with a numeric target, will determine success?",
+}
+
+
+def poc_brief_questions(missing_fields: tuple[str, ...]) -> tuple[str, ...]:
+    """Return one bounded discovery batch; never repeat more than three gaps."""
+    return tuple(_POC_QUESTIONS[field] for field in missing_fields[:3] if field in _POC_QUESTIONS)
+
+
+def _targeted_poc_source(
+    *,
+    user_message: str,
+    decision_context: dict[str, Any],
+    engagement_context: dict[str, Any],
+) -> str:
+    """Assemble targeted facts in precedence order without raw conversation history."""
+    archie = engagement_context.get("archie") if isinstance(engagement_context.get("archie"), dict) else {}
+    resolved = archie.get("resolved_decisions") if isinstance(archie.get("resolved_decisions"), dict) else {}
+    resolved = {key: value for key, value in resolved.items() if key != "poc"}
+    approved = archie.get("latest_approved_constraints") if isinstance(archie.get("latest_approved_constraints"), dict) else {}
+    resolved_questions = archie.get("resolved_questions") if isinstance(archie.get("resolved_questions"), list) else []
+    assumptions = archie.get("latest_approved_assumptions") if isinstance(archie.get("latest_approved_assumptions"), list) else []
+    summaries = [
+        archie.get("engagement_summary"),
+        archie.get("latest_notes_summary"),
+        engagement_context.get("engagement_context_summary"),
+    ]
+    # Current-turn facts come first so regex extraction prefers explicit corrections.
+    parts: list[Any] = [
+        user_message,
+        decision_context,
+        *summaries,
+        resolved,
+        resolved_questions,
+        approved,
+        engagement_context.get("client_facts"),
+        assumptions,
+    ]
+    rendered = [
+        value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+        for value in parts
+        if value not in (None, "", [], {})
+    ]
+    return re.sub(r"\s+", " ", " ".join(rendered)).strip()
 
 
 def compose_grounded_options(brief: PocBrief) -> list[dict[str, Any]]:
@@ -211,16 +291,81 @@ def apply_presentation_polish(
 
 def _extract_success_criteria(source: str) -> tuple[str, ...]:
     match = re.search(
-        r"\b(?:desired outcomes|success criteria|measurable targets|performance targets)[: ]+"
-        r"(.+?)(?:\.\s+(?:POC|The target|Scope|Constraints|Owners?|Oracle)|$)",
+        r"\b(?:desired outcomes?|success criteria|measurable (?:success )?(?:criteria|targets)|"
+        r"performance targets?|acceptance criteria|targets include)[: ]+"
+        r"(.+?)(?:\.\s+(?:POC|The target|Scope|Constraints|Owners?|Delivery owners?|"
+        r"Oracle|Risks?|Goals?|Excluded|Out of scope|Region|In scope|Workload)|$)",
         source,
         re.IGNORECASE,
     )
     if not match:
         return ()
     raw = match.group(1).strip().rstrip(".")
-    parts = re.split(r",\s+(?=(?:and\s+)?(?:p\d+|\d|database|restore|availability|throughput))|;", raw, flags=re.IGNORECASE)
+    parts = re.split(
+        r"(?:,\s+|\s+and\s+)(?=(?:and\s+)?(?:p\d+|\d|database|restore|recover|process|sustain|"
+        r"finish|keep|availability|throughput|response))|;",
+        raw,
+        flags=re.IGNORECASE,
+    )
     return tuple(re.sub(r"^and\s+", "", part.strip(), flags=re.IGNORECASE) for part in parts if re.search(r"\d", part))
+
+
+def _extract_workload(source: str) -> str:
+    labeled = _extract_labeled_value(
+        source,
+        ("workload", "current platform", "platform", "migration scope"),
+    )
+    if labeled:
+        return labeled
+    patterns = (
+        r"\b(?:migrat(?:e|ing)|move|moving)\s+(.+?)(?:\s+to\s+OCI\b|\.\s|;\s|$)",
+        r"\bmigration\s+of\s+(.+?)(?:\s+to\s+OCI\b|\.\s|;\s|$)",
+        r"\b(?:currently\s+)?runs?\s+(.+?)(?:\.\s|;\s|$)",
+        r"\b(?:hosts?|operates?)\s+(.+?)(?:\.\s|;\s|$)",
+        r"\b(?:is|are)\s+(?:an?\s+)?(?:on-premises|on-prem|hosted|legacy)\s+(.+?)"
+        r"(?:\.\s|;\s|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, source, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _extract_grounded_motivation(source: str, criteria: tuple[str, ...]) -> str:
+    labeled = _extract_labeled_value(
+        source,
+        ("pains", "pain", "risk", "risks", "goal", "goals", "objective", "objectives"),
+    )
+    if labeled:
+        return labeled
+    match = re.search(
+        r"\b(?:pain is|pains are|goal is|goals are|must prove|needs? to prove|"
+        r"needs? to reduce|wants? to reduce|at risk from)\s+(.+?)(?:\.\s|;\s|$)",
+        source,
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip()
+    # A stated measurable outcome is grounded motivation even when the fact
+    # sheet does not use a Pain/Goal label. Preserve it verbatim.
+    return "; ".join(criteria)
+
+
+def _extract_owners_text(source: str) -> str:
+    patterns = (
+        r"(?:^|[.!?]\s+)([^.!?]{3,180}?)\s+each\s+(?:own\s+delivery\s+and\s+)?"
+        r"(?:will\s+)?(?:commit|contribute|provide)\s+\d+\s*(?:hours?|hrs?)\s*(?:/|per)\s*week\b",
+        r"(?:^|[.!?]\s+)([^.!?]{3,180}?)\s+(?:own\s+delivery\s+and\s+)?"
+        r"(?:will\s+)?(?:commit|contribute|provide)\s+\d+\s*(?:hours?|hrs?)\s+each\s+(?:/|per)\s*week\b",
+        r"\b(?:owners?|delivery owners?)[: ]+([^.;]{3,180}?)(?:;|\.)\s*"
+        r"(?:commitment[: ]*)?\d+\s*(?:hours?|hrs?)\s*(?:/|per)\s*week\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, source, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return ""
 
 
 def _extract_labeled_value(source: str, labels: tuple[str, ...]) -> str:
@@ -234,6 +379,7 @@ def _split_grounded_list(value: str) -> tuple[str, ...]:
 
 
 def _explicit_owner_count(value: str) -> int:
+    value = re.sub(r"^(?:owners?|delivery owners?)[: ]+", "", value.strip(), flags=re.IGNORECASE)
     owners = [
         part.strip()
         for part in re.split(r",\s*(?:and\s+)?|\s+and\s+", value)

@@ -91,10 +91,15 @@ def deterministic_client(monkeypatch):
             content = {"pov": DETERMINISTIC_POV, "jep": DETERMINISTIC_JEP, "waf": DETERMINISTIC_WAF}[agent_name]
             return {"status": "ok", "result": content}
         if agent_name == "terraform":
+            files = {
+                "main_tf": DETERMINISTIC_TERRAFORM_FILES["main.tf"],
+                "variables_tf": DETERMINISTIC_TERRAFORM_FILES["variables.tf"],
+                "outputs_tf": DETERMINISTIC_TERRAFORM_FILES["outputs.tf"],
+                "readme_md": "# Apex Retail OCI Terraform bundle\n",
+            }
             return {
                 "status": "ok",
-                "result": json.dumps({"files": DETERMINISTIC_TERRAFORM_FILES}),
-                "terraform_files": DETERMINISTIC_TERRAFORM_FILES,
+                "result": json.dumps({"files": files, "artifact_key": "fixture/main.tf"}),
             }
         raise AssertionError(f"unexpected sub-agent {agent_name!r}")
 
@@ -187,7 +192,11 @@ def test_archie_prompt_to_output_file_e2e(case, deterministic_client):
     elif case.case_id == "terraform":
         key = call["artifact_key"]
         assert key and store.head(key)
-        main_download = manifest_download(body, "terraform")
+        main_download = next(
+            item
+            for item in body["artifact_manifest"]["downloads"]
+            if item.get("type") == "terraform" and item.get("filename") == "main.tf"
+        )
         assert main_download["filename"] == "main.tf"
         assert_terraform_files(
             {

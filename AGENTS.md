@@ -69,6 +69,8 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - `agent/context_store.py`: per-client/customer context and uploaded note state.
 - `agent/decision_context.py`: per-turn Decision Context extraction,
   constraint tags, and deterministic summaries.
+- `agent/consistency_contract.py`: canonical selected-POC, BOM, and Diagram
+  component identities, assumptions, artifact bindings, and parity validation.
 - `agent/bom_service.py`: BOM parsing, validation, readiness, and repair flows.
 - `agent/jep_lifecycle.py`: JEP draft/review lifecycle state.
 - `agent/jep_composer.py`: validated grounded JEP brief extraction, canonical
@@ -111,6 +113,9 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - POC exploration composes three grounded options, confirmation records only
   the selected option, and downstream POV/BOM/JEP artifacts run only when the
   user explicitly requests them.
+- Selected POC decisions are binding downstream. BOM and Diagram generation
+  validate canonical component, database, sizing, HA, and connectivity parity
+  before exposing artifacts; conflicts require a confirmed impact update.
 - Archie expert review wraps shared tool calls after specialist execution and
   before artifact exposure. It records the selected lens, sanitized specialist
   input, review verdict/findings, and retry history in
@@ -172,6 +177,10 @@ PROMPT_JUDGE_STRICT=0 ./scripts/test_nightly_prompt.sh -v
 # Live opt-in only
 RUN_LIVE_LLM_TESTS=1 pytest tests/test_llm_live.py -v -s
 AGENT_BASE_URL=http://127.0.0.1:8080 pytest tests/test_server_live.py -v -s
+
+# General SE qualification (point only at an isolated current-source stack)
+python3.11 scripts/qualify_general_se.py --base-url http://127.0.0.1:18080
+python3.11 scripts/qualify_general_se.py --suite complex-three-tier --base-url http://127.0.0.1:18080
 ```
 
 ## Run And Health Check

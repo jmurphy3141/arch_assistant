@@ -68,6 +68,7 @@ def _build_prompt(req: A2ARequest) -> str:
     memory_summary = str(context.get("archie_memory_summary") or "").strip()
     artifact_context = context.get("artifact_context")
     resolved_decisions = context.get("resolved_decisions")
+    expected_criteria = int(context.get("expected_success_criteria_count") or 3)
     if engagement_summary:
         parts.append(f"Persisted engagement context:\n{engagement_summary}")
     if memory_summary:
@@ -112,7 +113,9 @@ def _build_prompt(req: A2ARequest) -> str:
     parts.append(
         "JEP Writer review gate: return exactly the C3E JEP document in Markdown with "
         "the 9 required sections, exactly Phase 1 Assessment / Phase 2 Build / "
-        "Phase 3 Validate, at least 3 numeric SMART success criteria, at least 3 "
+        f"Phase 3 Validate, exactly {expected_criteria} grounded numeric SMART success "
+        "criteria (three by default; a lower count is allowed only when supplied from the "
+        "authoritative selected POC), at least 3 "
         "customer-specific risks, and a Phase 3 go/no-go sign-off and fallback."
     )
     return "\n\n".join(str(part).strip() for part in parts if str(part).strip())

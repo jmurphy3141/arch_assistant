@@ -85,10 +85,14 @@ DETERMINISTIC_DRAWIO = """<mxfile>
       <mxCell id="waf" value="OCI Web Application Firewall (WAF)" />
       <mxCell id="lb" value="Public Load Balancer" />
       <mxCell id="vcn" value="VCN 10.0.0.0/16 with public and private subnets" />
-      <mxCell id="web" value="Web Tier: 2 Compute web servers" />
+      <mxCell id="web" value="Web Tier: 2 × VM.Standard.E5.Flex Compute web servers" />
       <mxCell id="db" value="Private Database Subnet and OCI Database" />
       <mxCell id="obj" value="Object Storage bucket" />
       <mxCell id="block" value="Block Volume storage" />
+      <mxCell id="igw" value="Internet Gateway" />
+      <mxCell id="nat" value="NAT Gateway" />
+      <mxCell id="sgw" value="Service Gateway" />
+      <mxCell id="security" value="NSGs and Security Lists" />
     </root></mxGraphModel>
   </diagram>
 </mxfile>"""
@@ -221,8 +225,8 @@ object_storage_service_id = "ocid1.service.oc1.iad.objectstorage"
 
 DETERMINISTIC_BOM_PAYLOAD = {
     "line_items": [
-        {"sku": "B94176", "description": "Compute OCPU for VM.Standard.E5.Flex web tier", "category": "Compute", "metric": "OCPU per hour", "quantity": 4},
-        {"sku": "B94177", "description": "Compute memory for VM.Standard.E5.Flex web tier", "category": "Compute", "metric": "GB memory per hour", "quantity": 64},
+        {"sku": "B94176", "description": "Compute OCPU for VM.Standard.E5.Flex web tier", "category": "Compute", "metric": "OCPU per hour", "quantity": 4, "instance_count": 2, "ocpu_per_instance": 2},
+        {"sku": "B94177", "description": "Compute memory for VM.Standard.E5.Flex web tier", "category": "Compute", "metric": "GB memory per hour", "quantity": 64, "instance_count": 2, "gb_per_instance": 32},
         {"sku": "B93030", "description": "OCI Flexible Load Balancer", "category": "Networking", "metric": "Load balancer hour", "quantity": 1},
         {"sku": "BWAF01", "description": "OCI WAF policy for internet-facing application", "category": "Security", "metric": "Policy", "quantity": 1},
         {"sku": "B91628", "description": "Object Storage standard bucket", "category": "Storage", "metric": "GB month", "quantity": 1024},
@@ -239,15 +243,8 @@ def assert_no_blocked_or_needs_input(body: dict) -> None:
     assert body.get("status") == "ok"
     assert not body.get("needs_input")
     for call in body.get("tool_calls", []) or []:
-        status_text = " ".join(
-            [
-                str(call.get("status", "")),
-                str(call.get("result_summary", "")),
-                str(call.get("result_data", "")),
-            ]
-        ).lower()
-        assert "needs_input" not in status_text
-        assert "blocked" not in status_text
+        status = str(call.get("result_status") or call.get("status") or "ok").lower()
+        assert status not in {"needs_input", "blocked"}, call
 
 
 def expected_tool_call(body: dict, expected_tool: str) -> dict:

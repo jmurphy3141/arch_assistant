@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from agent.bom_parser import freeform_arch_text_to_llm_input
+from agent.bom_parser import ServiceItem, freeform_arch_text_to_llm_input
 
 try:
     from agent.intent_compiler import compile_intent
@@ -67,6 +67,27 @@ _model_id = str(_first_present(_diagram_llm.get("model_id"), _main_inference.get
 _system_message = (
     _SYSTEM_PROMPT.read_text(encoding="utf-8") if _SYSTEM_PROMPT.exists() else ""
 )
+
+_VALID_LAYOUT_LAYERS = {"async", "compute", "data", "external", "ingress"}
+
+_CONTRACT_SERVICE_TYPES = {
+    "compute.vm.standard.e5.flex": "compute",
+    "compute.vm.standard.e6.flex": "compute",
+    "compute.vm": "compute",
+    "database.postgresql": "database",
+    "database.autonomous": "database",
+    "database.mysql": "database",
+    "database.oracle": "database",
+    "network.load_balancer.flexible": "load balancer",
+    "security.waf": "waf",
+    "storage.object": "object storage",
+    "storage.block": "block volume",
+    "network.vpn.site_to_site": "vpn",
+    "network.fastconnect": "fastconnect",
+    "observability.logging": "logging",
+    "observability.monitoring": "monitoring",
+    "container.oke": "oke",
+}
 
 
 card = AgentCard(
@@ -186,6 +207,163 @@ def _explicit_layout_intent(task: str, items: list[Any]) -> dict[str, Any] | Non
     }
 
 
+def _contract_layout_intent(task: str, items: list[Any]) -> dict[str, Any] | None:
+    if "[authoritative cross-artifact requirements]" not in str(task or "").lower():
+        return None
+    lowered_task = str(task or "").lower()
+    contract_match = re.search(
+        r"\[authoritative cross-artifact requirements\](.*?)"
+        r"\[/authoritative cross-artifact requirements\]",
+        lowered_task,
+        flags=re.DOTALL,
+    )
+    contract_text = contract_match.group(1) if contract_match else ""
+    required_ids = set(re.findall(r"\(([a-z0-9_.]+)\)", contract_text))
+    allowed_types = {
+        _CONTRACT_SERVICE_TYPES[service_id]
+        for service_id in required_ids
+        if service_id in _CONTRACT_SERVICE_TYPES
+    }
+    if "vpn" in lowered_task and not any(str(getattr(item, "oci_type", "")).lower() == "vpn" for item in items):
+        items.append(ServiceItem("vpn_1", "vpn", "Site-to-Site VPN (IPSec)", "external"))
+    if "network.fastconnect" in required_ids and not any(
+        str(getattr(item, "oci_type", "")).lower() == "fastconnect" for item in items
+    ):
+        # The freeform parser commonly represents private connectivity as a
+        # generic DRG. Preserve the selected-POC identity explicitly so the
+        # diagram cannot silently turn FastConnect into VPN or omit it.
+        items.append(ServiceItem("fastconnect_1", "fastconnect", "FastConnect / DRG", "external"))
+    if allowed_types:
+        # The selected-POC contract is authoritative. The freeform parser's
+        # generic best-practice additions must not introduce unselected WAF,
+        # gateways, monitoring, storage, or other billable services.
+        items[:] = [
+            item
+            for item in items
+            if str(getattr(item, "oci_type", "") or "").lower() in allowed_types
+        ]
+    compute_match = re.search(
+        r"(\d+(?:\.\d+)?)\s+ocpu total across\s+(\d+)\s+instances?\s+"
+        r"\((\d+(?:\.\d+)?)\s+ocpu each\)",
+        lowered_task,
+    )
+    memory_match = re.search(
+        r"(\d+(?:\.\d+)?)\s+gb memory total across\s+(\d+)\s+instances?\s+"
+        r"\((\d+(?:\.\d+)?)\s+gb each\)",
+        lowered_task,
+    )
+    compute_shape = (
+        "VM.Standard.E6.Flex"
+        if "compute.vm.standard.e6.flex" in required_ids
+        else "VM.Standard.E5.Flex"
+    )
+    for item in items:
+        if str(getattr(item, "oci_type", "") or "").lower() == "compute" and compute_match:
+            memory_suffix = f" / {memory_match.group(3)} GB each" if memory_match else ""
+            item.label = (
+                f"{compute_shape} ×{compute_match.group(2)}\n"
+                f"{compute_match.group(1)} OCPU total / "
+                f"{compute_match.group(3)} OCPU each{memory_suffix}"
+            )
+        if str(getattr(item, "oci_type", "") or "").lower() == "database":
+            database_labels = (
+                ("database.oracle", "Oracle Base Database Service"),
+                ("database.postgresql", "PostgreSQL DB System"),
+                ("database.mysql", "MySQL HeatWave DB System"),
+                ("database.autonomous", "Autonomous Database"),
+            )
+            authoritative_label = next(
+                (label for service_id, label in database_labels if service_id in required_ids),
+                "",
+            )
+            if authoritative_label:
+                item.label = authoritative_label
+    groups = [
+        {"id": "pub_sub_box", "label": "Public Ingress Subnet", "order": 1},
+        {"id": "app_sub_box", "label": "Private Application Subnet", "order": 2},
+        {"id": "db_sub_box", "label": "Private Database Subnet", "order": 3},
+    ]
+    group_by_type = {
+        "waf": "pub_sub_box",
+        "load balancer": "pub_sub_box",
+        "compute": "app_sub_box",
+        "block volume": "app_sub_box",
+        "database": "db_sub_box",
+        "network security group": "app_sub_box",
+        "route table": "app_sub_box",
+    }
+    placements = []
+    ids_by_type: dict[str, str] = {}
+    for item in items:
+        item_id = str(getattr(item, "id", "") or "")
+        oci_type = str(getattr(item, "oci_type", "") or "").lower()
+        if not item_id or not oci_type:
+            continue
+        placement = {
+            "id": item_id,
+            "oci_type": oci_type,
+            "layer": str(getattr(item, "layer", "data") or "data"),
+        }
+        if group_by_type.get(oci_type):
+            placement["group"] = group_by_type[oci_type]
+        placements.append(placement)
+        ids_by_type.setdefault(oci_type, item_id)
+    flow_types = ("fastconnect", "internet", "waf", "load balancer", "compute", "database")
+    flow_ids = [ids_by_type[item_type] for item_type in flow_types if ids_by_type.get(item_type)]
+    edges = [
+        {"id": f"contract_flow_{index}", "source": source, "target": target, "label": ""}
+        for index, (source, target) in enumerate(zip(flow_ids, flow_ids[1:]), start=1)
+    ]
+    return {
+        "schema_version": "1.0",
+        "deployment_hints": {
+            "region_count": 1,
+            "availability_domains_per_region": 1,
+            "dr_enabled": False,
+            "on_prem_connectivity": (
+                "fastconnect"
+                if "network.fastconnect" in required_ids
+                else "vpn" if "vpn" in str(task or "").lower() else "none"
+            ),
+        },
+        "groups": groups,
+        "placements": placements,
+        "assumptions": [
+            {
+                "id": "authoritative_consistency_contract",
+                "statement": "Topology compiled from the authoritative engagement consistency contract.",
+                "reason": "Preserve selected POC and finalized BOM decisions.",
+                "risk": "low",
+            }
+        ],
+        "edges": edges,
+        "fixed_edges_policy": True,
+    }
+
+
+def _ground_layout_placement_layers(spec: dict[str, Any], items: list[Any]) -> dict[str, Any]:
+    """Replace LLM-invented layer names with each parsed component's valid layer."""
+    grounded = json.loads(json.dumps(spec))
+    items_by_id = {str(getattr(item, "id", "") or ""): item for item in items}
+    for placement in grounded.get("placements", []) or []:
+        if not isinstance(placement, dict):
+            continue
+        item = items_by_id.get(str(placement.get("id") or ""))
+        parsed_layer = str(getattr(item, "layer", "") or "").lower() if item else ""
+        if parsed_layer in _VALID_LAYOUT_LAYERS:
+            placement["layer"] = parsed_layer
+            continue
+        layer = str(placement.get("layer") or "").lower()
+        if layer not in _VALID_LAYOUT_LAYERS:
+            oci_type = str(placement.get("oci_type") or "").lower()
+            placement["layer"] = (
+                "external"
+                if any(token in oci_type for token in ("vpn", "gateway", "internet", "poc boundary"))
+                else "data"
+            )
+    return grounded
+
+
 async def handle(req: A2ARequest) -> A2AResponse:
     try:
         items, prompt = freeform_arch_text_to_llm_input(req.task)
@@ -201,8 +379,11 @@ async def handle(req: A2ARequest) -> A2AResponse:
             },
         )
 
-    spec = _explicit_layout_intent(req.task, items)
-    generation_mode = "deterministic_explicit_topology"
+    spec = _contract_layout_intent(req.task, items)
+    generation_mode = "deterministic_contract_topology"
+    if spec is None:
+        spec = _explicit_layout_intent(req.task, items)
+        generation_mode = "deterministic_explicit_topology"
     if spec is None:
         generation_mode = "llm_layout_intent"
         raw = await asyncio.to_thread(
@@ -244,6 +425,7 @@ async def handle(req: A2ARequest) -> A2AResponse:
         )
 
     if "placements" in spec:
+        spec = _ground_layout_placement_layers(spec, items)
         try:
             intent = validate_layout_intent(spec, items)
             spec = compile_intent(intent, items)
@@ -259,9 +441,12 @@ async def handle(req: A2ARequest) -> A2AResponse:
                 },
             )
 
-    if generation_mode == "deterministic_explicit_topology":
+    if generation_mode in {"deterministic_explicit_topology", "deterministic_contract_topology"}:
         regions = spec.get("regions") if isinstance(spec.get("regions"), list) else []
+        region_match = re.search(r"\b[a-z]{2,}-[a-z]+-\d+\b", req.task, flags=re.IGNORECASE)
         for region in regions:
+            if isinstance(region, dict) and region_match:
+                region["label"] = region_match.group(0).lower()
             ads = region.get("availability_domains") if isinstance(region, dict) else []
             if isinstance(ads, list) and ads and isinstance(ads[0], dict):
                 ads[0]["label"] = "Availability Domain 1 — Single-AD POC Boundary"

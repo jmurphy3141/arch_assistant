@@ -2502,7 +2502,19 @@ def _make_orchestrator_tool_runner():
         model_profile: str = "orchestrator",
     ) -> dict | str:
         import asyncio
-        return await asyncio.to_thread(_sync_runner, prompt, system_msg, schemas, model_profile)
+        timeout = float(os.environ.get("ARCHIE_ORCHESTRATOR_TURN_TIMEOUT_SECONDS", "0") or 0)
+        try:
+            call = asyncio.to_thread(_sync_runner, prompt, system_msg, schemas, model_profile)
+            return await asyncio.wait_for(call, timeout=timeout) if timeout > 0 else await call
+        except Exception as exc:
+            if timeout <= 0:
+                raise
+            logger.warning("Orchestrator inference fallback after bounded failure: %s", exc)
+            return (
+                "I recorded the current engagement facts. To sharpen the architecture, "
+                "which business outcome matters most? What availability or recovery target "
+                "must we meet? Which security, connectivity, or budget constraint is binding?"
+            )
 
     return _async_runner
 
