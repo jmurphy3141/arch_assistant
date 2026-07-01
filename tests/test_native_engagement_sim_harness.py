@@ -11,6 +11,11 @@ def test_unit_normalization_accepts_equivalent_grounding():
         "The recorded target is 600ms.",
         "Claims lookup p95 under 600 milliseconds.",
     ) == []
+    assert _fabrication_errors(
+        "The stored BOM has 4 OCPU.",
+        "",
+        "Compute quantity: 4 OCPUs",
+    ) == []
 
 
 def test_artifact_value_with_small_rounding_difference_is_grounded():

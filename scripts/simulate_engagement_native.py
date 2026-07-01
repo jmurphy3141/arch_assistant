@@ -445,6 +445,7 @@ def _normalize_units(text: str) -> str:
         (r"\brequests?\s+per\s+second\b", "rps"),
         (r"\bgigabytes?\b", "gb"),
         (r"\bterabytes?\b", "tb"),
+        (r"\bocpus?\b", "ocpu"),
     )
     for pattern, replacement in replacements:
         normalized = re.sub(pattern, replacement, normalized)
