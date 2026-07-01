@@ -2,6 +2,7 @@
 
 This service composes grounded OCI Joint Execution Plans. The final JEP is
 produced by the deterministic structured composer, not by an LLM.
+Ground every output to the provided customer identity and facts; never invent a customer, number, or fact that was not supplied.
 
 ## Grounding Contract
 

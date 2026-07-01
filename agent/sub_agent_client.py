@@ -15,6 +15,8 @@ from typing import Any
 import httpx
 import yaml
 
+from sub_agents.grounding import normalize_engagement_context
+
 
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.yaml"
 _CARD_CACHE: dict[str, dict[str, Any]] = {}
@@ -98,7 +100,7 @@ async def get_agent_card(name: str) -> dict:
 async def call_sub_agent(
     name: str,
     task: str,
-    engagement_context: dict = {},
+    engagement_context: dict | None = None,
     trace_id: str = "",
 ) -> dict:
     """
@@ -113,7 +115,9 @@ async def call_sub_agent(
 
     payload: dict[str, Any] = {"task": str(task or "")}
     if "engagement_context" in required or "engagement_context" in optional:
-        payload["engagement_context"] = dict(engagement_context or {})
+        payload["engagement_context"] = normalize_engagement_context(
+            engagement_context
+        )
     if "trace_id" in required or "trace_id" in optional:
         payload["trace_id"] = str(trace_id or "")
 

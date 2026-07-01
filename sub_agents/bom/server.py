@@ -10,6 +10,13 @@ import yaml
 from fastapi import FastAPI
 
 from agent.bom_service import get_shared_bom_service
+from sub_agents.grounding import (
+    grounding_trace,
+    input_grounding_missing,
+    needs_input_message,
+    normalize_engagement_context,
+    output_grounding_missing,
+)
 from sub_agents.models import A2ARequest, A2AResponse, AgentCard
 
 
@@ -44,8 +51,8 @@ card = AgentCard(
     name="bom",
     description="Produces a priced OCI Bill of Materials from workload inputs.",
     inputs={
-        "required": ["task"],
-        "optional": ["region", "engagement_context", "trace_id"],
+        "required": ["task", "engagement_context"],
+        "optional": ["region", "trace_id"],
     },
     output="Structured BOM JSON with line items and monthly cost total",
     llm_model_id=_model_id,
@@ -61,11 +68,19 @@ async def lifespan(app: FastAPI):
 
 
 async def handle(req: A2ARequest) -> A2AResponse:
+    raw_context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
+    context = normalize_engagement_context(raw_context)
+    grounding_missing = input_grounding_missing(raw_context)
+    if grounding_missing:
+        return A2AResponse(
+            status="needs_input",
+            result=needs_input_message(grounding_missing),
+            trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(context, grounding_missing)},
+        )
     service = get_shared_bom_service()
     structured_inputs = (
-        req.engagement_context.get("structured_inputs")
-        if isinstance(req.engagement_context, dict)
-        and isinstance(req.engagement_context.get("structured_inputs"), dict)
+        context.get("structured_inputs")
+        if isinstance(context.get("structured_inputs"), dict)
         else None
     )
     if structured_inputs:
@@ -80,19 +95,27 @@ async def handle(req: A2ARequest) -> A2AResponse:
             return A2AResponse(
                 status="needs_input",
                 result=str(response.get("reply") or "Structured BOM inputs could not be normalized."),
-                trace=dict(response.get("trace", {}) or {}),
+                trace={**dict(response.get("trace", {}) or {}), **grounding_trace(context, [])},
+            )
+        result = json.dumps({
+            "bom_payload": response["bom_payload"],
+            "prices_from": (response.get("trace") or {}).get("cache_source", "pricing_cache"),
+        }, ensure_ascii=False)
+        grounding_missing = output_grounding_missing(raw_context, result)
+        if grounding_missing:
+            return A2AResponse(
+                status="needs_input",
+                result=needs_input_message(grounding_missing),
+                trace={**dict(response.get("trace", {}) or {}), **grounding_trace(context, grounding_missing)},
             )
         return A2AResponse(
             status="ok",
-            result=json.dumps({
-                "bom_payload": response["bom_payload"],
-                "prices_from": (response.get("trace") or {}).get("cache_source", "pricing_cache"),
-            }, ensure_ascii=False),
-            trace=dict(response.get("trace", {}) or {}),
+            result=result,
+            trace={**dict(response.get("trace", {}) or {}), **grounding_trace(context, [])},
         )
     task_msg = req.task
-    if req.engagement_context:
-        ctx_block = json.dumps(req.engagement_context, ensure_ascii=False, indent=2)
+    if raw_context:
+        ctx_block = json.dumps(context, ensure_ascii=False, indent=2)
         task_msg = (
             f"[Archie Canonical Memory]\n{ctx_block}\n[End Archie Canonical Memory]\n\n{req.task}"
         )
@@ -113,17 +136,24 @@ async def handle(req: A2ARequest) -> A2AResponse:
         return A2AResponse(
             status="needs_input",
             result=error_detail,
-            trace=service_trace,
+            trace={**service_trace, **grounding_trace(context, [])},
         )
 
     bom_json = response.get("json_bom")
     if not isinstance(bom_json, str):
         bom_json = json.dumps(response.get("bom_payload") or {}, ensure_ascii=False)
 
+    grounding_missing = output_grounding_missing(raw_context, bom_json)
+    if grounding_missing:
+        return A2AResponse(
+            status="needs_input",
+            result=needs_input_message(grounding_missing),
+            trace={**service_trace, **grounding_trace(context, grounding_missing)},
+        )
     return A2AResponse(
         status="ok",
         result=bom_json,
-        trace=service_trace,
+        trace={**service_trace, **grounding_trace(context, [])},
     )
 
 

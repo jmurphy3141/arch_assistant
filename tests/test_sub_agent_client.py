@@ -72,7 +72,12 @@ def test_call_sub_agent_sends_correct_payload(tmp_path, monkeypatch) -> None:
     assert len(seen_payloads) == 1
     assert seen_payloads[0] == {
         "task": "build bom",
-        "engagement_context": {"region": "us-ashburn-1"},
+        "engagement_context": {
+            "customer_id": "",
+            "customer_name": "",
+            "facts": {"region": "us-ashburn-1"},
+            "region": "us-ashburn-1",
+        },
         "trace_id": "trace-123",
     }
 

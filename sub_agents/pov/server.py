@@ -10,6 +10,14 @@ import yaml
 
 from agent.llm_inference_client import run_inference
 from sub_agents.base import make_agent_app
+from sub_agents.grounding import (
+    grounding_prompt,
+    grounding_trace,
+    input_grounding_missing,
+    needs_input_message,
+    normalize_engagement_context,
+    output_grounding_missing,
+)
 from sub_agents.models import A2ARequest, A2AResponse, AgentCard
 
 
@@ -79,8 +87,8 @@ card = AgentCard(
     name="pov",
     description="Writes an OCI Point-of-View document for a customer engagement.",
     inputs={
-        "required": ["task"],
-        "optional": ["customer_name", "engagement_context", "prior_version", "trace_id"],
+        "required": ["task", "engagement_context"],
+        "optional": ["customer_name", "prior_version", "trace_id"],
     },
     output="POV document in Markdown",
     llm_model_id=_model_id,
@@ -88,8 +96,8 @@ card = AgentCard(
 
 
 def _build_prompt(req: A2ARequest) -> str:
-    context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
-    parts = [req.task]
+    context = normalize_engagement_context(req.engagement_context)
+    parts = [grounding_prompt(context), req.task]
     prior = context.get("prior_version")
     if prior:
         parts.append(
@@ -177,9 +185,27 @@ Agree the baselines and measurement plan, confirm the in-scope dependencies, ass
 
 
 async def handle(req: A2ARequest) -> A2AResponse:
+    raw_context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
+    context = normalize_engagement_context(raw_context)
+    missing = input_grounding_missing(raw_context, require_customer_name=True)
+    if missing:
+        return A2AResponse(
+            result=needs_input_message(missing),
+            status="needs_input",
+            trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(context, missing)},
+        )
     prompt = _build_prompt(req)
     grounded = _grounded_explicit_pov(req.task)
     if grounded is not None:
+        missing = output_grounding_missing(
+            raw_context, grounded, require_customer_name=True
+        )
+        if missing:
+            return A2AResponse(
+                result=needs_input_message(missing),
+                status="needs_input",
+                trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(context, missing)},
+            )
         return A2AResponse(
             result=grounded,
             status="ok",
@@ -187,6 +213,7 @@ async def handle(req: A2ARequest) -> A2AResponse:
                 "agent": card.name,
                 "trace_id": req.trace_id,
                 "generation_mode": "deterministic_grounded_brief",
+                **grounding_trace(context, []),
             },
         )
     text = await anyio.to_thread.run_sync(
@@ -202,7 +229,18 @@ async def handle(req: A2ARequest) -> A2AResponse:
             system_message=_system_message,
         )
     )
-    return A2AResponse(result=text, status="ok", trace={"agent": card.name, "trace_id": req.trace_id})
+    missing = output_grounding_missing(raw_context, text, require_customer_name=True)
+    if missing:
+        return A2AResponse(
+            result=needs_input_message(missing),
+            status="needs_input",
+            trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(context, missing)},
+        )
+    return A2AResponse(
+        result=text,
+        status="ok",
+        trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(context, [])},
+    )
 
 
 app = make_agent_app(card, handle)
