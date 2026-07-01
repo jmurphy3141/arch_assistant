@@ -113,6 +113,7 @@ async def run_turn(
         args = response.get("args") or {}
         trace_id = str(uuid.uuid4())
         spec = specs.get(tool_name)
+        result_artifact_key = ""
         if spec is None:
             result = ToolResult(
                 summary=f"Unknown tool: {tool_name}",
@@ -149,13 +150,14 @@ async def run_turn(
                     result=result,
                     context=context,
                 )
-            if result.status == "ok" and result.artifact_key:
+            result_artifact_key = _result_artifact_key(result)
+            if result.status == "ok" and result_artifact_key:
                 artifact_type = _artifact_type_for_tool(tool_name)
                 if artifact_type:
                     context_store.register_artifact(
                         context,
                         artifact_type,
-                        key=result.artifact_key,
+                        key=result_artifact_key,
                         summary=result.summary,
                         download=str((result.data or {}).get("download_url") or ""),
                     )
@@ -168,11 +170,11 @@ async def run_turn(
             "result_summary": result.summary,
             "result_status": result.status,
             "result_data": dict(result.data or {}),
-            "artifact_key": result.artifact_key if result.status == "ok" else "",
+            "artifact_key": result_artifact_key if result.status == "ok" else "",
         }
         tool_calls.append(call)
-        if result.status == "ok" and result.artifact_key:
-            artifacts[tool_name] = result.artifact_key
+        if result.status == "ok" and result_artifact_key:
+            artifacts[tool_name] = result_artifact_key
         prompt += "\n\n" + _tool_result_message(tool_name, result)
 
     turns = [
@@ -251,7 +253,7 @@ def _tool_result_message(tool_name: str, result: ToolResult) -> str:
         "tool": tool_name,
         "status": result.status,
         "summary": result.summary,
-        "artifact_key": result.artifact_key if result.status == "ok" else "",
+        "artifact_key": _result_artifact_key(result) if result.status == "ok" else "",
         "data": result.data,
         "clarification": result.clarification,
     }
@@ -273,6 +275,22 @@ def _artifact_type_for_tool(tool_name: str) -> str:
         "generate_technical_proposal": "technical_proposal",
         "generate_terraform": "terraform",
     }.get(tool_name, tool_name.removeprefix("generate_"))
+
+
+def _result_artifact_key(result: ToolResult) -> str:
+    if result.artifact_key:
+        return str(result.artifact_key)
+    data = result.data if isinstance(result.data, dict) else {}
+    for field in (
+        "xlsx_artifact_key",
+        "drawio_key",
+        "docx_key",
+        "object_key",
+        "artifact_key",
+    ):
+        if data.get(field):
+            return str(data[field])
+    return ""
 
 
 async def _maybe_await(value):

@@ -288,7 +288,7 @@ async def test_native_artifact_index_is_immediately_retrievable(monkeypatch):
         return ToolResult(
             summary="Northwind BOM generated.",
             status="ok",
-            artifact_key=artifact_key,
+            data={"xlsx_artifact_key": artifact_key},
         )
 
     monkeypatch.setattr(archie_native_loop, "build_forge", lambda **_kwargs: SimpleNamespace())

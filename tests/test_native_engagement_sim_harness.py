@@ -1,4 +1,9 @@
-from scripts.simulate_engagement_native import _fabrication_errors, _needs_input_errors
+from scripts.simulate_engagement_native import (
+    _artifact_prose_errors,
+    _behavior_errors,
+    _fabrication_errors,
+    _needs_input_errors,
+)
 
 
 def test_unit_normalization_accepts_equivalent_grounding():
@@ -22,6 +27,11 @@ def test_hedged_advisory_figure_is_allowed():
         "Northwind has no agreed savings target.",
     ) == []
 
+    assert _fabrication_errors(
+        "Success could be, e.g. 50% TCO reduction?",
+        "Northwind has no agreed savings target.",
+    ) == []
+
 
 def test_unsupported_engagement_claim_is_flagged():
     errors = _fabrication_errors(
@@ -39,3 +49,19 @@ def test_needs_input_scoring_distinguishes_absent_and_supplied_grounding():
     assert _needs_input_errors({"required_inputs_supplied": True}, call) == [
         "producer returned needs_input despite supplied grounding"
     ]
+
+
+def test_lookup_scoring_accepts_native_artifact_list_and_real_bom_price():
+    assert _behavior_errors(
+        {"kind": "lookup_artifacts"},
+        {
+            "reply": "The BOM is available.",
+            "tool_calls": [{"tool": "list_artifacts"}],
+        },
+        {"bom"},
+    ) == []
+    assert _artifact_prose_errors(
+        "The stored BOM total is $368/mo.",
+        "",
+        "Monthly total 367.64",
+    ) == []

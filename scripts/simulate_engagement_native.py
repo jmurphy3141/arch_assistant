@@ -57,7 +57,7 @@ from agent.object_store_oci import OciObjectStore
 
 
 DEFAULT_REPORT = ROOT / "docs" / "native-engagement-sim.json"
-LOOKUP_TOOLS = {"get_document", "get_summary", "list_documents"}
+LOOKUP_TOOLS = {"get_document", "get_summary", "list_artifacts", "list_documents"}
 NOTES = """Northwind call scratchpad — rough, please clean up
 
 Member portal is .NET and still in their data center. Healthcare/member claims,
@@ -453,14 +453,17 @@ def _normalize_units(text: str) -> str:
 
 
 def _claim_clause(text: str, start: int, end: int) -> str:
-    left = max(text.rfind(mark, 0, start) for mark in (".", "!", "?", "\n", ";"))
-    rights = [position for mark in (".", "!", "?", "\n", ";") if (position := text.find(mark, end)) >= 0]
+    left = max(text.rfind(mark, 0, start) for mark in ("!", "?", "\n", ";"))
+    rights = [position for mark in ("!", "?", "\n", ";") if (position := text.find(mark, end)) >= 0]
     right = min(rights) if rights else len(text)
     return text[left + 1 : right].lower()
 
 
 def _is_hedged_advisory(clause: str) -> bool:
-    hedged = re.search(r"\b(?:typically|often|roughly|about|approximately|up to|in general)\b|~", clause)
+    hedged = re.search(
+        r"\b(?:typically|often|roughly|about|approximately|up to|in general|for example)\b|e\.g\.|~",
+        clause,
+    )
     engagement_claim = re.search(
         r"\b(?:northwind|this (?:deal|engagement|customer)|for (?:you|them|northwind)|"
         r"their (?:measured|actual|current)|will (?:save|cost|achieve|deliver))\b",
@@ -482,6 +485,7 @@ def _measurement_is_grounded(value: str, grounded_text: str) -> bool:
     unit = unit_match.group(0) if unit_match else ""
     candidate_pattern = (
         rf"(?:\$\s*)?(\d+(?:\.\d+)?)" if unit == "$" else
+        rf"(\d+(?:\.\d+)?)\s*{re.escape(unit)}" if unit == "%" else
         rf"(\d+(?:\.\d+)?)\s*{re.escape(unit)}\b" if unit else
         r"(\d+(?:\.\d+)?)"
     )
@@ -563,12 +567,14 @@ def _needs_input_errors(turn: dict[str, Any], call: dict[str, Any]) -> list[str]
     return []
 
 
-def _artifact_prose_errors(reply: str) -> list[str]:
+def _artifact_prose_errors(
+    reply: str, grounded_text: str = "", artifact_text: str = ""
+) -> list[str]:
     errors: list[str] = []
     if re.search(r"\|\s*SKU\b", reply, re.IGNORECASE):
         errors.append("lookup reply contains a prose BOM table")
     if re.search(r"\$\s*\d[\d,.]*\s*(?:/\s*mo|per month|monthly)", reply, re.IGNORECASE):
-        errors.append("lookup reply contains an invented monthly price")
+        errors.extend(_fabrication_errors(reply, grounded_text, artifact_text))
     if re.search(r"\bfake\s+v\d+|\bversion\s+v\d+", reply, re.IGNORECASE):
         errors.append("lookup reply contains an ungrounded version string")
     return errors
@@ -578,6 +584,8 @@ def _behavior_errors(
     turn: dict[str, Any],
     body: dict[str, Any],
     prior_artifact_types: set[str],
+    grounded_text: str = "",
+    artifact_text: str = "",
 ) -> list[str]:
     errors: list[str] = []
     tools = _tool_names(body)
@@ -594,7 +602,7 @@ def _behavior_errors(
             errors.append(f"lookup turn did not call a fetch tool: {tools}")
         if generated:
             errors.append(f"lookup turn fired generate tools: {sorted(generated)}")
-        errors.extend(_artifact_prose_errors(reply))
+        errors.extend(_artifact_prose_errors(reply, grounded_text, artifact_text))
         if kind == "lookup_empty" and not re.search(
             r"\b(?:no|none|not yet|haven't|have not|don't have|do not have)\b",
             reply,
@@ -735,7 +743,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
         grounded_parts.append(str(turn["message"]))
         if status == 200:
-            turn_failures.extend(_behavior_errors(turn, body, artifact_types))
+            turn_failures.extend(
+                _behavior_errors(
+                    turn,
+                    body,
+                    artifact_types,
+                    "\n".join(grounded_parts),
+                    "\n".join(artifact_grounding_parts),
+                )
+            )
             if turn["id"] in {1, 2, 5, 7}:
                 turn_failures.extend(
                     _fabrication_errors(
