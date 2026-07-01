@@ -76,7 +76,7 @@ async def test_existing_bom_question_uses_lookup_and_never_invents_bom(monkeypat
 
     async def tool_runner(prompt, system_message, schemas, label):
         assert system_message == archie_native_loop.SYSTEM_IDENTITY
-        assert label == "orchestrator"
+        assert label == "native_orchestrator"
         assert any(schema.name == "get_document" for schema in schemas)
         return next(responses)
 

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from agent.runtime_config import resolve_agent_llm_config
 
@@ -63,3 +66,18 @@ def test_resolve_agent_llm_config_falls_back_to_inference_block() -> None:
     assert resolved["temperature"] == 0.0
     assert resolved["top_p"] == 0.95
     assert resolved["top_k"] == 10
+
+
+def test_committed_native_orchestrator_uses_grok_43_without_changing_forge_default() -> None:
+    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    native = resolve_agent_llm_config(cfg, "native_orchestrator")
+    forge = resolve_agent_llm_config(cfg, "orchestrator")
+
+    assert native["model_id"] == (
+        "ocid1.generativeaimodel.oc1.us-chicago-1."
+        "amaaaaaask7dceya4fxp5zjj27q24rjxk46l43die7u6nclgwfbemklsdvoa"
+    )
+    assert forge["model_id"] == cfg["llm_defaults"]["model_id"]
+    assert cfg["orchestrator"]["agent_mode"] == "forge"
