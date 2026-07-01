@@ -9,6 +9,14 @@ import yaml
 from agent.jep_composer import compose_jep
 from agent.llm_inference_client import run_inference  # compatibility patch point; never called
 from sub_agents.base import make_agent_app
+from sub_agents.grounding import (
+    grounding_prompt,
+    grounding_trace,
+    input_grounding_missing,
+    needs_input_message,
+    normalize_engagement_context,
+    output_grounding_missing,
+)
 from sub_agents.models import A2ARequest, A2AResponse, AgentCard
 
 
@@ -45,8 +53,8 @@ card = AgentCard(
     name="jep",
     description="Writes an OCI Joint Engagement Plan document.",
     inputs={
-        "required": ["task"],
-        "optional": ["customer_name", "engagement_context", "prior_version", "feedback", "trace_id"],
+        "required": ["task", "engagement_context"],
+        "optional": ["customer_name", "prior_version", "feedback", "trace_id"],
     },
     output="JEP document in Markdown",
     llm_model_id=_model_id,
@@ -54,8 +62,8 @@ card = AgentCard(
 
 
 def _build_prompt(req: A2ARequest) -> str:
-    context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
-    parts: list[str] = []
+    context = normalize_engagement_context(req.engagement_context)
+    parts: list[str] = [grounding_prompt(context)]
     customer_name = context.get("customer_name")
     if customer_name:
         parts.append(f"Customer: {customer_name}")
@@ -122,13 +130,24 @@ def _build_prompt(req: A2ARequest) -> str:
 
 
 async def handle(req: A2ARequest) -> A2AResponse:
-    context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
+    raw_context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
+    context = normalize_engagement_context(raw_context)
+    grounding_missing = input_grounding_missing(
+        raw_context, require_customer_name=True
+    )
+    if grounding_missing:
+        return A2AResponse(
+            result=needs_input_message(grounding_missing),
+            status="needs_input",
+            trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(context, grounding_missing)},
+        )
     composition = compose_jep(req.task, context)
     trace = {
         "agent": card.name,
         "trace_id": req.trace_id,
         "generation_mode": "deterministic_grounded_brief",
         "missing_fields": list(composition.missing_fields),
+        **grounding_trace(context, []),
     }
     if composition.status != "ok":
         questions = "\n".join(f"- {question}" for question in composition.questions)
@@ -136,6 +155,15 @@ async def handle(req: A2ARequest) -> A2AResponse:
             result="I need the following JEP kickoff details before I can create an artifact:\n\n" + questions,
             status="needs_input",
             trace=trace,
+        )
+    grounding_missing = output_grounding_missing(
+        raw_context, composition.markdown, require_customer_name=True
+    )
+    if grounding_missing:
+        return A2AResponse(
+            result=needs_input_message(grounding_missing),
+            status="needs_input",
+            trace={**trace, **grounding_trace(context, grounding_missing)},
         )
     return A2AResponse(result=composition.markdown, status="ok", trace=trace)
 

@@ -20,6 +20,14 @@ from agent.drawio_generator import DrawioValidationError, generate_drawio
 from agent.llm_inference_client import run_inference
 from agent.layout_intent import LayoutIntentError, validate_layout_intent
 from sub_agents.base import make_agent_app
+from sub_agents.grounding import (
+    grounding_prompt,
+    grounding_trace,
+    input_grounding_missing,
+    needs_input_message,
+    normalize_engagement_context,
+    output_grounding_missing,
+)
 from sub_agents.models import A2ARequest, A2AResponse, AgentCard
 
 
@@ -96,7 +104,7 @@ card = AgentCard(
     name="diagram",
     description="Generates an OCI architecture draw.io diagram from a workload description.",
     inputs={
-        "required": ["task"],
+        "required": ["task", "engagement_context"],
         "optional": ["diagram_name", "customer_id", "trace_id"],
     },
     output="draw.io XML string",
@@ -436,8 +444,20 @@ def _ground_layout_placement_layers(spec: dict[str, Any], items: list[Any]) -> d
 
 
 async def handle(req: A2ARequest) -> A2AResponse:
+    raw_context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
+    context = normalize_engagement_context(raw_context)
+    grounding_missing = input_grounding_missing(raw_context)
+    if grounding_missing:
+        return A2AResponse(
+            result=needs_input_message(grounding_missing),
+            status="needs_input",
+            trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(context, grounding_missing)},
+        )
+    grounding_block = grounding_prompt(context)
+    task = "\n\n".join(part for part in (req.task, grounding_block) if part)
+    grounded_trace = grounding_trace(context, [])
     try:
-        items, prompt = freeform_arch_text_to_llm_input(req.task)
+        items, prompt = freeform_arch_text_to_llm_input(task)
     except ValueError as exc:
         return A2AResponse(
             result=json.dumps(_component_clarification_questions(req.task), ensure_ascii=False),
@@ -447,13 +467,14 @@ async def handle(req: A2ARequest) -> A2AResponse:
                 "trace_id": req.trace_id,
                 "error_type": exc.__class__.__name__,
                 "stage": "freeform_input_parsing",
+                **grounded_trace,
             },
         )
 
-    spec = _contract_layout_intent(req.task, items)
+    spec = _contract_layout_intent(task, items)
     generation_mode = "deterministic_contract_topology"
     if spec is None:
-        spec = _explicit_layout_intent(req.task, items)
+        spec = _explicit_layout_intent(task, items)
         generation_mode = "deterministic_explicit_topology"
     if spec is None:
         generation_mode = "llm_layout_intent"
@@ -492,6 +513,7 @@ async def handle(req: A2ARequest) -> A2AResponse:
                 "agent": card.name,
                 "trace_id": req.trace_id,
                 "llm_status": "need_clarification",
+                **grounded_trace,
             },
         )
 
@@ -509,12 +531,13 @@ async def handle(req: A2ARequest) -> A2AResponse:
                     "trace_id": req.trace_id,
                     "error_type": exc.__class__.__name__,
                     "stage": "layout_intent_validation",
+                    **grounded_trace,
                 },
             )
 
     if generation_mode in {"deterministic_explicit_topology", "deterministic_contract_topology"}:
         regions = spec.get("regions") if isinstance(spec.get("regions"), list) else []
-        region_match = re.search(r"\b[a-z]{2,}-[a-z]+-\d+\b", req.task, flags=re.IGNORECASE)
+        region_match = re.search(r"\b[a-z]{2,}-[a-z]+-\d+\b", task, flags=re.IGNORECASE)
         for region in regions:
             if isinstance(region, dict) and region_match:
                 region["label"] = region_match.group(0).lower()
@@ -534,8 +557,8 @@ async def handle(req: A2ARequest) -> A2AResponse:
 
     diagram_name = "diagram"
     context_name = (
-        req.engagement_context.get("diagram_name")
-        if isinstance(req.engagement_context, dict)
+        context.get("diagram_name")
+        if isinstance(context, dict)
         else None
     )
     if context_name:
@@ -557,10 +580,18 @@ async def handle(req: A2ARequest) -> A2AResponse:
                     "trace_id": req.trace_id,
                     "error_type": exc.__class__.__name__,
                     "stage": "drawio_validation",
+                    **grounded_trace,
                 },
             )
         drawio_xml = await asyncio.to_thread(drawio_path.read_text, encoding="utf-8")
 
+    grounding_missing = output_grounding_missing(raw_context, drawio_xml)
+    if grounding_missing:
+        return A2AResponse(
+            result=needs_input_message(grounding_missing),
+            status="needs_input",
+            trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(context, grounding_missing)},
+        )
     return A2AResponse(
         result=drawio_xml,
         status="ok",
@@ -570,6 +601,7 @@ async def handle(req: A2ARequest) -> A2AResponse:
             "generation_mode": generation_mode,
             "node_count": len(draw_dict.get("nodes", [])),
             "edge_count": len(draw_dict.get("edges", [])),
+            **grounded_trace,
         },
     )
 

@@ -9,6 +9,14 @@ import yaml
 
 from agent.llm_inference_client import run_inference
 from sub_agents.base import make_agent_app
+from sub_agents.grounding import (
+    grounding_prompt,
+    grounding_trace,
+    input_grounding_missing,
+    needs_input_message,
+    normalize_engagement_context,
+    output_grounding_missing,
+)
 from sub_agents.models import A2ARequest, A2AResponse, AgentCard
 
 
@@ -122,11 +130,10 @@ card = AgentCard(
     name="waf",
     description="Performs an OCI Well-Architected Framework review of an architecture.",
     inputs={
-        "required": ["task"],
+        "required": ["task", "engagement_context"],
         "optional": [
             "architecture_summary",
             "diagram_context",
-            "engagement_context",
             "feedback",
             "trace_id",
         ],
@@ -137,8 +144,8 @@ card = AgentCard(
 
 
 def _build_prompt(req: A2ARequest) -> str:
-    context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
-    parts = [req.task]
+    context = normalize_engagement_context(req.engagement_context)
+    parts = [grounding_prompt(context), req.task]
     if context.get("architecture_summary"):
         parts.append(f"Architecture summary:\n{context['architecture_summary']}")
     if context.get("diagram_context"):
@@ -149,6 +156,15 @@ def _build_prompt(req: A2ARequest) -> str:
 
 
 async def handle(req: A2ARequest) -> A2AResponse:
+    raw_context = req.engagement_context if isinstance(req.engagement_context, dict) else {}
+    context = normalize_engagement_context(raw_context)
+    grounding_missing = input_grounding_missing(raw_context)
+    if grounding_missing:
+        return A2AResponse(
+            result=needs_input_message(grounding_missing),
+            status="needs_input",
+            trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(context, grounding_missing)},
+        )
     prompt = _build_prompt(req)
     text = await anyio.to_thread.run_sync(
         lambda: run_inference(
@@ -163,7 +179,18 @@ async def handle(req: A2ARequest) -> A2AResponse:
             system_message=_system_message,
         )
     )
-    return A2AResponse(result=text, status="ok", trace={"agent": card.name, "trace_id": req.trace_id})
+    grounding_missing = output_grounding_missing(raw_context, text)
+    if grounding_missing:
+        return A2AResponse(
+            result=needs_input_message(grounding_missing),
+            status="needs_input",
+            trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(context, grounding_missing)},
+        )
+    return A2AResponse(
+        result=text,
+        status="ok",
+        trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(context, [])},
+    )
 
 
 app = make_agent_app(card, handle)
