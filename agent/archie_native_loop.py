@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 import yaml
 
-from agent import context_store, document_store, hat_engine
+from agent import archie_memory, archie_memory_retrieval, context_store, document_store, hat_engine
 from agent.archie_wiring import (
     build_forge,
     get_registered_memory,
@@ -46,9 +46,23 @@ async def run_turn(
     a2a_base_url: str = "http://localhost:8080",
     max_tool_iterations: int = 5,
 ) -> dict:
-    history = document_store.load_conversation_history(store, customer_id)
     context = await _maybe_await(
         context_store.read_context(store, customer_id, customer_name)
+    )
+    settings = archie_memory_retrieval.load_memory_settings()
+    if archie_memory.record_native_turn_memory(context, user_message):
+        context_store.write_context(store, customer_id, context)
+    session_summary = archie_memory.compact_native_session(
+        store=store,
+        engagement_id=customer_id,
+        session_id=customer_id,
+        context=context,
+        threshold=settings["session_summary_threshold"],
+        retain_turns=settings["working_set_turns"],
+        summary_char_budget=max(500, settings["working_set_char_budget"] // 4),
+    )
+    history = document_store.load_conversation_history(
+        store, customer_id, settings["working_set_turns"]
     )
     forge = build_forge(
         store=store,
@@ -58,7 +72,15 @@ async def run_turn(
         tool_runner=tool_runner,
         a2a_base_url=a2a_base_url,
     )
-    specs = {spec.name: spec for spec in get_registered_tool_specs(forge)}
+    registered_specs = list(get_registered_tool_specs(forge))
+    registered_specs.extend(
+        archie_memory_retrieval.get_memory_tool_specs(
+            store=store,
+            engagement_id=customer_id,
+            customer_name=customer_name,
+        )
+    )
+    specs = {spec.name: spec for spec in registered_specs}
     memory = get_registered_memory(forge)
     schemas = [
         ToolSchema(name=spec.name, description=spec.description, args=spec.args)
@@ -68,12 +90,14 @@ async def run_turn(
     schemas.extend(hat_schemas)
     hat_names = {schema.name for schema in hat_schemas}
 
-    snapshot = memory.assemble(
-        session_id=customer_id,
+    working_set = archie_memory_retrieval.assemble_working_set(
         context=context,
-        user_message=user_message,
+        session_summary=session_summary,
+        history=history,
+        working_set_turns=settings["working_set_turns"],
+        char_budget=settings["working_set_char_budget"],
     )
-    prompt = _assemble_prompt(history, snapshot, user_message)
+    prompt = _assemble_prompt(working_set, user_message)
     tool_calls: list[dict[str, Any]] = []
     artifacts: dict[str, str] = {}
     reply = ""
@@ -130,6 +154,9 @@ async def run_turn(
                         result=result,
                         context=context,
                     )
+                if result.status == "ok" and result.artifact_key:
+                    archie_memory.refresh_engagement_digest(context)
+                    context_store.write_context(store, customer_id, context)
 
         call = {
             "tool": tool_name,
@@ -160,6 +187,15 @@ async def run_turn(
         },
     ]
     document_store.save_conversation_turns(store, customer_id, turns)
+    archie_memory.compact_native_session(
+        store=store,
+        engagement_id=customer_id,
+        session_id=customer_id,
+        context=context,
+        threshold=settings["session_summary_threshold"],
+        retain_turns=settings["working_set_turns"],
+        summary_char_budget=max(500, settings["working_set_char_budget"] // 4),
+    )
     return {
         "reply": reply,
         "tool_calls": tool_calls,
@@ -197,18 +233,10 @@ async def _infer(
     )
 
 
-def _assemble_prompt(history: list[dict], snapshot, user_message: str) -> str:
-    memory_payload = {
-        "facts": snapshot.facts,
-        "constraints": snapshot.constraints,
-        "prior_artifacts": snapshot.prior_artifacts,
-        "decision_context": snapshot.decision_context,
-        "context": snapshot.raw,
-    }
+def _assemble_prompt(working_set: str, user_message: str) -> str:
     return "\n\n".join(
         (
-            "[ARCHIE MEMORY]\n" + json.dumps(memory_payload, ensure_ascii=False, default=str),
-            "[SESSION HISTORY]\n" + json.dumps(history, ensure_ascii=False, default=str),
+            "[BOUNDED WORKING SET]\n" + working_set,
             "[USER MESSAGE]\n" + user_message,
         )
     )

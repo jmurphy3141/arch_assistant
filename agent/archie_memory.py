@@ -58,6 +58,207 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def merge_authoritative_facts(
+    context: dict[str, Any], facts: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Merge native facts while making every supplied leaf the current value."""
+    incoming = facts if isinstance(facts, dict) else {}
+    if not incoming:
+        return context
+    archie = context_store.get_archie_state(context)
+    before = dict(archie.get("client_facts") or {})
+    context_store.merge_archie_client_facts(context, incoming)
+    merged = dict(archie.get("client_facts") or {})
+    superseded = set(
+        str(item)
+        for item in archie.get("superseded_fact_values", [])
+        if str(item)
+    )
+    for path, value in _flatten_fact_values(incoming).items():
+        old = _get_fact_path(before, path)
+        if old not in (None, "", [], {}) and old != value:
+            superseded.update(_scalar_fact_values(old))
+        _set_fact_path(merged, path, value)
+    archie["client_facts"] = merged
+    archie["facts_summary"] = context_store._summarize_client_facts(merged)
+    archie["fact_currency"] = _flatten_fact_values(merged)
+    archie["superseded_fact_values"] = sorted(superseded)
+    context_store.refresh_archie_memory(context)
+    refresh_engagement_digest(context)
+    return context
+
+
+def current_authoritative_facts(context: dict[str, Any]) -> dict[str, Any]:
+    """Return only current engagement facts; superseded values are never included."""
+    archie = context_store.get_archie_state(context)
+    facts = dict(archie.get("client_facts") or {})
+    return {
+        "facts": facts,
+        "constraints": dict(archie.get("latest_approved_constraints") or {}),
+        "assumptions": list(archie.get("latest_approved_assumptions") or []),
+        "relationship": dict(archie.get("relationship") or {}),
+    }
+
+
+def superseded_fact_values(context: dict[str, Any]) -> list[str]:
+    archie = context_store.get_archie_state(context)
+    return [str(item) for item in archie.get("superseded_fact_values", []) if str(item)]
+
+
+def refresh_engagement_digest(context: dict[str, Any]) -> str:
+    """Rebuild the compact state-of-the-deal digest from authoritative state."""
+    archie = context_store.get_archie_state(context)
+    payload = {
+        "facts": dict(archie.get("client_facts") or {}),
+        "assumptions": list(archie.get("latest_approved_assumptions") or []),
+        "decisions": dict(archie.get("resolved_decisions") or {}),
+        "artifacts": _digest_artifacts(context),
+    }
+    digest = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)[:8000]
+    archie["engagement_digest"] = digest
+    return digest
+
+
+def record_native_turn_memory(context: dict[str, Any], text: str) -> bool:
+    """Update durable engagement memory from one native-path user turn."""
+    before = json.dumps(
+        context_store.get_archie_state(context), sort_keys=True, default=str
+    )
+    profile = _extract_infrastructure_profile(text)
+    if profile:
+        context_store.merge_archie_infrastructure_profile(context, profile)
+    facts = _extract_client_facts(text, profile=profile)
+    if facts:
+        merge_authoritative_facts(context, facts)
+    relationships = _extract_relationship_facts(text)
+    if relationships:
+        context_store.merge_archie_relationship_facts(context, relationships)
+    refresh_engagement_digest(context)
+    after = json.dumps(context_store.get_archie_state(context), sort_keys=True, default=str)
+    return before != after
+
+
+def compact_native_session(
+    *,
+    store: ObjectStoreBase,
+    engagement_id: str,
+    session_id: str,
+    context: dict[str, Any],
+    threshold: int,
+    retain_turns: int,
+    summary_char_budget: int,
+) -> str:
+    """Roll old native turns into a bounded summary and retain only recent turns."""
+    history = document_store.load_conversation_history(store, engagement_id, 0)
+    existing = document_store.load_conversation_summary(store, engagement_id).strip()
+    if len(history) <= max(2, threshold):
+        return existing
+    keep = max(1, min(retain_turns, threshold - 1))
+    older, recent = history[:-keep], history[-keep:]
+    addition = _summarize_turns(older)
+    summary = "\n".join(part for part in (existing, addition) if part).strip()
+    summary = _redact_superseded(summary, superseded_fact_values(context))
+    if len(summary) > summary_char_budget:
+        summary = summary[-summary_char_budget:]
+    document_store.save_conversation_summary(store, engagement_id, summary)
+    document_store.clear_conversation_history(store, engagement_id)
+    document_store.save_conversation_turns(store, engagement_id, recent)
+    archie = context_store.get_archie_state(context)
+    records = [
+        dict(item)
+        for item in archie.get("session_summaries", [])
+        if isinstance(item, dict) and str(item.get("session_id")) != str(session_id)
+    ]
+    records.append(
+        {"session_id": str(session_id), "summary": summary, "updated_at": _now()}
+    )
+    archie["session_summaries"] = records[-50:]
+    refresh_engagement_digest(context)
+    context_store.write_context(store, engagement_id, context)
+    return summary
+
+
+def _summarize_turns(turns: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for turn in turns:
+        role = str(turn.get("role") or "turn")
+        content = " ".join(str(turn.get("content") or "").split())
+        if content:
+            lines.append(f"{role}: {content[:600]}")
+        for call in turn.get("tool_calls", []) if isinstance(turn.get("tool_calls"), list) else []:
+            if isinstance(call, dict):
+                lines.append(
+                    f"tool {call.get('tool', '')}: {str(call.get('result_summary', ''))[:300]}"
+                )
+    return "\n".join(lines)
+
+
+def _digest_artifacts(context: dict[str, Any]) -> dict[str, str]:
+    found: dict[str, str] = {}
+
+    def visit(value: Any, path: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                visit(item, f"{path}.{key}" if path else str(key))
+        elif isinstance(value, str) and value and path.endswith(("_key", ".key")):
+            found[path] = value
+
+    visit(context.get("agents", {}), "agents")
+    visit(context_store.get_archie_state(context).get("work_products", {}), "work_products")
+    return found
+
+
+def _flatten_fact_values(value: Any, path: tuple[str, ...] = ()) -> dict[str, Any]:
+    if isinstance(value, dict):
+        flattened: dict[str, Any] = {}
+        for key, item in value.items():
+            flattened.update(_flatten_fact_values(item, (*path, str(key))))
+        return flattened
+    return {".".join(path): value} if path else {}
+
+
+def _get_fact_path(value: dict[str, Any], path: str) -> Any:
+    current: Any = value
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _set_fact_path(value: dict[str, Any], path: str, fact: Any) -> None:
+    parts = path.split(".")
+    current = value
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[parts[-1]] = fact
+
+
+def _scalar_fact_values(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        values: set[str] = set()
+        for item in value.values():
+            values.update(_scalar_fact_values(item))
+        return values
+    if isinstance(value, list):
+        values = set()
+        for item in value:
+            values.update(_scalar_fact_values(item))
+        return values
+    return {str(value)} if value not in (None, "") else set()
+
+
+def _redact_superseded(text: str, values: list[str]) -> str:
+    redacted = str(text or "")
+    for value in values:
+        redacted = re.sub(re.escape(value), "[superseded]", redacted, flags=re.IGNORECASE)
+    return redacted
+
+
 def _build_context_summary_for_skills(
     store: ObjectStoreBase,
     customer_id: str,
@@ -1045,7 +1246,7 @@ def _record_region_constraint_if_present(context: dict[str, Any], decision_conte
     region = str(constraints.get("region", "") or "").strip()
     if not region:
         return
-    context_store.merge_archie_client_facts(context, {"region": region})
+    merge_authoritative_facts(context, {"region": region})
     prior, prior_answer = _resolved_answer_for_question(_latest_resolved_answer_map(context), "constraints.region")
     if isinstance(prior, dict) and prior_answer == region:
         return
@@ -1068,7 +1269,7 @@ def _record_infrastructure_profile_if_present(context: dict[str, Any], text: str
         context_store.merge_archie_infrastructure_profile(context, profile)
     facts = _extract_client_facts(text, profile=profile)
     if facts:
-        context_store.merge_archie_client_facts(context, facts)
+        merge_authoritative_facts(context, facts)
     rel_facts = _extract_relationship_facts(text)
     if rel_facts:
         context_store.merge_archie_relationship_facts(context, rel_facts)

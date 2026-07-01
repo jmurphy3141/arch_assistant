@@ -155,6 +155,9 @@ orchestrator:
   max_tool_iterations: 5
   max_refinements: 3
   history_max_turns: 30
+  working_set_turns: 6
+  session_summary_threshold: 16
+  working_set_char_budget: 24000
   langgraph_enabled: true
   specialists_langgraph_enabled: true
   telegram:
