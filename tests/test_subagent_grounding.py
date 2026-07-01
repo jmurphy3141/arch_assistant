@@ -13,6 +13,7 @@ from sub_agents.models import A2ARequest
 from sub_agents.pov import server as pov_server
 from sub_agents.terraform import server as terraform_server
 from sub_agents.waf import server as waf_server
+from sub_agents.grounding import output_grounding_missing
 
 
 pytestmark = pytest.mark.anyio
@@ -179,6 +180,30 @@ async def test_bom_diagram_waf_and_terraform_reflect_supplied_facts(monkeypatch)
         assert response.status == "ok"
         assert response.trace["grounded"] is True
         assert response.trace["missing"] == []
+
+
+def test_structured_output_skips_prose_fact_anchor_but_keeps_input_grounding():
+    context = {
+        "customer_id": "northwind",
+        "customer_name": "Northwind Health",
+        "facts": {"latency_target": "600 milliseconds"},
+    }
+
+    assert output_grounding_missing(
+        context,
+        '<mxfile><object label="Application tier" /></mxfile>',
+        output_kind="structured",
+    ) == []
+    assert output_grounding_missing(
+        {**context, "facts": {}},
+        '<mxfile><object label="Application tier" /></mxfile>',
+        output_kind="structured",
+    ) == ["facts"]
+    assert "facts_not_reflected" in output_grounding_missing(
+        context,
+        "Northwind Health architecture overview.",
+        require_customer_name=True,
+    )
 
 
 @pytest.mark.parametrize("server", _SERVERS, ids=lambda server: server.card.name)

@@ -131,19 +131,33 @@ TURNS: tuple[dict[str, Any], ...] = (
     {
         "id": 9,
         "session_id": "m3",
+        "message": (
+            "They can give us 20 business days. Jordan Kim owns the Oracle side and "
+            "Priya Shah owns it for Northwind; each can commit 8 hours a week. Success "
+            "means 200 concurrent users, claims lookup p95 under 600 ms, and recovery "
+            "inside 45 minutes. Keep IIS, the claims app, Oracle, HA, security, logging, "
+            "and monitoring in scope; production cutover, DR, and load beyond 200 users "
+            "are out."
+        ),
+        "kind": "logistics",
+    },
+    {
+        "id": 10,
+        "session_id": "m3",
         "message": "They liked the POV. What POC could we run to prove it out?",
         "kind": "deliverable",
         "tool": "generate_poc_plan",
         "artifact_type": "poc_plan",
+        "required_inputs_supplied": True,
     },
     {
-        "id": 10,
+        "id": 11,
         "session_id": "m3",
         "message": "Let's go with the second option.",
         "kind": "selection",
     },
     {
-        "id": 11,
+        "id": 12,
         "session_id": "m3",
         "message": "Great — can you get the architecture diagram going for that?",
         "kind": "deliverable",
@@ -151,7 +165,7 @@ TURNS: tuple[dict[str, Any], ...] = (
         "artifact_type": "diagram",
     },
     {
-        "id": 12,
+        "id": 13,
         "session_id": "m3",
         "message": (
             "We'll need a BOM too — figure a couple of web boxes, a few app servers, "
@@ -162,21 +176,22 @@ TURNS: tuple[dict[str, Any], ...] = (
         "artifact_type": "bom",
     },
     {
-        "id": 13,
+        "id": 14,
         "session_id": "m3",
         "message": "Did that BOM slip in any Gen AI token costs?",
         "kind": "lookup_bom",
     },
     {
-        "id": 14,
+        "id": 15,
         "session_id": "m3",
         "message": "Last thing — put the JEP together for it.",
         "kind": "deliverable",
         "tool": "generate_jep",
         "artifact_type": "jep",
+        "required_inputs_supplied": True,
     },
     {
-        "id": 15,
+        "id": 16,
         "session_id": "wrap",
         "message": "Remind me what we've actually produced for Northwind so far.",
         "kind": "lookup_artifacts",
@@ -422,10 +437,68 @@ def _artifact_validation_errors(
     return errors, details
 
 
-def _fabrication_errors(reply: str, grounded_text: str) -> list[str]:
+def _normalize_units(text: str) -> str:
+    normalized = str(text or "").lower()
+    replacements = (
+        (r"\bmilliseconds?\b", "ms"),
+        (r"\bconcurrent\s+users?\b", "users"),
+        (r"\brequests?\s+per\s+second\b", "rps"),
+        (r"\bgigabytes?\b", "gb"),
+        (r"\bterabytes?\b", "tb"),
+    )
+    for pattern, replacement in replacements:
+        normalized = re.sub(pattern, replacement, normalized)
+    normalized = re.sub(r"(?<=\d)\s+(?=(?:ms|gb|tb|users|rps|%)(?:\b|$))", "", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _claim_clause(text: str, start: int, end: int) -> str:
+    left = max(text.rfind(mark, 0, start) for mark in (".", "!", "?", "\n", ";"))
+    rights = [position for mark in (".", "!", "?", "\n", ";") if (position := text.find(mark, end)) >= 0]
+    right = min(rights) if rights else len(text)
+    return text[left + 1 : right].lower()
+
+
+def _is_hedged_advisory(clause: str) -> bool:
+    hedged = re.search(r"\b(?:typically|often|roughly|about|approximately|up to|in general)\b|~", clause)
+    engagement_claim = re.search(
+        r"\b(?:northwind|this (?:deal|engagement|customer)|for (?:you|them|northwind)|"
+        r"their (?:measured|actual|current)|will (?:save|cost|achieve|deliver))\b",
+        clause,
+    )
+    return bool(hedged and not engagement_claim)
+
+
+def _measurement_is_grounded(value: str, grounded_text: str) -> bool:
+    normalized_value = _normalize_units(value).replace(",", "")
+    normalized_ground = _normalize_units(grounded_text).replace(",", "")
+    if normalized_value in normalized_ground:
+        return True
+    number = re.search(r"\d+(?:\.\d+)?", normalized_value)
+    if not number:
+        return False
+    claim_number = float(number.group(0))
+    unit_match = re.search(r"\$|%|\b(?:ms|minutes|hours|days|ocpu|gb|tb|users|rps)\b", normalized_value)
+    unit = unit_match.group(0) if unit_match else ""
+    candidate_pattern = (
+        rf"(?:\$\s*)?(\d+(?:\.\d+)?)" if unit == "$" else
+        rf"(\d+(?:\.\d+)?)\s*{re.escape(unit)}\b" if unit else
+        r"(\d+(?:\.\d+)?)"
+    )
+    for candidate in re.finditer(candidate_pattern, normalized_ground):
+        grounded_number = float(candidate.group(1))
+        tolerance = max(0.02 * abs(grounded_number), 0.5)
+        if abs(claim_number - grounded_number) <= tolerance:
+            return True
+    return False
+
+
+def _fabrication_errors(
+    reply: str, grounded_text: str, artifact_text: str = ""
+) -> list[str]:
     errors: list[str] = []
     reply_lower = reply.lower()
-    grounded_lower = grounded_text.lower()
+    grounded_lower = f"{grounded_text}\n{artifact_text}".lower()
     if re.search(r"\b(?:e5|e6)(?:\.flex)?\b[^.!?\n]{0,50}\b(?:ampere|arm)\b", reply_lower):
         errors.append("reply incorrectly describes E5/E6 as Ampere/Arm")
 
@@ -438,18 +511,10 @@ def _fabrication_errors(reply: str, grounded_text: str) -> list[str]:
     for pattern in precise_patterns:
         for match in re.finditer(pattern, reply_lower, re.IGNORECASE):
             value = re.sub(r"\s+", " ", match.group(0)).strip()
-            number = re.search(r"\d+(?:\.\d+)?", value)
-            grounded_number = bool(number and number.group(0) in grounded_lower)
-            unit = re.search(
-                r"%|\b(?:ms|milliseconds|minutes|hours|days|ocpu|gb|tb|"
-                r"concurrent users|requests per second|rps)\b",
-                value,
-            )
-            grounded_unit = bool(unit and unit.group(0) in grounded_lower)
-            if (
-                value not in re.sub(r"\s+", " ", grounded_lower)
-                and not (grounded_number and grounded_unit)
-            ):
+            clause = _claim_clause(reply_lower, match.start(), match.end())
+            if _is_hedged_advisory(clause):
+                continue
+            if not _measurement_is_grounded(value, grounded_lower):
                 errors.append(f"unsupported precise claim: {match.group(0)}")
 
     for match in re.finditer(
@@ -460,6 +525,42 @@ def _fabrication_errors(reply: str, grounded_text: str) -> list[str]:
         if match.group(1).lower() not in grounded_lower:
             errors.append(f"unsupported customer evidence: {match.group(1)}")
     return list(dict.fromkeys(errors))
+
+
+def _artifact_grounding_text(
+    store: OciObjectStore,
+    body: dict[str, Any],
+    tool_name: str,
+    artifact_type: str,
+) -> str:
+    key = _artifact_key(body, tool_name, artifact_type)
+    if not key:
+        return ""
+    try:
+        content = store.get(key)
+        if artifact_type == "bom":
+            workbook = openpyxl.load_workbook(BytesIO(content), data_only=True)
+            return " ".join(
+                str(cell.value)
+                for sheet in workbook.worksheets
+                for row in sheet.iter_rows()
+                for cell in row
+                if cell.value not in (None, "")
+            )
+        if artifact_type == "jep":
+            document = Document(BytesIO(content))
+            return "\n".join(paragraph.text for paragraph in document.paragraphs)
+        return content.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _needs_input_errors(turn: dict[str, Any], call: dict[str, Any]) -> list[str]:
+    if str(call.get("result_status") or "") != "needs_input":
+        return []
+    if turn.get("required_inputs_supplied", True):
+        return ["producer returned needs_input despite supplied grounding"]
+    return []
 
 
 def _artifact_prose_errors(reply: str) -> list[str]:
@@ -485,7 +586,7 @@ def _behavior_errors(
     reply = str(body.get("reply") or "")
     kind = turn["kind"]
 
-    if kind == "conversation":
+    if kind in {"conversation", "logistics"}:
         if generated:
             errors.append(f"conversational turn fired generate tools: {sorted(generated)}")
     elif kind.startswith("lookup"):
@@ -516,6 +617,7 @@ def _behavior_errors(
         unexpected = generated - {expected}
         if unexpected:
             errors.append(f"deliverable turn fired unrelated generators: {sorted(unexpected)}")
+        errors.extend(_needs_input_errors(turn, _call_for(body, expected)))
     elif kind == "selection":
         if "generate_poc_plan" not in tool_set:
             errors.append(f"POC selection was not recorded through generate_poc_plan: {tools}")
@@ -568,6 +670,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "failures": [],
     }
     grounded_parts: list[str] = []
+    artifact_grounding_parts: list[str] = []
     artifact_types: set[str] = set()
     max_latency = 0.0
     prior_chat_started = 0.0
@@ -638,21 +741,30 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     _fabrication_errors(
                         str(body.get("reply") or ""),
                         "\n".join(grounded_parts),
+                        "\n".join(artifact_grounding_parts),
                     )
                 )
 
             if turn["kind"] == "deliverable":
                 expected_tool = str(turn["tool"])
                 artifact_type = str(turn["artifact_type"])
-                artifact_errors, artifact_details = _artifact_validation_errors(
-                    store,
-                    body,
-                    expected_tool,
-                    artifact_type,
+                expected_call = _call_for(body, expected_tool)
+                accepted_needs_input = (
+                    str(expected_call.get("result_status") or "") == "needs_input"
+                    and not turn.get("required_inputs_supplied", True)
                 )
+                artifact_errors: list[str] = []
+                artifact_details: dict[str, Any] = {"type": artifact_type}
+                if not accepted_needs_input:
+                    artifact_errors, artifact_details = _artifact_validation_errors(
+                        store,
+                        body,
+                        expected_tool,
+                        artifact_type,
+                    )
                 download_ok = True
                 download_detail = "not exposed through artifact_manifest"
-                if artifact_type in {"diagram", "bom", "jep"}:
+                if not accepted_needs_input and artifact_type in {"diagram", "bom", "jep"}:
                     download_ok, download_detail = _download_manifest_artifact(
                         args.base_url,
                         body,
@@ -669,8 +781,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 artifact_details["failures"] = artifact_errors
                 evidence["artifact_reloads"].append(artifact_details)
                 turn_failures.extend(artifact_errors)
-                if not artifact_errors:
+                if not artifact_errors and not accepted_needs_input:
                     artifact_types.add(artifact_type)
+                    artifact_text = _artifact_grounding_text(
+                        store, body, expected_tool, artifact_type
+                    )
+                    if artifact_text:
+                        artifact_grounding_parts.append(artifact_text)
 
         turn_record = {
             "turn": turn["id"],

@@ -2,7 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import archie_memory_retrieval, archie_native_loop
+from agent import archie_memory_retrieval, archie_native_loop, context_store
+from agent.tools.notes import NotesHandlers
 from agent.engagement_mission import C3E_PHASE_ORDER, PHASE_ARTIFACTS
 from agent.persistence_objectstore import InMemoryObjectStore
 from skillforge.registry import ToolSpec
@@ -166,6 +167,15 @@ def test_native_identity_has_standing_c3e_methodology_and_gates():
             assert expected in identity
 
 
+def test_native_identity_offers_artifacts_and_reports_tool_status_honestly():
+    identity = archie_native_loop.SYSTEM_IDENTITY
+
+    assert "offer the next deliverable" in identity
+    assert "only when the user explicitly asks" in identity
+    assert "Report every tool's actual status" in identity
+    assert "unless that tool returned the artifact key on this turn" in identity
+
+
 def test_native_working_set_always_includes_live_c3e_phase_state():
     context = {
         "customer_id": "c1",
@@ -225,3 +235,103 @@ async def test_ha_advice_is_conversational_without_artifact(monkeypatch):
     assert result["tool_calls"] == []
     assert result["artifacts"] == {}
     assert "HA" in result["reply"]
+
+
+@pytest.mark.asyncio
+async def test_needs_input_is_unambiguous_and_reply_does_not_claim_success(monkeypatch):
+    async def producer(_args, **_kwargs):
+        return ToolResult(
+            summary="POC duration is required.",
+            status="needs_input",
+            clarification="Please provide POC duration.",
+        )
+
+    _wire_native(
+        monkeypatch,
+        [ToolSpec(name="generate_poc_plan", handler=producer, description="Generate POC plan.")],
+    )
+    responses = iter(
+        [
+            {"tool": "generate_poc_plan", "args": {}},
+            "Please provide the POC duration.",
+        ]
+    )
+
+    async def tool_runner(prompt, *_args):
+        if "[TOOL RESULT" in prompt:
+            assert "NO ARTIFACT PRODUCED" in prompt
+            assert "Status: needs_input" in prompt
+            assert "Please provide POC duration" in prompt
+        return next(responses)
+
+    result = await archie_native_loop.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="Make the POC plan.",
+        store=InMemoryObjectStore(),
+        text_runner=lambda *_args: "unused",
+        tool_runner=tool_runner,
+    )
+
+    assert result["tool_calls"][0]["result_status"] == "needs_input"
+    assert not any(word in result["reply"].lower() for word in ("saved", "ready", ".md"))
+
+
+@pytest.mark.asyncio
+async def test_native_artifact_index_is_immediately_retrievable(monkeypatch):
+    store = InMemoryObjectStore()
+    artifact_key = "artifacts/c1/bom/v1/oci_bom.xlsx"
+    notes = NotesHandlers(store, "c1", "Acme")
+
+    async def producer(_args, **_kwargs):
+        store.put(artifact_key, b"workbook", "application/octet-stream")
+        return ToolResult(
+            summary="Northwind BOM generated.",
+            status="ok",
+            artifact_key=artifact_key,
+        )
+
+    monkeypatch.setattr(archie_native_loop, "build_forge", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(
+        archie_native_loop,
+        "get_registered_tool_specs",
+        lambda _forge: (
+            ToolSpec(name="generate_bom", handler=producer, description="Generate BOM."),
+            ToolSpec(name="get_document", handler=notes.get_document, description="Get document."),
+        ),
+    )
+    monkeypatch.setattr(archie_native_loop, "get_registered_memory", lambda _forge: _Memory())
+
+    first = iter([{"tool": "generate_bom", "args": {}}, "The BOM was generated."])
+    await archie_native_loop.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="Generate the BOM.",
+        store=store,
+        text_runner=lambda *_args: "unused",
+        tool_runner=lambda *_args: next(first),
+    )
+
+    second = iter(
+        [
+            {"tool": "get_document", "args": {"type": "bom"}},
+            "The BOM excludes Gen AI token costs.",
+        ]
+    )
+    result = await archie_native_loop.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="Did the BOM include Gen AI token costs?",
+        store=store,
+        text_runner=lambda *_args: "unused",
+        tool_runner=lambda *_args: next(second),
+    )
+
+    assert [call["tool"] for call in result["tool_calls"]] == ["get_document"]
+    assert result["tool_calls"][0]["artifact_key"] == artifact_key
+    indexed = context_store.read_context(store, "c1", "Acme")["artifacts"]
+    assert indexed["bom"]["key"] == artifact_key
+    listed = await archie_memory_retrieval.NativeMemoryTools(store, "c1", "Acme").list_artifacts(
+        {}, memory=None, context={}, trace_id="list"
+    )
+    assert any(item["type"] == "bom" and item["key"] == artifact_key for item in listed.data["artifacts"])

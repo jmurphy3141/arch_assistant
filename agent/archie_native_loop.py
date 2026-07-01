@@ -150,6 +150,15 @@ async def run_turn(
                     context=context,
                 )
             if result.status == "ok" and result.artifact_key:
+                artifact_type = _artifact_type_for_tool(tool_name)
+                if artifact_type:
+                    context_store.register_artifact(
+                        context,
+                        artifact_type,
+                        key=result.artifact_key,
+                        summary=result.summary,
+                        download=str((result.data or {}).get("download_url") or ""),
+                    )
                 archie_memory.refresh_engagement_digest(context)
                 context_store.write_context(store, customer_id, context)
 
@@ -159,10 +168,10 @@ async def run_turn(
             "result_summary": result.summary,
             "result_status": result.status,
             "result_data": dict(result.data or {}),
-            "artifact_key": result.artifact_key or "",
+            "artifact_key": result.artifact_key if result.status == "ok" else "",
         }
         tool_calls.append(call)
-        if result.artifact_key:
+        if result.status == "ok" and result.artifact_key:
             artifacts[tool_name] = result.artifact_key
         prompt += "\n\n" + _tool_result_message(tool_name, result)
 
@@ -242,11 +251,28 @@ def _tool_result_message(tool_name: str, result: ToolResult) -> str:
         "tool": tool_name,
         "status": result.status,
         "summary": result.summary,
-        "artifact_key": result.artifact_key,
+        "artifact_key": result.artifact_key if result.status == "ok" else "",
         "data": result.data,
         "clarification": result.clarification,
     }
+    if result.status != "ok":
+        return (
+            "[TOOL RESULT - NO ARTIFACT PRODUCED]\n"
+            f"Status: {result.status}. Required clarification: "
+            f"{result.clarification or result.summary}\n"
+            + json.dumps(payload, ensure_ascii=False, default=str)
+        )
     return "[TOOL RESULT]\n" + json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _artifact_type_for_tool(tool_name: str) -> str:
+    if not tool_name.startswith("generate_"):
+        return ""
+    return {
+        "generate_poc_plan": "poc_plan",
+        "generate_technical_proposal": "technical_proposal",
+        "generate_terraform": "terraform",
+    }.get(tool_name, tool_name.removeprefix("generate_"))
 
 
 async def _maybe_await(value):

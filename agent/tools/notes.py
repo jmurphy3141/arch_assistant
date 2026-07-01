@@ -112,6 +112,22 @@ class NotesHandlers:
         trace_id: str,
     ) -> ToolResult:
         doc_type = str(args.get("type") or "")
+        stored_context = context
+        if hasattr(self._store, "get"):
+            stored_context = context_store.read_context(
+                self._store, self._customer_id, self._customer_name
+            )
+        indexed = context_store.get_latest_artifact_by_type(stored_context, doc_type)
+        if indexed.get("key"):
+            return ToolResult(
+                summary=str(indexed.get("summary") or f"{doc_type} retrieved."),
+                status="ok",
+                artifact_key=str(indexed["key"]),
+                data={
+                    "summary": str(indexed.get("summary") or ""),
+                    "download": str(indexed.get("download") or ""),
+                },
+            )
         latest = document_store.get_latest_doc(
             self._store, self._customer_id, doc_type
         )

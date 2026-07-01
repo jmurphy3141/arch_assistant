@@ -210,7 +210,8 @@ class NativeMemoryTools:
         context: dict[str, Any],
         trace_id: str,
     ) -> ToolResult:
-        artifacts = _artifact_references(self._context())
+        stored = self._context()
+        artifacts = _artifact_references(stored)
         return ToolResult(
             summary=f"Found {len(artifacts)} artifact reference(s).",
             status="ok",
@@ -338,8 +339,17 @@ def _artifact_references(context: dict[str, Any]) -> list[dict[str, str]]:
         ):
             found[path] = value
 
-    visit(context.get("agents", {}), "agents")
-    visit(context_store.get_archie_state(context).get("work_products", {}), "work_products")
+    indexed = context.get("artifacts", {})
+    has_indexed_artifacts = False
+    if isinstance(indexed, dict):
+        for artifact_type, entry in indexed.items():
+            if not isinstance(entry, dict) or not entry.get("key"):
+                continue
+            has_indexed_artifacts = True
+            found[str(artifact_type)] = str(entry["key"])
+    if not has_indexed_artifacts:
+        visit(context.get("agents", {}), "agents")
+        visit(context_store.get_archie_state(context).get("work_products", {}), "work_products")
     return [{"type": path, "key": key, "link": key} for path, key in sorted(found.items())]
 
 
