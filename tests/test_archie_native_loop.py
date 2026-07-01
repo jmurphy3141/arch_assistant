@@ -239,7 +239,11 @@ async def test_ha_advice_is_conversational_without_artifact(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_needs_input_is_unambiguous_and_reply_does_not_claim_success(monkeypatch):
+    producer_calls = 0
+
     async def producer(_args, **_kwargs):
+        nonlocal producer_calls
+        producer_calls += 1
         return ToolResult(
             summary="POC duration is required.",
             status="needs_input",
@@ -250,18 +254,9 @@ async def test_needs_input_is_unambiguous_and_reply_does_not_claim_success(monke
         monkeypatch,
         [ToolSpec(name="generate_poc_plan", handler=producer, description="Generate POC plan.")],
     )
-    responses = iter(
-        [
-            {"tool": "generate_poc_plan", "args": {}},
-            "Please provide the POC duration.",
-        ]
-    )
+    responses = iter([{"tool": "generate_poc_plan", "args": {}}])
 
-    async def tool_runner(prompt, *_args):
-        if "[TOOL RESULT" in prompt:
-            assert "NO ARTIFACT PRODUCED" in prompt
-            assert "Status: needs_input" in prompt
-            assert "Please provide POC duration" in prompt
+    async def tool_runner(_prompt, *_args):
         return next(responses)
 
     result = await archie_native_loop.run_turn(
@@ -274,7 +269,44 @@ async def test_needs_input_is_unambiguous_and_reply_does_not_claim_success(monke
     )
 
     assert result["tool_calls"][0]["result_status"] == "needs_input"
+    assert producer_calls == 1
+    assert result["reply"] == "Please provide POC duration."
     assert not any(word in result["reply"].lower() for word in ("saved", "ready", ".md"))
+
+
+@pytest.mark.asyncio
+async def test_identical_tool_call_reuses_prior_result_without_redispatch(monkeypatch):
+    producer_calls = 0
+
+    async def producer(_args, **_kwargs):
+        nonlocal producer_calls
+        producer_calls += 1
+        return ToolResult(summary="Lookup complete.", status="ok")
+
+    _wire_native(
+        monkeypatch,
+        [ToolSpec(name="lookup", handler=producer, description="Lookup.")],
+    )
+    responses = iter(
+        [
+            {"tool": "lookup", "args": {"query": "same"}},
+            {"tool": "lookup", "args": {"query": "same"}},
+            "Done.",
+        ]
+    )
+
+    result = await archie_native_loop.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="Look it up.",
+        store=InMemoryObjectStore(),
+        text_runner=lambda *_args: "unused",
+        tool_runner=lambda *_args: next(responses),
+    )
+
+    assert producer_calls == 1
+    assert len(result["tool_calls"]) == 2
+    assert result["reply"] == "Done."
 
 
 @pytest.mark.asyncio

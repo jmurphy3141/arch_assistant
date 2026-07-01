@@ -10,6 +10,13 @@ import yaml
 
 from agent.llm_inference_client import run_inference
 from sub_agents.base import make_agent_app
+from sub_agents.grounding import (
+    grounding_trace,
+    input_grounding_missing,
+    needs_input_message,
+    normalize_engagement_context,
+    output_grounding_missing,
+)
 from sub_agents.models import A2ARequest, A2AResponse, AgentCard
 
 
@@ -177,6 +184,16 @@ async def handle(req: A2ARequest) -> A2AResponse:
             status="ok",
             trace={"agent": card.name, "trace_id": req.trace_id, "mode": "deterministic_polish"},
         )
+    normalized = normalize_engagement_context(context)
+    grounding_missing = input_grounding_missing(context, require_customer_name=True)
+    if context and not _has_workload_grounding(req.task, normalized):
+        grounding_missing.append("workload")
+    if grounding_missing:
+        return A2AResponse(
+            result=needs_input_message(grounding_missing),
+            status="needs_input",
+            trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(normalized, grounding_missing)},
+        )
     prompt = _build_prompt(req)
     text = await _call_inference(prompt)
     text = _extract_json(text)
@@ -193,7 +210,36 @@ async def handle(req: A2ARequest) -> A2AResponse:
         text = await _call_inference(retry_prompt)
         text = _extract_json(text)
 
-    return A2AResponse(result=text, status="ok", trace={"agent": card.name, "trace_id": req.trace_id})
+    grounding_missing = output_grounding_missing(
+        context, text, require_customer_name=True
+    )
+    if grounding_missing:
+        return A2AResponse(
+            result=needs_input_message(grounding_missing),
+            status="needs_input",
+            trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(normalized, grounding_missing)},
+        )
+    return A2AResponse(
+        result=text,
+        status="ok",
+        trace={"agent": card.name, "trace_id": req.trace_id, **grounding_trace(normalized, [])},
+    )
+
+
+def _has_workload_grounding(task: str, context: dict[str, Any]) -> bool:
+    facts = context.get("facts") if isinstance(context.get("facts"), dict) else {}
+    fact_keys = {str(key).casefold() for key in facts}
+    if fact_keys & {"workload", "workloads", "platform", "current_platform", "application"}:
+        return True
+    text = f"{task} {_json_mod.dumps(facts, ensure_ascii=True, sort_keys=True)}"
+    return bool(
+        _re.search(
+            r"\b(?:workload|application|app|platform|portal|database|service|system|"
+            r"three[- ]tier|web tier|claims)\b",
+            text,
+            _re.IGNORECASE,
+        )
+    )
 
 
 app = make_agent_app(card, handle)

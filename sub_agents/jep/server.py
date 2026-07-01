@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -135,6 +136,8 @@ async def handle(req: A2ARequest) -> A2AResponse:
     grounding_missing = input_grounding_missing(
         raw_context, require_customer_name=True
     )
+    if raw_context and not _has_workload_grounding(req.task, context):
+        grounding_missing.append("workload")
     if grounding_missing:
         return A2AResponse(
             result=needs_input_message(grounding_missing),
@@ -166,6 +169,22 @@ async def handle(req: A2ARequest) -> A2AResponse:
             trace={**trace, **grounding_trace(context, grounding_missing)},
         )
     return A2AResponse(result=composition.markdown, status="ok", trace=trace)
+
+
+def _has_workload_grounding(task: str, context: dict[str, Any]) -> bool:
+    facts = context.get("facts") if isinstance(context.get("facts"), dict) else {}
+    fact_keys = {str(key).casefold() for key in facts}
+    if fact_keys & {"workload", "workloads", "platform", "current_platform", "application"}:
+        return True
+    text = f"{task} {json.dumps(facts, ensure_ascii=True, sort_keys=True)}"
+    return bool(
+        re.search(
+            r"\b(?:workload|application|app|platform|portal|database|service|system|"
+            r"three[- ]tier|web tier|claims)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 app = make_agent_app(card, handle)

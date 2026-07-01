@@ -2,8 +2,8 @@
 
 The composer accepts only the current request and same-engagement context.  It
 does not call an LLM and it never fills a missing business fact with a generic
-example.  A complete brief renders to canonical Markdown; an incomplete brief
-returns targeted kickoff questions.
+example.  Customer and workload are the only required draft inputs; unknown
+logistics render as explicit placeholders.
 """
 from __future__ import annotations
 
@@ -87,6 +87,7 @@ class JepComposition:
 
 _QUESTIONS = {
     "customer": "Which customer and engagement is this JEP for?",
+    "workload": "What customer workload is this JEP for?",
     "region": "Which OCI region is approved for the POC?",
     "duration": "What is the total POC duration?",
     "phases": "What are the windows for Phase 1 Assessment, Phase 2 Build, and Phase 3 Validate?",
@@ -144,35 +145,42 @@ def extract_jep_brief(
     sources = _clean(f"{current}\n{context_text}")
 
     customer = _clean(str(context.get("customer_name") or "")) or _extract_customer(current)
+    workload = _extract_workload(sources) or _selected_poc_workload(context)
     region_match = _REGION_RE.search(sources)
-    region = region_match.group(0) if region_match else ""
+    region = region_match.group(0) if region_match else "[TBD]"
     duration_match = _DURATION_RE.search(sources)
-    duration = duration_match.group(1) if duration_match else ""
+    duration = duration_match.group(1) if duration_match else "[TBD]"
 
     phases_by_number: dict[int, JepPhase] = {}
     for match in _PHASE_RE.finditer(sources):
         number = int(match.group(1))
         phases_by_number[number] = JepPhase(number, match.group(2).title(), _normalize_window(match.group(3)))
-    phases = tuple(phases_by_number.get(i) for i in (1, 2, 3))
+    phases = tuple(
+        phases_by_number.get(i) or JepPhase(i, name, "[TBD]")
+        for i, name in ((1, "Assessment"), (2, "Build"), (3, "Validate"))
+    )
 
-    scope = _extract_scope(sources)
+    scope = _extract_scope(sources) or (("[TBD]",) if workload else ())
     poc_scope = _selected_poc_scope(context)
     if poc_scope:
         scope = poc_scope
-    architecture = _extract_architecture(sources, context)
+    architecture = _extract_architecture(sources, context) or (
+        f"POC architecture for {workload}; detailed OCI topology [TBD]" if workload else ""
+    )
     criteria = _extract_criteria(sources)
     poc_criteria = _selected_poc_criteria(context)
     if poc_criteria:
         criteria = poc_criteria
-    owners = _extract_owners(sources, customer)
-    approvals = _extract_approvals(sources, owners)
-    risks = _extract_risks(sources, criteria)
+    owners = _extract_owners(sources, customer) or (JepOwner("[TBD]", "[TBD]", "[TBD]"),)
+    approvals = _extract_approvals(sources, owners) or "[TBD]"
+    risks = _extract_risks(sources, criteria) or ("[TBD]", "[TBD]", "[TBD]")
     artifact_references = _artifact_references(context)
-    artifact_context = context.get("artifact_context") if isinstance(context.get("artifact_context"), dict) else {}
+    artifact_context = (
+        context.get("artifact_context")
+        if isinstance(context.get("artifact_context"), dict)
+        else {}
+    )
     expected_criteria_count = _expected_success_criteria_count(context)
-    require_selected_poc = bool(re.search(r"\b(?:selected|confirmed)\s+poc\b", current, re.IGNORECASE))
-    require_finalized_bom = bool(re.search(r"\b(?:finalized|existing|latest)\s+bom\b", current, re.IGNORECASE))
-
     include_bom = bool(re.search(
         r"(?:\b(?:include|add|with|containing)\b[^.]{0,60}\b(?:BOM|bill of materials)\b|"
         r"\b(?:BOM|bill of materials)\s+section\b)",
@@ -180,42 +188,29 @@ def extract_jep_brief(
         re.IGNORECASE,
     ))
     include_handoff = bool(re.search(r"\bhandoff deliverables?\b", current, re.IGNORECASE))
-    bom_scope = _extract_bom_scope(context) or (scope if include_bom else ())
+    bom_scope = _extract_bom_scope({"artifact_context": artifact_context}) or (
+        scope if include_bom and scope else (("[TBD]",) if include_bom else ())
+    )
     handoff = _extract_handoff(sources, criteria) if include_handoff else ()
+    if include_handoff and not handoff:
+        handoff = ("[TBD]",)
 
     missing: list[str] = []
-    for name, value in (
-        ("customer", customer), ("region", region), ("duration", duration),
-        ("scope", scope), ("architecture", architecture), ("criteria", criteria),
-        ("owners", owners), ("risks", risks), ("approvals", approvals),
-    ):
+    for name, value in (("customer", customer), ("workload", workload)):
         if not value:
             missing.append(name)
-    if any(phase is None for phase in phases) or len(phases_by_number) != 3:
-        missing.append("phases")
-    if len(criteria) < expected_criteria_count and "criteria" not in missing:
-        missing.append("criteria")
-    if len(owners) < 2 and "owners" not in missing:
-        missing.append("owners")
-    if len(risks) < 3 and "risks" not in missing:
-        missing.append("risks")
-    if include_bom and not bom_scope:
-        missing.append("bom_scope")
-    if include_handoff and not handoff:
-        missing.append("handoff")
-    if require_selected_poc and not isinstance(artifact_context.get("poc"), dict):
-        missing.append("selected_poc")
-    bom_artifact = artifact_context.get("bom") if isinstance(artifact_context.get("bom"), dict) else {}
-    if require_finalized_bom and not (bom_artifact.get("xlsx_artifact_key") or bom_artifact.get("xlsx_filename")):
-        missing.append("finalized_bom")
     if missing:
         return None, list(dict.fromkeys(missing))
+    if len(criteria) < expected_criteria_count:
+        criteria = criteria + tuple(
+            "[TBD]" for _ in range(expected_criteria_count - len(criteria))
+        )
 
     brief = JepBrief(
         customer=customer,
         region=region,
         duration=duration,
-        phases=phases,  # type: ignore[arg-type]
+        phases=phases,
         scope=scope,
         architecture=architecture,
         criteria=criteria,
@@ -236,9 +231,9 @@ def extract_jep_brief(
 def render_jep_markdown(brief: JepBrief) -> str:
     """Render the canonical nine sections, with optional sections before Approvals."""
     scope_text = ", ".join(brief.scope)
-    out_of_scope = "Anything not explicitly listed in the grounded brief is out of scope."
+    out_of_scope = _extract_out_of_scope(brief.grounded_source) or "[TBD]"
     if brief.include_bom:
-        out_of_scope += " A separate BOM artifact is also out of scope."
+        out_of_scope += " A separate BOM artifact is not created by this draft."
     refs = ""
     if brief.artifact_references:
         refs = " Same-engagement references: " + "; ".join(brief.artifact_references) + "."
@@ -316,9 +311,12 @@ def validate_jep_markdown(
     required_criteria = expected_criteria_count or (
         brief.expected_criteria_count if brief is not None else 3
     )
-    if len(_NUMBER_RE.findall(criteria_section)) < required_criteria:
+    grounded_or_tbd_criteria = len(_NUMBER_RE.findall(criteria_section)) + len(
+        re.findall(r"^\|\s*\[TBD\]\s*\|", criteria_section, re.MULTILINE)
+    )
+    if grounded_or_tbd_criteria < required_criteria:
         findings.append(
-            f"success criteria require at least {required_criteria} grounded numeric targets"
+            f"success criteria require at least {required_criteria} grounded numeric targets or explicit TBD placeholders"
         )
     risk_section = _section(text, "Risk Registry")
     if len([line for line in risk_section.splitlines() if line.startswith("|")]) < 5:
@@ -351,7 +349,7 @@ def _clean(value: str) -> str:
 def _context_text(context: dict[str, Any]) -> str:
     allowed = (
         "engagement_context_summary", "archie_memory_summary", "architect_brief",
-        "resolved_decisions", "artifact_context",
+        "resolved_decisions", "artifact_context", "facts", "client_facts",
     )
     values = [context.get(key) for key in allowed if context.get(key)]
     return " ".join(value if isinstance(value, str) else json.dumps(value, sort_keys=True) for value in values)
@@ -367,6 +365,37 @@ def _extract_customer(text: str) -> str:
         if match:
             return _clean(match.group(1))
     return ""
+
+
+def _extract_workload(text: str) -> str:
+    labeled = re.search(
+        r"\b(?:workload|current platform|platform|migration scope)\s*[:=]\s*"
+        r"(.+?)(?:\.(?=\s|$)|;|\n|$)",
+        text,
+        re.IGNORECASE,
+    )
+    if labeled:
+        return _clean(labeled.group(1)).strip('"')
+    patterns = (
+        r"\b(?:migrat(?:e|ing)|move|moving)\s+(.+?)(?:\s+to\s+OCI\b|\.(?=\s|$)|;|$)",
+        r"\bmigration\s+of\s+(.+?)(?:\s+to\s+OCI\b|\.(?=\s|$)|;|$)",
+        r"\b(?:currently\s+)?runs?\s+(.+?)(?:\.(?=\s|$)|;|$)",
+        r"\b(?:hosts?|operates?)\s+(.+?)(?:\.(?=\s|$)|;|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return _clean(match.group(1)).strip('"')
+    return ""
+
+
+def _extract_out_of_scope(text: str) -> str:
+    match = re.search(
+        r"\bOut of scope:\s*(.+?)(?:\.\s+(?:Use|Success criteria|Oracle|Include|Generate)|\n|$)",
+        text,
+        re.IGNORECASE,
+    )
+    return _clean(match.group(1)) if match else ""
 
 
 def _normalize_window(value: str) -> str:
@@ -394,6 +423,14 @@ def _selected_poc_scope(context: dict[str, Any]) -> tuple[str, ...]:
         for item in poc.get("oci_services", []) or []
         if str(item).strip()
     )
+
+
+def _selected_poc_workload(context: dict[str, Any]) -> str:
+    artifact = context.get("artifact_context")
+    poc = artifact.get("poc") if isinstance(artifact, dict) else None
+    if not isinstance(poc, dict):
+        return ""
+    return _clean(str(poc.get("selected_option_name") or ""))
 
 
 def _selected_poc_criteria(context: dict[str, Any]) -> tuple[str, ...]:

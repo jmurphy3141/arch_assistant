@@ -11,6 +11,7 @@ from sub_agents.diagram import server as diagram_server
 from sub_agents.jep import server as jep_server
 from sub_agents.models import A2ARequest
 from sub_agents.pov import server as pov_server
+from sub_agents.poc_strategist import server as poc_server
 from sub_agents.terraform import server as terraform_server
 from sub_agents.waf import server as waf_server
 from sub_agents.grounding import output_grounding_missing
@@ -107,6 +108,58 @@ async def test_pov_and_jep_name_customer_and_report_grounded(monkeypatch):
     assert jep.status == "ok"
     assert jep.trace["grounded"] is True
     assert "Northwind Health" in jep.result
+
+
+async def test_jep_and_poc_grounding_require_only_customer_and_workload(monkeypatch):
+    context = {
+        "customer_id": "northwind",
+        "customer_name": "Northwind Health",
+        "facts": {"workload": ".NET member portal"},
+    }
+    jep = await jep_server.handle(
+        A2ARequest(
+            task="Draft a JEP for Northwind Health, which runs a .NET member portal.",
+            engagement_context=context,
+        )
+    )
+
+    async def fake_poc_inference(_prompt):
+        return json.dumps({
+            "option_name": "Northwind Health member portal validation",
+            "demo_script_summary": "Validate the .NET member portal workload.",
+        })
+
+    monkeypatch.setattr(poc_server, "_call_inference", fake_poc_inference)
+    poc = await poc_server.handle(
+        A2ARequest(
+            task="Draft a POC option for the Northwind Health .NET member portal workload.",
+            engagement_context=context,
+        )
+    )
+
+    assert jep.status == "ok"
+    assert "[TBD]" in jep.result
+    assert poc.status == "ok"
+    assert poc.trace["grounded"] is True
+
+
+async def test_jep_and_poc_grounding_reject_missing_workload(monkeypatch):
+    context = {
+        "customer_id": "northwind",
+        "customer_name": "Northwind Health",
+        "facts": {"region": "us-chicago-1"},
+    }
+    jep = await jep_server.handle(
+        A2ARequest(task="Draft the JEP.", engagement_context=context)
+    )
+    poc = await poc_server.handle(
+        A2ARequest(task="Draft the POC.", engagement_context=context)
+    )
+
+    assert jep.status == "needs_input"
+    assert "workload" in jep.trace["missing"]
+    assert poc.status == "needs_input"
+    assert "workload" in poc.trace["missing"]
 
 
 async def test_bom_diagram_waf_and_terraform_reflect_supplied_facts(monkeypatch):

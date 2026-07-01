@@ -67,31 +67,26 @@ POV:
    → generate_pov fires → real POV artifact; grounded.
 
 Meeting 3 — POC:
-9. "They can give us 20 business days. Jordan Kim owns the Oracle side and Priya
-   Shah owns it for Northwind; each can commit 8 hours a week. Success means 200
-   concurrent users, claims lookup p95 under 600 ms, and recovery inside 45
-   minutes. Keep IIS, the claims app, Oracle, HA, security, logging, and monitoring
-   in scope; production cutover, DR, and load beyond 200 users are out."
-   → conversational POC-logistics intake; no artifact yet.
-10. "They liked the POV. What POC could we run to prove it out?"
-   → POC options produced (generate_poc_plan); presented conversationally.
-11. "Let's go with the second option."
+9. "They liked the POV. What POC could we run to prove it out?"
+   → POC options produced as a draft (generate_poc_plan); unknown duration,
+   owners, commitments, criteria, and scope are `[TBD]`, never fabricated.
+10. "Let's go with the second option."
     → records the selection; no downstream artifacts yet.
 
 Build the POC:
-12. "Great — can you get the architecture diagram going for that?"
+11. "Great — can you get the architecture diagram going for that?"
     → generate_diagram fires → real .drawio (three tiers).
-13. "We'll need a BOM too — figure a couple of web boxes, a few app servers, an HA
+12. "We'll need a BOM too — figure a couple of web boxes, a few app servers, an HA
     Oracle database, and some file storage."
     → generate_bom fires → real .xlsx grounded to what was said; NO AI/token line items.
-14. "Did that BOM slip in any Gen AI token costs?"
+13. "Did that BOM slip in any Gen AI token costs?"
     → a LOOKUP fires (reads the stored BOM); answer derived from it; NO re-derived
     prose BOM.
-15. "Last thing — put the JEP together for it."
-    → generate_jep fires → real .docx; owners/phases/criteria grounded.
+14. "Last thing — put the JEP together for it."
+    → generate_jep fires → real draft .docx; unknown logistics are `[TBD]`.
 
 Wrap:
-16. "Remind me what we've actually produced for Northwind so far."
+15. "Remind me what we've actually produced for Northwind so far."
     → a LOOKUP/list fires; reply lists the real artifacts (POV, diagram, BOM, JEP)
     with links; nothing fabricated.
 
@@ -99,13 +94,14 @@ Wrap:
 - Conversational turns (1,2,5,7): no `generate_*` tool fired; reply contains no
   fabricated number/percentage/SLA/customer-evidence/AI-token claim, and no
   "E5/E6 = Ampere/Arm".
-- Lookup turns (3,14,16): a fetch tool (get_document/get_summary/list_documents)
+- Lookup turns (3,13,15): a fetch tool (get_document/get_summary/list_documents)
   fired and NO `generate_*` fired; reply reflects real store state; reply contains
   no artifact-shaped prose (no "| SKU", no invented "$/mo", no fake version string).
-- Deliverable turns (8,10,12,13,15): the matching sub-agent fired and produced a
+- Deliverable turns (8,9,11,12,14): the matching sub-agent fired and produced a
   real artifact whose key exists and reloads from object storage
-  (.md/.drawio/.xlsx/.docx as appropriate).
-- Memory turns (6,16): facts/artifacts introduced in earlier meetings appear in
+  (.md/.drawio/.xlsx/.docx as appropriate). POC and JEP drafts contain `[TBD]`
+  logistics; `needs_input` for missing logistics fails.
+- Memory turns (6,15): facts/artifacts introduced in earlier meetings appear in
   the reply.
 - Whole run: no HTTP 500s; every produced artifact reloads from object storage;
   max turn latency recorded.

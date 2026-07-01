@@ -6,6 +6,7 @@ import json
 import pytest
 
 from agent import context_store, sub_agent_client
+from agent.jep_composer import compose_jep
 from agent.persistence_objectstore import InMemoryObjectStore
 from agent.tools import specialists as specialists_module
 from agent.tools.specialists import REQUIRED_WAF_PILLARS, JepHandler, PovHandler, WafHandler
@@ -147,6 +148,20 @@ The POC uses OCI Logging Analytics, Object Storage, Vector Search, OCI Functions
 | TBD | Oracle | Oracle Solutions Architect |  | TBD |
 | TBD | ACME | Customer Technical Lead |  | TBD |
 """
+
+
+def test_jep_review_accepts_explicit_tbd_draft_criteria():
+    draft = compose_jep(
+        "Draft the JEP for Northwind Health, which runs a .NET member portal.",
+        {"customer_name": "Northwind Health"},
+    )
+
+    assert draft.status == "ok"
+    assert specialists_module._document_review_findings(
+        "jep",
+        draft.markdown,
+        "Draft the JEP for Northwind Health, which runs a .NET member portal.",
+    ) == []
 
 
 async def test_jep_review_counts_percentage_success_criteria():

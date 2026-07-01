@@ -89,19 +89,36 @@ def test_incomplete_request_returns_targeted_questions_without_artifact() -> Non
     result = compose_jep("Create a JEP for ACME", {"customer_name": "ACME"})
     assert result.status == "needs_input"
     assert result.markdown == ""
-    assert "region" in result.missing_fields
-    assert any("OCI region" in question for question in result.questions)
+    assert result.missing_fields == ("workload",)
+    assert any("workload" in question for question in result.questions)
 
 
-def test_general_jep_requires_three_measurable_criteria() -> None:
+def test_general_jep_drafts_missing_criterion_as_tbd() -> None:
     result = compose_jep(
         QUALIFIED.replace(
             ", and database restore within 60 minutes",
             "",
         )
     )
-    assert result.status == "needs_input"
-    assert "criteria" in result.missing_fields
+    assert result.status == "ok"
+    assert "[TBD]" in result.markdown
+
+
+def test_customer_and_workload_produce_draft_with_tbd_logistics() -> None:
+    result = compose_jep(
+        "Draft a JEP for Northwind Health, which runs a .NET member portal.",
+        {"customer_name": "Northwind Health"},
+    )
+
+    assert result.status == "ok"
+    assert result.brief is not None
+    assert result.brief.duration == "[TBD]"
+    assert all(phase.window == "[TBD]" for phase in result.brief.phases)
+    assert result.brief.owners[0].role == "[TBD]"
+    assert result.brief.criteria == ("[TBD]", "[TBD]", "[TBD]")
+    assert "Northwind Health" in result.markdown
+    assert "Jordan Kim" not in result.markdown
+    assert "20 days" not in result.markdown
 
 
 def test_canonical_order_optional_sections_and_approvals_last() -> None:
@@ -175,9 +192,8 @@ def test_markdown_and_docx_contain_matching_grounded_content() -> None:
 def test_jep_requires_and_references_selected_poc_and_finalized_bom() -> None:
     request = QUALIFIED + " Ground this JEP in the selected POC and finalized BOM."
     missing = compose_jep(request, {})
-    assert missing.status == "needs_input"
-    assert "selected_poc" in missing.missing_fields
-    assert "finalized_bom" in missing.missing_fields
+    assert missing.status == "ok"
+    assert "[TBD]" in missing.markdown
 
     result = compose_jep(
         request,
