@@ -28,7 +28,10 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
+
+import yaml
 
 from agent.persistence_objectstore import ObjectStoreBase
 from agent.archie_wiring import build_forge
@@ -45,6 +48,7 @@ from skillforge import Forge as _Forge
 logger = logging.getLogger(__name__)
 _PENDING_UPDATE_WORKFLOWS: dict[str, dict[str, Any]] = {}
 _forge_cache: dict[str, _Forge] = {}
+_CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 
 # ── System message ─────────────────────────────────────────────────────────────
 
@@ -266,6 +270,26 @@ async def run_turn(
             "history_length": int,
         }
     """
+    with open(_CONFIG_PATH, encoding="utf-8") as config_file:
+        agent_mode = str(
+            (yaml.safe_load(config_file) or {}).get("orchestrator", {}).get(
+                "agent_mode", "forge"
+            )
+        ).strip().lower()
+    if agent_mode == "native":
+        from agent.archie_native_loop import run_turn as run_native_turn
+
+        return await run_native_turn(
+            customer_id=customer_id,
+            customer_name=customer_name,
+            user_message=user_message,
+            store=store,
+            text_runner=text_runner,
+            tool_runner=tool_runner,
+            a2a_base_url=a2a_base_url,
+            max_tool_iterations=max_tool_iterations,
+        )
+
     _active_hats: list[str] = []
     _hat_rounds: dict[str, int] = {}
     loaded_hats = hat_engine.load_hats()

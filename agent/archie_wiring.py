@@ -35,6 +35,16 @@ from skillforge.types import MemorySnapshot
 
 _INTENT_ROUTING_SKILL = Path(__file__).parent.parent / "skills" / "intent_routing.md"
 
+
+def get_registered_tool_specs(forge: Forge) -> tuple:
+    """Expose the shared Archie registrations to the native agent loop."""
+    return tuple(forge._registry._tools.values())
+
+
+def get_registered_memory(forge: Forge):
+    """Expose the memory adapter paired with the shared tool registrations."""
+    return forge._memory
+
 _EXPERT_IDENTITY = """
 ## Expert Identity
 
@@ -643,9 +653,36 @@ def build_forge(
     notes = NotesHandlers(
         store=store, customer_id=customer_id, customer_name=customer_name
     )
-    forge.register_tool("save_notes", notes.save_notes, memory_contract=True)
-    forge.register_tool("get_summary", notes.get_summary)
-    forge.register_tool("get_document", notes.get_document)
+    forge.register_tool(
+        "save_notes",
+        notes.save_notes,
+        description="Save user-provided notes into the current engagement.",
+        args={"text": ArgSchema(
+            description="The note text to save.",
+            type="string",
+            required=True,
+        )},
+        memory_contract=True,
+    )
+    forge.register_tool(
+        "get_summary",
+        notes.get_summary,
+        description="Read the current engagement facts and summary.",
+    )
+    forge.register_tool(
+        "get_document",
+        notes.get_document,
+        description=(
+            "Fetch the latest stored deliverable of a requested type. Use this to "
+            "answer whether a BOM, diagram, POV, JEP, WAF, Terraform bundle, deck, "
+            "or other artifact exists and to read what it says."
+        ),
+        args={"type": ArgSchema(
+            description="Deliverable type, such as bom, diagram, pov, jep, waf, or terraform.",
+            type="string",
+            required=True,
+        )},
+    )
     forge.register_tool(
         "confirm_debrief",
         notes.confirm_debrief,

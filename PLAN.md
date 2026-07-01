@@ -111,6 +111,21 @@ Archie asks questions when context is insufficient. "We don't know yet" is a val
 answer that Archie accepts and proceeds with explicit assumptions. This behavior
 must not be eroded by routing shortcuts.
 
+### 7. Native agent loop (supersedes Forge-era orchestration)
+
+Archie's loop uses the model's **native tool-calling** (`run_inference_with_tools`),
+not text-parsed tool dispatch. The model self-selects tools — sub-agents, lookups,
+and hats — exactly as Decision #2 intends. Grounding comes from tool **use**.
+
+The following, which accreted in `skillforge/` beyond this plan, are retired in
+native mode: step-3 planning, `requires_hat` gating, expert pre/post-review, the
+correction loop, and text-parsed (`_parse_tool_call`) dispatch. Decision #2 is
+preserved — hats remain Archie's tools (`use_hat_*`), now delivered as native
+tool results rather than gate-injected.
+
+Rollout is behind config flag `agent_mode: forge | native` (default `forge`).
+The forge path stays intact and deployable; native is opt-in and instant-revert.
+
 ---
 
 ## Current State vs Target State
@@ -353,6 +368,25 @@ is small enough that the hat system integrates cleanly.
 - Remove `archie-cross-path-drafting` branch from remote
 - Update `AGENTS.md` to reflect final state
 - Update `CLAUDE.md` to reflect final state
+
+---
+
+### Phase 5 — Native Agent Loop
+
+**Goal:** realign the loop with native tool-calling per Decision #7; retire the
+Forge ceremony in native mode behind the `agent_mode` flag. Sub-agent quality and
+the forge path are untouched.
+
+Assigned task: `tasks/p57-native-archie-loop.md`.
+
+**Acceptance:**
+- `agent_mode: native` → Archie converses, and self-calls sub-agents / lookups /
+  hats via native tool-calling; loose asks ("do we have a BOM") resolve by lookup,
+  never by prose.
+- `agent_mode: forge` → byte-for-byte current behavior; all existing tests pass.
+- No `_parse_tool_call` in the native path.
+
+---
 
 ### UI — Deferred, Low Priority
 

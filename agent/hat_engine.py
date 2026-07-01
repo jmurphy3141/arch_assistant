@@ -7,6 +7,9 @@ from pathlib import Path
 
 import yaml as _yaml
 
+from skillforge.protocols import ToolSchema
+from skillforge.types import ToolResult
+
 
 _HATS_DIR = Path(__file__).parent / "hats"
 MAX_ACTIVE_HATS = 3
@@ -103,6 +106,35 @@ def get_hat_tool_definitions() -> list[dict]:
             }
         )
     return tools
+
+
+def get_native_hat_tool_schemas() -> list[ToolSchema]:
+    """Return native function declarations for every discovered Archie hat."""
+    return [
+        ToolSchema(
+            name=f"use_hat_{name}",
+            description=(
+                f"Read the {name} expert hat before reasoning further about a relevant task."
+            ),
+        )
+        for name in sorted(_HAT_CACHE)
+    ]
+
+
+async def invoke_native_hat(tool_name: str) -> ToolResult:
+    """Return a native hat tool's markdown so the model can use it next round."""
+    prefix = "use_hat_"
+    if not tool_name.startswith(prefix):
+        raise KeyError(tool_name)
+    name = tool_name[len(prefix):]
+    content = _HAT_CACHE.get(name)
+    if content is None:
+        raise KeyError(tool_name)
+    return ToolResult(
+        summary=content,
+        status="ok",
+        data={"hat": name, "content": content},
+    )
 
 
 def apply_hat(active_hats: list[str], hat_name: str) -> list[str]:
