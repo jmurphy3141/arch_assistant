@@ -415,7 +415,9 @@ Tasks (land in order; each rebases on the prior — all touch the native loop):
 - `tasks/p60-drop-hats-promote-c3e.md` — retire hats (Decision #8); C3E → identity + memory.
 - `tasks/p61-reference-tools.md` — reference/lookup tools for hard facts (grounding by retrieval).
 - `tasks/p62-subagent-produce-grounding.md` — producers ground to the engagement + self-review.
-- `tasks/p63-grounding-guard.md` — last-resort deterministic numeric-claim guard (conditional).
+- `tasks/p63-grounding-guard.md` — harness grounding-assertion accuracy (fabrication cleared; make the score trustworthy).
+- `tasks/p64-native-generation-discipline.md` — converse/suggest, don't auto-generate on conversational turns.
+- `tasks/p65-structured-output-grounding.md` — relax producer output-grounding for structured artifacts (diagram/terraform/bom).
 
 **Acceptance:**
 - `agent_mode: native` → Archie converses, and self-calls sub-agents / lookups /
