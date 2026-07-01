@@ -6,6 +6,7 @@ from agent import archie_memory_retrieval, archie_native_loop, context_store
 from agent.tools.notes import NotesHandlers
 from agent.engagement_mission import C3E_PHASE_ORDER, PHASE_ARTIFACTS
 from agent.persistence_objectstore import InMemoryObjectStore
+from skillforge.protocols import ArgSchema
 from skillforge.registry import ToolSpec
 from skillforge.types import MemorySnapshot, ToolResult
 
@@ -307,6 +308,121 @@ async def test_identical_tool_call_reuses_prior_result_without_redispatch(monkey
     assert producer_calls == 1
     assert len(result["tool_calls"]) == 2
     assert result["reply"] == "Done."
+
+
+@pytest.mark.asyncio
+async def test_poc_option_selection_is_persisted_through_confirm_tool(monkeypatch):
+    selected: dict[str, str] = {}
+    prior_context = {
+        "customer_id": "c1",
+        "latest_decision_context": {
+            "poc_options": [
+                {"option_name": "Option 1"},
+                {"option_name": "Option 2"},
+            ]
+        },
+    }
+
+    async def confirm(args, **_kwargs):
+        assert args == {"action": "confirm", "confirmed_option_name": "option 2"}
+        selected["option"] = "Option 2"
+        return ToolResult(
+            summary="POC confirmed: Option 2.",
+            status="ok",
+            data={"selected_option": {"option_name": "Option 2"}},
+        )
+
+    spec = ToolSpec(
+        name="generate_poc_plan",
+        handler=confirm,
+        description=(
+            "Persist a selected POC option with action='confirm'; the selection is not "
+            "recorded until this call succeeds."
+        ),
+        args={
+            "action": ArgSchema(
+                description="Use confirm to persist a choice.",
+                type="string",
+                required=False,
+            ),
+            "confirmed_option_name": ArgSchema(
+                description="The selected option.",
+                type="string",
+                required=False,
+            ),
+        },
+    )
+    _wire_native(monkeypatch, [spec])
+    monkeypatch.setattr(
+        archie_native_loop.context_store,
+        "read_context",
+        lambda *_args: prior_context,
+    )
+    responses = iter(
+        [
+            {
+                "tool": "generate_poc_plan",
+                "args": {"action": "confirm", "confirmed_option_name": "option 2"},
+            },
+            "Option 2 is recorded.",
+        ]
+    )
+
+    async def tool_runner(_prompt, system_message, schemas, _label):
+        assert "do not say it is confirmed until that call returns successfully" in system_message
+        schema = next(item for item in schemas if item.name == "generate_poc_plan")
+        assert "not recorded until" in schema.description
+        assert {"action", "confirmed_option_name"} <= set(schema.args)
+        return next(responses)
+
+    result = await archie_native_loop.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="Let's go with option 2.",
+        store=InMemoryObjectStore(),
+        text_runner=lambda *_args: "unused",
+        tool_runner=tool_runner,
+    )
+
+    assert selected == {"option": "Option 2"}
+    assert result["tool_calls"][0]["result_status"] == "ok"
+    assert result["tool_calls"][0]["result_data"]["selected_option"] == {
+        "option_name": "Option 2"
+    }
+
+
+@pytest.mark.asyncio
+async def test_failed_poc_confirmation_does_not_claim_recorded_decision(monkeypatch):
+    async def confirm(_args, **_kwargs):
+        return ToolResult(
+            summary="Select one of the persisted POC options.",
+            status="needs_input",
+            clarification="Select one of the persisted POC options.",
+        )
+
+    _wire_native(
+        monkeypatch,
+        [ToolSpec(name="generate_poc_plan", handler=confirm, description="Confirm POC.")],
+    )
+    responses = iter(
+        [
+            {
+                "tool": "generate_poc_plan",
+                "args": {"action": "confirm", "confirmed_option_name": "option 2"},
+            }
+        ]
+    )
+    result = await archie_native_loop.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="Let's go with option 2.",
+        store=InMemoryObjectStore(),
+        text_runner=lambda *_args: "unused",
+        tool_runner=lambda *_args: next(responses),
+    )
+
+    assert result["reply"] == "Select one of the persisted POC options."
+    assert "confirmed" not in result["reply"].lower()
 
 
 @pytest.mark.asyncio

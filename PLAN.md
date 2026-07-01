@@ -423,6 +423,8 @@ Tasks (land in order; each rebases on the prior — all touch the native loop):
 - `tasks/p68-scenario-poc-logistics.md` — scenario tests draft-first POC/JEP (no required logistics; assert [TBD] drafts).
 - `tasks/p69-draft-first-poc-jep.md` — poc/jep produce complete-as-possible drafts; require only customer+workload; [TBD] the rest; never fabricate or refuse for logistics.
 - `tasks/p70-needs-input-loop-discipline.md` — on needs_input, surface and stop; never re-loop the same producer to the tool limit.
+- `tasks/p71-prose-grounding-customer-name-only.md` — prose grounding = customer name; drop brittle fact-anchor blocker.
+- `tasks/p72-record-poc-selection.md` — record POC selection via the tool, not prose.
 
 **Acceptance:**
 - `agent_mode: native` → Archie converses, and self-calls sub-agents / lookups /

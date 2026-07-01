@@ -47,7 +47,9 @@ NATIVE_SYSTEM_IDENTITY = (
     "status. When it returns needs_input, ask for exactly the stated missing input and end "
     "the turn; do not call that tool again with the same arguments. Never "
     "say an artifact is saved or ready, or cite a key or filename, unless that tool returned "
-    "the artifact key on this turn. "
+    "the artifact key on this turn. Persist user decisions through the tool that records "
+    "them: for a chosen POC option, call generate_poc_plan with action=confirm and do not "
+    "say it is confirmed until that call returns successfully. "
     "C3E is your standing engagement method: Qualify → Discover → Develop → Design → "
     "Prove → Win → Deploy → Support → Grow. Artifact gates are Discover: Strategic "
     "Technical Approach; Develop: POV; Design: architecture diagram and BOM; Prove: JEP "
@@ -857,17 +859,38 @@ def build_forge(
         description=(
             "Explores 3 parallel POC options across migration, performance/AI, "
             "and cost angles. Returns ranked options with effort and value "
-            "scores, and a recommended POC with demo script."
+            "scores, and a recommended POC with demo script. To persist the option "
+            "the user selects, call this tool again with action='confirm' and "
+            "confirmed_option_name set to the chosen option; the selection is not "
+            "recorded until that confirm call returns successfully."
         ),
-        args={"prompt": ArgSchema(
-            description=(
-                "Customer context and POC planning request. Include pain, current "
-                "platform, timeline, budget signal, industry, and competitive context "
-                "when known."
+        args={
+            "prompt": ArgSchema(
+                description=(
+                    "Customer context and POC planning request. Include pain, current "
+                    "platform, timeline, budget signal, industry, and competitive context "
+                    "when known."
+                ),
+                type="string",
+                required=False,
             ),
-            type="string",
-            required=False,
-        )},
+            "action": ArgSchema(
+                description=(
+                    "Use 'explore' to create options. Use 'confirm' to persist the option "
+                    "the user selected."
+                ),
+                type="string",
+                required=False,
+            ),
+            "confirmed_option_name": ArgSchema(
+                description=(
+                    "For action='confirm', the exact chosen option name or an unambiguous "
+                    "choice such as 'option 2'."
+                ),
+                type="string",
+                required=False,
+            ),
+        },
         memory_contract=True,
         critique_enabled=True,
         requires_hat="oci_poc_strategist",
