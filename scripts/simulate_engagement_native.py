@@ -33,11 +33,14 @@ the harness never retries a failed intent with command-like phrasing.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from datetime import datetime, timezone
 from io import BytesIO
 import json
+import math
 from pathlib import Path
 import re
+import statistics
 import sys
 import time
 from typing import Any
@@ -686,10 +689,20 @@ def _behavior_errors(
     return errors
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
+def _run_once(
+    args: argparse.Namespace,
+    *,
+    customer_id_override: str = "",
+    write_report: bool = True,
+    run_number: int | None = None,
+) -> dict[str, Any]:
     store = _store_from_config()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    customer_id = args.customer_id or f"native-sim-northwind-{run_id.lower()}"
+    customer_id = (
+        customer_id_override
+        or args.customer_id
+        or f"native-sim-northwind-{run_id.lower()}"
+    )
     evidence: dict[str, Any] = {
         "scenario": "Northwind Health native engagement simulation",
         "run_id": run_id,
@@ -846,8 +859,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         evidence["turns"].append(turn_record)
         for failure in turn_record["failures"]:
             evidence["failures"].append({"turn": turn["id"], "cause": failure})
+        label = f"Run {run_number} " if run_number is not None else ""
         print(
-            f"Turn {turn['id']:02d} [{turn_record['verdict']}] "
+            f"{label}Turn {turn['id']:02d} [{turn_record['verdict']}] "
             f"{elapsed:.3f}s tools={_tool_names(body)}"
         )
         for failure in turn_record["failures"]:
@@ -864,11 +878,149 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     evidence["completed_at"] = datetime.now(timezone.utc).isoformat()
     evidence["overall_verdict"] = "PASS" if not evidence["failures"] else "FAIL"
+    if write_report:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(
+            json.dumps(evidence, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            f"Overall: {evidence['overall_verdict']} | "
+            f"max latency: {evidence['max_turn_latency_seconds']:.3f}s | report: {args.report}"
+        )
+    return evidence
+
+
+def _nearest_rank_percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = max(1, math.ceil(percentile * len(ordered)))
+    return ordered[rank - 1]
+
+
+def _aggregate_runs(
+    raw_runs: list[dict[str, Any]],
+    *,
+    base_url: str,
+    started_at: str,
+) -> dict[str, Any]:
+    per_turn: list[dict[str, Any]] = []
+    for turn in TURNS:
+        turn_id = int(turn["id"])
+        records = [
+            next(item for item in run["turns"] if int(item["turn"]) == turn_id)
+            for run in raw_runs
+        ]
+        pass_count = sum(record.get("verdict") == "PASS" for record in records)
+        failures = Counter(
+            str(failure)
+            for record in records
+            for failure in record.get("failures", [])
+        )
+        per_turn.append({
+            "turn": turn_id,
+            "pass_count": pass_count,
+            "run_count": len(raw_runs),
+            "pass_rate": round(pass_count / len(raw_runs), 4),
+            "pass_label": f"{pass_count}/{len(raw_runs)}",
+            "failure_counts": [
+                {"cause": cause, "count": count}
+                for cause, count in sorted(
+                    failures.items(), key=lambda item: (-item[1], item[0])
+                )
+            ],
+        })
+    per_turn.sort(key=lambda item: (item["pass_rate"], item["turn"]))
+
+    pass_counts = [
+        sum(turn.get("verdict") == "PASS" for turn in run.get("turns", []))
+        for run in raw_runs
+    ]
+    latencies = [
+        float(turn.get("elapsed_seconds") or 0.0)
+        for run in raw_runs
+        for turn in run.get("turns", [])
+    ]
+    aggregate = {
+        "scenario": "Northwind Health native engagement simulation",
+        "aggregate": True,
+        "runs_requested": len(raw_runs),
+        "base_url": base_url,
+        "agent_mode": "native",
+        "model": "Grok 4 via configured OCI Generative AI endpoint",
+        "started_at": started_at,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "per_turn_pass_rates_worst_first": per_turn,
+            "overall_pass_distribution": {
+                "pass_counts": pass_counts,
+                "min_pass_count": min(pass_counts),
+                "median_pass_count": statistics.median(pass_counts),
+                "max_pass_count": max(pass_counts),
+                "turns_per_run": len(TURNS),
+            },
+            "latency_seconds": {
+                "sample_count": len(latencies),
+                "median": round(statistics.median(latencies), 3),
+                "p95": round(_nearest_rank_percentile(latencies, 0.95), 3),
+                "max": round(max(latencies), 3),
+            },
+        },
+        "http_500_count": sum(int(run.get("http_500_count") or 0) for run in raw_runs),
+        "overall_verdict": "PASS" if min(pass_counts) == len(TURNS) else "FAIL",
+        "raw_runs": raw_runs,
+    }
+    return aggregate
+
+
+def run(args: argparse.Namespace) -> dict[str, Any]:
+    runs = int(getattr(args, "runs", 1) or 1)
+    if runs < 1:
+        raise ValueError("--runs must be at least 1")
+    if runs == 1:
+        return _run_once(args)
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    raw_runs: list[dict[str, Any]] = []
+    for index in range(1, runs + 1):
+        if index > 1 and args.min_turn_interval > 0:
+            time.sleep(args.min_turn_interval)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ").lower()
+        base_customer_id = args.customer_id or f"native-sim-northwind-{timestamp}"
+        customer_id = f"{base_customer_id}-run-{index}-{uuid.uuid4().hex[:8]}"
+        raw_runs.append(
+            _run_once(
+                args,
+                customer_id_override=customer_id,
+                write_report=False,
+                run_number=index,
+            )
+        )
+
+    evidence = _aggregate_runs(
+        raw_runs,
+        base_url=args.base_url,
+        started_at=started_at,
+    )
     args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(json.dumps(evidence, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    args.report.write_text(
+        json.dumps(evidence, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    distribution = evidence["summary"]["overall_pass_distribution"]
+    latency = evidence["summary"]["latency_seconds"]
+    print("Per-turn pass rates (worst first):")
+    for item in evidence["summary"]["per_turn_pass_rates_worst_first"]:
+        print(f"  T{item['turn']}: {item['pass_label']}")
     print(
-        f"Overall: {evidence['overall_verdict']} | "
-        f"max latency: {evidence['max_turn_latency_seconds']:.3f}s | report: {args.report}"
+        "Overall PASS counts: "
+        f"min={distribution['min_pass_count']} "
+        f"median={distribution['median_pass_count']} "
+        f"max={distribution['max_pass_count']} | "
+        f"latency median={latency['median']:.3f}s "
+        f"p95={latency['p95']:.3f}s max={latency['max']:.3f}s | "
+        f"report: {args.report}"
     )
     return evidence
 
@@ -878,6 +1030,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--base-url", default="http://127.0.0.1:18080")
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--customer-id", default="")
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="Number of fresh full-scenario runs to execute and aggregate.",
+    )
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument(
         "--min-turn-interval",
