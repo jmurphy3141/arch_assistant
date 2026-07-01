@@ -126,6 +126,37 @@ tool results rather than gate-injected.
 Rollout is behind config flag `agent_mode: forge | native` (default `forge`).
 The forge path stays intact and deployable; native is opt-in and instant-revert.
 
+### 8. Native architecture — no hats; expertise lives in the model, the specialists, and reference (supersedes Decision #2 in native mode)
+
+In native mode, hats are **removed**. The hat mechanism (a lens the model must
+choose to invoke before acting) is unreliable and redundant with a capable model
+plus real specialists — it caused the model to "consult the hat and stop" instead
+of delegating. What a hat used to carry splits three ways:
+
+- **General expert judgment** (how to reason as a solutions architect) — already
+  in the manager model's weights. No injection needed.
+- **Specific / proprietary reference** (SKU families, HA multipliers, pricing
+  rules, Oracle reference architectures) — becomes **reference/lookup tools** the
+  manager consults on demand. Grounding by retrieval, not persona injection.
+- **Production** — belongs to the sub-agents, which are the domain experts.
+
+**Sub-agents are grounding producers, not document factories.** Each sub-agent
+receives the engagement identity + facts and MUST ground its output to them (a POV
+must name the customer), and self-reviews before returning. There is no separate
+critic/governor hat: review is the producer's own job plus the manager's judgment,
+backed only by the thin deterministic `safety_rules.py` guard.
+
+**C3E is not a hat — it is standing context.** The methodology (phase order,
+gating artifacts) lives in Archie's **base identity**; the live phase state
+(current phase, blockers, next required artifact) lives in **always-loaded
+engagement memory** (`engagement_mission.py`, already deterministic). Archie is
+always C3E-aware, never dependent on choosing to "wear" it.
+
+**Grounding** comes from tool use + producer grounding. A single optional
+deterministic guard MAY flag/strip a specific *quantified claim about this
+engagement* not traceable to its data; hedged advisory figures ("customers often
+see ~30–40%") are legitimate expert reasoning and are NOT blocked.
+
 ---
 
 ## Current State vs Target State
@@ -377,7 +408,14 @@ is small enough that the hat system integrates cleanly.
 Forge ceremony in native mode behind the `agent_mode` flag. Sub-agent quality and
 the forge path are untouched.
 
-Assigned task: `tasks/p57-native-archie-loop.md`.
+Tasks (land in order; each rebases on the prior — all touch the native loop):
+- `tasks/p57-native-archie-loop.md` — native tool-calling loop (done).
+- `tasks/p58-native-engagement-sim.md` — live natural-language acceptance run.
+- `tasks/p59-native-memory-management.md` — compact working set + memory retrieval.
+- `tasks/p60-drop-hats-promote-c3e.md` — retire hats (Decision #8); C3E → identity + memory.
+- `tasks/p61-reference-tools.md` — reference/lookup tools for hard facts (grounding by retrieval).
+- `tasks/p62-subagent-produce-grounding.md` — producers ground to the engagement + self-review.
+- `tasks/p63-grounding-guard.md` — last-resort deterministic numeric-claim guard (conditional).
 
 **Acceptance:**
 - `agent_mode: native` → Archie converses, and self-calls sub-agents / lookups /
