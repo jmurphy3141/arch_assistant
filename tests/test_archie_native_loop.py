@@ -2,7 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import archie_native_loop
+from agent import archie_memory_retrieval, archie_native_loop
+from agent.engagement_mission import C3E_PHASE_ORDER, PHASE_ARTIFACTS
 from agent.persistence_objectstore import InMemoryObjectStore
 from skillforge.registry import ToolSpec
 from skillforge.types import MemorySnapshot, ToolResult
@@ -121,7 +122,9 @@ async def test_bom_request_calls_registered_sub_agent_handler_and_produces_xlsx(
         ]
     )
 
-    async def tool_runner(*_args):
+    async def tool_runner(_prompt, system_message, schemas, _label):
+        assert system_message == archie_native_loop.SYSTEM_IDENTITY
+        assert all(not schema.name.startswith("use_hat_") for schema in schemas)
         return next(responses)
 
     result = await archie_native_loop.run_turn(
@@ -137,6 +140,55 @@ async def test_bom_request_calls_registered_sub_agent_handler_and_produces_xlsx(
     assert artifact_key.endswith(".xlsx")
     assert result["artifacts"] == {"generate_bom": artifact_key}
     assert [call["tool"] for call in result["tool_calls"]] == ["generate_bom"]
+
+
+def test_native_identity_has_standing_c3e_methodology_and_gates():
+    identity = archie_native_loop.SYSTEM_IDENTITY
+
+    assert " → ".join(C3E_PHASE_ORDER) in identity
+    for artifacts in PHASE_ARTIFACTS.values():
+        for artifact in artifacts:
+            expected = {
+                "sta": "Strategic Technical Approach",
+                "pov": "POV",
+                "diagram": "architecture diagram",
+                "bom": "BOM",
+                "jep": "JEP",
+                "waf": "WAF assessment",
+                "technical_proposal": "technical proposal",
+                "terraform": "Terraform",
+            }[artifact]
+            assert expected in identity
+
+
+def test_native_working_set_always_includes_live_c3e_phase_state():
+    context = {
+        "customer_id": "c1",
+        "agents": {},
+        "archie": {
+            "mission": {
+                "phase": "Design",
+                "completed_artifacts": ["diagram"],
+            },
+            "client_facts": {
+                "economic_buyer": "CIO",
+                "platform": "VMware",
+            },
+        },
+    }
+
+    working_set = archie_memory_retrieval.assemble_working_set(
+        context=context,
+        session_summary="",
+        history=[],
+        working_set_turns=6,
+        char_budget=4000,
+    )
+
+    assert "[LIVE C3E PHASE STATE]" in working_set
+    assert '"phase": "Design"' in working_set
+    assert '"next_required": ["bom"]' in working_set
+    assert '"blockers": []' in working_set
 
 
 @pytest.mark.asyncio

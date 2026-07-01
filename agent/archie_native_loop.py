@@ -11,8 +11,9 @@ from typing import Any, Callable
 
 import yaml
 
-from agent import archie_memory, archie_memory_retrieval, context_store, document_store, hat_engine
+from agent import archie_memory, archie_memory_retrieval, context_store, document_store
 from agent.archie_wiring import (
+    NATIVE_SYSTEM_IDENTITY,
     build_forge,
     get_registered_memory,
     get_registered_tool_specs,
@@ -24,13 +25,7 @@ from skillforge.protocols import ToolSchema
 from skillforge.types import ToolResult
 
 
-SYSTEM_IDENTITY = (
-    "You are Archie, a manager of expert OCI sub-agents and a sharp "
-    "solutions-architect colleague. Converse and advise freely. When the user wants "
-    "a deliverable, call the sub-agent; when they ask whether one exists or what it "
-    "says, fetch and read it; otherwise just talk. Never fabricate a deliverable or a "
-    "stored fact — call the tool, or say you don't have it."
-)
+SYSTEM_IDENTITY = NATIVE_SYSTEM_IDENTITY
 
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 
@@ -86,10 +81,6 @@ async def run_turn(
         ToolSchema(name=spec.name, description=spec.description, args=spec.args)
         for spec in specs.values()
     ]
-    hat_schemas = hat_engine.get_native_hat_tool_schemas()
-    schemas.extend(hat_schemas)
-    hat_names = {schema.name for schema in hat_schemas}
-
     working_set = archie_memory_retrieval.assemble_working_set(
         context=context,
         session_summary=session_summary,
@@ -114,49 +105,46 @@ async def run_turn(
         tool_name = str(response.get("tool") or "")
         args = response.get("args") or {}
         trace_id = str(uuid.uuid4())
-        if tool_name in hat_names:
-            result = await hat_engine.invoke_native_hat(tool_name)
+        spec = specs.get(tool_name)
+        if spec is None:
+            result = ToolResult(
+                summary=f"Unknown tool: {tool_name}",
+                status="blocked",
+            )
         else:
-            spec = specs.get(tool_name)
-            if spec is None:
-                result = ToolResult(
-                    summary=f"Unknown tool: {tool_name}",
-                    status="blocked",
-                )
-            else:
-                tool_memory = (
-                    memory.assemble(
-                        session_id=customer_id,
-                        context=context,
-                        user_message=user_message,
-                    )
-                    if spec.memory_contract
-                    else None
-                )
-                result = await spec.handler(
-                    args,
-                    memory=tool_memory,
+            tool_memory = (
+                memory.assemble(
+                    session_id=customer_id,
                     context=context,
-                    trace_id=trace_id,
+                    user_message=user_message,
                 )
-                if spec.safety_checker is not None and result.status == "ok":
-                    passed, reason = spec.safety_checker(tool_name, result)
-                    if not passed:
-                        result = ToolResult(
-                            summary=f"Safety check blocked: {reason}",
-                            status="blocked",
-                            data=result.data,
-                        )
-                if spec.memory_contract and result.status == "ok":
-                    context = memory.update(
-                        session_id=customer_id,
-                        tool_name=tool_name,
-                        result=result,
-                        context=context,
+                if spec.memory_contract
+                else None
+            )
+            result = await spec.handler(
+                args,
+                memory=tool_memory,
+                context=context,
+                trace_id=trace_id,
+            )
+            if spec.safety_checker is not None and result.status == "ok":
+                passed, reason = spec.safety_checker(tool_name, result)
+                if not passed:
+                    result = ToolResult(
+                        summary=f"Safety check blocked: {reason}",
+                        status="blocked",
+                        data=result.data,
                     )
-                if result.status == "ok" and result.artifact_key:
-                    archie_memory.refresh_engagement_digest(context)
-                    context_store.write_context(store, customer_id, context)
+            if spec.memory_contract and result.status == "ok":
+                context = memory.update(
+                    session_id=customer_id,
+                    tool_name=tool_name,
+                    result=result,
+                    context=context,
+                )
+            if result.status == "ok" and result.artifact_key:
+                archie_memory.refresh_engagement_digest(context)
+                context_store.write_context(store, customer_id, context)
 
         call = {
             "tool": tool_name,
