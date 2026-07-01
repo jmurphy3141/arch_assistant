@@ -585,7 +585,9 @@ async def handle(req: A2ARequest) -> A2AResponse:
             )
         drawio_xml = await asyncio.to_thread(drawio_path.read_text, encoding="utf-8")
 
-    grounding_missing = output_grounding_missing(raw_context, drawio_xml)
+    grounding_missing = output_grounding_missing(
+        raw_context, drawio_xml, output_kind="structured"
+    )
     if grounding_missing:
         return A2AResponse(
             result=needs_input_message(grounding_missing),

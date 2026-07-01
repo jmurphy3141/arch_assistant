@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,7 @@ from skillforge.types import ToolResult
 SYSTEM_IDENTITY = NATIVE_SYSTEM_IDENTITY
 
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+logger = logging.getLogger(__name__)
 
 
 async def run_turn(
@@ -113,6 +115,7 @@ async def run_turn(
         args = response.get("args") or {}
         trace_id = str(uuid.uuid4())
         spec = specs.get(tool_name)
+        result_artifact_key = ""
         if spec is None:
             result = ToolResult(
                 summary=f"Unknown tool: {tool_name}",
@@ -134,6 +137,10 @@ async def run_turn(
                 context=context,
                 trace_id=trace_id,
             )
+            if tool_name == "generate_bom" and result.status == "ok":
+                result = await _persist_native_bom_artifact(
+                    result, customer_id=customer_id, store=store
+                )
             if spec.safety_checker is not None and result.status == "ok":
                 passed, reason = spec.safety_checker(tool_name, result)
                 if not passed:
@@ -149,7 +156,17 @@ async def run_turn(
                     result=result,
                     context=context,
                 )
-            if result.status == "ok" and result.artifact_key:
+            result_artifact_key = _result_artifact_key(result)
+            if result.status == "ok" and result_artifact_key:
+                artifact_type = _artifact_type_for_tool(tool_name)
+                if artifact_type:
+                    context_store.register_artifact(
+                        context,
+                        artifact_type,
+                        key=result_artifact_key,
+                        summary=result.summary,
+                        download=str((result.data or {}).get("download_url") or ""),
+                    )
                 archie_memory.refresh_engagement_digest(context)
                 context_store.write_context(store, customer_id, context)
 
@@ -159,11 +176,11 @@ async def run_turn(
             "result_summary": result.summary,
             "result_status": result.status,
             "result_data": dict(result.data or {}),
-            "artifact_key": result.artifact_key or "",
+            "artifact_key": result_artifact_key if result.status == "ok" else "",
         }
         tool_calls.append(call)
-        if result.artifact_key:
-            artifacts[tool_name] = result.artifact_key
+        if result.status == "ok" and result_artifact_key:
+            artifacts[tool_name] = result_artifact_key
         prompt += "\n\n" + _tool_result_message(tool_name, result)
 
     turns = [
@@ -242,11 +259,84 @@ def _tool_result_message(tool_name: str, result: ToolResult) -> str:
         "tool": tool_name,
         "status": result.status,
         "summary": result.summary,
-        "artifact_key": result.artifact_key,
+        "artifact_key": _result_artifact_key(result) if result.status == "ok" else "",
         "data": result.data,
         "clarification": result.clarification,
     }
+    if result.status != "ok":
+        return (
+            "[TOOL RESULT - NO ARTIFACT PRODUCED]\n"
+            f"Status: {result.status}. Required clarification: "
+            f"{result.clarification or result.summary}\n"
+            + json.dumps(payload, ensure_ascii=False, default=str)
+        )
     return "[TOOL RESULT]\n" + json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _artifact_type_for_tool(tool_name: str) -> str:
+    if not tool_name.startswith("generate_"):
+        return ""
+    return {
+        "generate_poc_plan": "poc_plan",
+        "generate_technical_proposal": "technical_proposal",
+        "generate_terraform": "terraform",
+    }.get(tool_name, tool_name.removeprefix("generate_"))
+
+
+def _result_artifact_key(result: ToolResult) -> str:
+    if result.artifact_key:
+        return str(result.artifact_key)
+    data = result.data if isinstance(result.data, dict) else {}
+    for field in (
+        "xlsx_artifact_key",
+        "drawio_key",
+        "docx_key",
+        "object_key",
+        "artifact_key",
+    ):
+        if data.get(field):
+            return str(data[field])
+    return ""
+
+
+async def _persist_native_bom_artifact(
+    result: ToolResult, *, customer_id: str, store: ObjectStoreBase
+) -> ToolResult:
+    """Run the existing BOM export before native indexing; the HTTP route then no-ops."""
+    if _result_artifact_key(result):
+        return result
+    data = dict(result.data or {})
+    payload = data.get("bom_payload")
+    if not isinstance(payload, dict) or not payload.get("line_items"):
+        return result
+
+    from agent.bom_service import get_shared_bom_service
+    from server.services.bom_artifacts import persist_bom_xlsx_downloads
+
+    wrapper = {
+        "tool_calls": [
+            {
+                "tool": "generate_bom",
+                "result_status": "ok",
+                "result_data": data,
+            }
+        ]
+    }
+    await persist_bom_xlsx_downloads(
+        customer_id,
+        store,
+        wrapper,
+        bom_service_factory=get_shared_bom_service,
+        logger=logger,
+    )
+    persisted = wrapper["tool_calls"][0]["result_data"]
+    return ToolResult(
+        summary=result.summary,
+        status=result.status,
+        data=persisted,
+        artifact_key=str(persisted.get("xlsx_artifact_key") or ""),
+        clarification=result.clarification,
+    )
 
 
 async def _maybe_await(value):

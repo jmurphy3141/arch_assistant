@@ -171,6 +171,35 @@ def write_context(
     logger.debug("Context written: customer_id=%s", customer_id)
 
 
+def register_artifact(
+    context: dict,
+    artifact_type: str,
+    *,
+    key: str,
+    summary: str = "",
+    download: str = "",
+) -> dict:
+    """Register the latest native artifact in the engagement context index."""
+    artifacts = context.setdefault("artifacts", {})
+    entry = {
+        "key": str(key),
+        "summary": str(summary),
+        "download": str(download),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    artifacts[str(artifact_type)] = entry
+    return entry
+
+
+def get_latest_artifact_by_type(context: dict, artifact_type: str) -> dict:
+    """Return one artifact index entry without consulting producer-specific state."""
+    artifacts = context.get("artifacts", {})
+    if not isinstance(artifacts, dict):
+        return {}
+    entry = artifacts.get(str(artifact_type), {})
+    return dict(entry) if isinstance(entry, dict) else {}
+
+
 def reset_context(
     store: ObjectStoreBase,
     customer_id: str,

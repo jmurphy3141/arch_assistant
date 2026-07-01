@@ -178,7 +178,9 @@ async def handle(req: A2ARequest) -> A2AResponse:
         },
         ensure_ascii=False,
     )
-    grounding_missing = output_grounding_missing(raw_context, result)
+    grounding_missing = output_grounding_missing(
+        raw_context, result, output_kind="structured"
+    )
     if grounding_missing:
         return A2AResponse(
             result=needs_input_message(grounding_missing),

@@ -101,7 +101,9 @@ async def handle(req: A2ARequest) -> A2AResponse:
             "bom_payload": response["bom_payload"],
             "prices_from": (response.get("trace") or {}).get("cache_source", "pricing_cache"),
         }, ensure_ascii=False)
-        grounding_missing = output_grounding_missing(raw_context, result)
+        grounding_missing = output_grounding_missing(
+            raw_context, result, output_kind="structured"
+        )
         if grounding_missing:
             return A2AResponse(
                 status="needs_input",
@@ -143,7 +145,9 @@ async def handle(req: A2ARequest) -> A2AResponse:
     if not isinstance(bom_json, str):
         bom_json = json.dumps(response.get("bom_payload") or {}, ensure_ascii=False)
 
-    grounding_missing = output_grounding_missing(raw_context, bom_json)
+    grounding_missing = output_grounding_missing(
+        raw_context, bom_json, output_kind="structured"
+    )
     if grounding_missing:
         return A2AResponse(
             status="needs_input",

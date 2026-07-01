@@ -103,8 +103,9 @@ def output_grounding_missing(
     output: str,
     *,
     require_customer_name: bool = False,
+    output_kind: str = "prose",
 ) -> list[str]:
-    """Verify identity (when required) and at least one supplied fact in output."""
+    """Verify producer input/identity and prose fact reflection when applicable."""
     if not context:
         return []
     normalized = normalize_engagement_context(context)
@@ -117,9 +118,10 @@ def output_grounding_missing(
     customer_name = str(normalized.get("customer_name") or "").strip()
     if require_customer_name and customer_name.lower() not in output_lower:
         missing.append("customer_name_not_reflected")
-    anchors = _fact_anchors(normalized.get("facts", {}))
-    if anchors and not any(anchor in output_lower for anchor in anchors):
-        missing.append("facts_not_reflected")
+    if output_kind == "prose":
+        anchors = _fact_anchors(normalized.get("facts", {}))
+        if anchors and not any(anchor in output_lower for anchor in anchors):
+            missing.append("facts_not_reflected")
     return missing
 
 
