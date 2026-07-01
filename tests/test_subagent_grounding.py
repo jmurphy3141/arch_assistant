@@ -14,7 +14,7 @@ from sub_agents.pov import server as pov_server
 from sub_agents.poc_strategist import server as poc_server
 from sub_agents.terraform import server as terraform_server
 from sub_agents.waf import server as waf_server
-from sub_agents.grounding import output_grounding_missing
+from sub_agents.grounding import grounding_trace, output_grounding_missing
 
 
 pytestmark = pytest.mark.anyio
@@ -235,7 +235,7 @@ async def test_bom_diagram_waf_and_terraform_reflect_supplied_facts(monkeypatch)
         assert response.trace["missing"] == []
 
 
-def test_structured_output_skips_prose_fact_anchor_but_keeps_input_grounding():
+def test_fact_anchor_mismatch_is_trace_only_for_prose_and_structured_output():
     context = {
         "customer_id": "northwind",
         "customer_name": "Northwind Health",
@@ -252,11 +252,20 @@ def test_structured_output_skips_prose_fact_anchor_but_keeps_input_grounding():
         '<mxfile><object label="Application tier" /></mxfile>',
         output_kind="structured",
     ) == ["facts"]
-    assert "facts_not_reflected" in output_grounding_missing(
+    paraphrased = "Northwind Health will use the Chicago region for the target architecture."
+    assert output_grounding_missing(
         context,
-        "Northwind Health architecture overview.",
+        paraphrased,
         require_customer_name=True,
-    )
+    ) == []
+    trace = grounding_trace(context, [], output=paraphrased)
+    assert trace["grounded"] is True
+    assert trace["facts_reflected"] is False
+    assert output_grounding_missing(
+        context,
+        "The customer will use the Chicago region.",
+        require_customer_name=True,
+    ) == ["customer_name_not_reflected"]
 
 
 @pytest.mark.parametrize("server", _SERVERS, ids=lambda server: server.card.name)

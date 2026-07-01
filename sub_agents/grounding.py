@@ -105,7 +105,7 @@ def output_grounding_missing(
     require_customer_name: bool = False,
     output_kind: str = "prose",
 ) -> list[str]:
-    """Verify producer input/identity and prose fact reflection when applicable."""
+    """Verify producer input and required customer identity."""
     if not context:
         return []
     normalized = normalize_engagement_context(context)
@@ -118,23 +118,29 @@ def output_grounding_missing(
     customer_name = str(normalized.get("customer_name") or "").strip()
     if require_customer_name and customer_name.lower() not in output_lower:
         missing.append("customer_name_not_reflected")
-    if output_kind == "prose":
-        anchors = _fact_anchors(normalized.get("facts", {}))
-        if anchors and not any(anchor in output_lower for anchor in anchors):
-            missing.append("facts_not_reflected")
     return missing
 
 
 def grounding_trace(
-    context: dict[str, Any], missing: list[str]
+    context: dict[str, Any],
+    missing: list[str],
+    *,
+    output: str | None = None,
+    output_kind: str = "prose",
 ) -> dict[str, Any]:
     normalized = normalize_engagement_context(context)
-    return {
+    trace = {
         "grounded": not missing,
         "missing": list(dict.fromkeys(missing)),
         "customer_id": normalized.get("customer_id", ""),
         "customer_name": normalized.get("customer_name", ""),
     }
+    if output is not None and output_kind == "prose":
+        anchors = _fact_anchors(normalized.get("facts", {}))
+        trace["facts_reflected"] = not anchors or any(
+            anchor in str(output).lower() for anchor in anchors
+        )
+    return trace
 
 
 def needs_input_message(missing: list[str]) -> str:
