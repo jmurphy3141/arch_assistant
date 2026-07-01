@@ -335,3 +335,43 @@ async def test_native_artifact_index_is_immediately_retrievable(monkeypatch):
         {}, memory=None, context={}, trace_id="list"
     )
     assert any(item["type"] == "bom" and item["key"] == artifact_key for item in listed.data["artifacts"])
+
+
+@pytest.mark.asyncio
+async def test_native_bom_payload_is_persisted_before_artifact_indexing(monkeypatch):
+    store = InMemoryObjectStore()
+    artifact_key = "customers/c1/bom/xlsx/native.xlsx"
+
+    async def fake_persist(result, *, customer_id, store):
+        assert customer_id == "c1"
+        return ToolResult(
+            summary=result.summary,
+            status="ok",
+            artifact_key=artifact_key,
+            data={**result.data, "xlsx_artifact_key": artifact_key},
+        )
+
+    async def producer(_args, **_kwargs):
+        return ToolResult(
+            summary="BOM generated.",
+            status="ok",
+            data={"bom_payload": {"line_items": [{"description": "Compute"}]}},
+        )
+
+    monkeypatch.setattr(archie_native_loop, "_persist_native_bom_artifact", fake_persist)
+    _wire_native(
+        monkeypatch,
+        [ToolSpec(name="generate_bom", handler=producer, description="Generate BOM.")],
+    )
+    responses = iter([{"tool": "generate_bom", "args": {}}, "BOM generated."])
+    result = await archie_native_loop.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="Generate a BOM.",
+        store=store,
+        text_runner=lambda *_args: "unused",
+        tool_runner=lambda *_args: next(responses),
+    )
+
+    assert result["tool_calls"][0]["artifact_key"] == artifact_key
+    assert result["artifacts"] == {"generate_bom": artifact_key}

@@ -830,6 +830,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             print(f"  - {failure}")
 
     evidence["max_turn_latency_seconds"] = round(max_latency, 3)
+    evidence["http_500_count"] = sum(
+        1 for turn in evidence["turns"] if int(turn.get("http_status") or 0) >= 500
+    ) + sum(
+        1
+        for turn in evidence["turns"]
+        for call in turn.get("tool_calls", [])
+        if "http 500" in str(call.get("result_summary") or "").lower()
+    )
     evidence["completed_at"] = datetime.now(timezone.utc).isoformat()
     evidence["overall_verdict"] = "PASS" if not evidence["failures"] else "FAIL"
     args.report.parent.mkdir(parents=True, exist_ok=True)

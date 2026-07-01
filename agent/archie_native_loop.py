@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,7 @@ from skillforge.types import ToolResult
 SYSTEM_IDENTITY = NATIVE_SYSTEM_IDENTITY
 
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+logger = logging.getLogger(__name__)
 
 
 async def run_turn(
@@ -135,6 +137,10 @@ async def run_turn(
                 context=context,
                 trace_id=trace_id,
             )
+            if tool_name == "generate_bom" and result.status == "ok":
+                result = await _persist_native_bom_artifact(
+                    result, customer_id=customer_id, store=store
+                )
             if spec.safety_checker is not None and result.status == "ok":
                 passed, reason = spec.safety_checker(tool_name, result)
                 if not passed:
@@ -291,6 +297,46 @@ def _result_artifact_key(result: ToolResult) -> str:
         if data.get(field):
             return str(data[field])
     return ""
+
+
+async def _persist_native_bom_artifact(
+    result: ToolResult, *, customer_id: str, store: ObjectStoreBase
+) -> ToolResult:
+    """Run the existing BOM export before native indexing; the HTTP route then no-ops."""
+    if _result_artifact_key(result):
+        return result
+    data = dict(result.data or {})
+    payload = data.get("bom_payload")
+    if not isinstance(payload, dict) or not payload.get("line_items"):
+        return result
+
+    from agent.bom_service import get_shared_bom_service
+    from server.services.bom_artifacts import persist_bom_xlsx_downloads
+
+    wrapper = {
+        "tool_calls": [
+            {
+                "tool": "generate_bom",
+                "result_status": "ok",
+                "result_data": data,
+            }
+        ]
+    }
+    await persist_bom_xlsx_downloads(
+        customer_id,
+        store,
+        wrapper,
+        bom_service_factory=get_shared_bom_service,
+        logger=logger,
+    )
+    persisted = wrapper["tool_calls"][0]["result_data"]
+    return ToolResult(
+        summary=result.summary,
+        status=result.status,
+        data=persisted,
+        artifact_key=str(persisted.get("xlsx_artifact_key") or ""),
+        clarification=result.clarification,
+    )
 
 
 async def _maybe_await(value):
