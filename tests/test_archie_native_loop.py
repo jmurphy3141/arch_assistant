@@ -125,6 +125,11 @@ async def test_bom_request_calls_registered_sub_agent_handler_and_produces_xlsx(
     async def tool_runner(_prompt, system_message, schemas, _label):
         assert system_message == archie_native_loop.SYSTEM_IDENTITY
         assert all(not schema.name.startswith("use_hat_") for schema in schemas)
+        assert {
+            "lookup_compute_shapes",
+            "lookup_price",
+            "lookup_reference_architecture",
+        } <= {schema.name for schema in schemas}
         return next(responses)
 
     result = await archie_native_loop.run_turn(

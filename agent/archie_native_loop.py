@@ -11,7 +11,13 @@ from typing import Any, Callable
 
 import yaml
 
-from agent import archie_memory, archie_memory_retrieval, context_store, document_store
+from agent import (
+    archie_memory,
+    archie_memory_retrieval,
+    context_store,
+    document_store,
+    reference_tools,
+)
 from agent.archie_wiring import (
     NATIVE_SYSTEM_IDENTITY,
     build_forge,
@@ -75,6 +81,7 @@ async def run_turn(
             customer_name=customer_name,
         )
     )
+    registered_specs.extend(reference_tools.get_reference_tool_specs())
     specs = {spec.name: spec for spec in registered_specs}
     memory = get_registered_memory(forge)
     schemas = [
