@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from agent import archie_memory, context_store, document_store
+from agent.engagement_mission import EngagementMission
 from agent.persistence_objectstore import ObjectStoreBase
 from skillforge import ArgSchema
 from skillforge.registry import ToolSpec
@@ -65,9 +66,11 @@ def assemble_working_set(
     recent = list(history or [])[-max(1, int(working_set_turns)) :]
     digest = archie_memory.refresh_engagement_digest(context)
     facts = archie_memory.current_authoritative_facts(context)
+    mission = EngagementMission().get_mission(context) or {}
     sections = [
         ("[ENGAGEMENT FACT DIGEST]", digest),
         ("[AUTHORITATIVE FACTS]", json.dumps(facts, ensure_ascii=False, sort_keys=True)),
+        ("[LIVE C3E PHASE STATE]", json.dumps(mission, ensure_ascii=False, sort_keys=True)),
         ("[ROLLING SESSION SUMMARY]", str(session_summary or "No older turns summarized.")),
         (
             "[RECENT SESSION TURNS]",
@@ -270,7 +273,7 @@ def search_documents(
 def _fit_sections(sections: list[tuple[str, str]], budget: int) -> str:
     headers = sum(len(header) + 2 for header, _ in sections)
     available = max(0, budget - headers)
-    weights = (0.28, 0.27, 0.20, 0.25)
+    weights = (0.22, 0.22, 0.14, 0.16, 0.26)
     chunks: list[str] = []
     for index, (header, content) in enumerate(sections):
         allowance = int(available * weights[index])
