@@ -1730,7 +1730,10 @@ def _jep_writer_review_findings(
 
     success_section = _markdown_section(text, "Success Criteria")
     smart_count = _count_numeric_criteria(success_section)
-    if smart_count < expected_criteria_count:
+    tbd_count = len(
+        re.findall(r"^\|\s*\[TBD\]\s*\|", success_section, flags=re.MULTILINE)
+    )
+    if smart_count + tbd_count < expected_criteria_count:
         findings.append(
             f"fewer than {expected_criteria_count} SMART success criteria with numeric thresholds"
         )

@@ -41,15 +41,18 @@ class PocBrief:
     pain: str
     region: str
     allowed_services: tuple[str, ...]
-    duration_days: int
-    owner_weekly_hours: int
+    duration_days: int | None
+    owner_weekly_hours: int | None
     owner_count: int
+    owners: str
     success_criteria: tuple[str, ...]
     exclusions: tuple[str, ...]
     grounded_source: str
 
     @property
-    def delivery_capacity_hours(self) -> int:
+    def delivery_capacity_hours(self) -> int | str:
+        if self.duration_days is None or self.owner_weekly_hours is None or self.owner_count < 2:
+            return "[TBD]"
         weeks = max(1, math.ceil(self.duration_days / 7))
         return weeks * self.owner_weekly_hours * self.owner_count
 
@@ -99,7 +102,7 @@ def assess_poc_brief(
     )
     region_match = re.search(r"\b[a-z]{2,}-[a-z]+-\d+\b", source, re.IGNORECASE)
     duration_match = re.search(
-        r"\b(\d+)\s*(?:-\s*|calendar\s+)?days?\b",
+        r"\b(\d+)\s*(?:-\s*|calendar\s+|business\s+)?days?\b",
         source,
         re.IGNORECASE,
     )
@@ -117,12 +120,6 @@ def assess_poc_brief(
     for name, present in (
         ("customer", bool(customer_name.strip())),
         ("workload", bool(workload)),
-        ("pain", bool(pain)),
-        ("region", bool(region_match)),
-        ("duration", bool(duration_match)),
-        ("owners", bool(commitment_match and owner_count >= 2)),
-        ("services", bool(services)),
-        ("criteria", bool(criteria)),
     ):
         if not present:
             missing.append(name)
@@ -131,12 +128,13 @@ def assess_poc_brief(
     return PocBrief(
         customer_name=customer_name.strip(),
         workload=workload,
-        pain=pain,
-        region=region_match.group(0),
+        pain=pain or workload,
+        region=region_match.group(0) if region_match else "",
         allowed_services=services,
-        duration_days=int(duration_match.group(1)),
-        owner_weekly_hours=int(commitment_match.group(1)),
+        duration_days=int(duration_match.group(1)) if duration_match else None,
+        owner_weekly_hours=int(commitment_match.group(1)) if commitment_match else None,
         owner_count=owner_count,
+        owners=owners_text,
         success_criteria=criteria,
         exclusions=exclusions,
         grounded_source=source,
@@ -198,9 +196,17 @@ def _targeted_poc_source(
 
 
 def compose_grounded_options(brief: PocBrief) -> list[dict[str, Any]]:
-    criterion = "; ".join(brief.success_criteria)
+    criterion = "; ".join(brief.success_criteria) or "[TBD]"
     capacity = brief.delivery_capacity_hours
-    service_text = ", ".join(brief.allowed_services)
+    service_text = ", ".join(brief.allowed_services) or "[TBD]"
+    region = brief.region or "[TBD]"
+    if capacity == "[TBD]":
+        capacity_basis = "[TBD]"
+    else:
+        capacity_basis = (
+            f"{brief.owner_count} owners x {brief.owner_weekly_hours} hours per week x "
+            f"{max(1, math.ceil((brief.duration_days or 0) / 7))} calendar weeks"
+        )
     patterns = (
         (
             f"{brief.customer_name} Core Workload Validation POC",
@@ -223,30 +229,41 @@ def compose_grounded_options(brief: PocBrief) -> list[dict[str, Any]]:
             "option_name": name,
             "relevance_score": relevance,
             "executability_hours": capacity,
-            "delivery_capacity_basis": (
-                f"{brief.owner_count} owners x {brief.owner_weekly_hours} hours per week x "
-                f"{max(1, math.ceil(brief.duration_days / 7))} calendar weeks"
+            "delivery_capacity_basis": capacity_basis,
+            "cost_effectiveness": (
+                "No price or savings is asserted; validate against the confirmed customer constraint."
+                if brief.success_criteria
+                else "No price or savings is asserted; cost constraint [TBD]."
             ),
-            "cost_effectiveness": "No price or savings is asserted; validate against the confirmed customer constraint.",
             "security_highlights": _grounded_security_highlights(brief.allowed_services),
             "wow_moment": criterion,
             "demo_script_summary": summary,
             "oci_services": list(brief.allowed_services),
             "build_sequence": [
                 "Confirm the selected scope and evidence method",
-                f"Configure only the approved {service_text} scope in {brief.region}",
+                f"Configure only the draft {service_text} scope in {region}",
                 "Run the stated measurements",
                 "Record the joint go/no-go evidence",
             ],
             "top_risks": [
                 "The test conditions may not represent the confirmed workload.",
-                "A stated success criterion may not be met within the confirmed POC window.",
+                (
+                    "A stated success criterion may not be met within the confirmed POC window."
+                    if brief.duration_days is not None and brief.success_criteria
+                    else "POC window and success criteria remain [TBD]."
+                ),
             ],
             "grounding": {
-                "region": brief.region,
-                "duration_days": brief.duration_days,
-                "success_criteria": list(brief.success_criteria),
-                "exclusions": list(brief.exclusions),
+                "region": region,
+                "duration_days": brief.duration_days if brief.duration_days is not None else "[TBD]",
+                "owners": (
+                    f"{brief.owners}; {brief.owner_weekly_hours} hours per week"
+                    if brief.owner_weekly_hours is not None and brief.owner_count >= 2
+                    else "[TBD]"
+                ),
+                "success_criteria": list(brief.success_criteria) or ["[TBD]"],
+                "scope": list(brief.allowed_services) or ["[TBD]"],
+                "exclusions": list(brief.exclusions) or ["[TBD]"],
             },
         }
         for name, relevance, summary in patterns
@@ -393,7 +410,7 @@ def _grounded_security_highlights(services: tuple[str, ...]) -> list[str]:
     for service in services:
         if service in {"Site-to-Site VPN", "OCI IAM", "Audit Logging", "Logging", "OCI WAF"}:
             highlights.append(f"Use the confirmed {service} control within the POC boundary.")
-    return highlights or ["Preserve the confirmed private-access and evidence constraints."]
+    return highlights or ["[TBD]"]
 
 
 def _normalize_number(value: str) -> str:

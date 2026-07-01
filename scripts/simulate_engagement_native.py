@@ -61,13 +61,10 @@ LOOKUP_TOOLS = {"get_document", "get_summary", "list_artifacts", "list_documents
 NOTES = """Northwind call scratchpad — rough, please clean up
 
 Member portal is .NET and still in their data center. Healthcare/member claims,
-so HIPAA and audit evidence will matter. Priya Shah is the Northwind application
-owner; Marcus Lee owns security. Oracle SA partner is Jordan Kim.
-
-For a proof point they mentioned 200 concurrent portal users, claims lookup p95
-under 600 ms, and service recovery within 45 minutes. They can give us 20 business
-days for a POC. Nobody picked an OCI region or final topology on this call. No
-budget, production SLA, server sizing, or storage quantity was agreed.
+so HIPAA and audit evidence will matter. Nobody picked an OCI region or final
+topology on this call. POC duration, owners, commitments, success criteria,
+scope, budget, production SLA, server sizing, and storage quantity are all still
+to be worked out.
 """
 
 TURNS: tuple[dict[str, Any], ...] = (
@@ -131,33 +128,20 @@ TURNS: tuple[dict[str, Any], ...] = (
     {
         "id": 9,
         "session_id": "m3",
-        "message": (
-            "They can give us 20 business days. Jordan Kim owns the Oracle side and "
-            "Priya Shah owns it for Northwind; each can commit 8 hours a week. Success "
-            "means 200 concurrent users, claims lookup p95 under 600 ms, and recovery "
-            "inside 45 minutes. Keep IIS, the claims app, Oracle, HA, security, logging, "
-            "and monitoring in scope; production cutover, DR, and load beyond 200 users "
-            "are out."
-        ),
-        "kind": "logistics",
-    },
-    {
-        "id": 10,
-        "session_id": "m3",
         "message": "They liked the POV. What POC could we run to prove it out?",
         "kind": "deliverable",
         "tool": "generate_poc_plan",
         "artifact_type": "poc_plan",
-        "required_inputs_supplied": True,
+        "draft_logistics_required": True,
     },
     {
-        "id": 11,
+        "id": 10,
         "session_id": "m3",
         "message": "Let's go with the second option.",
         "kind": "selection",
     },
     {
-        "id": 12,
+        "id": 11,
         "session_id": "m3",
         "message": "Great — can you get the architecture diagram going for that?",
         "kind": "deliverable",
@@ -165,7 +149,7 @@ TURNS: tuple[dict[str, Any], ...] = (
         "artifact_type": "diagram",
     },
     {
-        "id": 13,
+        "id": 12,
         "session_id": "m3",
         "message": (
             "We'll need a BOM too — figure a couple of web boxes, a few app servers, "
@@ -176,22 +160,22 @@ TURNS: tuple[dict[str, Any], ...] = (
         "artifact_type": "bom",
     },
     {
-        "id": 14,
+        "id": 13,
         "session_id": "m3",
         "message": "Did that BOM slip in any Gen AI token costs?",
         "kind": "lookup_bom",
     },
     {
-        "id": 15,
+        "id": 14,
         "session_id": "m3",
         "message": "Last thing — put the JEP together for it.",
         "kind": "deliverable",
         "tool": "generate_jep",
         "artifact_type": "jep",
-        "required_inputs_supplied": True,
+        "draft_logistics_required": True,
     },
     {
-        "id": 16,
+        "id": 15,
         "session_id": "wrap",
         "message": "Remind me what we've actually produced for Northwind so far.",
         "kind": "lookup_artifacts",
@@ -421,15 +405,14 @@ def _artifact_validation_errors(
                 errors.append(f"BOM key is not .xlsx: {key}")
         elif artifact_type == "jep":
             document = Document(BytesIO(content))
-            text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+            text = "\n".join(
+                [paragraph.text for paragraph in document.paragraphs]
+                + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+            )
             lowered = text.lower()
             for marker in ("assessment", "build", "validate"):
                 if marker not in lowered:
                     errors.append(f"JEP is missing {marker} phase")
-            if not any(owner in lowered for owner in ("priya", "marcus", "jordan")):
-                errors.append("JEP does not contain a grounded owner from the notes")
-            if not any(target in lowered for target in ("200", "600", "45")):
-                errors.append("JEP does not contain a grounded success criterion")
             if not key.endswith(".docx"):
                 errors.append(f"JEP key is not .docx: {key}")
     except Exception as exc:
@@ -563,9 +546,51 @@ def _artifact_grounding_text(
 def _needs_input_errors(turn: dict[str, Any], call: dict[str, Any]) -> list[str]:
     if str(call.get("result_status") or "") != "needs_input":
         return []
-    if turn.get("required_inputs_supplied", True):
-        return ["producer returned needs_input despite supplied grounding"]
-    return []
+    return ["producer returned needs_input instead of a draft artifact"]
+
+
+def _draft_logistics_errors(
+    store: OciObjectStore,
+    body: dict[str, Any],
+    tool_name: str,
+    artifact_type: str,
+) -> list[str]:
+    if artifact_type not in {"poc_plan", "jep"}:
+        return []
+    key = _artifact_key(body, tool_name, artifact_type)
+    if not key:
+        return []
+    try:
+        content = store.get(key)
+        if artifact_type == "poc_plan":
+            payload = json.loads(content.decode("utf-8"))
+            options = payload.get("poc_options") if isinstance(payload, dict) else []
+            if not options:
+                return ["POC draft has no options to inspect for TBD logistics"]
+            errors: list[str] = []
+            for option in options:
+                grounding = option.get("grounding") if isinstance(option, dict) else {}
+                if option.get("executability_hours") != "[TBD]":
+                    errors.append("POC draft fabricated executability hours")
+                if grounding.get("duration_days") != "[TBD]":
+                    errors.append("POC draft did not mark duration [TBD]")
+                if grounding.get("owners") != "[TBD]":
+                    errors.append("POC draft did not mark owners [TBD]")
+                if "[TBD]" not in (grounding.get("success_criteria") or []):
+                    errors.append("POC draft did not mark success criteria [TBD]")
+            return list(dict.fromkeys(errors))
+        document = Document(BytesIO(content))
+        text = "\n".join(
+            [paragraph.text for paragraph in document.paragraphs]
+            + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+        )
+        if text.count("[TBD]") < 5:
+            return ["JEP draft does not preserve TBD placeholders for unknown logistics"]
+        if re.search(r"\b(?:Priya Shah|Marcus Lee|Jordan Kim)\b", text, re.IGNORECASE):
+            return ["JEP draft fabricated an owner name"]
+        return []
+    except Exception as exc:
+        return [f"could not inspect draft logistics in {key}: {exc}"]
 
 
 def _artifact_prose_errors(
@@ -765,23 +790,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             if turn["kind"] == "deliverable":
                 expected_tool = str(turn["tool"])
                 artifact_type = str(turn["artifact_type"])
-                expected_call = _call_for(body, expected_tool)
-                accepted_needs_input = (
-                    str(expected_call.get("result_status") or "") == "needs_input"
-                    and not turn.get("required_inputs_supplied", True)
-                )
                 artifact_errors: list[str] = []
                 artifact_details: dict[str, Any] = {"type": artifact_type}
-                if not accepted_needs_input:
-                    artifact_errors, artifact_details = _artifact_validation_errors(
-                        store,
-                        body,
-                        expected_tool,
-                        artifact_type,
+                artifact_errors, artifact_details = _artifact_validation_errors(
+                    store,
+                    body,
+                    expected_tool,
+                    artifact_type,
+                )
+                if turn.get("draft_logistics_required"):
+                    artifact_errors.extend(
+                        _draft_logistics_errors(store, body, expected_tool, artifact_type)
                     )
                 download_ok = True
                 download_detail = "not exposed through artifact_manifest"
-                if not accepted_needs_input and artifact_type in {"diagram", "bom", "jep"}:
+                if artifact_type in {"diagram", "bom", "jep"}:
                     download_ok, download_detail = _download_manifest_artifact(
                         args.base_url,
                         body,
@@ -798,7 +821,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 artifact_details["failures"] = artifact_errors
                 evidence["artifact_reloads"].append(artifact_details)
                 turn_failures.extend(artifact_errors)
-                if not artifact_errors and not accepted_needs_input:
+                if not artifact_errors:
                     artifact_types.add(artifact_type)
                     artifact_text = _artifact_grounding_text(
                         store, body, expected_tool, artifact_type

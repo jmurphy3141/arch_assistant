@@ -128,6 +128,14 @@ def test_brief_extracts_success_criteria_not_target_architecture():
     assert brief.success_criteria[0].startswith("p95 response under 400 milliseconds")
     assert all("Target OCI" not in criterion for criterion in brief.success_criteria)
 
+    options = poc_composer.compose_grounded_options(brief)
+    assert all(
+        "Oracle SA" in option["grounding"]["owners"]
+        and "Redwood technical lead" in option["grounding"]["owners"]
+        and "10 hours per week" in option["grounding"]["owners"]
+        for option in options
+    )
+
 
 async def test_novel_customer_uses_one_presentation_polish_call(monkeypatch):
     calls = []
@@ -218,11 +226,57 @@ async def test_missing_grounded_brief_needs_input_without_inference(monkeypatch)
     monkeypatch.setattr(specialists_module.sub_agent_client, "call_sub_agent", fake_call)
     result = await PocStrategistHandler(InMemoryObjectStore(), "cust-1", "ACME")(
         {"action": "explore", "_user_message": "Give me POC ideas."},
-        memory=make_memory(pain_statement=""), context={}, trace_id="t1",
+        memory=make_memory(pain_statement="", current_platform=""), context={}, trace_id="t1",
     )
     assert result.status == "needs_input"
     assert called is False
     assert 1 <= len(result.data["questions"]) <= 3
+
+
+async def test_customer_and_workload_create_tbd_draft_without_logistics(monkeypatch):
+    async def fake_call(_name, task, engagement_context={}, trace_id=""):
+        options = json.loads(task)["options"]
+        return {
+            "status": "ok",
+            "result": json.dumps({
+                "options": [
+                    {
+                        "option_name": option["option_name"],
+                        "demo_script_summary": option["demo_script_summary"],
+                    }
+                    for option in options
+                ]
+            }),
+        }
+
+    monkeypatch.setattr(specialists_module.sub_agent_client, "call_sub_agent", fake_call)
+    result = await PocStrategistHandler(InMemoryObjectStore(), "cust-1", "Northwind Health")(
+        {
+            "action": "explore",
+            "_user_message": "Northwind Health runs a .NET member portal. Draft POC options.",
+        },
+        memory=make_memory(
+            pain_statement="",
+            current_platform=".NET member portal",
+        ),
+        context={},
+        trace_id="draft",
+    )
+
+    assert result.status == "ok"
+    assert result.artifact_key
+    for option in result.data["poc_options"]:
+        assert option["executability_hours"] == "[TBD]"
+        assert option["delivery_capacity_basis"] == "[TBD]"
+        assert option["wow_moment"] == "[TBD]"
+        assert option["grounding"]["duration_days"] == "[TBD]"
+        assert option["grounding"]["owners"] == "[TBD]"
+        assert option["grounding"]["success_criteria"] == ["[TBD]"]
+        assert option["grounding"]["scope"] == ["[TBD]"]
+        assert option["grounding"]["exclusions"] == ["[TBD]"]
+    serialized = json.dumps(result.data)
+    assert "Jordan Kim" not in serialized
+    assert "20 days" not in serialized
 
 
 def test_gradual_context_builds_targeted_brief_and_current_correction_wins():

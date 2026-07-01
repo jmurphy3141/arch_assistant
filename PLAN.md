@@ -420,7 +420,9 @@ Tasks (land in order; each rebases on the prior — all touch the native loop):
 - `tasks/p65-structured-output-grounding.md` — relax producer output-grounding for structured artifacts (diagram/terraform/bom).
 - `tasks/p66-artifact-retrieval-coherence.md` — lookups find just-produced artifacts (get_document/list_artifacts).
 - `tasks/p67-honest-tool-result-reporting.md` — never narrate a saved artifact when a tool returned needs_input.
-- `tasks/p68-scenario-poc-logistics.md` — scenario supplies POC logistics; score grounded needs_input correctly (harness).
+- `tasks/p68-scenario-poc-logistics.md` — scenario tests draft-first POC/JEP (no required logistics; assert [TBD] drafts).
+- `tasks/p69-draft-first-poc-jep.md` — poc/jep produce complete-as-possible drafts; require only customer+workload; [TBD] the rest; never fabricate or refuse for logistics.
+- `tasks/p70-needs-input-loop-discipline.md` — on needs_input, surface and stop; never re-loop the same producer to the tool limit.
 
 **Acceptance:**
 - `agent_mode: native` → Archie converses, and self-calls sub-agents / lookups /

@@ -47,12 +47,11 @@ def test_unsupported_engagement_claim_is_flagged():
     assert any("$6" in error for error in errors)
 
 
-def test_needs_input_scoring_distinguishes_absent_and_supplied_grounding():
+def test_needs_input_for_missing_logistics_fails_draft_turn():
     call = {"result_status": "needs_input"}
 
-    assert _needs_input_errors({"required_inputs_supplied": False}, call) == []
-    assert _needs_input_errors({"required_inputs_supplied": True}, call) == [
-        "producer returned needs_input despite supplied grounding"
+    assert _needs_input_errors({"draft_logistics_required": True}, call) == [
+        "producer returned needs_input instead of a draft artifact"
     ]
 
 

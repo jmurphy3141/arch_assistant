@@ -100,6 +100,7 @@ async def run_turn(
     prompt = _assemble_prompt(working_set, user_message)
     tool_calls: list[dict[str, Any]] = []
     artifacts: dict[str, str] = {}
+    turn_results: dict[tuple[str, str], ToolResult] = {}
     reply = ""
 
     for iteration in range(max_tool_iterations + 1):
@@ -113,10 +114,13 @@ async def run_turn(
 
         tool_name = str(response.get("tool") or "")
         args = response.get("args") or {}
+        call_identity = _tool_call_identity(tool_name, args)
         trace_id = str(uuid.uuid4())
         spec = specs.get(tool_name)
         result_artifact_key = ""
-        if spec is None:
+        if call_identity in turn_results:
+            result = turn_results[call_identity]
+        elif spec is None:
             result = ToolResult(
                 summary=f"Unknown tool: {tool_name}",
                 status="blocked",
@@ -169,6 +173,8 @@ async def run_turn(
                     )
                 archie_memory.refresh_engagement_digest(context)
                 context_store.write_context(store, customer_id, context)
+        turn_results.setdefault(call_identity, result)
+        result_artifact_key = _result_artifact_key(result)
 
         call = {
             "tool": tool_name,
@@ -182,6 +188,9 @@ async def run_turn(
         if result.status == "ok" and result_artifact_key:
             artifacts[tool_name] = result_artifact_key
         prompt += "\n\n" + _tool_result_message(tool_name, result)
+        if result.status == "needs_input":
+            reply = str(result.clarification or result.summary).strip()
+            break
 
     turns = [
         {
@@ -271,6 +280,15 @@ def _tool_result_message(tool_name: str, result: ToolResult) -> str:
             + json.dumps(payload, ensure_ascii=False, default=str)
         )
     return "[TOOL RESULT]\n" + json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _tool_call_identity(tool_name: str, args: Any) -> tuple[str, str]:
+    """Return a stable per-turn identity for deterministic repeat suppression."""
+    try:
+        rendered_args = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        rendered_args = str(args)
+    return tool_name, rendered_args
 
 
 def _artifact_type_for_tool(tool_name: str) -> str:
