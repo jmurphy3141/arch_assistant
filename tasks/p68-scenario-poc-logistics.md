@@ -1,26 +1,24 @@
-# Task: p58 scenario realism — provide POC logistics; accept grounded needs_input
+# Task: scenario tests draft-first POC/JEP (no required logistics)
 Phase: 5
 Status: todo
 
 ## Goal
-The Northwind scenario asks for a POC plan and JEP but never provides POC
-duration, owners, hours/week, success criteria, or in/out scope — so the poc/jep
-producers CORRECTLY return `needs_input` (p58 re-run turns 9/14). That is grounding
-working, not a product failure. A real SE supplies those before scoping a POC. Add
-a natural turn that provides them so the POC/JEP become producible, and stop the
-harness from scoring a legitimately-grounded `needs_input` as a failure.
+Correct the p58 scenario to match the real SE workflow: the SE does NOT have POC
+duration, owners, or sign-offs when drafting, and sends a draft before they exist.
+The earlier version of this task added a logistics turn — that was wrong. The
+scenario must instead confirm the POC plan and JEP are produced as DRAFTS with
+`[TBD]` placeholders for unknown logistics, never blocked by `needs_input`.
 
-Authorized by PLAN.md Decision #6 (understand before acting) — this fixes the test
-scenario, not the product.
+Depends on p69 (draft-first producers). Harness only — no product code.
 
 ## Files to change
-- `tasks/p58-native-engagement-sim.md` — add a Meeting-3 turn BEFORE the POC ask
-  (current turn 9) that provides, in natural language: POC duration, Oracle +
-  customer owners and hours/week each, success criteria, and explicit in/out scope.
-  Renumber subsequent turns.
-- `scripts/simulate_engagement_native.py` — insert the corresponding turn; and in
-  scoring, distinguish "correctly asked for input the SE genuinely never supplied"
-  (not a failure) from "failed to produce despite having the input" (a failure).
+- `tasks/p58-native-engagement-sim.md` — remove the requirement that the SE supply
+  POC duration/owners/criteria before the POC/JEP turns. Keep the flow natural: the
+  SE asks for a POC and later a JEP without having finalized logistics.
+- `scripts/simulate_engagement_native.py` — revert the "supply logistics" turn;
+  change the POC/JEP assertions to expect a produced DRAFT artifact whose unknown
+  logistics render as `[TBD]` (assert the artifact exists and reloads, and that
+  `[TBD]`/placeholder appears for absent duration/owners) — NOT `needs_input`.
 
 ## Files to delete
 - None.
@@ -30,14 +28,16 @@ scenario, not the product.
   doc only.
 
 ## What to do
-1. Add the POC-logistics turn to the scenario (task doc + harness), phrased as a
-   real SE would after a discovery call.
-2. Update scoring so a grounded `needs_input` for a genuinely-absent input is not a
-   failure; a `needs_input` when the input WAS supplied still fails.
+1. Remove the injected logistics turn from the scenario (doc + harness).
+2. Assert the POC/JEP turns produce a draft artifact with `[TBD]` placeholders for
+   absent logistics; a `needs_input` for missing logistics now FAILS (it should
+   draft instead).
+3. Keep asserting no fabricated values (no invented duration/owner/number).
 
 ## Acceptance criteria
-- With the logistics turn added, `generate_poc_plan` and `generate_jep` produce
-  real artifacts (former turns 9/14) in the re-run. (recorded)
-- A correct `needs_input` for a genuinely-absent input is not scored as a failure;
-  a `needs_input` despite supplied input still fails. (assert in harness self-test)
+- Without any logistics provided, the POC and JEP turns produce reloadable draft
+  artifacts containing `[TBD]` for unknown duration/owners/criteria. (assert)
+- A `needs_input` for missing logistics is scored as a FAILURE (drafts are
+  required). (assert in harness self-test)
+- No fabricated logistics values appear. (assert)
 - No product code changed.
