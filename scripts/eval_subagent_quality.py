@@ -670,6 +670,7 @@ async def _absolute_judgments(
     prompt = _absolute_prompt(artifact_type, content, rubric)
     judgments: list[dict[str, Any]] = []
     for index in range(1, runs + 1):
+        print(f"Judge {artifact_type} absolute {index}/{runs}", flush=True)
         try:
             raw = await _invoke_judge(
                 judge_runner, prompt, model_id=model_id, artifact_type=artifact_type,
@@ -706,6 +707,10 @@ async def _pairwise_judgments(
     judgments: list[dict[str, Any]] = []
     allowed = {labels[0], labels[1], "tie"}
     for index in range(1, runs + 1):
+        print(
+            f"Judge {artifact_type} pairwise {labels[0]} vs {labels[1]} {index}/{runs}",
+            flush=True,
+        )
         try:
             raw = await _invoke_judge(
                 judge_runner, prompt, model_id=model_id, artifact_type=artifact_type,
@@ -817,6 +822,10 @@ async def run_baseline(
         golden = load_golden_exemplar(artifact_type)
         artifacts: list[dict[str, Any]] = []
         for run_index in range(1, producer_runs + 1):
+            print(
+                f"Generate {artifact_type} artifact {run_index}/{producer_runs}",
+                flush=True,
+            )
             trace_id = f"quality-{artifact_type}-{run_index}-{uuid.uuid4().hex[:8]}"
             response = producer(
                 artifact_type,
