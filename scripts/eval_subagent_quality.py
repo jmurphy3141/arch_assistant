@@ -17,6 +17,7 @@ import re
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Callable
@@ -29,6 +30,7 @@ from docx import Document
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 RUBRIC_ROOT = ROOT / "eval" / "rubrics"
 GOLDEN_ROOT = ROOT / "eval" / "golden"
 DEFAULT_REPORT = ROOT / "docs" / "subagent-quality.json"
