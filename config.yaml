@@ -113,6 +113,11 @@ agents:
     model_id: ""   # optional override; can use a stronger reasoning model
     timeout_seconds: 180
     retries: 1
+  native_orchestrator:
+    # Grok 4.3 Reasoning; used only when orchestrator.agent_mode is native.
+    model_id: "ocid1.generativeaimodel.oc1.us-chicago-1.amaaaaaask7dceya4fxp5zjj27q24rjxk46l43die7u6nclgwfbemklsdvoa"
+    timeout_seconds: 180
+    retries: 1
   diagram:
     model_id: ""
   pov:

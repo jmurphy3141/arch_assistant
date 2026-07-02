@@ -130,12 +130,10 @@ async def test_compaction_and_cross_session_summary_recall():
 
 
 def test_native_memory_specs_expose_all_retrieval_tools():
-    names = {
-        spec.name
-        for spec in archie_memory_retrieval.get_memory_tool_specs(
-            store=InMemoryObjectStore(), engagement_id="eng-a"
-        )
-    }
+    specs = archie_memory_retrieval.get_memory_tool_specs(
+        store=InMemoryObjectStore(), engagement_id="eng-a"
+    )
+    names = {spec.name for spec in specs}
     assert names == {
         "recall_fact",
         "search_notes",
@@ -143,3 +141,21 @@ def test_native_memory_specs_expose_all_retrieval_tools():
         "list_artifacts",
         "get_meeting_summaries",
     }
+
+
+def test_native_retrieval_descriptions_state_use_and_sibling_exclusions():
+    descriptions = {
+        spec.name: spec.description.lower()
+        for spec in archie_memory_retrieval.get_memory_tool_specs(
+            store=InMemoryObjectStore(), engagement_id="eng-a"
+        )
+    }
+
+    assert "one specific" in descriptions["recall_fact"]
+    assert "not for" in descriptions["recall_fact"]
+    assert "uploaded notes" in descriptions["search_notes"]
+    assert "not for" in descriptions["search_notes"]
+    assert "every produced deliverable" in descriptions["list_artifacts"]
+    assert "not for" in descriptions["list_artifacts"]
+    assert "per-meeting or per-session" in descriptions["get_meeting_summaries"]
+    assert "not for" in descriptions["get_meeting_summaries"]

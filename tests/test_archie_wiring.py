@@ -1,7 +1,12 @@
 import importlib
 import sys
 
-from agent.archie_wiring import ArchiePromptEnricher, build_forge
+from agent.archie_wiring import (
+    NATIVE_SYSTEM_IDENTITY,
+    ArchiePromptEnricher,
+    build_forge,
+    get_registered_tool_specs,
+)
 from skillforge import Forge
 from skillforge.types import MemorySnapshot
 
@@ -56,6 +61,50 @@ def test_memory_contract_tools():
 
     for name in names:
         assert forge._registry.requires_memory(name)
+
+
+def test_native_identity_makes_explicit_request_the_only_generation_authority():
+    identity = NATIVE_SYSTEM_IDENTITY.lower()
+
+    assert identity.count("call a generate_* tool only") == 1
+    assert "sole authorization" in identity
+    assert "c3e guides the conversation, never generation" in identity
+    assert "only to decide whether to offer the next deliverable" in identity
+    assert "phase or artifact gate is never a request to produce" in identity
+
+
+def test_native_generation_descriptions_have_non_overlapping_triggers():
+    forge = make_forge()
+    native = {spec.name: spec.description for spec in get_registered_tool_specs(forge)}
+
+    assert "written research report" in native["generate_tech_report"]
+    assert "how to architect a workload" not in native["generate_tech_report"]
+    assert "not for conversational architecture questions" in native["generate_tech_report"].lower()
+    assert "poc presentation" in native["generate_presentation"].lower()
+    assert "sales deck" in native["generate_sales_deck"].lower()
+    assert "point of view document" in native["generate_pov"].lower()
+    assert "technical proposal" in native["generate_technical_proposal"].lower()
+
+
+def test_native_description_overrides_do_not_mutate_forge_registry():
+    forge = make_forge()
+    forge_description = forge._registry.get("generate_tech_report").description
+
+    get_registered_tool_specs(forge)
+
+    assert forge._registry.get("generate_tech_report").description == forge_description
+
+
+def test_native_shared_retrieval_descriptions_have_distinct_boundaries():
+    descriptions = {
+        spec.name: spec.description.lower()
+        for spec in get_registered_tool_specs(make_forge())
+    }
+
+    assert "gathered facts" in descriptions["get_summary"]
+    assert "not for produced artifacts" in descriptions["get_summary"]
+    assert "one produced deliverable" in descriptions["get_document"]
+    assert "not for listing every deliverable" in descriptions["get_document"]
 
 
 def test_prompt_enricher_injects_facts():

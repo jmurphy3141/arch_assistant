@@ -709,7 +709,7 @@ def _run_once(
         "customer_id": customer_id,
         "base_url": args.base_url,
         "agent_mode": "native",
-        "model": "Grok 4 via configured OCI Generative AI endpoint",
+        "model": "Grok 4.3 Reasoning via configured OCI Generative AI endpoint",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "notes_text": NOTES,
         "turns": [],
@@ -948,7 +948,7 @@ def _aggregate_runs(
         "runs_requested": len(raw_runs),
         "base_url": base_url,
         "agent_mode": "native",
-        "model": "Grok 4 via configured OCI Generative AI endpoint",
+        "model": "Grok 4.3 Reasoning via configured OCI Generative AI endpoint",
         "started_at": started_at,
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "summary": {

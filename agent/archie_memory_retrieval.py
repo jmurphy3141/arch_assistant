@@ -94,7 +94,7 @@ def get_memory_tool_specs(
     tools = NativeMemoryTools(store, engagement_id, customer_name)
     query_arg = {
         "query": ArgSchema(
-            description="Fact or note keywords to retrieve from this engagement.",
+            description="Keywords for the specific fact or uploaded note to retrieve.",
             type="string",
             required=True,
         )
@@ -103,13 +103,21 @@ def get_memory_tool_specs(
         ToolSpec(
             name="recall_fact",
             handler=tools.recall_fact,
-            description="Recall current authoritative facts for the active engagement.",
+            description=(
+                "Use this when the user asks for the current value of ONE specific "
+                "engagement fact. NOT for reading a deliverable; use get_document. "
+                "NOT for searching uploaded notes; use search_notes."
+            ),
             args=query_arg,
         ),
         ToolSpec(
             name="search_notes",
             handler=tools.search_notes,
-            description="Keyword-search notes from the active engagement only.",
+            description=(
+                "Use this to keyword-search uploaded NOTES in the active engagement. "
+                "NOT for produced artifacts; use list_artifacts or get_document. "
+                "NOT for the current value of a known fact; use recall_fact."
+            ),
             args=query_arg,
         ),
         ToolSpec(
@@ -120,12 +128,21 @@ def get_memory_tool_specs(
         ToolSpec(
             name="list_artifacts",
             handler=tools.list_artifacts,
-            description="List artifact keys and links for the active engagement.",
+            description=(
+                "Use this to list EVERY produced deliverable and its key or link when "
+                "the user asks 'what have we produced?' or 'do we have anything?'. "
+                "NOT for reading one artifact; use get_document. NOT for engagement "
+                "facts; use get_summary or recall_fact."
+            ),
         ),
         ToolSpec(
             name="get_meeting_summaries",
             handler=tools.get_meeting_summaries,
-            description="Return rolling summaries across this engagement's sessions.",
+            description=(
+                "Use this for per-meeting or per-session summaries across the engagement. "
+                "NOT for the engagement's gathered fact summary; use get_summary. "
+                "NOT for uploaded note search; use search_notes."
+            ),
         ),
     )
 

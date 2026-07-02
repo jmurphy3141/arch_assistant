@@ -33,6 +33,7 @@ from skillforge.types import ToolResult
 
 
 SYSTEM_IDENTITY = NATIVE_SYSTEM_IDENTITY
+NATIVE_MODEL_PROFILE = "native_orchestrator"
 
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 logger = logging.getLogger(__name__)
@@ -232,12 +233,12 @@ async def _infer(
     tool_runner: Callable | None,
 ) -> dict | str:
     if tool_runner is not None:
-        result = tool_runner(prompt, SYSTEM_IDENTITY, schemas, "orchestrator")
+        result = tool_runner(prompt, SYSTEM_IDENTITY, schemas, NATIVE_MODEL_PROFILE)
         return await _maybe_await(result)
 
     with open(_CONFIG_PATH, encoding="utf-8") as config_file:
         config = yaml.safe_load(config_file) or {}
-    llm_config = resolve_agent_llm_config(config, "orchestrator")
+    llm_config = resolve_agent_llm_config(config, NATIVE_MODEL_PROFILE)
     return await _maybe_await(
         run_inference_with_tools(
             prompt=prompt,

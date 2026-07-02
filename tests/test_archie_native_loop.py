@@ -4,7 +4,7 @@ import pytest
 
 from agent import archie_memory_retrieval, archie_native_loop, context_store
 from agent.tools.notes import NotesHandlers
-from agent.engagement_mission import C3E_PHASE_ORDER, PHASE_ARTIFACTS
+from agent.engagement_mission import C3E_PHASE_ORDER
 from agent.persistence_objectstore import InMemoryObjectStore
 from skillforge.protocols import ArgSchema
 from skillforge.registry import ToolSpec
@@ -76,7 +76,7 @@ async def test_existing_bom_question_uses_lookup_and_never_invents_bom(monkeypat
 
     async def tool_runner(prompt, system_message, schemas, label):
         assert system_message == archie_native_loop.SYSTEM_IDENTITY
-        assert label == "orchestrator"
+        assert label == "native_orchestrator"
         assert any(schema.name == "get_document" for schema in schemas)
         return next(responses)
 
@@ -149,30 +149,21 @@ async def test_bom_request_calls_registered_sub_agent_handler_and_produces_xlsx(
     assert [call["tool"] for call in result["tool_calls"]] == ["generate_bom"]
 
 
-def test_native_identity_has_standing_c3e_methodology_and_gates():
+def test_native_identity_has_standing_c3e_methodology_without_generation_pressure():
     identity = archie_native_loop.SYSTEM_IDENTITY
 
     assert " → ".join(C3E_PHASE_ORDER) in identity
-    for artifacts in PHASE_ARTIFACTS.values():
-        for artifact in artifacts:
-            expected = {
-                "sta": "Strategic Technical Approach",
-                "pov": "POV",
-                "diagram": "architecture diagram",
-                "bom": "BOM",
-                "jep": "JEP",
-                "waf": "WAF assessment",
-                "technical_proposal": "technical proposal",
-                "terraform": "Terraform",
-            }[artifact]
-            assert expected in identity
+    assert "C3E guides the conversation, never generation" in identity
+    assert "next-required artifact only to decide whether to offer" in identity
+    assert "phase or artifact gate is never a request to produce" in identity
 
 
 def test_native_identity_offers_artifacts_and_reports_tool_status_honestly():
     identity = archie_native_loop.SYSTEM_IDENTITY
 
     assert "offer the next deliverable" in identity
-    assert "only when the user explicitly asks" in identity
+    assert "only when the user explicitly requests" in identity
+    assert identity.count("Call a generate_* tool only") == 1
     assert "Report every tool's actual status" in identity
     assert "unless that tool returned the artifact key on this turn" in identity
 

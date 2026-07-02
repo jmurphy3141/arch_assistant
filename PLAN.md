@@ -426,6 +426,7 @@ Tasks (land in order; each rebases on the prior — all touch the native loop):
 - `tasks/p71-prose-grounding-customer-name-only.md` — prose grounding = customer name; drop brittle fact-anchor blocker.
 - `tasks/p72-record-poc-selection.md` — record POC selection via the tool, not prose.
 - `tasks/p73-multi-run-distribution.md` — measure pass-rate distribution across N runs (the A/B instrument).
+- `tasks/p74-native-tool-surface-clarity.md` — disambiguate the six retrieve tools, fix generate_tech_report trigger, resolve the identity C3E/discipline conflict.
 
 **Acceptance:**
 - `agent_mode: native` → Archie converses, and self-calls sub-agents / lookups /
