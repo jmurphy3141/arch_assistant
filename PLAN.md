@@ -428,6 +428,8 @@ Tasks (land in order; each rebases on the prior — all touch the native loop):
 - `tasks/p73-multi-run-distribution.md` — measure pass-rate distribution across N runs (the A/B instrument).
 - `tasks/p74-native-tool-surface-clarity.md` — disambiguate the six retrieve tools, fix generate_tech_report trigger, resolve the identity C3E/discipline conflict.
 - `tasks/p75-file-content-reader.md` — general read_file_content tool (read any stored spreadsheet/doc's contents; closes T13). Native-only.
+- `tasks/p76-compute-tool.md` — deterministic compute tool (exact cost/TCO/proration math; never mental arithmetic). Native-only.
+- `tasks/p77-export-tool.md` — export_artifact (diagram→PNG, spreadsheet→CSV) with download link. Native-only.
 
 **Acceptance:**
 - `agent_mode: native` → Archie converses, and self-calls sub-agents / lookups /
