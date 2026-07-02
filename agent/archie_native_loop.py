@@ -15,8 +15,11 @@ import yaml
 from agent import (
     archie_memory,
     archie_memory_retrieval,
+    compute_tools,
     context_store,
     document_store,
+    export_tools,
+    file_reader_tools,
     reference_tools,
 )
 from agent.archie_wiring import (
@@ -85,6 +88,21 @@ async def run_turn(
         )
     )
     registered_specs.extend(reference_tools.get_reference_tool_specs())
+    registered_specs.extend(
+        file_reader_tools.get_file_reader_tool_specs(
+            store=store,
+            engagement_id=customer_id,
+            customer_name=customer_name,
+        )
+    )
+    registered_specs.extend(compute_tools.get_compute_tool_specs())
+    registered_specs.extend(
+        export_tools.get_export_tool_specs(
+            store=store,
+            engagement_id=customer_id,
+            customer_name=customer_name,
+        )
+    )
     specs = {spec.name: spec for spec in registered_specs}
     memory = get_registered_memory(forge)
     schemas = [
