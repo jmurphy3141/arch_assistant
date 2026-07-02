@@ -159,3 +159,14 @@ def test_lookup_scoring_accepts_native_artifact_list_and_real_bom_price():
         "",
         "Monthly total 367.64",
     ) == []
+
+
+def test_lookup_scoring_accepts_native_file_content_reader():
+    assert _behavior_errors(
+        {"kind": "lookup_bom"},
+        {
+            "reply": "No Gen AI token costs appear in the workbook rows.",
+            "tool_calls": [{"tool": "read_file_content"}],
+        },
+        {"bom"},
+    ) == []
