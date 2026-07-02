@@ -157,6 +157,31 @@ deterministic guard MAY flag/strip a specific *quantified claim about this
 engagement* not traceable to its data; hedged advisory figures ("customers often
 see ~30–40%") are legitimate expert reasoning and are NOT blocked.
 
+### 9. Sub-agent quality is measured before it is tuned
+
+With the orchestrator solved, the sub-agents are the ceiling on everything the SE
+hands a customer. Quality is raised the same disciplined way the orchestrator was:
+measure first, tune against a baseline, validate pairwise.
+
+Quality splits into two layers:
+
+- **Objective (deterministic, checked — never judged):** structural completeness
+  (JEP sections/phases/owners, BOM priced line items that sum, diagram tiers, POV
+  names the customer), grounding fidelity (every number/service traces to input),
+  and format/correctness (docx/xlsx/drawio parse, `terraform validate`, BOM math).
+- **Subjective craft (LLM-judged):** clarity, persuasiveness, appropriate depth,
+  professional tone, actionability — a **per-artifact-type rubric**, each dimension
+  anchored 1–5.
+
+The judge is trustworthy ONLY with: anchored rubrics; a **distribution** (run the
+judge N times — quality is as non-deterministic as tool-selection was); a **strong
+judge model that is never the producer**; **pairwise** comparison for A/B ("is v2
+better than v1?") over absolute scores; **golden exemplars** (SE-endorsed artifacts
+that anchor both judge and producers); and **calibration against human (SE) scores**
+on a labelled set — the judge is trusted only insofar as it correlates with the SE's
+own eye. Improvements are validated pairwise against the baseline, never by absolute
+score movement alone.
+
 ---
 
 ## Current State vs Target State
@@ -427,6 +452,9 @@ Tasks (land in order; each rebases on the prior — all touch the native loop):
 - `tasks/p72-record-poc-selection.md` — record POC selection via the tool, not prose.
 - `tasks/p73-multi-run-distribution.md` — measure pass-rate distribution across N runs (the A/B instrument).
 - `tasks/p74-native-tool-surface-clarity.md` — disambiguate the six retrieve tools, fix generate_tech_report trigger, resolve the identity C3E/discipline conflict.
+- `tasks/p75-file-content-reader.md` — general read_file_content tool (read any stored spreadsheet/doc's contents; closes T13). Native-only.
+- `tasks/p76-compute-tool.md` — deterministic compute tool (exact cost/TCO/proration math; never mental arithmetic). Native-only.
+- `tasks/p77-export-tool.md` — export_artifact (diagram→PNG, spreadsheet→CSV) with download link. Native-only.
 
 **Acceptance:**
 - `agent_mode: native` → Archie converses, and self-calls sub-agents / lookups /
@@ -434,6 +462,29 @@ Tasks (land in order; each rebases on the prior — all touch the native loop):
   never by prose.
 - `agent_mode: forge` → byte-for-byte current behavior; all existing tests pass.
 - No `_parse_tool_call` in the native path.
+
+---
+
+### Phase 6 — Better Sub-Agents
+
+**Goal:** raise the quality of the artifacts the specialists produce — the new
+ceiling now that the native orchestrator scores a 15/15 median. Per Decision #9:
+measure first, then tune against a baseline, validating pairwise.
+
+Do NOT tune a sub-agent before the quality harness gives it a baseline.
+
+Tasks (land in order):
+- `tasks/p78-subagent-quality-harness.md` — the eval harness: deterministic checks
+  + rubric LLM-judge distribution + human calibration; per-artifact baselines. (first)
+- *(then)* per-sub-agent model selection (the Decision #3 lever — a reasoning model
+  for JEP/POV, a code model for Terraform), validated pairwise.
+- *(then)* grounded-brief → constrained-prose rendering for JEP/POV.
+- *(then)* richer per-sub-agent domain corpus + golden exemplars.
+
+**Acceptance:**
+- The harness produces a per-artifact, per-dimension quality distribution plus
+  objective pass rates, and reports judge-vs-SE calibration on a labelled set.
+- Every subsequent sub-agent change is validated pairwise against its baseline.
 
 ---
 

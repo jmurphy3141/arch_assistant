@@ -60,7 +60,13 @@ from agent.object_store_oci import OciObjectStore
 
 
 DEFAULT_REPORT = ROOT / "docs" / "native-engagement-sim.json"
-LOOKUP_TOOLS = {"get_document", "get_summary", "list_artifacts", "list_documents"}
+LOOKUP_TOOLS = {
+    "get_document",
+    "get_summary",
+    "list_artifacts",
+    "list_documents",
+    "read_file_content",
+}
 NOTES = """Northwind call scratchpad — rough, please clean up
 
 Member portal is .NET and still in their data center. Healthcare/member claims,

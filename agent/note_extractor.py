@@ -11,6 +11,7 @@ _CONTENT_TYPES = {
     "text/x-markdown": "md",
     "application/pdf": "pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "text/csv": "csv",
 }
 
 _EXTENSIONS = {
@@ -19,6 +20,7 @@ _EXTENSIONS = {
     ".markdown": "md",
     ".pdf": "pdf",
     ".docx": "docx",
+    ".csv": "csv",
 }
 
 
@@ -66,7 +68,7 @@ def extract_text(content_bytes: bytes, content_type: str, filename: str) -> dict
         return _result(text="", detected_type=detected_type, extraction_status="unsupported")
 
     try:
-        if detected_type in {"txt", "md"}:
+        if detected_type in {"txt", "md", "csv"}:
             text = content_bytes.decode("utf-8", errors="replace")
         elif detected_type == "pdf":
             import pdfplumber
