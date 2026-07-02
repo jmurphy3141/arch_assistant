@@ -135,7 +135,12 @@ FIXTURE: dict[str, Any] = {
             "instance_count": 1,
             "ha": True,
         },
-        "storage": {"block_gb": 500, "object_gb": 100},
+        "storage": {
+            "block_tb": 0.48828125,
+            "block_gb": 500,
+            "object_tb": 0.09765625,
+            "object_gb": 100,
+        },
         "workloads": [".NET member claims portal"],
         "assumptions": ["730 hours per month", "estimate only and non-binding"],
     },
@@ -153,8 +158,19 @@ TASKS = {
         "Create the complete Joint Execution Plan for the Northwind Health three-tier "
         ".NET member claims portal POC. Duration is 6 weeks in us-chicago-1. Phase 1 "
         "Assessment is Week 1; Phase 2 Build is Weeks 2-3; Phase 3 Validate is Weeks 4-6. "
-        "Include the stated success criteria, owners, Bill of Materials scope, test cases, "
-        "participants, deliverables, logistics, and handoff deliverables."
+        "In scope: OCI WAF, Flexible Load Balancer, two E5 Flex web servers, two E5 Flex "
+        "application servers, Oracle Base Database Service, 500 GB Block Volume, 100 GB "
+        "Object Storage, Logging, Monitoring, IAM, Vault, HIPAA control validation, and "
+        "evidence collection. Out of scope: production cutover and production data migration. "
+        "The architecture is public WAF and load balancer ingress to private web, application, "
+        "and database tiers. Success criteria and evidence: measure p95 response time under "
+        "300 ms, 99.9% availability during the validation window, recovery time under 60 "
+        "minutes, and a proposed 30% infrastructure cost reduction target within 12 months. "
+        "Owners and commitments: Oracle solution architect owns architecture and evidence; "
+        "Northwind application owner runs tests; Northwind security lead reviews HIPAA controls. "
+        "Track access delay, performance miss, and recovery miss risks with joint mitigation. "
+        "Approvals are joint Oracle and Northwind go/no-go review. Include Bill of Materials, "
+        "test cases, participants, deliverables, logistics, and handoff deliverables sections."
     ),
     "bom": "Generate the priced BOM for the fixed Northwind Health OCI architecture and sizing.",
     "diagram": (
@@ -477,7 +493,8 @@ def _check_bom(content: str, fixture: dict[str, Any]) -> dict[str, dict[str, Any
 def _check_diagram(content: str, fixture: dict[str, Any]) -> dict[str, dict[str, Any]]:
     try:
         root = ElementTree.fromstring(content)
-        parse_ok = root.tag.lower().endswith("mxfile") or "mxfile" in root.tag.lower()
+        tag = root.tag.lower()
+        parse_ok = "mxfile" in tag or "mxgraphmodel" in tag
         parse_detail = root.tag
     except Exception as exc:
         parse_ok = False
