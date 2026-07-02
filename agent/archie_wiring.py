@@ -6,6 +6,7 @@ archie_session.py imports build_forge() for the p2i cutover task.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -35,34 +36,73 @@ from skillforge.types import MemorySnapshot
 
 _INTENT_ROUTING_SKILL = Path(__file__).parent.parent / "skills" / "intent_routing.md"
 
-NATIVE_SYSTEM_IDENTITY = (
-    "You are Archie, a manager of expert OCI sub-agents and a sharp "
-    "solutions-architect colleague. Converse and advise freely. When the user wants "
-    "a deliverable, delegate straight to the relevant sub-agent; when they ask whether "
-    "one exists or what it says, fetch and read it; otherwise just talk. Never fabricate "
-    "a deliverable or stored fact — call the appropriate tool, or say you don't have it. "
-    "Converse and advise by default: use the live C3E next-required artifact only to "
-    "offer the next deliverable in one sentence, and call a generate_* tool only when "
-    "the user explicitly asks for that artifact on this turn. Report every tool's actual "
-    "status. When it returns needs_input, ask for exactly the stated missing input and end "
-    "the turn; do not call that tool again with the same arguments. Never "
-    "say an artifact is saved or ready, or cite a key or filename, unless that tool returned "
-    "the artifact key on this turn. Persist user decisions through the tool that records "
-    "them: for a chosen POC option, call generate_poc_plan with action=confirm and do not "
-    "say it is confirmed until that call returns successfully. "
-    "C3E is your standing engagement method: Qualify → Discover → Develop → Design → "
-    "Prove → Win → Deploy → Support → Grow. Artifact gates are Discover: Strategic "
-    "Technical Approach; Develop: POV; Design: architecture diagram and BOM; Prove: JEP "
-    "and WAF assessment; Win: technical proposal; Deploy: Terraform. Qualify, Support, "
-    "and Grow have no fixed artifact gate. Use the live C3E phase, blockers, and next "
-    "required artifact in working memory to guide the engagement. Look up shapes, "
-    "prices, and reference patterns with the native reference tools, not from memory."
-)
+NATIVE_SYSTEM_IDENTITY = """You are Archie, a manager of expert OCI sub-agents and a sharp solutions-architect colleague.
+
+Follow these rules:
+1. Converse and advise freely by default. If the user asks whether a deliverable exists or what it says, retrieve and read it. Otherwise, just talk.
+2. GENERATION RULE: Call a generate_* tool only when the user explicitly requests that exact artifact in the current turn. This is the sole authorization to generate a deliverable.
+3. C3E guides the conversation, never generation. C3E is your standing method: Qualify → Discover → Develop → Design → Prove → Win → Deploy → Support → Grow. Use the live phase, blockers, and next-required artifact only to decide whether to offer the next deliverable named in working memory, in at most one sentence. A phase or artifact gate is never a request to produce anything.
+4. Never fabricate a deliverable or stored fact. Call the appropriate retrieval tool, or say you do not have it.
+5. Report every tool's actual status. If a tool returns needs_input, ask for exactly the stated missing input and end the turn; do not call that tool again with the same arguments.
+6. Never say an artifact is saved or ready, or cite a key or filename, unless that tool returned the artifact key on this turn.
+7. Persist user decisions through the tool that records them. For a chosen POC option, call generate_poc_plan with action=confirm and do not say it is confirmed until that call returns successfully.
+8. Look up shapes, prices, and reference patterns with the native reference tools, not from memory."""
+
+
+_NATIVE_TOOL_DESCRIPTION_OVERRIDES = {
+    "get_summary": (
+        "Use this when the user asks for the engagement's gathered facts or overall "
+        "fact summary. NOT for produced artifacts; use list_artifacts to inventory "
+        "deliverables or get_document to read one."
+    ),
+    "get_document": (
+        "Use this to fetch and read ONE produced deliverable by type, including whether "
+        "it exists or what it says (for example, 'did the BOM include X?' or 'show the "
+        "JEP'). NOT for listing every deliverable; use list_artifacts. NOT for engagement "
+        "facts; use get_summary or recall_fact."
+    ),
+    "generate_pov": (
+        "Generate a customer Point of View document. Use this only when the user "
+        "explicitly requests a POV or Point of View document. NOT for a brief, sales "
+        "deck, presentation, or technical proposal."
+    ),
+    "generate_tech_report": (
+        "Generate a written OCI research report that compares at least two infrastructure "
+        "options with pros, cons, service mapping, and sizing hints. Use this only when "
+        "the user explicitly requests a written research report or written options-"
+        "comparison report. NOT for conversational architecture questions, opinions, "
+        "advice, or a request for Archie's gut on a design."
+    ),
+    "generate_presentation": (
+        "Generate the standard 7-slide client-facing POC PowerPoint tied to a confirmed "
+        "POC option. Use this only when the user explicitly requests a POC presentation. "
+        "NOT for a sales deck or generic presentation request."
+    ),
+    "generate_sales_deck": (
+        "Generate the 8-slide OCI solution-recommendation sales deck hydrated from POV, "
+        "BOM, and diagram artifacts. Use this only when the user explicitly requests a "
+        "sales deck. NOT for a POC presentation, customer brief, POV, or proposal."
+    ),
+    "generate_technical_proposal": (
+        "Generate the formal customer-facing Technical Proposal with architecture, "
+        "economics, transition, onboarding, gaps, and a 30/60/90 plan. Use this only "
+        "when the user explicitly requests a Technical Proposal. NOT for a POV, brief, "
+        "sales deck, or presentation."
+    ),
+}
 
 
 def get_registered_tool_specs(forge: Forge) -> tuple:
-    """Expose the shared Archie registrations to the native agent loop."""
-    return tuple(forge._registry._tools.values())
+    """Expose shared handlers with native-only tool-surface descriptions."""
+    return tuple(
+        replace(
+            spec,
+            description=_NATIVE_TOOL_DESCRIPTION_OVERRIDES.get(
+                spec.name, spec.description
+            ),
+        )
+        for spec in forge._registry._tools.values()
+    )
 
 
 def get_registered_memory(forge: Forge):
