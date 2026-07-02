@@ -517,13 +517,21 @@ def _check_diagram(content: str, fixture: dict[str, Any]) -> dict[str, dict[str,
 
 
 def _check_waf(content: str, fixture: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    lowered = content.lower()
+    lowered = content.lower().replace("cost optimization", "cost optimisation")
     pillars = (
         "security", "reliability", "performance efficiency", "cost optimisation",
         "operational excellence", "continuous improvement",
     )
     missing = [pillar for pillar in pillars if pillar not in lowered]
-    score_hits = sum(bool(re.search(rf"{re.escape(pillar)}[^\n]{{0,50}}(?:score\s*:?)?\s*[1-5]\s*/\s*5", lowered)) for pillar in pillars)
+    score_hits = 0
+    for pillar in pillars:
+        section = re.search(
+            rf"^##[^\n]*{re.escape(pillar)}[^\n]*\n(.*?)(?=^##\s|\Z)",
+            lowered,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+        if section and re.search(r"\bscore\s*:\s*[1-5](?:\.\d+)?\s*/\s*5", section.group(1)):
+            score_hits += 1
     return {
         "markdown_parse": _check(bool(_headings(content)), f"headings={len(_headings(content))}"),
         "six_pillars": _check(not missing, "missing=" + ", ".join(missing) if missing else "all pillars present"),
