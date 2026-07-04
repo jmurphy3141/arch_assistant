@@ -107,6 +107,74 @@ def create_chat_router(deps) -> APIRouter:
 
         from agent import archie_session
 
+        if archie_session.get_agent_mode() == "native":
+            from agent import archie_native_loop
+
+            async def _run_native_background() -> None:
+                try:
+                    result_dict = await archie_native_loop.run_turn(
+                        customer_id=req.customer_id,
+                        customer_name=req.customer_name,
+                        user_message=req.message,
+                        store=store,
+                        text_runner=text_runner,
+                        tool_runner=tool_runner,
+                        a2a_base_url=a2a_base_url,
+                    )
+                    # Native run_turn persists the conversation turns itself;
+                    # only post-process artifacts and attach the manifest here
+                    # (mirrors the /api/chat/stream path) — no double-save.
+                    result_dict = await deps.persist_bom_xlsx_downloads(
+                        req.customer_id, store, result_dict
+                    )
+                    artifact_manifest = deps.build_artifact_manifest(
+                        req.customer_id, result_dict
+                    )
+                    result_dict = attach_artifact_delivery_to_reply(
+                        result_dict, artifact_manifest
+                    )
+                    await anyio.to_thread.run_sync(
+                        functools.partial(
+                            update_latest_assistant_turn,
+                            store,
+                            req.customer_id,
+                            {
+                                "content": result_dict.get("reply", ""),
+                                "tool_calls": result_dict.get("tool_calls", []),
+                                "artifacts": result_dict.get("artifacts", {}),
+                                "artifact_manifest": artifact_manifest,
+                            },
+                        )
+                    )
+                    project_membership = _persist_chat_project_membership(store, req)
+                    deps.complete_job(
+                        job_id,
+                        {
+                            "status": "ok",
+                            "trace_id": deps.current_trace_id(),
+                            "project_id": project_membership["project_id"],
+                            "project_name": project_membership["project_name"],
+                            "engagement_id": req.customer_id,
+                            "reply": result_dict.get("reply", ""),
+                            "tool_calls": result_dict.get("tool_calls", []),
+                            "artifacts": result_dict.get("artifacts", {}),
+                            "artifact_manifest": artifact_manifest,
+                            "history_length": result_dict.get("history_length", 0),
+                        },
+                    )
+                except Exception as exc:
+                    deps.logger.error(
+                        "/api/chat/background native error customer=%s job_id=%s trace_id=%s: %s",
+                        req.customer_id,
+                        job_id,
+                        deps.current_trace_id(),
+                        exc,
+                    )
+                    deps.fail_job(job_id, str(exc))
+
+            asyncio.create_task(_run_native_background())
+            return {"job_id": job_id, "status": "pending"}
+
         history = await anyio.to_thread.run_sync(
             functools.partial(load_conversation_history, store, req.customer_id)
         )

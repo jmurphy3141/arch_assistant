@@ -157,3 +157,54 @@ def test_telegram_failure_does_not_fail_job(client, monkeypatch):
 
     assert body["status"] == "ok"
     assert body["reply"] == "Background POC step complete."
+
+
+def test_background_native_mode_runs_native_loop_not_forge(monkeypatch):
+    import agent.archie_native_loop as native_loop
+
+    drawing_agent_server._JOB_STORE.clear()
+    drawing_agent_server.app.state.object_store = InMemoryObjectStore()
+    drawing_agent_server.app.state.llm_runner = object()
+
+    native_calls: list[dict] = []
+
+    async def fake_native_run_turn(**kwargs):
+        native_calls.append(kwargs)
+        return {
+            "reply": "Native background turn complete.",
+            "tool_calls": [],
+            "artifacts": {},
+            "history_length": 2,
+            "events": [{"type": "native_reasoning", "message": "Reasoning...", "data": {}}],
+        }
+
+    def forbidden_forge(**_kwargs):
+        raise AssertionError("forge must not be constructed in native background mode")
+
+    monkeypatch.setattr(archie_session, "get_agent_mode", lambda: "native")
+    monkeypatch.setattr(native_loop, "run_turn", fake_native_run_turn)
+    monkeypatch.setattr(archie_session, "_get_forge", forbidden_forge)
+    monkeypatch.setattr(notifications, "_load_telegram_config", lambda: {"enabled": False})
+
+    try:
+        with TestClient(drawing_agent_server.app, raise_server_exceptions=True) as test_client:
+            job_id = _start_background_job(test_client)
+            body = _poll_job(test_client, job_id)
+    finally:
+        drawing_agent_server._JOB_STORE.clear()
+        drawing_agent_server.app.state.object_store = None
+        drawing_agent_server.app.state.llm_runner = None
+
+    assert body["status"] == "ok"
+    assert body["reply"] == "Native background turn complete."
+    assert len(native_calls) == 1
+    assert native_calls[0]["customer_id"] == "acme"
+    assert native_calls[0]["user_message"] == "Generate the POC artifacts in the background."
+
+
+def test_background_forge_mode_unchanged_by_agent_mode_helper(client, monkeypatch):
+    monkeypatch.setattr(archie_session, "get_agent_mode", lambda: "forge")
+    job_id = _start_background_job(client)
+    body = _poll_job(client, job_id)
+    assert body["status"] == "ok"
+    assert body["reply"] == "Background POC step complete."

@@ -50,6 +50,18 @@ _PENDING_UPDATE_WORKFLOWS: dict[str, dict[str, Any]] = {}
 _forge_cache: dict[str, _Forge] = {}
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 
+
+def get_agent_mode() -> str:
+    """Resolve orchestrator.agent_mode from config.yaml ("forge" | "native")."""
+    try:
+        with open(_CONFIG_PATH, encoding="utf-8") as config_file:
+            config = yaml.safe_load(config_file) or {}
+    except OSError:
+        return "forge"
+    return str(
+        (config.get("orchestrator") or {}).get("agent_mode", "forge")
+    ).strip().lower()
+
 # ── System message ─────────────────────────────────────────────────────────────
 
 ORCHESTRATOR_SYSTEM_MSG = """\
@@ -270,13 +282,7 @@ async def run_turn(
             "history_length": int,
         }
     """
-    with open(_CONFIG_PATH, encoding="utf-8") as config_file:
-        agent_mode = str(
-            (yaml.safe_load(config_file) or {}).get("orchestrator", {}).get(
-                "agent_mode", "forge"
-            )
-        ).strip().lower()
-    if agent_mode == "native":
+    if get_agent_mode() == "native":
         from agent.archie_native_loop import run_turn as run_native_turn
 
         return await run_native_turn(
@@ -288,6 +294,7 @@ async def run_turn(
             tool_runner=tool_runner,
             a2a_base_url=a2a_base_url,
             max_tool_iterations=max_tool_iterations,
+            reasoning_sink=reasoning_sink,
         )
 
     _active_hats: list[str] = []

@@ -514,3 +514,170 @@ async def test_native_bom_payload_is_persisted_before_artifact_indexing(monkeypa
 
     assert result["tool_calls"][0]["artifact_key"] == artifact_key
     assert result["artifacts"] == {"generate_bom": artifact_key}
+
+
+@pytest.mark.asyncio
+async def test_native_turn_emits_reasoning_and_tool_events(monkeypatch):
+    sink_calls: list[tuple[str, str]] = []
+
+    async def producer(_args, **_kwargs):
+        return ToolResult(summary="Done.", status="ok")
+
+    _wire_native(
+        monkeypatch,
+        [ToolSpec(name="generate_bom", handler=producer, description="Generate BOM.")],
+    )
+    responses = iter([{"tool": "generate_bom", "args": {}}, "All set."])
+
+    result = await archie_native_loop.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="Generate the BOM.",
+        store=InMemoryObjectStore(),
+        text_runner=lambda *_args: "unused",
+        tool_runner=lambda *_args: next(responses),
+        reasoning_sink=lambda label, phase: sink_calls.append((label, phase)),
+    )
+
+    assert len(sink_calls) >= 2
+    assert all(phase == "native_reasoning" for _label, phase in sink_calls)
+    assert "Reasoning over the engagement..." in [label for label, _ in sink_calls]
+    event_types = [event["type"] for event in result["events"]]
+    assert "native_reasoning" in event_types
+    assert "native_tool" in event_types
+    tool_event = next(e for e in result["events"] if e["type"] == "native_tool")
+    assert tool_event["data"]["tool"] == "generate_bom"
+    assert all({"type", "message", "data"} <= set(e) for e in result["events"])
+
+
+@pytest.mark.asyncio
+async def test_reasoning_sink_failure_never_breaks_the_turn(monkeypatch):
+    def broken_sink(_label, _phase):
+        raise RuntimeError("sink exploded")
+
+    _wire_native(monkeypatch, [])
+
+    result = await archie_native_loop.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="hello",
+        store=InMemoryObjectStore(),
+        text_runner=lambda *_args: "unused",
+        tool_runner=lambda *_args: "Hi there.",
+        reasoning_sink=broken_sink,
+    )
+
+    assert result["reply"] == "Hi there."
+
+
+@pytest.mark.asyncio
+async def test_native_tool_started_notification_fires(monkeypatch):
+    import agent.notifications as notifications
+
+    notified: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        notifications,
+        "notify",
+        lambda event, customer_id, detail="": notified.append((event, customer_id)),
+    )
+
+    async def producer(_args, **_kwargs):
+        return ToolResult(summary="Done.", status="ok")
+
+    _wire_native(
+        monkeypatch,
+        [ToolSpec(name="generate_bom", handler=producer, description="Generate BOM.")],
+    )
+    responses = iter([{"tool": "generate_bom", "args": {}}, "All set."])
+
+    await archie_native_loop.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="Generate the BOM.",
+        store=InMemoryObjectStore(),
+        text_runner=lambda *_args: "unused",
+        tool_runner=lambda *_args: next(responses),
+    )
+
+    assert ("tool_started:generate_bom", "c1") in notified
+
+
+@pytest.mark.asyncio
+async def test_tool_handler_exception_is_isolated_and_surfaced(monkeypatch):
+    async def exploding(_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    _wire_native(
+        monkeypatch,
+        [ToolSpec(name="generate_diagram", handler=exploding, description="Generate diagram.")],
+    )
+    responses = iter(
+        [
+            {"tool": "generate_diagram", "args": {}},
+            "The diagram step failed; I can retry or adjust the request.",
+        ]
+    )
+
+    result = await archie_native_loop.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="Generate the diagram.",
+        store=InMemoryObjectStore(),
+        text_runner=lambda *_args: "unused",
+        tool_runner=lambda *_args: next(responses),
+    )
+
+    assert result["tool_calls"][0]["result_status"] == "error"
+    assert "boom" in result["tool_calls"][0]["result_summary"]
+    assert result["tool_calls"][0]["artifact_key"] == ""
+    assert "failed" in result["reply"]
+
+
+def test_artifact_type_map_covers_every_registered_generate_tool():
+    registered = {
+        "generate_bom": "bom",
+        "generate_diagram": "diagram",
+        "generate_jep": "jep",
+        "generate_poc_plan": "poc_plan",
+        "generate_pov": "pov",
+        "generate_presentation": "presentation",
+        "generate_sales_deck": "sales_deck",
+        "generate_sta": "sta",
+        "generate_tech_report": "tech_report",
+        "generate_technical_proposal": "technical_proposal",
+        "generate_terraform": "terraform",
+        "generate_waf": "waf",
+    }
+    assert archie_native_loop._ARTIFACT_TYPE_BY_TOOL == registered
+    for tool_name, expected in registered.items():
+        assert archie_native_loop._artifact_type_for_tool(tool_name) == expected
+    assert archie_native_loop._artifact_type_for_tool("generate_future_tool") == "future_tool"
+    assert archie_native_loop._artifact_type_for_tool("get_document") == ""
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_passes_reasoning_sink_to_native_loop(monkeypatch):
+    import agent.archie_native_loop as native_loop
+    import agent.archie_session as archie_session
+
+    captured: dict = {}
+
+    async def fake_native_run_turn(**kwargs):
+        captured.update(kwargs)
+        return {"reply": "ok", "tool_calls": [], "artifacts": {}, "history_length": 0, "events": []}
+
+    monkeypatch.setattr(archie_session, "get_agent_mode", lambda: "native")
+    monkeypatch.setattr(native_loop, "run_turn", fake_native_run_turn)
+    sentinel = object()
+
+    result = await archie_session.run_turn(
+        customer_id="c1",
+        customer_name="Acme",
+        user_message="hello",
+        store=InMemoryObjectStore(),
+        text_runner=lambda *_args: "unused",
+        reasoning_sink=sentinel,
+    )
+
+    assert result["reply"] == "ok"
+    assert captured["reasoning_sink"] is sentinel
