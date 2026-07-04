@@ -1,6 +1,7 @@
 # AGENTS.md
 
-Last updated: 2026-06-01 for Archie OCI Architecture Assistant v1.9.x.
+Last updated: 2026-07-04 for Archie OCI Architecture Assistant, native-architecture
+migration (`PLAN.md` Phases 3-7; see `CHANGELOG.md` "Unreleased" for the full list).
 
 Read this file first, then read `PLAN.md` before touching any code.
 `PLAN.md` is the locked architecture plan. It defines the target state,
@@ -16,15 +17,24 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - Main backend app: `drawing_agent_server.py`.
 - Main UI app: `ui/src/App.tsx`.
 - Agent 0 orchestrates chat, uploaded notes, diagrams, BOM, POV, JEP, WAF,
-  and Terraform workflows.
+  Terraform, tech research, POC strategy, presentations, sales decks, STA,
+  and technical proposal workflows.
+- Two orchestration paths behind `config.yaml` → `orchestrator.agent_mode`
+  (defaults to `"forge"`): **forge** (`skillforge/forge.py`, hat-gated ReAct
+  loop) and **native** (`agent/archie_native_loop.py`, native tool-calling,
+  no hats — Decision #8). Forge behavior must stay byte-for-byte unchanged
+  by any native-loop work.
 - `archie.memory` is the canonical specialist execution contract and is
-  injected into BOM, Diagram, WAF, Terraform, POV, and JEP prompts.
+  injected into BOM, Diagram, WAF, Terraform, POV, and JEP prompts (both
+  orchestration paths).
 - v1.9 completion evidence and guardrail status live in
-  `docs/v1_9_status.md`.
+  `docs/v1_9_status.md` (historical snapshot — the codebase has moved well
+  past v1.9 since; treat it as evidence of what shipped by that date, not a
+  current-state doc).
 - Backend route ownership and compatibility status live in
   `docs/backend-api-surface.md`.
-- Expert hats live under `agent/hats/`; specialist services live under
-  `sub_agents/`.
+- Expert hats live under `agent/hats/` (19 files, forge path only); specialist
+  services live under `sub_agents/` (12 directories).
 - Production service runs uvicorn on internal port `8080`.
 
 ## Read First
@@ -55,18 +65,31 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - `server/services/`: server-only job and BOM artifact/download helpers.
 - `agent/orchestrator_agent.py`: thin compatibility shim for existing Agent 0
   imports.
-- `agent/archie_session.py`: session wrapper and compatibility layer — loads
-  history/context, calls `forge.run_turn()`, saves results, and still contains
-  deterministic fast paths plus legacy tool-dispatch compatibility.
+- `agent/archie_session.py`: session wrapper and compatibility layer — reads
+  `get_agent_mode()`, dispatches to `forge.run_turn()` or
+  `archie_native_loop.run_turn()`, saves results, and still contains
+  deterministic fast paths plus legacy tool-dispatch compatibility (forge path).
 - `agent/archie_wiring.py`: `build_forge()` — constructs the Forge instance
-  with the Archie system prompt and registers all OCI tool handlers.
+  with the Archie system prompt and registers all 16 OCI tool handlers.
+- `agent/archie_native_loop.py`: native tool-calling loop for
+  `agent_mode: native` — no hat gate, no expert pre-action/post-review; adds
+  its own tool surface (below) for grounding instead.
+- `agent/archie_memory_retrieval.py`, `agent/reference_tools.py`,
+  `agent/file_reader_tools.py`, `agent/compute_tools.py`,
+  `agent/export_tools.py`: native-only tool specs — memory recall/search,
+  reference-data lookups, arbitrary stored-file reads, deterministic
+  compute, and artifact export (PNG/CSV), respectively.
 - `agent/archie_memory.py`: context assembly, memory enforcement, BOM
   hydration, and specialist-question management.
 - `agent/hat_engine.py`: loads markdown hats and exposes hat activation tools
-  for Archie.
+  for Archie (forge path only — native mode never activates hats).
 - `agent/safety_rules.py`: thin deterministic safety guard for hard blocks.
 - `agent/document_store.py`: generated artifacts and document persistence.
-- `agent/context_store.py`: per-client/customer context and uploaded note state.
+- `agent/context_store.py`: per-client/customer context, relationship schema
+  (`archie.relationship`), and uploaded note state.
+- `agent/engagement_mission.py`: C3E phase tracker and `suggest_next_step`
+  proactivity.
+- `agent/meeting_prep.py`: deterministic `build_meeting_prep()` assembler.
 - `agent/decision_context.py`: per-turn Decision Context extraction,
   constraint tags, and deterministic summaries.
 - `agent/consistency_contract.py`: canonical selected-POC, BOM, and Diagram
@@ -77,6 +100,11 @@ with `PLAN.md`, stop and flag it — do not improvise.
   Markdown composition, revision handling, and deterministic validation.
 - `agent/poc_composer.py`: grounded POC brief extraction and deterministic
   three-option composition with presentation-only LLM polishing.
+- `server/routes/chat.py`: `/api/chat`, `/api/chat/stream`, and
+  `/api/chat/background` — the background route branches on
+  `archie_session.get_agent_mode()` the same way the session wrapper does.
+- `server/routes/briefing.py`: `/api/briefing/*` — engagement state, SE
+  cross-account accounts, meeting prep.
 - `ui/src/App.tsx`: tab shell and top-level UI state.
 - `ui/src/components/ChatInterface.tsx`: chat experience and Agent 0 surface.
 - `ui/src/api/client.ts`: browser API client and endpoint contracts.
@@ -92,11 +120,24 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - Static UI: the backend serves the Vite build from `ui/dist/` in production.
 - Orchestrator: `skillforge/forge.py` owns the ReAct loop — planning, hat
   activation, expert pre-action, tool dispatch, expert post-review, and
-  correction. `agent/archie_session.py` loads state, calls `forge.run_turn()`,
-  saves results, and preserves compatibility fast paths while migration work
+  correction — on the **forge** path (`agent_mode: forge`, the default).
+  `agent/archie_session.py` loads state, calls `forge.run_turn()`, saves
+  results, and preserves compatibility fast paths while migration work
   continues.
+- **Native path** (`agent_mode: native`): `agent/archie_native_loop.py` runs a
+  native tool-calling loop instead — no hat gate, no expert pre/post-review.
+  It registers the same domain tools plus native-only grounding tools
+  (`recall_fact`, `search_notes`, `get_decisions`, `list_artifacts`,
+  `get_meeting_summaries`, `lookup_compute_shapes`, `lookup_price`,
+  `lookup_reference_architecture`, `read_file_content`, `compute`,
+  `export_artifact`). Per-tool failures are isolated (a raising handler
+  produces a `status="error"` ToolResult; the turn continues). `reasoning_sink`
+  and `notify("tool_started:<tool>", ...)` drive the same live thinking/
+  tool-chip UI events the forge path already produced. Changing the native
+  loop must never change forge-path behavior, and vice versa.
 - ReAct prompts include internal orchestrator self-guidance; deterministic fast
-  paths skip ReAct by design and are not self-guidance failures.
+  paths skip ReAct by design and are not self-guidance failures. This applies
+  to the forge path only — the native path has no ReAct prompt to check.
 - Decision Context is generated per turn, persisted to context, included in
   traces, and recorded in the Decision Log.
 - Canonical Archie memory is assembled and enforced in `agent/archie_memory.py`,
@@ -131,10 +172,17 @@ with `PLAN.md`, stop and flag it — do not improvise.
 - Persistence: document/context stores write local artifacts and can integrate
   with OCI Object Storage through `agent/object_store_oci.py` and related
   persistence modules.
-- Hats: markdown files in `agent/hats/` encode Archie's expert lenses.
-- Sub-agents: `sub_agents/` contains independent A2A services for BOM,
+- Hats: markdown files in `agent/hats/` (19 total) encode Archie's expert
+  lenses — forge path only; never activated by the native loop.
+- Sub-agents: `sub_agents/` contains 12 independent A2A services: BOM,
   diagram, POV, JEP, WAF, Terraform, tech research, sales deck, POC strategy,
-  and presentation.
+  presentation, STA, and technical proposal.
+- Second brain: `archie.relationship` (stakeholders, objections, commitments,
+  competitive posture, action items, meetings) lives in
+  `agent/context_store.py`; the debrief loop (`server/routes/documents.py` →
+  `extract_relationship_facts_llm()` → `pending_debrief` → `confirm_debrief`
+  tool) and C3E phase tracking (`agent/engagement_mission.py`) are
+  Archie-domain only — `skillforge/` has zero knowledge of any of it.
 - Individual specialist endpoints can be overridden at runtime with
   `ARCHIE_SUB_AGENT_<NAME>_URL` (for example,
   `ARCHIE_SUB_AGENT_DIAGRAM_URL=http://127.0.0.1:18082`).
@@ -169,6 +217,9 @@ pytest tests/test_bom_service.py tests/test_bom_api.py -v
 pytest tests/test_terraform_api.py -v
 pytest tests/test_jep_lifecycle.py -v
 pytest tests/test_sub_agent_port_config.py -v
+pytest tests/test_archie_forge_wiring.py -v          # forge/session boundary guard
+pytest tests/test_archie_native_loop.py -v           # native loop (agent_mode: native)
+pytest tests/test_background_job.py -v               # /api/chat/background, both agent_mode values
 
 # Repo gates
 ./scripts/test_pr_gate.sh -v

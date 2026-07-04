@@ -62,6 +62,8 @@ Archie: [fans out all 5 artifacts simultaneously, ~90 seconds]
 | `generate_tech_report` | Technical research and service selection |
 | `generate_sales_deck` | Sales enablement deck |
 | `generate_presentation` | 7-slide client-ready PowerPoint using Oracle OCI icon stencils |
+| `generate_sta` | Strategic Technical Approach document |
+| `generate_technical_proposal` | Technical Proposal document |
 
 ---
 
@@ -226,8 +228,17 @@ Expert hats live in `agent/hats/` as structured markdown files. When activated, 
 | `jep_writer` | `generate_jep` | JEP scope, success criteria, phased execution |
 | `oci_presentation_writer` | `generate_presentation` | Synthesis of BOM + research + diagrams into a client deck |
 | `infra_tech_research` | `generate_tech_report` | Service selection, technology research |
+| `oci_sales_deck` | `generate_sales_deck` | Sales enablement narrative and slide structure |
+| `sta_writer` | `generate_sta` | Strategic Technical Approach structure and rigor |
+| `technical_proposal_writer` | `generate_technical_proposal` | Technical Proposal structure and rigor |
 | `critic` | any `critique_enabled` tool | Per-item Quality Bar review |
 | `governor` | manual | Cost, security, and compliance guardrails |
+
+Plus 6 conversational hats that activate on dialogue rather than a
+`generate_*` tool call: `architecture_reviewer`, `c3e_navigator`,
+`deal_coach`, `discovery`, `industry_expert`, `meeting_prep`. All hats above
+are forge-path only — `agent_mode: native` reasons without hats (see
+`CLAUDE.md` "Key Design Decisions").
 
 ### Hat File Format
 
@@ -276,21 +287,26 @@ drawing_agent_server.py      FastAPI, port 8080
   │  /health
   │  (route inventory: docs/backend-api-surface.md)
   │
-  ├─ archie_session.py        thin session wrapper: load context → forge.run_turn() → save
-  ├─ agent/archie_wiring.py   build_forge(): Archie system prompt + 10 tools + hat engine
+  ├─ archie_session.py        thin session wrapper: get_agent_mode() → forge or native → save
+  ├─ agent/archie_wiring.py   build_forge(): Archie system prompt + 16 tools + hat engine
+  ├─ agent/archie_native_loop.py  native tool-calling loop (agent_mode: native) — no hats
   │
   ├─ SkillForge (skillforge/)
   │   └─ forge.py             ReAct loop, expert reasoning, parallel dispatch, critique
   │
   ├─ Sub-agents (independent A2A HTTP services)
-  │   ├─ sub_agents/diagram/       port 8082
-  │   ├─ sub_agents/bom/           port 8083
-  │   ├─ sub_agents/pov/           port 8084
-  │   ├─ sub_agents/jep/           port 8085
-  │   ├─ sub_agents/waf/           port 8086
-  │   ├─ sub_agents/terraform/     port 8087
-  │   ├─ sub_agents/tech_research/ port 8088
-  │   └─ sub_agents/sales_deck/    port 8089
+  │   ├─ sub_agents/diagram/            port 8082
+  │   ├─ sub_agents/bom/                port 8083
+  │   ├─ sub_agents/pov/                port 8084
+  │   ├─ sub_agents/jep/                port 8085
+  │   ├─ sub_agents/waf/                port 8086
+  │   ├─ sub_agents/terraform/          port 8087
+  │   ├─ sub_agents/tech_research/      port 8088
+  │   ├─ sub_agents/sales_deck/         port 8089
+  │   ├─ sub_agents/poc_strategist/     port 8090
+  │   ├─ sub_agents/presentation/       port 8091
+  │   ├─ sub_agents/sta/                port 8092
+  │   └─ sub_agents/technical_proposal/ port 8093
   │
   ├─ Diagram pipeline
   │   ├─ agent/bom_parser.py        BOM → ServiceItem list + LLM prompt
@@ -348,6 +364,10 @@ python3.11 -m uvicorn sub_agents.waf.server:app           --host 0.0.0.0 --port 
 python3.11 -m uvicorn sub_agents.terraform.server:app     --host 0.0.0.0 --port 8087 > logs/terraform.log 2>&1 &
 python3.11 -m uvicorn sub_agents.tech_research.server:app --host 0.0.0.0 --port 8088 > logs/research.log 2>&1 &
 python3.11 -m uvicorn sub_agents.sales_deck.server:app    --host 0.0.0.0 --port 8089 > logs/sales.log   2>&1 &
+python3.11 -m uvicorn sub_agents.poc_strategist.server:app     --host 0.0.0.0 --port 8090 > logs/poc_strategist.log 2>&1 &
+python3.11 -m uvicorn sub_agents.presentation.server:app       --host 0.0.0.0 --port 8091 > logs/presentation.log 2>&1 &
+python3.11 -m uvicorn sub_agents.sta.server:app                --host 0.0.0.0 --port 8092 > logs/sta.log 2>&1 &
+python3.11 -m uvicorn sub_agents.technical_proposal.server:app --host 0.0.0.0 --port 8093 > logs/technical_proposal.log 2>&1 &
 
 # Check health
 curl -s http://localhost:8080/health

@@ -10,14 +10,21 @@ The project started as a single diagram-generation agent and has grown into a mu
 
 ## Architecture Overview
 
-**Forge is the framework. Archie is the personality (system prompt + tools + hats).**
+**Two orchestration paths, one flag.** `config.yaml` → `orchestrator.agent_mode`
+selects `forge` (default) or `native`. Forge is the hat-gated ReAct ceremony
+described below; native is a leaner native-tool-calling loop with no hats
+(Decision #8) and its own retrieval/compute/export tool surface. Both paths
+share the same tool handlers, sub-agents, and second-brain layer underneath.
+Archie is the personality (system prompt + tools [+ hats, in forge mode]) on
+top of either loop.
 
 ```
 User (browser UI or API)
   │
   ▼
-drawing_agent_server.py  ← FastAPI, port 8080, v1.9.1
-  │   /api/chat/stream    → chat_stream.py → archie_session.py → Forge
+drawing_agent_server.py  ← FastAPI, port 8080, AGENT_VERSION="1.9.1" (const; codebase is well past it — see CHANGELOG.md)
+  │   /api/chat/stream    → chat_stream.py → archie_session.py → agent_mode dispatch
+  │   /api/chat/background→ server/routes/chat.py → agent_mode dispatch (native or forge)
   │   /upload-bom         → direct diagram pipeline
   │   /api/bom/*          → bom_service.py
   │   /api/briefing/*     → briefing router (engagement state, meeting prep, SE accounts)
@@ -27,28 +34,45 @@ drawing_agent_server.py  ← FastAPI, port 8080, v1.9.1
   ├─ orchestrator_agent.py   Thin compatibility shim (26 lines)
   │
   ├─ archie_session.py       Thin session wrapper (~150 lines):
-  │    load history + context → forge.run_turn() → save results
+  │    get_agent_mode() reads config.yaml → routes to forge.run_turn()
+  │    or archie_native_loop.run_turn(); saves results either way;
   │    upserts SE engagement index after each turn
   │
-  ├─ SkillForge (skillforge/)    Domain-agnostic ReAct orchestrator
-  │    forge.py              Forge.run_turn() — the primary loop:
-  │      step3_planning      → structured planning LLM call before tools
-  │      requires_hat gate   → auto-activates expert hat before domain tools
-  │      expert pre-action   → expert LLM call before tool dispatch
-  │      tool dispatch       → calls registered tool handlers
-  │      expert post-review  → quality + correctness review after tool
-  │      correction loop     → injects review concern on iterate
-  │    registry.py           Tool registration (ToolSpec, requires_hat)
-  │    types.py              TurnResult, ToolCallRecord, TurnEvent
+  ├─ FORGE PATH (agent_mode: forge — default)
+  │    SkillForge (skillforge/)    Domain-agnostic ReAct orchestrator
+  │      forge.py              Forge.run_turn() — the primary loop:
+  │        step3_planning      → structured planning LLM call before tools
+  │        requires_hat gate   → auto-activates expert hat before domain tools
+  │        expert pre-action   → expert LLM call before tool dispatch
+  │        tool dispatch       → calls registered tool handlers
+  │        expert post-review  → quality + correctness review after tool
+  │        correction loop     → injects review concern on iterate
+  │      registry.py           Tool registration (ToolSpec, requires_hat)
+  │      types.py              TurnResult, ToolCallRecord, TurnEvent
+  │    Archie wiring (agent/archie_wiring.py)
+  │      build_forge()         Constructs Forge with Archie system prompt,
+  │                            16 registered domain tools, and hat_engine
+  │    Hat system (forge-only — retired from native mode, Decision #8)
+  │      hat_engine.py         Loads agent/hats/*.md, exposes use_hat_* tools
+  │      hats/*.md             19 expert lenses — see "Hat System" below
   │
-  ├─ Archie wiring (agent/archie_wiring.py)
-  │    build_forge()         Constructs Forge with Archie system prompt,
-  │                          10 registered tools (incl. confirm_debrief), and hat_engine
+  ├─ NATIVE PATH (agent_mode: native)
+  │    archie_native_loop.py  Native tool-calling ReAct loop, no hats:
+  │      per-tool error isolation (a failing tool → status="error" ToolResult,
+  │      turn continues); reasoning_sink/notify hooks emit live thinking +
+  │      tool-chip events; complete artifact-type map for all 12 generate tools
+  │    archie_memory_retrieval.py  recall_fact / search_notes / get_decisions /
+  │                            list_artifacts / get_meeting_summaries
+  │    reference_tools.py     lookup_compute_shapes / lookup_price /
+  │                            lookup_reference_architecture (grounding by retrieval)
+  │    file_reader_tools.py   read_file_content — read any stored doc/spreadsheet
+  │    compute_tools.py       compute — deterministic cost/TCO/proration math
+  │    export_tools.py        export_artifact — diagram→PNG, spreadsheet→CSV
   │
-  ├─ Tool handlers (agent/tools/)
+  ├─ Tool handlers (agent/tools/) — shared by both paths
   │    diagram.py            DiagramHandler → A2A diagram sub-agent
   │    bom.py                BomHandler → bom_service.py
-  │    specialists.py        WafHandler / PovHandler / JepHandler → A2A
+  │    specialists.py        WafHandler / PovHandler / JepHandler / etc. → A2A
   │    terraform.py          TerraformHandler → sub_agents/terraform/
   │    notes.py              save_notes / get_summary / get_document / confirm_debrief
   │
@@ -58,24 +82,12 @@ drawing_agent_server.py  ← FastAPI, port 8080, v1.9.1
   │    server/routes/briefing.py  REST endpoints: engagement, SE accounts, prep
   │    agent/archie_memory.py     extract_relationship_facts_llm() + regex fallback
   │
-  ├─ Hat system
-  │    hat_engine.py              Loads agent/hats/*.md, exposes use_hat_* tools
-  │    hats/diagram_for_oci.md    Expert lens: OCI diagram quality + AI/ML checks
-  │    hats/oci_bom_expert.md     Expert lens: BOM service list + pricing review
-  │    hats/oci_waf_reviewer.md   Expert lens: WAF findings + P1 severity
-  │    hats/terraform_for_oci.md  Expert lens: Terraform correctness
-  │    hats/oci_customer_pov_writer.md  Expert lens: POV document quality
-  │    hats/jep_writer.md         Expert lens: JEP document quality
-  │    hats/critic.md             Critic post-review lens (manual only)
-  │    hats/governor.md           Guardrail lens (manual only)
-  │
-  ├─ Sub-agents (independent A2A services)
-  │    sub_agents/bom/        BOM specialist
-  │    sub_agents/diagram/    Diagram specialist
-  │    sub_agents/pov/        POV specialist
-  │    sub_agents/jep/        JEP specialist
-  │    sub_agents/waf/        WAF specialist
-  │    sub_agents/terraform/  Terraform specialist
+  ├─ Sub-agents (independent A2A services) — see "Sub-Agents" below for all 12
+  │    sub_agents/bom/        sub_agents/diagram/     sub_agents/pov/
+  │    sub_agents/jep/        sub_agents/waf/         sub_agents/terraform/
+  │    sub_agents/tech_research/  sub_agents/poc_strategist/
+  │    sub_agents/presentation/   sub_agents/sales_deck/
+  │    sub_agents/sta/            sub_agents/technical_proposal/
   │
   ├─ Diagram pipeline
   │    bom_parser.py          BOM.xlsx / inline text → ServiceItem list + LLM prompt
@@ -114,19 +126,38 @@ arch_assistant/
 │
 ├── agent/
 │   ├── orchestrator_agent.py   # Thin compatibility shim for existing imports
-│   ├── archie_session.py       # Thin session wrapper: load state → forge.run_turn() → save
+│   ├── archie_session.py       # Thin session wrapper: get_agent_mode() → forge or native → save
 │   ├── archie_wiring.py        # build_forge(): Archie system prompt + tool registration
+│   ├── archie_native_loop.py   # Native tool-calling loop (agent_mode: native) — no hats
 │   ├── archie_memory.py        # Memory/context assembly, extract_relationship_facts_llm()
-│   ├── hat_engine.py           # Loads hats and exposes use_hat_* tools
+│   ├── archie_memory_impl.py   # MemorySnapshot assembly/update implementation
+│   ├── archie_memory_retrieval.py  # Native-only: recall_fact/search_notes/get_decisions/
+│   │                            #   list_artifacts/get_meeting_summaries tool specs
+│   ├── reference_tools.py      # Native-only: lookup_compute_shapes/lookup_price/
+│   │                            #   lookup_reference_architecture tool specs
+│   ├── file_reader_tools.py    # Native-only: read_file_content tool spec
+│   ├── compute_tools.py        # Native-only: compute (deterministic math) tool spec
+│   ├── export_tools.py         # Native-only: export_artifact (PNG/CSV) tool spec
+│   ├── chat_stream.py          # SSE streaming: reasoning_sink + notification_sink wiring
+│   ├── context_enricher.py     # Parallel pre-turn context enrichment before forge.run_turn
+│   ├── hat_engine.py           # Loads hats and exposes use_hat_* tools (forge path only)
 │   ├── engagement_mission.py   # C3E phase tracker, next-step proactivity (suggest_next_step)
 │   ├── meeting_prep.py         # build_meeting_prep() — deterministic prep assembler
+│   ├── note_extractor.py       # PDF/DOCX/text extraction for uploaded notes
+│   ├── lesson_store.py         # Per-engagement lessons-learned store (grouped by tool)
 │   ├── safety_rules.py         # Thin deterministic safety checks
+│   ├── consistency_contract.py # Canonical selected-POC/BOM/Diagram identity + parity checks
+│   ├── poc_composer.py         # Grounded POC brief extraction + 3-option composition
+│   ├── jep_composer.py         # Grounded JEP brief extraction + canonical Markdown composition
+│   ├── jep_docx_renderer.py    # JEP canonical Markdown → DOCX
 │   ├── bom_parser.py           # BOM → ServiceItem list + LLM prompt
 │   ├── bom_service.py          # Live OCI pricing, BOM generation, repair loop
 │   ├── bom_stub.py             # Offline stub for tests
 │   ├── layout_engine.py        # LayoutIntent spec → x,y positions
 │   ├── intent_compiler.py      # Validates + post-processes LLM layout output
 │   ├── drawio_generator.py     # Positions → flat draw.io XML
+│   ├── drawio_inspector.py     # Programmatic .drawio XML inspection (tests/tools)
+│   ├── diagram_waf_orchestrator.py  # Combined diagram+WAF parallel dispatch
 │   ├── oci_standards.py        # OCI icon stencil data (147KB, do not edit)
 │   ├── pov_agent.py            # Point-of-View document writer
 │   ├── jep_agent.py            # JEP document writer
@@ -149,11 +180,13 @@ arch_assistant/
 │   ├── tools/                  # Forge tool handlers (called by forge.run_turn)
 │   │   ├── diagram.py          # DiagramHandler — calls diagram sub-agent A2A
 │   │   ├── bom.py              # BomHandler — calls bom_service.py
-│   │   ├── specialists.py      # WafHandler, PovHandler, JepHandler — A2A
+│   │   ├── specialists.py      # WafHandler, PovHandler, JepHandler, etc. — A2A
 │   │   ├── terraform.py        # TerraformHandler — calls terraform sub-agent
 │   │   └── notes.py            # save_notes, get_summary, get_document, confirm_debrief
 │   │
-│   ├── hats/                   # Expert lenses (markdown) loaded by hat_engine
+│   ├── hats/                   # Expert lenses (markdown) loaded by hat_engine — forge path
+│   │   │                       #   only; retired from agent_mode: native (Decision #8).
+│   │   │                       #   19 hats total — see "Hat System" below for the full list.
 │   │   ├── diagram_for_oci.md       # OCI diagram quality, AI/ML completeness
 │   │   ├── oci_bom_expert.md        # BOM service list and pricing review
 │   │   ├── oci_waf_reviewer.md      # WAF findings, P1 severity checks
@@ -161,23 +194,42 @@ arch_assistant/
 │   │   ├── oci_customer_pov_writer.md  # POV document quality
 │   │   ├── jep_writer.md            # JEP document quality
 │   │   ├── critic.md                # Critic post-review (manual activation only)
-│   │   └── governor.md              # Guardrail lens (manual activation only)
+│   │   ├── governor.md              # Guardrail lens (manual activation only)
+│   │   └── ...                      # 11 more — architecture_reviewer, c3e_navigator,
+│   │                                #   deal_coach, discovery, industry_expert,
+│   │                                #   infra_tech_research, meeting_prep, oci_poc_strategist,
+│   │                                #   oci_presentation_writer, oci_sales_deck, sta_writer,
+│   │                                #   technical_proposal_writer
 │
-│   └── standards/
-│       └── oracle_reference_bundle.json
+│   └── standards/               # Reference corpus wired into producers + hats
+│       ├── oracle_reference_bundle.json
+│       ├── oci_compute_shapes.json         oci_shape_region_availability.json
+│       ├── oci_provisioning_times.json     oci_service_slas.json
+│       ├── oci_terraform_resources.json    oracle_customer_case_studies.json
+│       ├── pci_dss_v4.json  hipaa_security_rule.json  fedramp_moderate_controls.json
+│       └── templates/
 │
-├── sub_agents/                 # Independent A2A specialist services
-│   ├── bom/
-│   ├── diagram/
-│   ├── pov/
-│   ├── jep/
-│   ├── waf/
-│   └── terraform/
+├── sub_agents/                 # Independent A2A specialist services (12 total)
+│   ├── bom/                    # Priced OCI Bills of Materials
+│   ├── diagram/                # OCI architecture draw.io diagrams
+│   ├── pov/                    # Point-of-View documents
+│   ├── jep/                    # Joint Engagement Plan documents
+│   ├── waf/                    # Well-Architected Framework reviews
+│   ├── terraform/              # Terraform modules
+│   ├── tech_research/          # Infrastructure technology research and evaluation
+│   ├── poc_strategist/         # 3-option POC exploration and ranking
+│   ├── presentation/           # Client-ready PowerPoint (OCI icon stencils)
+│   ├── sales_deck/             # Sales enablement deck
+│   ├── sta/                    # Strategic Technical Approach documents
+│   └── technical_proposal/     # Technical Proposal documents
 │
 ├── server/
 │   └── routes/
 │       ├── documents.py        # /api/notes/upload — debrief extraction + pending_debrief
-│       └── briefing.py         # /api/briefing/* — engagement state, SE accounts, meeting prep
+│       ├── briefing.py         # /api/briefing/* — engagement state, SE accounts, meeting prep
+│       ├── chat.py             # /api/chat, /api/chat/stream, /api/chat/background
+│       ├── bom.py              # /api/bom/* — BOM advisory/generation REST surface
+│       └── a2a.py              # A2A protocol route glue
 │
 ├── ui/                         # React + Vite frontend ("Archie")
 │   ├── src/
@@ -272,6 +324,46 @@ When no customer is selected in the Briefing tab, the SE sees all their accounts
 
 ---
 
+## Hat System (forge path only)
+
+`agent/hat_engine.py` loads every `agent/hats/*.md` file and exposes
+`use_hat_*` tools; Forge auto-activates the `requires_hat` a registered tool
+declares before dispatching it. Native mode (`agent_mode: native`) does not
+use hats at all — Decision #8 moved that expertise into the model, the
+sub-agent specialists, and the `reference_tools.py` lookup surface instead.
+
+19 hats total:
+
+| Hat file | Display name | Activates on |
+|---|---|---|
+| `diagram_for_oci.md` | OCI Diagram Architect | diagram / architecture drawing / topology / network map requests |
+| `oci_bom_expert.md` | OCI BOM Expert | cost, pricing, BOM, XLSX, budget, SKU questions |
+| `oci_waf_reviewer.md` | OCI WAF Reviewer | WAF / Well-Architected / security assessment requests |
+| `terraform_for_oci.md` | OCI Terraform Expert | Terraform, IaC, HCL, infrastructure-as-code requests |
+| `oci_customer_pov_writer.md` | OCI POV Writer | POV / Point-of-View / customer vision document requests |
+| `jep_writer.md` | JEP Writer | JEP / Joint Execution Plan / POC plan document requests |
+| `oci_poc_strategist.md` | OCI POC Strategist | "what POC should we build for this customer" |
+| `oci_presentation_writer.md` | OCI Presentation Writer | PowerPoint / deck / slides / POC kit requests |
+| `oci_sales_deck.md` | OCI Sales Deck Builder | sales deck / presentation requests |
+| `sta_writer.md` | Strategic Technical Approach Writer | STA document requests |
+| `technical_proposal_writer.md` | Technical Proposal Writer | Technical Proposal document requests |
+| `infra_tech_research.md` | OCI Infrastructure Research Analyst | "what OCI service is best for this workload" |
+| `architecture_reviewer.md` | Architecture Reviewer | architecture discussed conversationally, no formal review requested |
+| `industry_expert.md` | Industry Expert | industry identified as FSI/banking/insurance/capital markets |
+| `discovery.md` | Discovery Conductor | customer being described for the first time |
+| `deal_coach.md` | Deal Coach | competitive situation / "why would they choose OCI" questions |
+| `c3e_navigator.md` | C3E Navigator | SE asks about C3E phase or engagement process |
+| `meeting_prep.md` | (meeting prep) | pre-call brief / debrief requests — see Second Brain section |
+| `critic.md` | Critic | post-review of a `critique_enabled` tool result (manual activation only) |
+| `governor.md` | Governor | BOM/Terraform/WAF output finalization guardrail (manual activation only) |
+
+Hat frontmatter (`hat_rules.when_to_activate`, `can_hand_off_to`,
+`suggested_next_hat`, `resume_condition`, `memory_focus.priority_fields`)
+drives auto-activation and cross-hat handoff — see any hat file for the exact
+schema.
+
+---
+
 ## UI — JARVIS Dark-Ops Aesthetic
 
 Design principle: **calm at rest, glow when active.** The UI has zero decoration when Archie is idle; glow is earned by system activity.
@@ -312,30 +404,45 @@ Layout engine overrides gateway X after computing subnet bounding boxes:
 - SGW: `x = vcn_right - icon_w/2`
 
 ### Forge is the orchestrator — Archie is the personality
-`skillforge/forge.py` owns ALL orchestration: planning, hat activation, expert
-pre-action, tool dispatch, expert post-review, and correction loops.
-`agent/archie_session.py` is a thin session wrapper (~150 lines) that loads
-state, calls `forge.run_turn()`, and saves results. It must never contain
-routing logic, LLM calls, or tool dispatch.
+`skillforge/forge.py` owns ALL orchestration on the forge path: planning, hat
+activation, expert pre-action, tool dispatch, expert post-review, and
+correction loops. `agent/archie_session.py` is a thin session wrapper (~150
+lines) that loads state, dispatches on `get_agent_mode()`, calls
+`forge.run_turn()` or `archie_native_loop.run_turn()`, and saves results. It
+must never contain routing logic, LLM calls, or tool dispatch itself.
 
 `agent/archie_wiring.py` builds the Forge instance with the Archie system
-prompt (OCI architect persona + tool sequencing rules) and registers the 10
+prompt (OCI architect persona + tool sequencing rules) and registers 16
 domain tools via `build_forge()`.
 
 Expert lenses are markdown hats in `agent/hats/`, loaded by `hat_engine.py`.
 Forge auto-activates the required hat before any domain tool call via the
 `requires_hat` field on each registered tool.
 
+### Native mode drops hats; forge mode is untouched (Decision #8)
+`config.yaml` → `orchestrator.agent_mode` defaults to `"forge"`. Setting it to
+`"native"` routes turns through `agent/archie_native_loop.py` instead: native
+tool-calling, no hat gate, no expert pre-action/post-review ceremony — the
+model reasons directly, grounding itself via `reference_tools.py` /
+`archie_memory_retrieval.py` / `file_reader_tools.py` /`compute_tools.py` /
+`export_tools.py` instead of a markdown expert lens. Per-tool failures are
+isolated (one bad tool call → `status="error"` ToolResult, turn continues)
+and `reasoning_sink`/`notify()` hooks drive the same live thinking/tool-chip
+UI events the forge path already used. The forge path's behavior must stay
+byte-for-byte unchanged regardless of native-loop changes.
+
 ### Second brain is Archie-domain only — Forge is untouched
 All relationship memory, debrief loop, and proactivity logic lives in
 `agent/`, `server/routes/`, and `ui/src/components/`. The Forge framework
 (`skillforge/`) has zero knowledge of C3E phases, stakeholders, or engagement
-state. Never add deal-tracking logic to Forge.
+state. Never add deal-tracking logic to Forge. This applies equally to the
+native loop — it is Archie-domain code, not part of `skillforge/`.
 
 ### Sub-agents are A2A services
-Specialists live under `sub_agents/`: BOM, diagram, POV, JEP, WAF, and
-Terraform. Archie delegates to them through `agent/sub_agent_client.py`; do not
-reintroduce in-process graph wrappers.
+Specialists live under `sub_agents/` — 12 total: BOM, diagram, POV, JEP, WAF,
+Terraform, tech research, POC strategist, presentation, sales deck, STA, and
+technical proposal. Archie delegates to them through
+`agent/sub_agent_client.py`; do not reintroduce in-process graph wrappers.
 
 ### Deterministic safety guard
 `agent/safety_rules.py` holds the thin deterministic hard-block checks. Critic
@@ -451,14 +558,31 @@ curl -X POST http://10.0.3.47:8080/upload-bom \
 
 ## Open Enhancements (Next Up)
 
-- **Inject relationship context into specialists** — open objections, economic
-  buyer, and competitive posture should flow into `_build_archie_specialist_context()`
-  so POV / BOM / WAF / JEP generators are aware of deal dynamics.
+Done since this list was last written: relationship context (open objections,
+economic buyer, competitive posture) already flows into the specialist
+prompt-context builder in `agent/archie_wiring.py` — POV/BOM/WAF/JEP
+generators see deal dynamics.
+
+Still open, UI-only:
 - **"Due this week" filter** in `SeAccountsPanel` — highlight commitments and
   action items with `due` within 7 days across all accounts.
 - **Auto-load prep on customer select** — remove the button click in
   `MeetingBriefing.tsx`; load the prep brief automatically when a customer row
   is opened.
+
+### Phase status (see `PLAN.md` for the full plan)
+- **Phase 5 (Native Agent Loop):** complete — native mode has live streaming
+  events, per-tool error isolation, full artifact-type coverage, and
+  `agent_mode`-aware background chat. `config.yaml` still defaults to
+  `"forge"`; native is opt-in.
+- **Phase 6 (Better Sub-Agents):** `tasks/p78-subagent-quality-harness.md`
+  done. `tasks/p80-baseline-integrity.md` is `todo` — the harness/path fixes
+  landed, but the live re-run (real `terraform validate` on an eval host with
+  registry/provider access, `--runs 3 --judge-runs 3`, refreshed
+  `docs/subagent-quality.json`) has not. Per Decision #9, do not tune any
+  sub-agent before that refreshed baseline lands.
+- **Phase 7 (Learning & Memory):** opened; `tasks/p79-transcript-memory.md` is
+  `todo`, explicitly sequenced after Phase 6 closes.
 
 ---
 
