@@ -31,9 +31,22 @@ Authorized by PLAN.md Decision #9 + Phase 6.
 - `eval/golden/**`
 - `skillforge/forge.py`, config defaults (`agent_mode` stays forge)
 
-## What to do
-1. Install the terraform CLI in the isolated eval environment so
-   `_terraform_validate` actually executes (`terraform version` works).
+## Already done (code half — verified)
+- `load_golden_exemplar` now records repo-relative golden paths (fix in
+  `scripts/eval_subagent_quality.py`; verified: `eval/golden/jep/JEP_template.docx`).
+- `_terraform_validate` proven end-to-end with terraform v1.9.8: a valid bundle
+  returns `Success! The configuration is valid.`; a broken bundle returns the real
+  HCL error. No harness changes needed for the CLI — it inherits the environment.
+
+## What to do (live half — eval host)
+1. Install the terraform CLI on the isolated eval host (`terraform version` works).
+   `terraform init -backend=false` must be able to install the `oracle/oci`
+   provider: either the host can reach `registry.terraform.io`, or configure a
+   filesystem mirror (verified recipe: download the provider zip into
+   `<mirror>/registry.terraform.io/<namespace>/<name>/`, write a `terraformrc` with
+   a `provider_installation { filesystem_mirror { path = "<mirror>" } }` block, and
+   export `TF_CLI_CONFIG_FILE=<path to terraformrc>` — terraform picks it up with
+   no harness changes).
 2. From a CLEAN checkout of this repo (so golden paths resolve in-repo), bring up
    the isolated A2A stack and re-run the full baseline:
    `python scripts/eval_subagent_quality.py --runs 3 --judge-runs 3`

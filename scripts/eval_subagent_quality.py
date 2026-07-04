@@ -270,7 +270,12 @@ def load_golden_exemplar(artifact_type: str, root: Path = GOLDEN_ROOT) -> dict[s
         content = _xlsx_text(path.read_bytes())
     else:
         content = path.read_text(encoding="utf-8", errors="replace")
-    return {"path": str(path), "content": content}
+    try:
+        # Record repo-relative so the baseline JSON resolves from any checkout.
+        recorded = str(path.relative_to(ROOT))
+    except ValueError:
+        recorded = str(path)
+    return {"path": recorded, "content": content}
 
 
 def _docx_text(content: bytes) -> str:
