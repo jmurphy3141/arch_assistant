@@ -1,6 +1,6 @@
 # Task: drop hats, promote C3E to standing context
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Remove the hat mechanism from the native path (per PLAN.md Decision #8) so the

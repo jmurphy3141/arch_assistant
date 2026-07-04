@@ -1,6 +1,6 @@
 # Task: Fix stale git_push branch in config.yaml
 Phase: 0
-Status: todo
+Status: done
 
 ## Goal
 Update the server's auto-push branch so generated diagrams commit to main,

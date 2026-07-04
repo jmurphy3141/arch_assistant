@@ -1,6 +1,6 @@
 # Task: sub-agent quality-eval harness
 Phase: 6
-Status: todo
+Status: done
 
 ## Goal
 Measure sub-agent artifact quality so it can be improved against a baseline (per

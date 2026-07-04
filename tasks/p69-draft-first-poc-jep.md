@@ -1,6 +1,6 @@
 # Task: draft-first POC/JEP producers (never require logistics)
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 The POC plan and JEP are DRAFTS an SE sends before logistics are finalized. They

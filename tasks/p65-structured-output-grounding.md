@@ -1,6 +1,6 @@
 # Task: relax producer output-grounding for structured artifacts
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Stop p62's output-grounding from wrongly rejecting valid structured artifacts.

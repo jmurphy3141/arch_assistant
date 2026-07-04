@@ -1,6 +1,6 @@
 # Task: A2A sub-agent base
 Phase: 1
-Status: todo
+Status: done
 Depends on: p0-fix-config.md
 
 ## Goal

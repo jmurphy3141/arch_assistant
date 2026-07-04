@@ -1,6 +1,6 @@
 # Task: artifact export/convert tool (native)
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Let the native model export/convert a produced artifact to a shareable format —

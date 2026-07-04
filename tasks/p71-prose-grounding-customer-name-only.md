@@ -1,6 +1,6 @@
 # Task: prose grounding = customer name, not fact-anchor substrings
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Stop the output grounding check from falsely rejecting valid prose artifacts. p58

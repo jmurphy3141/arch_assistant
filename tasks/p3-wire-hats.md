@@ -1,6 +1,6 @@
 # Task: Wire hat engine into archie_loop.py
 Phase: 3
-Status: todo
+Status: done
 Depends on: p3-hat-engine.md merged to main
 
 ## Goal

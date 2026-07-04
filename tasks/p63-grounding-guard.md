@@ -1,6 +1,6 @@
 # Task: harness grounding-assertion accuracy
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Fix the p58 harness so its grounding assertion stops producing false positives.

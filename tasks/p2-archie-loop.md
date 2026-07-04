@@ -1,6 +1,6 @@
 # Task: Extract archie_loop.py and thin orchestrator_agent.py
 Phase: 2
-Status: todo
+Status: done
 Depends on: p2-archie-memory.md merged to main
 
 ## Goal

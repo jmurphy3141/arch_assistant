@@ -1,6 +1,6 @@
 # Task: needs_input loop discipline
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 When a tool returns `needs_input`, the native model must surface the ask to the

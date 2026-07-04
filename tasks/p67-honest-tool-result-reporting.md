@@ -1,6 +1,6 @@
 # Task: honest tool-result reporting (no fabricated success)
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 The native model must never claim an artifact was created or saved when the tool

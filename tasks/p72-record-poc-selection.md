@@ -1,6 +1,6 @@
 # Task: record POC selection through the tool
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 When the user picks a POC option, the selection must be PERSISTED via

@@ -1,6 +1,6 @@
 # Task: native long-term memory management
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Give the native agent scalable long-term memory: a compact working set plus

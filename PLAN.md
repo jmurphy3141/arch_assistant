@@ -182,6 +182,32 @@ on a labelled set — the judge is trusted only insofar as it correlates with th
 own eye. Improvements are validated pairwise against the baseline, never by absolute
 score movement alone.
 
+### 10. Learning is curated retrieval, never base-model fine-tuning
+
+Archie improves as deals progress by growing a **curated, grounded corpus it
+retrieves from** — not by retraining the model (which we don't own, can't attribute
+a win/loss to, and would train on noise). Two corpora with OPPOSITE sharing rules:
+
+- **Per-client memory** — everything about ONE engagement. Strictly isolated; a
+  client's data is never retrieved for another. Semantic retrieval over the client's
+  notes and transcripts, cited.
+- **Cross-client knowledge** — patterns, endorsed exemplars (the Phase 6 goldens),
+  and Q&A/playbook lessons. **Anonymized** — teaches patterns, never leaks one
+  customer's specifics into another's artifact. Human-curated before it becomes
+  guidance.
+
+**Transcripts: distill, don't dump.** Recorded/transcribed meetings are stored and
+indexed for retrieval and **citation only**. The raw transcript never feeds artifact
+production or context directly. The **distilled** extraction (facts, decisions,
+objections, commitments, action items, a concise summary) — via the existing debrief
+loop, human-confirmed before persisting — is what feeds memory and artifacts. Every
+retrieved fact carries its source citation; ASR-uncertain numbers/names are flagged
+for confirmation, never asserted.
+
+Every corpus entry has a source, date, owner, and review; stale content is retired;
+sensitivity segmentation (public / internal-confidential / customer) governs access
+and retention. A learning system that invents "best practices" is worse than none.
+
 ---
 
 ## Current State vs Target State
@@ -476,6 +502,8 @@ Do NOT tune a sub-agent before the quality harness gives it a baseline.
 Tasks (land in order):
 - `tasks/p78-subagent-quality-harness.md` — the eval harness: deterministic checks
   + rubric LLM-judge distribution + human calibration; per-artifact baselines. (first)
+- `tasks/p80-baseline-integrity.md` — make the baseline trustworthy: real
+  `terraform validate`, producer variance (`--runs 3`), resolvable golden paths.
 - *(then)* per-sub-agent model selection (the Decision #3 lever — a reasoning model
   for JEP/POV, a code model for Terraform), validated pairwise.
 - *(then)* grounded-brief → constrained-prose rendering for JEP/POV.
@@ -485,6 +513,29 @@ Tasks (land in order):
 - The harness produces a per-artifact, per-dimension quality distribution plus
   objective pass rates, and reports judge-vs-SE calibration on a labelled set.
 - Every subsequent sub-agent change is validated pairwise against its baseline.
+
+---
+
+### Phase 7 — Learning & Memory
+
+**Goal:** Archie learns as deals progress — deep per-client memory plus a curated,
+anonymized cross-deal knowledge corpus — per Decision #10 (curated retrieval,
+distill-don't-dump, isolated vs anonymized, human-curated, grounded-by-citation).
+Sequenced AFTER Phase 6.
+
+Tasks (land in order):
+- `tasks/p79-transcript-memory.md` — per-client transcript ingestion (distill →
+  extract/confirm → cite/index) + per-client SEMANTIC retrieval. The enabler; now
+  justified since all meetings are being recorded/transcribed. (first)
+- *(then)* outcome capture — a structured win/loss debrief per engagement (the
+  labels that make cross-deal learning possible).
+- *(then)* cross-client knowledge corpus — anonymized endorsed exemplars + Q&A/
+  playbook + pattern retrieval, human-curated.
+
+**Acceptance:**
+- Per-client retrieval is semantic, cited, and strictly isolated; raw transcripts
+  never reach artifact producers — only distilled, confirmed facts do.
+- Cross-deal lessons are anonymized, human-curated, and grounded in real deals.
 
 ---
 

@@ -1,6 +1,6 @@
 # Task: native tool-surface clarity (disambiguate lookups, fix generate triggers, resolve identity conflict)
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Fix the prompt/tool-surface causes of the residual native failures. The Grok-4 →
