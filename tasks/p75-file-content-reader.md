@@ -1,6 +1,6 @@
 # Task: general file-content reader tool (native)
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Give the native model a general tool to READ the actual contents of a stored

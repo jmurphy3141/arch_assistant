@@ -1,6 +1,6 @@
 # Task: reference/lookup tools for hard facts
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Give the native manager reference/lookup tools for the specific facts the domain

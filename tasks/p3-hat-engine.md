@@ -1,6 +1,6 @@
 # Task: Hat engine and hat files
 Phase: 3
-Status: todo
+Status: done
 Depends on: Phase 2 merged to main
 
 ## Goal

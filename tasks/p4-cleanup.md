@@ -1,6 +1,6 @@
 # Task: Phase 4a — delete provably-dead files and fix version assertions
 Phase: 4
-Status: todo
+Status: done
 Depends on: p3-wire-hats.md merged to main
 
 ## Goal

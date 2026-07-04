@@ -1,6 +1,6 @@
 # Task: Archie sub-agent client
 Phase: 1
-Status: todo
+Status: done
 Depends on: all p1-sub-agent-*.md tasks complete
 
 ## Goal

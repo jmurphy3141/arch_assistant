@@ -1,6 +1,6 @@
 # Task: deterministic compute tool (native)
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Give the native model a deterministic calculator so cost/TCO/proration/sizing math

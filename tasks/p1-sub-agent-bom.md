@@ -1,6 +1,6 @@
 # Task: BOM sub-agent
 Phase: 1
-Status: todo
+Status: done
 Depends on: p1-a2a-base.md, p1-sub-agent-diagram.md (pattern established)
 
 ## Goal

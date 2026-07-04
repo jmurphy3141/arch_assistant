@@ -1,6 +1,6 @@
 # Task: native archie loop
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Add a native tool-calling agent loop selectable by `agent_mode: native`, retiring

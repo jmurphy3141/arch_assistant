@@ -1,6 +1,6 @@
 # Task: native generation discipline (converse/suggest, don't auto-generate)
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Stop native mode over-generating artifacts on conversational turns (p58 re-run

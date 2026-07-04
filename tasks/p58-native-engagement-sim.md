@@ -1,6 +1,6 @@
 # Task: native engagement simulation (live)
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Live acceptance test for native mode: run one realistic, natural-language,

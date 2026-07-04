@@ -1,6 +1,6 @@
 # Task: multi-run p58 — pass-rate distribution + variance
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Single p58 runs are noisy (11/16, 12/15, 9/15 on identical code) because the model

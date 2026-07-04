@@ -1,6 +1,6 @@
 # Task: artifact retrieval coherence
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 `get_document` / `list_artifacts` must find artifacts that the `generate_*`

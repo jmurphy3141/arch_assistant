@@ -1,6 +1,6 @@
 # Task: Delete dead BOM helpers from archie_memory.py
 Phase: 4
-Status: todo
+Status: done
 Depends on: p4-cleanup.md merged to main
 
 ## Goal

@@ -502,6 +502,8 @@ Do NOT tune a sub-agent before the quality harness gives it a baseline.
 Tasks (land in order):
 - `tasks/p78-subagent-quality-harness.md` — the eval harness: deterministic checks
   + rubric LLM-judge distribution + human calibration; per-artifact baselines. (first)
+- `tasks/p80-baseline-integrity.md` — make the baseline trustworthy: real
+  `terraform validate`, producer variance (`--runs 3`), resolvable golden paths.
 - *(then)* per-sub-agent model selection (the Decision #3 lever — a reasoning model
   for JEP/POV, a code model for Terraform), validated pairwise.
 - *(then)* grounded-brief → constrained-prose rendering for JEP/POV.

@@ -1,6 +1,6 @@
 # Task: sub-agent produce-grounding + self-review
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Make every sub-agent ground its output to the engagement (identity + facts) and

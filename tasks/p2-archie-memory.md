@@ -1,6 +1,6 @@
 # Task: Extract archie_memory.py
 Phase: 2
-Status: todo
+Status: done
 Depends on: all Phase 1 tasks merged to main
 
 ## Goal

@@ -1,6 +1,6 @@
 # Task: scenario tests draft-first POC/JEP (no required logistics)
 Phase: 5
-Status: todo
+Status: done
 
 ## Goal
 Correct the p58 scenario to match the real SE workflow: the SE does NOT have POC
