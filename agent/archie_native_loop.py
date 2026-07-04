@@ -42,6 +42,28 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 logger = logging.getLogger(__name__)
 
 
+def _emit_reasoning(
+    reasoning_sink: Callable | None, label: str, phase: str = "native_reasoning"
+) -> None:
+    """Surface a live thinking event; a sink failure must never break the turn."""
+    if reasoning_sink is None:
+        return
+    try:
+        reasoning_sink(label, phase)
+    except Exception:
+        logger.debug("reasoning_sink failed for label=%r", label, exc_info=True)
+
+
+def _notify_tool_started(tool_name: str, customer_id: str) -> None:
+    """Fire the live tool-started chip; a notify failure must never break the turn."""
+    try:
+        from agent.notifications import notify
+
+        notify(f"tool_started:{tool_name}", customer_id)
+    except Exception:
+        logger.debug("tool_started notify failed for %s", tool_name, exc_info=True)
+
+
 async def run_turn(
     *,
     customer_id: str,
@@ -52,6 +74,7 @@ async def run_turn(
     tool_runner: Callable | None = None,
     a2a_base_url: str = "http://localhost:8080",
     max_tool_iterations: int = 5,
+    reasoning_sink: Callable | None = None,
 ) -> dict:
     context = await _maybe_await(
         context_store.read_context(store, customer_id, customer_name)
@@ -120,9 +143,19 @@ async def run_turn(
     tool_calls: list[dict[str, Any]] = []
     artifacts: dict[str, str] = {}
     turn_results: dict[tuple[str, str], ToolResult] = {}
+    events: list[dict[str, Any]] = []
     reply = ""
 
     for iteration in range(max_tool_iterations + 1):
+        reasoning_label = (
+            "Reasoning over the engagement..."
+            if iteration == 0
+            else "Reviewing tool results and deciding the next step..."
+        )
+        _emit_reasoning(reasoning_sink, reasoning_label)
+        events.append(
+            {"type": "native_reasoning", "message": reasoning_label, "data": {}}
+        )
         response = await _infer(prompt, schemas, tool_runner)
         if isinstance(response, str):
             reply = response
@@ -145,53 +178,75 @@ async def run_turn(
                 status="blocked",
             )
         else:
-            tool_memory = (
-                memory.assemble(
-                    session_id=customer_id,
-                    context=context,
-                    user_message=user_message,
-                )
-                if spec.memory_contract
-                else None
+            _notify_tool_started(tool_name, customer_id)
+            events.append(
+                {
+                    "type": "native_tool",
+                    "message": f"Calling {tool_name}...",
+                    "data": {"tool": tool_name, "trace_id": trace_id},
+                }
             )
-            result = await spec.handler(
-                args,
-                memory=tool_memory,
-                context=context,
-                trace_id=trace_id,
-            )
-            if tool_name == "generate_bom" and result.status == "ok":
-                result = await _persist_native_bom_artifact(
-                    result, customer_id=customer_id, store=store
-                )
-            if spec.safety_checker is not None and result.status == "ok":
-                passed, reason = spec.safety_checker(tool_name, result)
-                if not passed:
-                    result = ToolResult(
-                        summary=f"Safety check blocked: {reason}",
-                        status="blocked",
-                        data=result.data,
+            try:
+                tool_memory = (
+                    memory.assemble(
+                        session_id=customer_id,
+                        context=context,
+                        user_message=user_message,
                     )
-            if spec.memory_contract and result.status == "ok":
-                context = memory.update(
-                    session_id=customer_id,
-                    tool_name=tool_name,
-                    result=result,
+                    if spec.memory_contract
+                    else None
+                )
+                result = await spec.handler(
+                    args,
+                    memory=tool_memory,
                     context=context,
+                    trace_id=trace_id,
                 )
-            result_artifact_key = _result_artifact_key(result)
-            if result.status == "ok" and result_artifact_key:
-                artifact_type = _artifact_type_for_tool(tool_name)
-                if artifact_type:
-                    context_store.register_artifact(
-                        context,
-                        artifact_type,
-                        key=result_artifact_key,
-                        summary=result.summary,
-                        download=str((result.data or {}).get("download_url") or ""),
+                if tool_name == "generate_bom" and result.status == "ok":
+                    result = await _persist_native_bom_artifact(
+                        result, customer_id=customer_id, store=store
                     )
-                archie_memory.refresh_engagement_digest(context)
-                context_store.write_context(store, customer_id, context)
+                if spec.safety_checker is not None and result.status == "ok":
+                    passed, reason = spec.safety_checker(tool_name, result)
+                    if not passed:
+                        result = ToolResult(
+                            summary=f"Safety check blocked: {reason}",
+                            status="blocked",
+                            data=result.data,
+                        )
+                if spec.memory_contract and result.status == "ok":
+                    context = memory.update(
+                        session_id=customer_id,
+                        tool_name=tool_name,
+                        result=result,
+                        context=context,
+                    )
+                result_artifact_key = _result_artifact_key(result)
+                if result.status == "ok" and result_artifact_key:
+                    artifact_type = _artifact_type_for_tool(tool_name)
+                    if artifact_type:
+                        context_store.register_artifact(
+                            context,
+                            artifact_type,
+                            key=result_artifact_key,
+                            summary=result.summary,
+                            download=str((result.data or {}).get("download_url") or ""),
+                        )
+                    archie_memory.refresh_engagement_digest(context)
+                    context_store.write_context(store, customer_id, context)
+            except Exception as exc:
+                # One failing tool must not abort the whole turn; surface the
+                # failure to the model so it can adapt or report honestly.
+                logger.exception(
+                    "Native tool %s failed customer=%s trace_id=%s",
+                    tool_name,
+                    customer_id,
+                    trace_id,
+                )
+                result = ToolResult(
+                    summary=f"Tool {tool_name} failed: {exc}",
+                    status="error",
+                )
         turn_results.setdefault(call_identity, result)
         result_artifact_key = _result_artifact_key(result)
 
@@ -241,7 +296,7 @@ async def run_turn(
         "tool_calls": tool_calls,
         "artifacts": artifacts,
         "history_length": len(history) + len(turns),
-        "events": [],
+        "events": events,
     }
 
 
@@ -310,14 +365,29 @@ def _tool_call_identity(tool_name: str, args: Any) -> tuple[str, str]:
     return tool_name, rendered_args
 
 
+# Explicit map so every native-produced artifact lands in the index under the
+# type string get_document/list_artifacts look up. New generate_* tools must be
+# added here (tests assert full coverage of the registered tool surface).
+_ARTIFACT_TYPE_BY_TOOL = {
+    "generate_bom": "bom",
+    "generate_diagram": "diagram",
+    "generate_jep": "jep",
+    "generate_poc_plan": "poc_plan",
+    "generate_pov": "pov",
+    "generate_presentation": "presentation",
+    "generate_sales_deck": "sales_deck",
+    "generate_sta": "sta",
+    "generate_tech_report": "tech_report",
+    "generate_technical_proposal": "technical_proposal",
+    "generate_terraform": "terraform",
+    "generate_waf": "waf",
+}
+
+
 def _artifact_type_for_tool(tool_name: str) -> str:
     if not tool_name.startswith("generate_"):
         return ""
-    return {
-        "generate_poc_plan": "poc_plan",
-        "generate_technical_proposal": "technical_proposal",
-        "generate_terraform": "terraform",
-    }.get(tool_name, tool_name.removeprefix("generate_"))
+    return _ARTIFACT_TYPE_BY_TOOL.get(tool_name, tool_name.removeprefix("generate_"))
 
 
 def _result_artifact_key(result: ToolResult) -> str:

@@ -481,6 +481,8 @@ Tasks (land in order; each rebases on the prior — all touch the native loop):
 - `tasks/p75-file-content-reader.md` — general read_file_content tool (read any stored spreadsheet/doc's contents; closes T13). Native-only.
 - `tasks/p76-compute-tool.md` — deterministic compute tool (exact cost/TCO/proration math; never mental arithmetic). Native-only.
 - `tasks/p77-export-tool.md` — export_artifact (diagram→PNG, spreadsheet→CSV) with download link. Native-only.
+- `tasks/p81-native-streaming-events.md` — live thinking + tool-chip events, per-tool error isolation, complete artifact-type map (native prod-readiness).
+- `tasks/p82-background-agent-mode.md` — /api/chat/background honors agent_mode (native branch; forge unchanged).
 
 **Acceptance:**
 - `agent_mode: native` → Archie converses, and self-calls sub-agents / lookups /
