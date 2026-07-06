@@ -507,7 +507,13 @@ def _check_diagram(content: str, fixture: dict[str, Any]) -> dict[str, dict[str,
     lowered = content.lower()
     tiers = {
         "web": any(marker in lowered for marker in ("web tier", "web server", "iis")),
-        "application": any(marker in lowered for marker in ("application tier", "app tier", "claims app")),
+        "application": any(
+            marker in lowered
+            for marker in (
+                "application tier", "app tier", "claims app",
+                "application subnet", "app subnet", "private application",
+            )
+        ),
         "database": any(marker in lowered for marker in ("database", "oracle base")),
     }
     required = ("waf", "load balancer", "object storage", "block volume", "logging", "monitoring")
@@ -530,12 +536,15 @@ def _check_waf(content: str, fixture: dict[str, Any]) -> dict[str, dict[str, Any
     missing = [pillar for pillar in pillars if pillar not in lowered]
     score_hits = 0
     for pillar in pillars:
+        # Match from the heading line itself (not just the body after it) —
+        # producers commonly put "Score: N/5" directly in the heading text,
+        # e.g. "## Pillar 6: Sustainability (Score: 3/5 - ...)".
         section = re.search(
-            rf"^##[^\n]*{re.escape(pillar)}[^\n]*\n(.*?)(?=^##\s|\Z)",
+            rf"^##[^\n]*{re.escape(pillar)}[^\n]*\n.*?(?=^##\s|\Z)",
             lowered,
             flags=re.MULTILINE | re.DOTALL,
         )
-        if section and re.search(r"\bscore\s*:\s*[1-5](?:\.\d+)?\s*/\s*5", section.group(1)):
+        if section and re.search(r"\bscore\s*:\s*[1-5](?:\.\d+)?\s*/\s*5", section.group(0)):
             score_hits += 1
     return {
         "markdown_parse": _check(bool(_headings(content)), f"headings={len(_headings(content))}"),
