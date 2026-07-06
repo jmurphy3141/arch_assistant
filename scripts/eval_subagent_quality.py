@@ -544,7 +544,10 @@ def _check_waf(content: str, fixture: dict[str, Any]) -> dict[str, dict[str, Any
             lowered,
             flags=re.MULTILINE | re.DOTALL,
         )
-        if section and re.search(r"\bscore\s*:\s*[1-5](?:\.\d+)?\s*/\s*5", section.group(0)):
+        if section and re.search(
+            r"\bscore\s*:\s*(?:[*_]{1,2})?[1-5](?:\.\d+)?\s*/\s*5",
+            section.group(0),
+        ):
             score_hits += 1
     return {
         "markdown_parse": _check(bool(_headings(content)), f"headings={len(_headings(content))}"),
