@@ -91,8 +91,11 @@ def _bom() -> str:
 
 
 def _diagram() -> str:
+    # Uses real producer phrasing ("Private Application Subnet", not the
+    # literal "application tier") so this exercises the tier-alias matching
+    # rather than a phrase hand-picked to match the check.
     labels = (
-        "Northwind Health us-chicago-1 web tier application tier Oracle database "
+        "Northwind Health us-chicago-1 web tier Private Application Subnet Oracle database "
         "WAF load balancer Object Storage Block Volume Logging Monitoring"
     )
     return f'<mxfile><diagram><mxGraphModel><root><mxCell value="{labels}" /></root></mxGraphModel></diagram></mxfile>'
@@ -186,6 +189,33 @@ def test_objective_checks_return_named_pass_fail_results_for_every_type() -> Non
         assert checks
         assert all(set(result) == {"passed", "detail"} for result in checks.values())
         assert any(result["passed"] for result in checks.values())
+
+
+def test_waf_pillar_score_detected_when_score_is_in_the_heading_line() -> None:
+    # Regression guard: producers commonly write "## Pillar 6: X (Score: N/5)"
+    # with the score on the heading line itself, not in the body below it.
+    # pillar_scores must search the heading, not just the text after it.
+    checks = quality._check_waf(_waf(), quality.FIXTURE)
+    assert checks["six_pillars"]["passed"], checks["six_pillars"]["detail"]
+    assert checks["pillar_scores"]["passed"], checks["pillar_scores"]["detail"]
+
+
+def test_waf_sixth_pillar_is_continuous_improvement_per_subagent_spec() -> None:
+    # sub_agents/waf/system_prompt.md section 6 and agent/hats/oci_waf_reviewer.md
+    # both specify "Continuous Improvement" as the sixth pillar. A producer that
+    # substitutes "Sustainability" (a different, non-OCI six-pillar framework)
+    # must fail six_pillars — this is a real spec deviation, not a harness bug.
+    content = _waf().replace("Continuous Improvement", "Sustainability")
+    checks = quality._check_waf(content, quality.FIXTURE)
+    assert not checks["six_pillars"]["passed"]
+    assert "continuous improvement" in checks["six_pillars"]["detail"]
+
+
+def test_diagram_three_tier_structure_matches_real_subnet_label_phrasing() -> None:
+    # Regression guard: real diagram output labels the app tier as
+    # "Private Application Subnet", not the literal phrase "application tier".
+    checks = quality._check_diagram(_diagram(), quality.FIXTURE)
+    assert checks["three_tier_structure"]["passed"], checks["three_tier_structure"]["detail"]
 
 
 @pytest.mark.asyncio
