@@ -71,8 +71,27 @@ class NotesHandlers:
                 data={"confirmed": 0},
             )
 
+        is_transcript = pending.get("source_type") == "transcript"
         context_store.merge_archie_relationship_facts(context, pending)
+        if is_transcript:
+            context_store.merge_archie_client_facts(
+                context, pending.get("client_facts") or {}
+            )
+            confirmed_at = datetime.now(timezone.utc).isoformat()
+            for decision in pending.get("decisions") or []:
+                if not isinstance(decision, dict) or not decision.get("statement"):
+                    continue
+                context_store.append_decision_log(
+                    context,
+                    {
+                        **decision,
+                        "source": "confirmed_transcript_debrief",
+                        "confirmed_at": confirmed_at,
+                    },
+                )
         context.pop("pending_debrief", None)
+        if is_transcript:
+            context_store.write_context(self._store, self._customer_id, context)
 
         counts = {
             "stakeholders": len(pending.get("stakeholders") or []),
@@ -80,6 +99,9 @@ class NotesHandlers:
             "objections": len(pending.get("objections") or []),
             "commitments": len(pending.get("commitments") or []),
         }
+        if is_transcript:
+            counts["facts"] = len(pending.get("facts") or [])
+            counts["decisions"] = len(pending.get("decisions") or [])
         total = sum(counts.values())
         summary_parts = [f"{v} {k.replace('_', ' ')}" for k, v in counts.items() if v]
         summary = f"Debrief confirmed — {', '.join(summary_parts)} saved to engagement context."

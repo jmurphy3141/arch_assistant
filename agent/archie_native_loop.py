@@ -21,6 +21,7 @@ from agent import (
     export_tools,
     file_reader_tools,
     reference_tools,
+    semantic_notes,
 )
 from agent.archie_wiring import (
     NATIVE_SYSTEM_IDENTITY,
@@ -28,6 +29,7 @@ from agent.archie_wiring import (
     get_registered_memory,
     get_registered_tool_specs,
 )
+from agent.embedding_client import EmbedFn
 from agent.llm_inference_client import run_inference_with_tools
 from agent.persistence_objectstore import ObjectStoreBase
 from agent.runtime_config import resolve_agent_llm_config
@@ -72,6 +74,7 @@ async def run_turn(
     store: ObjectStoreBase,
     text_runner: Callable,
     tool_runner: Callable | None = None,
+    embed_fn: EmbedFn | None = None,
     a2a_base_url: str = "http://localhost:8080",
     max_tool_iterations: int = 5,
     reasoning_sink: Callable | None = None,
@@ -108,6 +111,13 @@ async def run_turn(
             store=store,
             engagement_id=customer_id,
             customer_name=customer_name,
+        )
+    )
+    registered_specs.extend(
+        semantic_notes.get_semantic_tool_specs(
+            store=store,
+            engagement_id=customer_id,
+            embed_fn=embed_fn,
         )
     )
     registered_specs.extend(reference_tools.get_reference_tool_specs())

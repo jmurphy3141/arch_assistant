@@ -40,6 +40,13 @@ inference:
     No markdown fences, no explanation, no preamble.
     Every response must start with '{' and end with '}'.
 
+# OCI GenAI embeddings for per-engagement transcript semantic retrieval.
+# Tests inject a deterministic embed_fn and never call this live endpoint.
+embedding:
+  enabled: true
+  service_endpoint: "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+  model_id: "cohere.embed-english-v3.0"
+
 # Artifact persistence
 persistence:
   enabled: true
