@@ -2,6 +2,9 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
+pytestmark = pytest.mark.usefixtures("force_forge_mode")
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_not_called_from_run_turn(monkeypatch):
     """

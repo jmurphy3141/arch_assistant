@@ -68,7 +68,8 @@ def test_resolve_agent_llm_config_falls_back_to_inference_block() -> None:
     assert resolved["top_k"] == 10
 
 
-def test_committed_native_orchestrator_uses_grok_43_without_changing_forge_default() -> None:
+def test_committed_native_orchestrator_uses_grok_43_and_native_default() -> None:
+    """Guard the deliberate native-mode default and its dedicated model."""
     config_path = Path(__file__).resolve().parents[1] / "config.yaml"
     cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
@@ -80,4 +81,4 @@ def test_committed_native_orchestrator_uses_grok_43_without_changing_forge_defau
         "amaaaaaask7dceya4fxp5zjj27q24rjxk46l43die7u6nclgwfbemklsdvoa"
     )
     assert forge["model_id"] == cfg["llm_defaults"]["model_id"]
-    assert cfg["orchestrator"]["agent_mode"] == "forge"
+    assert cfg["orchestrator"]["agent_mode"] == "native"

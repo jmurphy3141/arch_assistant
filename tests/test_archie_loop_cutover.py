@@ -3,6 +3,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from skillforge.types import TurnResult, ToolCall, ToolResult
 
 
+pytestmark = pytest.mark.usefixtures("force_forge_mode")
+
+
 @pytest.mark.asyncio
 async def test_run_turn_delegates_to_forge(monkeypatch):
     import agent.archie_session as archie_session

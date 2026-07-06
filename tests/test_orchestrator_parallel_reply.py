@@ -17,7 +17,7 @@ from agent.persistence_objectstore import InMemoryObjectStore
 from skillforge.types import ToolResult
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("force_forge_mode")]
 
 
 def _forge_with_executor(executor):

@@ -8,6 +8,20 @@ import pytest
 _MARKERS = {"unit", "integration", "system", "e2e", "prompt_static", "prompt_judge", "live"}
 
 
+@pytest.fixture
+def force_forge_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Select Forge explicitly for tests whose subject is the compatibility path."""
+    from agent import archie_session
+    import agent.orchestrator_agent as orchestrator_agent
+
+    monkeypatch.setattr(archie_session, "get_agent_mode", lambda: "forge")
+    monkeypatch.setattr(
+        orchestrator_agent.archie_session,
+        "get_agent_mode",
+        lambda: "forge",
+    )
+
+
 def _has_taxonomy_marker(item: pytest.Item) -> bool:
     return any(mark.name in _MARKERS for mark in item.iter_markers())
 

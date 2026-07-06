@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Last updated: 2026-06-01 for Archie OCI Architecture Assistant v1.9.x.
+Last updated: 2026-07-06 for Archie OCI Architecture Assistant v1.9.x.
 
 Read this file first, then read `PLAN.md` before touching any code.
 `PLAN.md` is the locked architecture plan. It defines the target state,
@@ -90,11 +90,10 @@ with `PLAN.md`, stop and flag it — do not improvise.
   refine, download, health, config, and refresh routes remain in the composition
   root.
 - Static UI: the backend serves the Vite build from `ui/dist/` in production.
-- Orchestrator: `skillforge/forge.py` owns the ReAct loop — planning, hat
-  activation, expert pre-action, tool dispatch, expert post-review, and
-  correction. `agent/archie_session.py` loads state, calls `forge.run_turn()`,
-  saves results, and preserves compatibility fast paths while migration work
-  continues.
+- Orchestrator: committed config defaults to the native OCI tool-calling loop in
+  `agent/archie_native_loop.py`; `agent/archie_session.py` selects it through
+  `orchestrator.agent_mode`. `skillforge/forge.py` remains the compatibility
+  path when forge mode is explicitly selected.
 - ReAct prompts include internal orchestrator self-guidance; deterministic fast
   paths skip ReAct by design and are not self-guidance failures.
 - Decision Context is generated per turn, persisted to context, included in

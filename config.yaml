@@ -163,7 +163,7 @@ telegram:
 # Orchestrator (Agent 0) — conversational entry point
 orchestrator:
   agent_id: "agent0-sa-orchestrator"
-  agent_mode: "forge"
+  agent_mode: "native"
   max_tool_iterations: 5
   max_refinements: 3
   history_max_turns: 30

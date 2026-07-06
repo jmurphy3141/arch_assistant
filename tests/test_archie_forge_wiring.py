@@ -10,6 +10,9 @@ from skillforge.protocols import ArgSchema
 from skillforge.types import TurnResult
 
 
+pytestmark = pytest.mark.usefixtures("force_forge_mode")
+
+
 GENERATION_TOOLS = {
     "generate_bom",
     "generate_diagram",
