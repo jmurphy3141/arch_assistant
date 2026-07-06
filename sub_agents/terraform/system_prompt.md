@@ -182,14 +182,10 @@ Before returning, verify:
 
 ```json
 {
-  "files": {
-    "main_tf": "terraform {\n  required_providers {\n    oci = {\n      source  = \"hashicorp/oci\"\n      version = \">= 5.40.0\"\n    }\n  }\n}\n...",
-    "variables_tf": "variable \"compartment_id\" {\n  type        = string\n  description = \"OCID of the non-root compartment for all resources\"\n}\n...",
-    "outputs_tf": "output \"vcn_id\" {\n  value = oci_core_vcn.main.id\n}\n...",
-    "readme_md": "# Terraform for OCI\n\n## Prerequisites\n- Terraform >= 1.5\n- OCI Provider >= 5.40.0\n\n## Required Variables\n...\n\n## Deploy\n```\nterraform init\nterraform plan -var-file=terraform.tfvars\nterraform apply -var-file=terraform.tfvars\n```\n"
-  },
-  "artifact_key": "terraform/customer-123/v2.zip",
-  "resource_count": 12
+  "main_tf": "terraform {\n  required_providers {\n    oci = {\n      source  = \"hashicorp/oci\"\n      version = \">= 5.40.0\"\n    }\n  }\n}\n...",
+  "variables_tf": "variable \"compartment_id\" {\n  type        = string\n  description = \"OCID of the non-root compartment for all resources\"\n}\n...",
+  "outputs_tf": "output \"vcn_id\" {\n  value = oci_core_vcn.main.id\n}\n...",
+  "readme_md": "# Terraform for OCI\n\n## Prerequisites\n- Terraform >= 1.5\n- OCI Provider >= 5.40.0\n\n## Required Variables\n...\n\n## Deploy\n```\nterraform init\nterraform plan -var-file=terraform.tfvars\nterraform apply -var-file=terraform.tfvars\n```\n"
 }
 ```
 

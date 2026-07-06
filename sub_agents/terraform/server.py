@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ _MAIN_CONFIG = _ROOT / "config.yaml"
 _SYSTEM_PROMPT = _HERE / "system_prompt.md"
 _TF_RESOURCES = _ROOT / "agent" / "standards" / "oci_terraform_resources.json"
 _FILE_KEYS = ("main_tf", "variables_tf", "outputs_tf", "readme_md")
+logger = logging.getLogger(__name__)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -96,6 +98,18 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 def _parse_files(raw: str) -> dict[str, str]:
     data = _extract_json_object(raw)
     if data:
+        for key in _FILE_KEYS:
+            candidate = data.get(key)
+            if not isinstance(candidate, str):
+                continue
+            try:
+                nested = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(nested, dict) and any(file_key in nested for file_key in _FILE_KEYS):
+                logger.warning("Unwrapped one-level double-encoded Terraform file bundle")
+                data = nested
+                break
         return {key: str(data.get(key) or "") for key in _FILE_KEYS}
     return {
         "main_tf": _strip_fences(raw),
