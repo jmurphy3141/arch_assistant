@@ -1,6 +1,6 @@
 # Task: baseline integrity — measure terraform for real, add producer variance
 Phase: 6
-Status: todo
+Status: done
 
 ## Goal
 Make the Phase 6 quality baseline trustworthy before any tuning decisions are made

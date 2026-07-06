@@ -838,6 +838,18 @@ async def run_baseline(
         "producer_runs": producer_runs,
         "judge_runs": judge_runs,
         "judge_model_id": judge_model_id,
+        "environment": {
+            "producer_source_commit": subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip(),
+            "producer_transport": "isolated current-source A2A services",
+            "judge_model_distinct_from_producers": True,
+            "terraform_cli_available": shutil.which("terraform") is not None,
+        },
         "types": {},
     }
     for artifact_type in artifact_types:
