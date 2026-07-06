@@ -6,7 +6,8 @@ import anyio
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 
-from agent.context_store import read_context, write_context, merge_archie_relationship_facts
+from agent import embedding_client, transcript_ingest
+from agent.context_store import read_context
 from agent.document_store import (
     JEP_DOCX_CONTENT_TYPE,
     get_approved_doc,
@@ -53,6 +54,7 @@ def create_documents_router(deps) -> APIRouter:
     async def upload_note(
         customer_id: str = Form(...),
         note_name: str = Form(default=""),
+        is_transcript: bool = Form(default=False),
         file: UploadFile = File(...),
     ):
         store = deps.require_object_store()
@@ -60,15 +62,66 @@ def create_documents_router(deps) -> APIRouter:
         content_bytes = await file.read()
         content_type = file.content_type or "text/plain"
         try:
-            key = await anyio.to_thread.run_sync(
-                functools.partial(save_note, store, customer_id, name, content_bytes, content_type)
-            )
-
             extraction = await anyio.to_thread.run_sync(
                 functools.partial(extract_text, content_bytes, content_type, file.filename or name)
             )
             debrief: dict = {}
-            if extraction.get("text"):
+            transcript_result: dict = {}
+            if is_transcript:
+                text = str(extraction.get("text") or "")
+                meeting_id = name.rsplit(".", 1)[0]
+                if text:
+                    try:
+                        text_runner = build_inference_runner(
+                            deps.app().state,
+                            inference_config=deps.inference_settings(),
+                        )
+                    except Exception:
+                        text_runner = None
+                    embed_fn = getattr(deps.app().state, "embedding_runner", None)
+                    if embed_fn is None:
+                        embed_fn = embedding_client.build_embed_fn(deps.config())
+                    transcript_result = await anyio.to_thread.run_sync(
+                        functools.partial(
+                            transcript_ingest.ingest_transcript,
+                            store=store,
+                            engagement_id=customer_id,
+                            meeting_id=meeting_id,
+                            transcript_text=text,
+                            embed_fn=embed_fn,
+                            source_bytes=content_bytes,
+                            source_name=file.filename or name,
+                            content_type=content_type,
+                            text_runner=text_runner,
+                        )
+                    )
+                    key = transcript_result["raw_key"]
+                    debrief = dict(transcript_result.get("debrief") or {})
+                else:
+                    key = await anyio.to_thread.run_sync(
+                        functools.partial(
+                            transcript_ingest.store_raw_transcript,
+                            store=store,
+                            engagement_id=customer_id,
+                            meeting_id=meeting_id,
+                            source_name=file.filename or name,
+                            content=content_bytes,
+                            content_type=content_type,
+                        )
+                    )
+            else:
+                key = await anyio.to_thread.run_sync(
+                    functools.partial(
+                        save_note,
+                        store,
+                        customer_id,
+                        name,
+                        content_bytes,
+                        content_type,
+                    )
+                )
+
+            if extraction.get("text") and not is_transcript:
                 try:
                     await anyio.to_thread.run_sync(
                         functools.partial(save_note_text, store, customer_id, name, extraction["text"])
@@ -85,13 +138,7 @@ def create_documents_router(deps) -> APIRouter:
 
                 if extraction.get("text"):
                     try:
-                        from agent.archie_memory import (
-                            extract_relationship_facts_llm,
-                            _extract_relationship_facts,
-                            _extract_client_facts,
-                        )
                         text = extraction["text"]
-                        # LLM extraction first; regex fallback if LLM unavailable/fails
                         try:
                             text_runner = build_inference_runner(
                                 deps.app().state,
@@ -99,30 +146,16 @@ def create_documents_router(deps) -> APIRouter:
                             )
                         except Exception:
                             text_runner = None
-                        if text_runner:
-                            rel_facts = extract_relationship_facts_llm(text, text_runner)
-                        if not text_runner or not rel_facts:
-                            rel_facts = _extract_relationship_facts(text)
-                        client_facts = _extract_client_facts(text)
-                        debrief = {
-                            "stakeholders": rel_facts.get("stakeholders", []),
-                            "action_items": rel_facts.get("action_items", []),
-                            "objections": rel_facts.get("objections", []),
-                            "commitments": rel_facts.get("commitments", []),
-                            "competitive": rel_facts.get("competitive", {}),
-                            "client_facts": client_facts,
-                            "fact_count": sum(
-                                len(rel_facts.get(k, [])) for k in ("stakeholders", "action_items", "objections", "commitments")
-                            ),
-                            "pending_confirmation": True,
-                        }
-                        context = await anyio.to_thread.run_sync(
-                            functools.partial(read_context, store, customer_id, "")
+                        debrief = transcript_ingest.extract_debrief(
+                            text, text_runner=text_runner
                         )
-                        context.setdefault("pending_debrief", debrief)
-                        from agent.context_store import write_context as _write_ctx
-                        await anyio.to_thread.run_sync(
-                            functools.partial(_write_ctx, store, customer_id, context)
+                        debrief = await anyio.to_thread.run_sync(
+                            functools.partial(
+                                transcript_ingest.stage_pending_debrief,
+                                store=store,
+                                engagement_id=customer_id,
+                                debrief=debrief,
+                            )
                         )
                     except Exception as exc:
                         deps.logger.warning("Debrief extraction failed for %s: %s", name, exc)
@@ -138,6 +171,15 @@ def create_documents_router(deps) -> APIRouter:
                 "char_count": extraction["char_count"],
                 "warning": extraction["warning"],
                 "debrief": debrief,
+                "is_transcript": is_transcript,
+                **(
+                    {
+                        "transcript_index_key": transcript_result.get("index_key", ""),
+                        "transcript_chunk_count": transcript_result.get("chunk_count", 0),
+                    }
+                    if is_transcript
+                    else {}
+                ),
             }
         except Exception as exc:
             deps.logger.error("Error in /notes/upload: %s", exc)

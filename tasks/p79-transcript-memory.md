@@ -1,6 +1,6 @@
 # Task: per-client transcript memory (distill + cite + semantic retrieval)
 Phase: 7
-Status: todo — sequenced AFTER Phase 6 (sub-agent quality)
+Status: done — sequenced AFTER Phase 6 (sub-agent quality)
 
 ## Goal
 Now that all meetings are recorded and transcribed, give each engagement deep,
