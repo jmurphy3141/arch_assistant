@@ -200,6 +200,15 @@ def test_waf_pillar_score_detected_when_score_is_in_the_heading_line() -> None:
     assert checks["pillar_scores"]["passed"], checks["pillar_scores"]["detail"]
 
 
+def test_waf_pillar_score_detected_when_heading_score_is_bold() -> None:
+    # Regression guard from a stored live producer artifact: headings can use
+    # "Score: **4/5 - Strong**", with Markdown emphasis before the number.
+    content = _waf().replace("Score: 3/5", "Score: **3/5 - Strong**")
+    checks = quality._check_waf(content, quality.FIXTURE)
+    assert checks["six_pillars"]["passed"], checks["six_pillars"]["detail"]
+    assert checks["pillar_scores"]["passed"], checks["pillar_scores"]["detail"]
+
+
 def test_waf_sixth_pillar_is_continuous_improvement_per_subagent_spec() -> None:
     # sub_agents/waf/system_prompt.md section 6 and agent/hats/oci_waf_reviewer.md
     # both specify "Continuous Improvement" as the sixth pillar. A producer that
