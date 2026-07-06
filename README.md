@@ -418,8 +418,11 @@ See `deploy/README.md` for full instructions.
 | `inference.model_id` | OCI GenAI model OCID |
 | `inference.service_endpoint` | OCI GenAI endpoint URL |
 | `persistence.bucket_name` | OCI Object Storage bucket |
+| `orchestrator.agent_mode` | `"forge"` (default, hat-gated ReAct) or `"native"` (native tool-calling, no hats) |
 | `orchestrator.max_tool_iterations` | Forge ReAct loop max iterations (default: 5) |
 | `orchestrator.history_max_turns` | History turns per prompt (default: 30) |
+| `embedding.model_id` | OCI GenAI embedding model (transcript semantic retrieval, native mode only) |
+| `embedding.service_endpoint` | OCI GenAI embedding endpoint URL |
 | `telegram.enabled` | Enable Telegram notifications (default: false) |
 
 ### .env — secrets

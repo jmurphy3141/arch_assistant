@@ -1,7 +1,10 @@
 # AGENTS.md
 
-Last updated: 2026-07-04 for Archie OCI Architecture Assistant, native-architecture
-migration (`PLAN.md` Phases 3-7; see `CHANGELOG.md` "Unreleased" for the full list).
+Last updated: 2026-07-06 for Archie OCI Architecture Assistant. The full p0-p82
+task sequence is landed (`PLAN.md` Phases 3-7 enablers all `done`; see
+`CHANGELOG.md` "Unreleased" for the full list). Phase 6/7 "then" follow-on work
+(sub-agent tuning, outcome capture, cross-client corpus) is authorized but not
+yet spec'd into task files.
 
 Read this file first, then read `PLAN.md` before touching any code.
 `PLAN.md` is the locked architecture plan. It defines the target state,
@@ -76,9 +79,17 @@ with `PLAN.md`, stop and flag it — do not improvise.
   its own tool surface (below) for grounding instead.
 - `agent/archie_memory_retrieval.py`, `agent/reference_tools.py`,
   `agent/file_reader_tools.py`, `agent/compute_tools.py`,
-  `agent/export_tools.py`: native-only tool specs — memory recall/search,
-  reference-data lookups, arbitrary stored-file reads, deterministic
-  compute, and artifact export (PNG/CSV), respectively.
+  `agent/export_tools.py`, `agent/semantic_notes.py`: native-only tool specs —
+  memory recall/search, reference-data lookups, arbitrary stored-file reads,
+  deterministic compute, artifact export (PNG/CSV), and `semantic_search`
+  (meaning/paraphrase retrieval over one engagement's transcript index),
+  respectively.
+- `agent/transcript_ingest.py`, `agent/embedding_client.py`: transcript
+  distillation (reuses the debrief/confirm_debrief path — nothing persists to
+  `archie.relationship` until confirmed) plus chunk/embed/index into an
+  isolated per-engagement store. `POST /api/notes/upload` with
+  `is_transcript=true` routes here instead of the generic note path; raw
+  transcript text never reaches `read_file_content` or a specialist prompt.
 - `agent/archie_memory.py`: context assembly, memory enforcement, BOM
   hydration, and specialist-question management.
 - `agent/hat_engine.py`: loads markdown hats and exposes hat activation tools
@@ -130,7 +141,7 @@ with `PLAN.md`, stop and flag it — do not improvise.
   (`recall_fact`, `search_notes`, `get_decisions`, `list_artifacts`,
   `get_meeting_summaries`, `lookup_compute_shapes`, `lookup_price`,
   `lookup_reference_architecture`, `read_file_content`, `compute`,
-  `export_artifact`). Per-tool failures are isolated (a raising handler
+  `export_artifact`, `semantic_search`). Per-tool failures are isolated (a raising handler
   produces a `status="error"` ToolResult; the turn continues). `reasoning_sink`
   and `notify("tool_started:<tool>", ...)` drive the same live thinking/
   tool-chip UI events the forge path already produced. Changing the native
@@ -220,6 +231,7 @@ pytest tests/test_sub_agent_port_config.py -v
 pytest tests/test_archie_forge_wiring.py -v          # forge/session boundary guard
 pytest tests/test_archie_native_loop.py -v           # native loop (agent_mode: native)
 pytest tests/test_background_job.py -v               # /api/chat/background, both agent_mode values
+pytest tests/test_transcript_memory.py -v             # transcript distill/confirm/semantic-index
 
 # Repo gates
 ./scripts/test_pr_gate.sh -v

@@ -68,6 +68,9 @@ drawing_agent_server.py  ← FastAPI, port 8080, AGENT_VERSION="1.9.1" (const; c
   │    file_reader_tools.py   read_file_content — read any stored doc/spreadsheet
   │    compute_tools.py       compute — deterministic cost/TCO/proration math
   │    export_tools.py        export_artifact — diagram→PNG, spreadsheet→CSV
+  │    semantic_notes.py      semantic_search — meaning/paraphrase retrieval over
+  │                            one engagement's transcript index (isolated;
+  │                            disambiguated from keyword search_notes)
   │
   ├─ Tool handlers (agent/tools/) — shared by both paths
   │    diagram.py            DiagramHandler → A2A diagram sub-agent
@@ -81,6 +84,9 @@ drawing_agent_server.py  ← FastAPI, port 8080, AGENT_VERSION="1.9.1" (const; c
   │    meeting_prep.py            Deterministic meeting prep assembler
   │    server/routes/briefing.py  REST endpoints: engagement, SE accounts, prep
   │    agent/archie_memory.py     extract_relationship_facts_llm() + regex fallback
+  │    transcript_ingest.py       Distill (same debrief path) + chunk/embed/index
+  │                            a meeting transcript, isolated per engagement
+  │    embedding_client.py        OCI GenAI embeddings, swappable embed_fn
   │
   ├─ Sub-agents (independent A2A services) — see "Sub-Agents" below for all 12
   │    sub_agents/bom/        sub_agents/diagram/     sub_agents/pov/
@@ -138,6 +144,11 @@ arch_assistant/
 │   ├── file_reader_tools.py    # Native-only: read_file_content tool spec
 │   ├── compute_tools.py        # Native-only: compute (deterministic math) tool spec
 │   ├── export_tools.py         # Native-only: export_artifact (PNG/CSV) tool spec
+│   ├── semantic_notes.py       # Native-only: semantic_search tool spec — cosine-ranks
+│   │                            #   one engagement's transcript index (see transcript_ingest.py)
+│   ├── transcript_ingest.py    # Distill (debrief path) + chunk/embed/store a transcript,
+│   │                            #   isolated per engagement; raw text never reaches producers
+│   ├── embedding_client.py     # OCI GenAI embeddings; injectable embed_fn for tests
 │   ├── chat_stream.py          # SSE streaming: reasoning_sink + notification_sink wiring
 │   ├── context_enricher.py     # Parallel pre-turn context enrichment before forge.run_turn
 │   ├── hat_engine.py           # Loads hats and exposes use_hat_* tools (forge path only)
@@ -183,6 +194,8 @@ arch_assistant/
 │   │   ├── specialists.py      # WafHandler, PovHandler, JepHandler, etc. — A2A
 │   │   ├── terraform.py        # TerraformHandler — calls terraform sub-agent
 │   │   └── notes.py            # save_notes, get_summary, get_document, confirm_debrief
+│   │                            #   (confirm_debrief also persists transcript-sourced
+│   │                            #   client_facts/decisions when pending.source_type=="transcript")
 │   │
 │   ├── hats/                   # Expert lenses (markdown) loaded by hat_engine — forge path
 │   │   │                       #   only; retired from agent_mode: native (Decision #8).
@@ -292,6 +305,12 @@ Archie tracks the human side of every deal alongside the technical artifacts.
 5. SE confirms in chat → `confirm_debrief` tool → `merge_archie_relationship_facts`
 
 `extract_relationship_facts_llm(text, run_fn)` in `agent/archie_memory.py`: structured JSON prompt requesting stakeholders / objections / commitments / action_items / competitive; strips markdown fences, validates types, returns `{}` on any failure so the caller falls back to regex.
+
+### Transcript Memory (`agent/transcript_ingest.py`, `agent/semantic_notes.py`, native-only)
+`POST /api/notes/upload` with `is_transcript=true` routes through `transcript_ingest.ingest_transcript()` instead of the generic note path:
+1. **Distill** — reuses the SAME `extract_relationship_facts_llm()`/regex-fallback path as regular notes, plus decision extraction; every extracted fact/decision carries a transcript citation (meeting id + line/offset range) and an ASR `low_confidence` flag (regex-detected `inaudible`/`unclear`/`[?]` near the source line). Staged to `pending_debrief` only — **nothing touches `archie.relationship` until `confirm_debrief` runs**, identical to the regular debrief loop's confirm gate.
+2. **Index (retrieval/citation only, never fed to producers)** — the raw transcript is chunked, embedded (`agent/embedding_client.py`, OCI GenAI `cohere.embed-english-v3.0` via `config.yaml` → `embedding:`, Instance Principal auth), and stored as one JSON index per engagement (`customers/{engagement_id}/transcripts/index.json`). Raw transcript bytes are stored separately from the generic notes manifest (`transcript_ingest.store_raw_transcript()`), so `read_file_content`/`get_document` and specialist prompt-building never see them — only the confirmed, distilled facts do.
+3. **`semantic_search`** (native-only tool, `agent/semantic_notes.py`) cosine-ranks that one engagement's chunks for a paraphrased/conceptual query and returns cited passages ("per the `<date>` call: ..."). Its engagement id is bound at tool-construction time in `archie_native_loop.py` (closed over the per-turn `customer_id`), not passed as a queryable argument — cross-engagement leakage would require actively wrong wiring, not just a missed filter. Disambiguated from keyword `search_notes`: semantic = meaning/paraphrase match, keyword = exact term match.
 
 ### C3E Phase Tracking (`agent/engagement_mission.py`)
 Correct phase order:
@@ -459,7 +478,7 @@ and governor behavior now lives in hats, not Python modules.
 
 **OCI Identity Domain OAuth** — the web UI uses OIDC for user sessions. Config via environment variables (see `.env.example`).
 
-All non-secret config lives in `config.yaml` (OCI resource OCIDs, inference endpoint, region, agent tuning). These are not secrets.
+All non-secret config lives in `config.yaml` (OCI resource OCIDs, inference endpoint, region, agent tuning, `embedding:` model/endpoint for transcript semantic retrieval). These are not secrets.
 
 Active region: **us-chicago-1** (not us-phoenix-1 — that is stale in some old comments).
 
@@ -571,18 +590,33 @@ Still open, UI-only:
   is opened.
 
 ### Phase status (see `PLAN.md` for the full plan)
+The p0-p82 task sequence is now fully landed. Phases 5-7's *enabler* tasks are
+done; each phase's "then" follow-on work (listed below) has not been spec'd
+into task files yet.
+
 - **Phase 5 (Native Agent Loop):** complete — native mode has live streaming
   events, per-tool error isolation, full artifact-type coverage, and
   `agent_mode`-aware background chat. `config.yaml` still defaults to
   `"forge"`; native is opt-in.
-- **Phase 6 (Better Sub-Agents):** `tasks/p78-subagent-quality-harness.md`
-  done. `tasks/p80-baseline-integrity.md` is `todo` — the harness/path fixes
-  landed, but the live re-run (real `terraform validate` on an eval host with
-  registry/provider access, `--runs 3 --judge-runs 3`, refreshed
-  `docs/subagent-quality.json`) has not. Per Decision #9, do not tune any
-  sub-agent before that refreshed baseline lands.
-- **Phase 7 (Learning & Memory):** opened; `tasks/p79-transcript-memory.md` is
-  `todo`, explicitly sequenced after Phase 6 closes.
+- **Phase 6 (Better Sub-Agents):** complete. `tasks/p78-subagent-quality-harness.md`
+  and `tasks/p80-baseline-integrity.md` are both `done` —
+  `docs/subagent-quality.json` now reflects a REAL baseline
+  (`environment.terraform_cli_available: true`, `producer_runs: 3`,
+  `judge_runs: 3`, repo-relative golden paths). Current worst-to-best ranking:
+  JEP 1.29 / Diagram 2.40 / Terraform 2.42 / BOM 3.27 / POV 4.04 / WAF 4.98.
+  Notable finding from the real run: Terraform's `terraform_validate` objective
+  check passed **0 of 3** producer runs — the prior baseline couldn't see this
+  because `terraform_cli_available` was `false`; this is a real, actionable
+  defect now that measurement is trustworthy. Per Decision #9, sub-agent
+  *tuning* (the "then" items — per-sub-agent model selection, grounded-brief
+  rendering, richer domain corpus) is authorized now that the baseline is
+  real, but not yet spec'd into a task file.
+- **Phase 7 (Learning & Memory):** enabler complete. `tasks/p79-transcript-memory.md`
+  is `done` — per-client transcript ingestion (distill+cite+confirm, reusing
+  the existing debrief/confirm_debrief gate) and an isolated per-engagement
+  semantic index (`semantic_search`, native-only) are live. Still open, not
+  yet spec'd: outcome capture (structured win/loss debrief) and the anonymized
+  cross-client knowledge corpus.
 
 ---
 
