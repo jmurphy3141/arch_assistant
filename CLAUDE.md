@@ -11,12 +11,13 @@ The project started as a single diagram-generation agent and has grown into a mu
 ## Architecture Overview
 
 **Two orchestration paths, one flag.** `config.yaml` → `orchestrator.agent_mode`
-selects `forge` (default) or `native`. Forge is the hat-gated ReAct ceremony
-described below; native is a leaner native-tool-calling loop with no hats
-(Decision #8) and its own retrieval/compute/export tool surface. Both paths
-share the same tool handlers, sub-agents, and second-brain layer underneath.
-Archie is the personality (system prompt + tools [+ hats, in forge mode]) on
-top of either loop.
+selects `native` (default, switched from forge for live testing) or `forge`
+(explicit compatibility path). Native is a leaner native-tool-calling loop
+with no hats (Decision #8) and its own retrieval/compute/export tool surface;
+forge is the hat-gated ReAct ceremony described below. Both paths share the
+same tool handlers, sub-agents, and second-brain layer underneath. Archie is
+the personality (system prompt + tools [+ hats, in forge mode]) on top of
+either loop.
 
 ```
 User (browser UI or API)
@@ -38,7 +39,7 @@ drawing_agent_server.py  ← FastAPI, port 8080, AGENT_VERSION="1.9.1" (const; c
   │    or archie_native_loop.run_turn(); saves results either way;
   │    upserts SE engagement index after each turn
   │
-  ├─ FORGE PATH (agent_mode: forge — default)
+  ├─ FORGE PATH (agent_mode: forge — explicit compatibility path)
   │    SkillForge (skillforge/)    Domain-agnostic ReAct orchestrator
   │      forge.py              Forge.run_turn() — the primary loop:
   │        step3_planning      → structured planning LLM call before tools
@@ -56,7 +57,7 @@ drawing_agent_server.py  ← FastAPI, port 8080, AGENT_VERSION="1.9.1" (const; c
   │      hat_engine.py         Loads agent/hats/*.md, exposes use_hat_* tools
   │      hats/*.md             19 expert lenses — see "Hat System" below
   │
-  ├─ NATIVE PATH (agent_mode: native)
+  ├─ NATIVE PATH (agent_mode: native — default)
   │    archie_native_loop.py  Native tool-calling ReAct loop, no hats:
   │      per-tool error isolation (a failing tool → status="error" ToolResult,
   │      turn continues); reasoning_sink/notify hooks emit live thinking +
@@ -439,9 +440,10 @@ Forge auto-activates the required hat before any domain tool call via the
 `requires_hat` field on each registered tool.
 
 ### Native mode drops hats; forge mode is untouched (Decision #8)
-`config.yaml` → `orchestrator.agent_mode` defaults to `"forge"`. Setting it to
-`"native"` routes turns through `agent/archie_native_loop.py` instead: native
-tool-calling, no hat gate, no expert pre-action/post-review ceremony — the
+`config.yaml` → `orchestrator.agent_mode` defaults to `"native"` (switched
+from `"forge"` for live testing). Native mode routes turns through
+`agent/archie_native_loop.py`: native tool-calling, no hat gate, no expert
+pre-action/post-review ceremony — the
 model reasons directly, grounding itself via `reference_tools.py` /
 `archie_memory_retrieval.py` / `file_reader_tools.py` /`compute_tools.py` /
 `export_tools.py` instead of a markdown expert lens. Per-tool failures are
@@ -596,8 +598,9 @@ into task files yet.
 
 - **Phase 5 (Native Agent Loop):** complete — native mode has live streaming
   events, per-tool error isolation, full artifact-type coverage, and
-  `agent_mode`-aware background chat. `config.yaml` still defaults to
-  `"forge"`; native is opt-in.
+  `agent_mode`-aware background chat. `config.yaml` now defaults to
+  `"native"` for live testing (switched from `"forge"`); forge remains
+  available as an explicit compatibility path.
 - **Phase 6 (Better Sub-Agents):** complete. `tasks/p78-subagent-quality-harness.md`
   and `tasks/p80-baseline-integrity.md` are both `done` —
   `docs/subagent-quality.json` now reflects a REAL baseline
