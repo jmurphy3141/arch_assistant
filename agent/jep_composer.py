@@ -14,21 +14,22 @@ from typing import Any, Iterable
 
 
 CORE_SECTIONS = (
-    "Executive Summary",
-    "Objectives",
-    "Scope",
-    "POC Architecture",
-    "Phased Execution Plan",
+    "Overview",
+    "High Level Scope and Approach",
+    "Future State Architecture",
+    "POC Plan",
+    "Proof of Concept Test Cases",
     "Success Criteria",
-    "Resource Plan",
-    "Risk Registry",
-    "Approvals",
+    "Bill of Materials",
+    "POC Participants",
+    "Deliverables",
+    "Logistics",
 )
 
 _REGION_RE = re.compile(r"\b(?:[a-z]{2,}-[a-z]+-\d+)\b", re.IGNORECASE)
 _DURATION_RE = re.compile(r"\b(\d+[- ](?:day|week|month)s?)\b", re.IGNORECASE)
 _PHASE_RE = re.compile(
-    r"Phase\s*([123])\s*[-:]?\s*(Assessment|Build|Validate)\s+(?:on\s+)?"
+    r"Phase\s*([123])\s*[-:—]?\s*(Assessment|Build|Validate)\s*(?:(?:is|on)\s+|[-:—]\s*)?"
     r"((?:days?|weeks?)\s*\d+\s*(?:-|–|to)\s*\d+|(?:day|week)\s*\d+)",
     re.IGNORECASE,
 )
@@ -56,6 +57,13 @@ class JepOwner:
 
 
 @dataclass(frozen=True)
+class JepTestCase:
+    criterion: str
+    procedure: str
+    evidence: str
+
+
+@dataclass(frozen=True)
 class JepBrief:
     customer: str
     region: str
@@ -64,14 +72,14 @@ class JepBrief:
     scope: tuple[str, ...]
     architecture: str
     criteria: tuple[str, ...]
+    test_cases: tuple[JepTestCase, ...]
     owners: tuple[JepOwner, ...]
     risks: tuple[str, ...]
     approvals: str
     artifact_references: tuple[str, ...] = ()
     bom_scope: tuple[str, ...] = ()
-    handoff_requirements: tuple[str, ...] = ()
-    include_bom: bool = False
-    include_handoff: bool = False
+    deliverables: tuple[str, ...] = ()
+    logistics: tuple[tuple[str, str], ...] = ()
     expected_criteria_count: int = 3
     grounded_source: str = field(default="", repr=False)
 
@@ -181,19 +189,6 @@ def extract_jep_brief(
         else {}
     )
     expected_criteria_count = _expected_success_criteria_count(context)
-    include_bom = bool(re.search(
-        r"(?:\b(?:include|add|with|containing)\b[^.]{0,60}\b(?:BOM|bill of materials)\b|"
-        r"\b(?:BOM|bill of materials)\s+section\b)",
-        current,
-        re.IGNORECASE,
-    ))
-    include_handoff = bool(re.search(r"\bhandoff deliverables?\b", current, re.IGNORECASE))
-    bom_scope = _extract_bom_scope({"artifact_context": artifact_context}) or (
-        scope if include_bom and scope else (("[TBD]",) if include_bom else ())
-    )
-    handoff = _extract_handoff(sources, criteria) if include_handoff else ()
-    if include_handoff and not handoff:
-        handoff = ("[TBD]",)
 
     missing: list[str] = []
     for name, value in (("customer", customer), ("workload", workload)):
@@ -205,6 +200,10 @@ def extract_jep_brief(
         criteria = criteria + tuple(
             "[TBD]" for _ in range(expected_criteria_count - len(criteria))
         )
+    test_cases = _extract_test_cases(sources, criteria)
+    bom_scope = _extract_bom_scope({"artifact_context": artifact_context}) or scope or ("[TBD]",)
+    deliverables = _extract_deliverables(sources, criteria)
+    logistics = _extract_logistics(sources, duration, phases)
 
     brief = JepBrief(
         customer=customer,
@@ -214,14 +213,14 @@ def extract_jep_brief(
         scope=scope,
         architecture=architecture,
         criteria=criteria,
+        test_cases=test_cases,
         owners=owners,
         risks=risks,
         approvals=approvals,
         artifact_references=artifact_references,
         bom_scope=bom_scope,
-        handoff_requirements=handoff,
-        include_bom=include_bom,
-        include_handoff=include_handoff,
+        deliverables=deliverables,
+        logistics=logistics,
         expected_criteria_count=expected_criteria_count,
         grounded_source=sources,
     )
@@ -229,26 +228,24 @@ def extract_jep_brief(
 
 
 def render_jep_markdown(brief: JepBrief) -> str:
-    """Render the canonical nine sections, with optional sections before Approvals."""
+    """Render the canonical ten-section SE Joint Execution Plan."""
     scope_text = ", ".join(brief.scope)
     out_of_scope = _extract_out_of_scope(brief.grounded_source) or "[TBD]"
-    if brief.include_bom:
-        out_of_scope += " A separate BOM artifact is not created by this draft."
     refs = ""
     if brief.artifact_references:
         refs = " Same-engagement references: " + "; ".join(brief.artifact_references) + "."
     lines = [
         f"# Joint Execution Plan — {brief.customer}", "",
-        "## Executive Summary", "",
-        f"{brief.customer} and Oracle will execute a {brief.duration} POC in {brief.region} "
+        "## Overview", "",
+        f"{brief.customer} and Oracle will execute a POC lasting {brief.duration} in {brief.region} "
         "to validate the agreed scope and success criteria. Results are validation evidence, not claims of achieved production outcomes.", "",
-        "## Objectives", "",
+        "## High Level Scope and Approach", "",
+        f"In scope: {scope_text}.", "", f"Out of scope: {out_of_scope}", "",
+        "The joint team will assess readiness, build only the agreed POC scope, and validate the following outcomes:", "",
     ]
     lines.extend(f"- Validate: {criterion}" for criterion in brief.criteria)
-    lines += ["", "## Scope", "", f"In scope: {scope_text}.",
-              "", f"Out of scope: {out_of_scope}",
-              "", "## POC Architecture", "", f"{brief.architecture}.{refs}".replace("..", "."),
-              "", "## Phased Execution Plan", "",
+    lines += ["", "## Future State Architecture", "", f"{brief.architecture}.{refs}".replace("..", "."),
+              "", "## POC Plan", "",
               "| Phase | Window | Activities | Exit evidence |", "|---|---|---|---|"]
     phase_activity = {
         1: "Confirm the in-scope architecture, access, test method, owners, risks, and approvals.",
@@ -262,24 +259,29 @@ def render_jep_markdown(brief: JepBrief) -> str:
     }
     for phase in brief.phases:
         lines.append(f"| Phase {phase.number} {phase.name} | {phase.window} | {phase_activity[phase.number]} | {phase_exit[phase.number]} |")
-    lines += ["", "## Success Criteria", "", "| Criterion | Evidence requirement |", "|---|---|"]
-    for criterion in brief.criteria:
-        lines.append(f"| {criterion} | Record the measured result for the stated target and test condition. |")
-    lines += ["", "## Resource Plan", "", "| Organization | Owner | Commitment |", "|---|---|---|"]
-    for owner in brief.owners:
-        lines.append(f"| {owner.organization} | {owner.role} | {owner.commitment} |")
-    lines += ["", "## Risk Registry", "", "| Risk | Mitigation | Owner |", "|---|---|---|"]
+    lines += ["", "### Risks and decision controls", "", "| Risk | Mitigation | Owner |", "|---|---|---|"]
     owner_label = " / ".join(owner.role for owner in brief.owners)
     for risk in brief.risks:
         lines.append(f"| {risk} | Preserve evidence and apply the agreed fallback if the criterion is not met. | {owner_label} |")
-    if brief.include_bom:
-        lines += ["", "## Bill of Materials (BOM)", "", "The JEP references only this approved scope:", ""]
-        lines.extend(f"- {item}" for item in brief.bom_scope)
-        lines += ["", "This section does not create or authorize a separate BOM workbook."]
-    if brief.include_handoff:
-        lines += ["", "## Handoff Deliverables", ""]
-        lines.extend(f"- {item}" for item in brief.handoff_requirements)
-    lines += ["", "## Approvals", "", brief.approvals, ""]
+    lines += ["", f"Go/no-go approval: {brief.approvals}",
+              "", "## Proof of Concept Test Cases", "",
+              "| Test objective | Procedure | Evidence |", "|---|---|---|"]
+    for test_case in brief.test_cases:
+        lines.append(f"| {test_case.criterion} | {test_case.procedure} | {test_case.evidence} |")
+    lines += ["", "## Success Criteria", "", "| Criterion | Evidence requirement |", "|---|---|"]
+    for criterion in brief.criteria:
+        lines.append(f"| {criterion} | Record the measured result for the stated target and test condition. |")
+    lines += ["", "## Bill of Materials", "", "The JEP references only this approved POC scope:", ""]
+    lines.extend(f"- {item}" for item in brief.bom_scope)
+    lines += ["", "This section does not create or authorize a separate BOM workbook.",
+              "", "## POC Participants", "", "| Organization | Participant / Role | Commitment |", "|---|---|---|"]
+    for owner in brief.owners:
+        lines.append(f"| {owner.organization} | {owner.role} | {owner.commitment} |")
+    lines += ["", "## Deliverables", ""]
+    lines.extend(f"- {item}" for item in brief.deliverables)
+    lines += ["", "## Logistics", "", "| Topic | Grounded plan |", "|---|---|"]
+    lines.extend(f"| {topic} | {value} |" for topic, value in brief.logistics)
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -301,9 +303,16 @@ def validate_jep_markdown(
             core_positions.append(headings.index(section))
     if core_positions and core_positions != sorted(core_positions):
         findings.append("required sections are out of canonical order")
-    if headings and headings[-1] != "Approvals":
-        findings.append("Approvals must be the final section")
-    phase_section = _section(text, "Phased Execution Plan")
+    if headings and headings[-1] != "Logistics":
+        findings.append("Logistics must be the final section")
+    legacy_sections = {
+        "Executive Summary", "Objectives", "Scope", "POC Architecture",
+        "Phased Execution Plan", "Resource Plan", "Risk Registry", "Approvals",
+    }
+    unexpected = [heading for heading in headings if heading in legacy_sections]
+    if unexpected:
+        findings.append("legacy top-level sections are not canonical: " + ", ".join(unexpected))
+    phase_section = _section(text, "POC Plan")
     phase_rows = re.findall(r"^\|\s*Phase\s+(\d+)\s+([^|]+?)\s*\|", phase_section, re.MULTILINE)
     if phase_rows != [("1", "Assessment"), ("2", "Build"), ("3", "Validate")]:
         findings.append("execution plan must contain exactly Phase 1 Assessment, Phase 2 Build, and Phase 3 Validate")
@@ -318,9 +327,17 @@ def validate_jep_markdown(
         findings.append(
             f"success criteria require at least {required_criteria} grounded numeric targets or explicit TBD placeholders"
         )
-    risk_section = _section(text, "Risk Registry")
-    if len([line for line in risk_section.splitlines() if line.startswith("|")]) < 5:
-        findings.append("risk registry requires at least three entries")
+    if len(re.findall(r"^\|\s*(?!---|Risk\s*\|)[^|]+\|[^|]+\|[^|]+\|", phase_section, re.MULTILINE)) < 6:
+        findings.append("POC plan requires three phases and at least three risk entries")
+    if not all(token in phase_section.lower() for token in ("go/no-go", "fallback")):
+        findings.append("POC plan requires go/no-go approval and fallback framing")
+    test_case_section = _section(text, "Proof of Concept Test Cases")
+    test_case_rows = [
+        line for line in test_case_section.splitlines()
+        if line.startswith("|") and not re.match(r"^\|(?:---|\s*Test objective)", line)
+    ]
+    if len(test_case_rows) < required_criteria:
+        findings.append(f"proof of concept test cases require at least {required_criteria} criterion-linked entries")
     if brief is not None:
         grounded_numbers = {_norm_number(item) for item in _NUMBER_RE.findall(brief.grounded_source)}
         rendered_numbers = {_norm_number(item) for item in _NUMBER_RE.findall(text)}
@@ -403,7 +420,12 @@ def _normalize_window(value: str) -> str:
 
 
 def _extract_scope(text: str) -> tuple[str, ...]:
-    match = re.search(r"\bScope:\s*(.+?)(?:\.\s+(?:Use|Success criteria|Oracle|Include|Generate)|\n|$)", text, re.IGNORECASE)
+    match = re.search(
+        r"\b(?:In\s+)?Scope:\s*(.+?)"
+        r"(?:\.\s+(?:Out of scope|The architecture|Architecture|Use|Success criteria|Oracle|Include|Generate)|\n|$)",
+        text,
+        re.IGNORECASE,
+    )
     if not match:
         match = re.search(r"\bIn scope:\s*(.+?)(?:\.\s+Out of scope|\n|$)", text, re.IGNORECASE)
     if not match:
@@ -480,18 +502,30 @@ def _extract_architecture(text: str, context: dict[str, Any]) -> str:
     match = re.search(r"\b(?:validate\s+)?migration of\s+(.+?)\s+to\s+OCI\s+([a-z]{2,}-[a-z]+-\d+)", text, re.IGNORECASE)
     if match:
         return f"The POC architecture covers {match.group(1)} in OCI {match.group(2)}"
+    match = re.search(
+        r"\bThe architecture is\s+(.+?)(?:\.\s+(?:Success criteria|Owners?|Track|Approvals?)|\n|$)",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        return _clean(match.group(1))
     match = re.search(r"\bArchitecture:\s*(.+?)(?:\n|$)", text, re.IGNORECASE)
     return _clean(match.group(1)) if match else ""
 
 
 def _extract_criteria(text: str) -> tuple[str, ...]:
-    match = re.search(r"\bSuccess criteria:\s*(.+?)(?:\.\s+(?:Oracle|Include|Generate)|\n|$)", text, re.IGNORECASE)
+    match = re.search(
+        r"\bSuccess criteria(?:\s+and\s+evidence)?:\s*(.+?)"
+        r"(?:\.\s+(?:Oracle|Owners?|Track|Approvals?|Include|Generate)|\n|$)",
+        text,
+        re.IGNORECASE,
+    )
     if not match:
         return ()
     raw = match.group(1).strip().rstrip(".")
     parts = re.split(
         r",\s+(?=(?:p\d+|and\s+database|\d+(?:\.\d+)?%|restore|recover|process|"
-        r"sustain|keep|finish|latency|availability|response))|;",
+        r"and\s+(?:a\s+)?proposed|sustain|keep|finish|latency|availability|response))|;",
         raw,
         flags=re.IGNORECASE,
     )
@@ -536,7 +570,29 @@ def _extract_owners(text: str, customer: str) -> tuple[JepOwner, ...]:
             re.IGNORECASE,
         )
     if not match:
-        return ()
+        labeled = re.search(
+            r"\bOwners?(?:\s+and\s+commitments?)?:\s*(.+?)"
+            r"(?:\.\s+(?:Track|Approvals?|Include|Generate)|\n|$)",
+            text,
+            re.IGNORECASE,
+        )
+        if not labeled:
+            return ()
+        owners: list[JepOwner] = []
+        for item in re.split(r"\s*;\s*", labeled.group(1)):
+            role, _, responsibility = item.partition(" owns ")
+            if not responsibility:
+                for verb in (" runs ", " reviews ", " provides ", " leads "):
+                    if verb in item:
+                        role, responsibility = item.split(verb, 1)
+                        break
+            role = _clean(role)
+            if not role:
+                continue
+            organization = "Oracle" if role.lower().startswith("oracle ") else customer
+            commitment = _clean(responsibility) if responsibility else "[TBD]"
+            owners.append(JepOwner(organization, role, commitment or "[TBD]"))
+        return tuple(owners)
     customer_role = _clean(match.group(2))
     commitment = _clean(match.group(3))
     customer_org = customer if customer and customer.lower() in customer_role.lower() else customer_role
@@ -547,6 +603,16 @@ def _extract_owners(text: str, customer: str) -> tuple[JepOwner, ...]:
 
 
 def _extract_approvals(text: str, owners: tuple[JepOwner, ...]) -> str:
+    explicit = re.search(
+        r"\bApprovals?\s+(?:are|:)\s*(.+?)(?:\.\s+(?:Include|Generate)|\n|$)",
+        text,
+        re.IGNORECASE,
+    )
+    if explicit and re.search(r"go/no-go", explicit.group(1), re.IGNORECASE):
+        return (
+            f"{_clean(explicit.group(1))}. Go requires every stated success criterion to be met; "
+            "no-go applies the agreed fallback without claiming success."
+        )
     has_decision = re.search(r"go/no-go", text, re.IGNORECASE)
     has_fallback = re.search(r"\bfallback\b|\bif\s+no-go\b", text, re.IGNORECASE)
     if not owners or not has_decision or not has_fallback:
@@ -561,6 +627,11 @@ def _extract_risks(text: str, criteria: tuple[str, ...]) -> tuple[str, ...]:
         risks = _split_items(explicit.group(1))
         if len(risks) >= 3:
             return risks
+    tracked = re.search(r"\bTrack\s+(.+?)\s+risks?\b", text, re.IGNORECASE)
+    if tracked:
+        risks = _split_items(tracked.group(1))
+        if len(risks) >= 3:
+            return tuple(f"{risk} risk" for risk in risks)
     if len(criteria) >= 2 and re.search(r"include at least three risks", text, re.IGNORECASE):
         risks = [f"The measured result may not meet: {criterion}" for criterion in criteria]
         risks.append(
@@ -606,12 +677,72 @@ def _extract_bom_scope(context: dict[str, Any]) -> tuple[str, ...]:
     return tuple(facts)
 
 
-def _extract_handoff(text: str, criteria: tuple[str, ...]) -> tuple[str, ...]:
-    if not re.search(r"handoff deliverables?", text, re.IGNORECASE):
-        return ()
-    items = ["Approved scope and POC architecture", "Signed go/no-go decision and fallback record"]
-    items.extend(f"Evidence for: {criterion}" for criterion in criteria)
-    return tuple(items)
+def _extract_test_cases(text: str, criteria: tuple[str, ...]) -> tuple[JepTestCase, ...]:
+    """Derive executable tests only from grounded criteria; leave methods TBD when unknown."""
+    cases: list[JepTestCase] = []
+    for criterion in criteria:
+        lowered = criterion.lower()
+        if criterion == "[TBD]":
+            procedure = "[TBD]"
+            evidence = "[TBD]"
+        elif any(token in lowered for token in ("latency", "response time", "rps", "qps", "tps", "requests per")):
+            procedure = "Run the agreed workload test under the approved POC conditions."
+            evidence = "Capture workload level and measured latency or throughput for the stated target."
+        elif "availability" in lowered:
+            procedure = "Observe the in-scope service during the agreed validation window."
+            evidence = "Record the observation window, interruptions, and calculated availability."
+        elif any(token in lowered for token in ("recover", "recovery", "restore", "rto")):
+            procedure = "Execute the agreed recovery or restore scenario."
+            evidence = "Record start time, restored-service confirmation, and elapsed recovery time."
+        elif any(token in lowered for token in ("cost", "saving", "reduction")):
+            procedure = "Compare the grounded current-state and OCI cost inputs for the agreed scope."
+            evidence = "Retain source inputs, assumptions, calculations, and the resulting comparison."
+        else:
+            procedure = "[TBD]"
+            evidence = "Record the measured result for the stated criterion."
+        cases.append(JepTestCase(criterion, procedure, evidence))
+    return tuple(cases)
+
+
+def _extract_deliverables(text: str, criteria: tuple[str, ...]) -> tuple[str, ...]:
+    explicit = re.search(
+        r"\b(?:handoff\s+)?Deliverables?:\s*(.+?)(?:\.\s+(?:Logistics|Generate)|\n|$)",
+        text,
+        re.IGNORECASE,
+    )
+    items = list(_split_items(explicit.group(1))) if explicit else []
+    items.extend(f"Validation evidence for: {criterion}" for criterion in criteria)
+    items.append("Joint go/no-go decision and fallback record")
+    return tuple(dict.fromkeys(items))
+
+
+def _extract_logistics(
+    text: str,
+    duration: str,
+    phases: tuple[JepPhase, JepPhase, JepPhase],
+) -> tuple[tuple[str, str], ...]:
+    def labeled(label: str) -> str:
+        match = re.search(
+            rf"\b{label}\s*:\s*(.+?)(?:\.\s+(?:Location|Access|Cadence|Communication|"
+            r"Data transfer|Data cleansing|Timing|Generate)|\n|$)",
+            text,
+            re.IGNORECASE,
+        )
+        return _clean(match.group(1)) if match else "[TBD]"
+
+    timing = duration
+    if timing == "[TBD]" and any(phase.window != "[TBD]" for phase in phases):
+        timing = "; ".join(
+            f"Phase {phase.number} {phase.name}: {phase.window}" for phase in phases
+        )
+    return (
+        ("Location", labeled("Location")),
+        ("Access", labeled("Access")),
+        ("Communication cadence", labeled("(?:Cadence|Communication)")),
+        ("Data transfer", labeled("Data transfer")),
+        ("Data cleansing", labeled("Data cleansing")),
+        ("Timing", timing),
+    )
 
 
 def _split_items(value: str) -> tuple[str, ...]:

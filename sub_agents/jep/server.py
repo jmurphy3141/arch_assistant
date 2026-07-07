@@ -121,11 +121,12 @@ def _build_prompt(req: A2ARequest) -> str:
         )
     parts.append(
         "JEP Writer review gate: return exactly the C3E JEP document in Markdown with "
-        "the 9 required sections, exactly Phase 1 Assessment / Phase 2 Build / "
+        "the 10 canonical SE sections, exactly Phase 1 Assessment / Phase 2 Build / "
         f"Phase 3 Validate, exactly {expected_criteria} grounded numeric SMART success "
         "criteria (three by default; a lower count is allowed only when supplied from the "
         "authoritative selected POC), at least 3 "
-        "customer-specific risks, and a Phase 3 go/no-go sign-off and fallback."
+        "customer-specific risks, criterion-linked test cases, participants, deliverables, "
+        "logistics, and a Phase 3 go/no-go sign-off and fallback."
     )
     return "\n\n".join(str(part).strip() for part in parts if str(part).strip())
 

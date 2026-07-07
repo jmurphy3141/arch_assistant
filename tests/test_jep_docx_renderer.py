@@ -85,26 +85,27 @@ def test_jep_agent_prompt_uses_c3e_section_contract() -> None:
     )
 
     expected_sections = [
-        "## Executive Summary",
-        "## Objectives",
-        "## Scope",
-        "## POC Architecture",
-        "## Phased Execution Plan",
+        "## Overview",
+        "## High Level Scope and Approach",
+        "## Future State Architecture",
+        "## POC Plan",
+        "## Proof of Concept Test Cases",
         "## Success Criteria",
-        "## Resource Plan",
-        "## Risk Registry",
-        "## Approvals",
+        "## Bill of Materials",
+        "## POC Participants",
+        "## Deliverables",
+        "## Logistics",
     ]
     for section in expected_sections:
         assert section in prompt
     assert [prompt.index(section) for section in expected_sections] == sorted(
         prompt.index(section) for section in expected_sections
     )
-    assert "## High Level Scope and Approach" not in prompt
-    assert "## POC Participants" not in prompt
-    assert "## Logistics" not in prompt
+    assert "## Executive Summary" not in prompt
+    assert "## Resource Plan" not in prompt
+    assert "## Approvals" not in prompt
     assert "Oracle Corporation | 2300 Oracle Way" not in prompt
-    assert prompt.rstrip().endswith("| [TBD] | ACME | Customer Technical Lead |  | [TBD] |")
+    assert prompt.rstrip().endswith("| Timing | 2 weeks |")
 
 
 def test_jep_sub_agent_prompt_includes_prior_version_review_gate() -> None:

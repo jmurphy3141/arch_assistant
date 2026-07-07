@@ -27,10 +27,12 @@ questions and no artifact.
 
 ## Document Contract
 
-The nine core sections are Executive Summary, Objectives, Scope, POC
-Architecture, Phased Execution Plan, Success Criteria, Resource Plan, Risk
-Registry, and Approvals. Phase names are exactly Phase 1 Assessment, Phase 2
-Build, and Phase 3 Validate. Optional BOM and Handoff Deliverables sections
-appear only when requested. Approvals is always the final section.
+The ten core sections are Overview, High Level Scope and Approach, Future State
+Architecture, POC Plan, Proof of Concept Test Cases, Success Criteria, Bill of
+Materials, POC Participants, Deliverables, and Logistics. Phase names are
+exactly Phase 1 Assessment, Phase 2 Build, and Phase 3 Validate. Risks,
+go/no-go approval, and fallback controls remain inside the POC Plan. The Bill
+of Materials section references only approved scope and never creates or
+authorizes a separate workbook. Logistics is always the final section.
 
 The service returns Markdown only on success. Validation failure is fail-closed.

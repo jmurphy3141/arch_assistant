@@ -114,24 +114,35 @@ OCI improves resilience, operational control, storage durability, and migration 
 
 DETERMINISTIC_JEP = """# Joint Execution Plan - Apex Retail OCI Migration
 
-## Executive Summary
+## Overview
 Apex Retail will validate its OCI 3-tier application migration in a 14-day POC.
 
-## Objectives
-Validate the landing zone, application path, security controls, and operational handoff.
-
-## Scope
+## High Level Scope and Approach
 The POC includes WAF, load balancing, VCN networking, two web servers, a private database tier, Object Storage, and Block Volume. Production cutover is out of scope.
 
-## POC Architecture
+## Future State Architecture
 Traffic passes through OCI WAF and a public load balancer to two web servers in private subnets. The web tier reaches the private database tier and OCI storage services.
 
-## Phased Execution Plan
+## POC Plan
 | Phase | Days | Activities | Exit Gate |
 |-------|------|------------|-----------|
 | Phase 1 - Assessment | Days 1-3 | Confirm tenancy access, quotas, connectivity, and architecture | Access and architecture sign-off complete |
 | Phase 2 - Build | Days 4-9 | Deploy networking, WAF, load balancer, web tier, database tier, and storage | Workload ready for validation |
 | Phase 3 - Validate | Days 10-14 | Measure criteria, record sign-off, run go/no-go review, and use fallback teardown if criteria fail | Customer approves the go/no-go decision |
+
+### Risks and decision controls
+| Risk | Probability | Impact | Mitigation | Owner |
+|------|-------------|--------|------------|-------|
+| Tenancy quota delays compute provisioning | Medium | High | Confirm quota in Phase 1 | Oracle SA |
+| Firewall rules block application traffic | Medium | High | Validate paths before Phase 2 | Apex Retail Lead |
+| Database restore exceeds target | Low | High | Test backup and fallback in Phase 3 | Database Owner |
+
+## Proof of Concept Test Cases
+| Test Objective | Procedure | Evidence |
+|----------------|-----------|----------|
+| Web availability | Observe the validation window | Availability record |
+| Application response time | Run the agreed workload test | Latency and throughput record |
+| Recovery validation | Run the database restore | Elapsed restore-time record |
 
 ## Success Criteria
 | Criterion | Target |
@@ -140,21 +151,30 @@ Traffic passes through OCI WAF and a public load balancer to two web servers in 
 | Application response time | < 500 ms at 100 requests/second |
 | Recovery validation | Restore the database within 60 minutes |
 
-## Resource Plan
+## Bill of Materials
+- WAF and load balancing
+- Two web servers and a private database tier
+- Object Storage and Block Volume
+
+This section does not create or authorize a separate BOM workbook.
+
+## POC Participants
 | Organization | Role | Weekly Hours |
 |--------------|------|--------------|
 | Oracle | Solutions Architect | 8 hours |
 | Apex Retail | Technical Lead | 8 hours |
 
-## Risk Registry
-| Risk | Probability | Impact | Mitigation | Owner |
-|------|-------------|--------|------------|-------|
-| Tenancy quota delays compute provisioning | Medium | High | Confirm quota in Phase 1 | Oracle SA |
-| Firewall rules block application traffic | Medium | High | Validate paths before Phase 2 | Apex Retail Lead |
-| Database restore exceeds target | Low | High | Test backup and fallback in Phase 3 | Database Owner |
+## Deliverables
+- Validation evidence for each success criterion
+- Joint go/no-go and fallback record
 
-## Approvals
-Oracle Solutions Architect and the Apex Retail Technical Lead sign the Phase 3 go/no-go record.
+## Logistics
+| Topic | Grounded Plan |
+|-------|---------------|
+| Access | Confirm during Phase 1 |
+| Communication cadence | [TBD] |
+| Data transfer | [TBD] |
+| Timing | 14 days |
 """
 
 DETERMINISTIC_WAF = """# OCI Well-Architected Review: Apex Retail
@@ -295,15 +315,16 @@ def assert_markdown(case_id: str, content: str) -> None:
             assert marker in lowered
     elif case_id == "jep":
         for marker in (
-            "executive summary",
-            "objectives",
-            "scope",
-            "poc architecture",
-            "phased execution plan",
+            "overview",
+            "high level scope and approach",
+            "future state architecture",
+            "poc plan",
+            "proof of concept test cases",
             "success criteria",
-            "resource plan",
-            "risk registry",
-            "approvals",
+            "bill of materials",
+            "poc participants",
+            "deliverables",
+            "logistics",
         ):
             assert marker in lowered
         assert "14-day" in lowered or "14 day" in lowered or "timeline" in lowered or "duration" in lowered

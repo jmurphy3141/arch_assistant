@@ -97,30 +97,43 @@ def stub_save_jep_docx(monkeypatch, key="docs/jep_v1.docx"):
 def valid_jep_markdown() -> str:
     return """# Joint Execution Plan - ACME
 
-## Executive Summary
+## Overview
 ACME will validate an OCI POC for VMware log analytics over 6 weeks.
 
-## Objectives
+## High Level Scope and Approach
 1. Validate OCI ingestion for 10 GB/day of telemetry.
 2. Confirm query latency targets for 50 users.
 3. Validate operating handoff and support readiness.
 
-## Scope
 ### In Scope
 - OCI Logging Analytics, Object Storage, Functions, Vault, and Vector Search.
 
 ### Out of Scope
 - Production cutover and migration of non-telemetry workloads.
 
-## POC Architecture
+## Future State Architecture
 The POC uses OCI Logging Analytics, Object Storage, Vector Search, OCI Functions, Vault, and private networking.
 
-## Phased Execution Plan
+## POC Plan
 | Phase | Weeks | Activities | Exit Gate |
 |-------|-------|------------|-----------|
 | Phase 1 - Assessment | Weeks 1-2 | Confirm tenancy quota, firewall paths, and baseline telemetry flow | Access and quota confirmed |
 | Phase 2 - Build | Weeks 3-4 | Provision OCI services and deploy the log ingestion path | Workload deployed and ready for measurement |
 | Phase 3 - Validate | Weeks 5-6 | Measure success criteria, run go/no-go review, capture sign-off, and define fallback if criteria fail | Customer signs go/no-go decision |
+
+### Risks and decision controls
+| Risk | Probability | Impact | Mitigation | Owner |
+|------|-------------|--------|------------|-------|
+| ACME firewall blocks OCI log ingestion | H | H | Test connectivity in Week 1 | ACME Technical Lead |
+| OCI tenancy OCPU quota delays required functions | M | H | Confirm quota before Phase 2 | Oracle SA |
+| VMware telemetry volume exceeds POC window | M | M | Use a representative 10 GB/day subset | ACME Engineer |
+
+## Proof of Concept Test Cases
+| Test Objective | Procedure | Evidence |
+|----------------|-----------|----------|
+| Log ingestion sustained at 10 GB/day | Run ingestion test | Capture throughput |
+| Response latency under 5 seconds | Run analyst query test | Capture latency |
+| Coverage for 50 users | Run acceptance test | Capture results |
 
 ## Success Criteria
 | # | Criterion | Target | Validation Week |
@@ -129,24 +142,28 @@ The POC uses OCI Logging Analytics, Object Storage, Vector Search, OCI Functions
 | 2 | Response latency for analyst queries | < 5 seconds | Week 6 |
 | 3 | User acceptance test coverage | >= 50 users | Week 6 |
 
-## Resource Plan
+## Bill of Materials
+- OCI Logging Analytics
+- Object Storage
+
+This section does not create or authorize a separate BOM workbook.
+
+## POC Participants
 | Organization | Name | Role | Weekly Hours |
 |--------------|------|------|--------------|
 | Oracle | TBD | Solutions Architect | 4 |
 | ACME | TBD | Customer Technical Lead | 4 |
 
-## Risk Registry
-| Risk | Probability | Impact | Mitigation | Owner |
-|------|-------------|--------|------------|-------|
-| ACME firewall blocks OCI log ingestion | H | H | Test connectivity in Week 1 | ACME Technical Lead |
-| OCI tenancy OCPU quota delays required functions | M | H | Confirm quota before Phase 2 | Oracle SA |
-| VMware telemetry volume exceeds POC window | M | M | Use a representative 10 GB/day subset | ACME Engineer |
+## Deliverables
+- Validation evidence
+- Joint go/no-go and fallback record
 
-## Approvals
-| Approver | Organization | Role | Signature | Date |
-|----------|--------------|------|-----------|------|
-| TBD | Oracle | Oracle Solutions Architect |  | TBD |
-| TBD | ACME | Customer Technical Lead |  | TBD |
+## Logistics
+| Topic | Grounded Plan |
+|-------|---------------|
+| Location | TBD |
+| Access | TBD |
+| Timing | 6 weeks |
 """
 
 
@@ -204,24 +221,21 @@ async def test_jep_review_accepts_bold_required_headings():
 
 async def test_jep_review_accepts_numbered_risks_and_approval_decision_gate():
     content = valid_jep_markdown()
-    risk_start = content.index("## Risk Registry")
-    approvals_start = content.index("## Approvals")
+    risk_start = content.index("### Risks and decision controls")
+    test_cases_start = content.index("## Proof of Concept Test Cases")
     content = (
         content[:risk_start]
-        + """## Risk Registry
+        + """### Risks and decision controls
 1. **Firewall risk:** High impact. Mitigation: test connectivity. Owner: Customer lead.
 2. **Quota risk:** Medium probability, high impact. Mitigation: request quota. Owner: Oracle SA.
 3. **Data volume risk:** Medium impact. Mitigation: use a subset. Owner: Customer engineer.
 
 """
-        + content[approvals_start:]
+        + content[test_cases_start:]
     )
     content = content.replace(
         "run go/no-go review, capture sign-off, and define fallback if criteria fail",
-        "measure the success criteria",
-    ).replace(
-        "## Approvals\n",
-        "## Approvals\nRun the go/no-go review here, capture sign-off, and use the fallback if criteria fail.\n\n",
+        "measure the success criteria and run the go/no-go sign-off with fallback",
     )
 
     assert specialists_module._jep_writer_review_findings(content) == []

@@ -90,9 +90,9 @@ def test_recursive_prompt_static_contracts_cover_core_paths() -> None:
     rows.append(_row(
         "jep", "jep", "deterministic_composer", "required_sections",
         jep_composer.CORE_SECTIONS == (
-            "Executive Summary", "Objectives", "Scope", "POC Architecture",
-            "Phased Execution Plan", "Success Criteria", "Resource Plan",
-            "Risk Registry", "Approvals",
+            "Overview", "High Level Scope and Approach", "Future State Architecture",
+            "POC Plan", "Proof of Concept Test Cases", "Success Criteria",
+            "Bill of Materials", "POC Participants", "Deliverables", "Logistics",
         ),
         "JEP canonical section contract is enforced",
     ))

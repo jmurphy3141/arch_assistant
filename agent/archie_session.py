@@ -3452,7 +3452,7 @@ def _clean_jep_poc_heading(heading: str) -> str:
 
 def _first_jep_summary_sentence(markdown: str) -> str:
     section = re.search(
-        r"(?ims)^##+\s+(?:\d+\.\s*)?Executive Summary\s*$"
+        r"(?ims)^##+\s+(?:\d+\.\s*)?Overview\s*$"
         r"(?P<body>.*?)(?=^##+\s+|\Z)",
         str(markdown or ""),
     )

@@ -148,11 +148,11 @@ If the notes clearly answer a question, set known_value to the extracted value.
 
 JEP_SYSTEM_MESSAGE = (
     "You are an Oracle Cloud solutions architect writing a Joint Execution Plan (JEP) for a POC. "
-    "A JEP defines POC goals, success criteria, scope, architecture, execution phases, resource plan, risks, and approvals. "
+    "A JEP defines POC goals, success criteria, scope, architecture, execution phases, test cases, participants, deliverables, and logistics. "
     "Write in precise, professional language suitable for an Oracle–customer engagement document. "
     "Use exactly the C3E JEP section order requested in the prompt. "
     "Be specific about OCI services, shapes, network topology, measurable gates, owners, and dates. "
-    "Use Markdown tables for execution phases, success criteria, resource plan, and risk registry. "
+    "Use Markdown tables for execution phases, test cases, success criteria, participants, risks, and logistics. "
     "Fill in values from the meeting notes. Use [TBD] where information is not available. "
     "Operating contract: make scope, milestones, ownership, risks, and success criteria explicit and actionable. "
     "Output ONLY the document content in Markdown format. No meta-commentary, no preamble."
@@ -179,35 +179,34 @@ Bill of Materials (pre-generated from notes):
 Diagram reference:
 {diagram_ref}
 
-Generate a complete C3E Joint Engagement Plan in Markdown. Use exactly these nine sections, in this order.
-Do not add legacy top-level sections such as Overview, High Level Scope and Approach, Bill of Materials,
-POC Participants, Deliverables, or Logistics. Incorporate BOM details inside Scope, POC Architecture,
-Phased Execution Plan, and Resource Plan as appropriate.
+Generate a complete C3E Joint Engagement Plan in Markdown. Use exactly the ten canonical SE sections below, in order.
 
 Document quality requirements:
-- All nine sections below must be present and substantive.
+- All ten sections below must be present and substantive.
 - Success criteria must be SMART, with number, unit, and validation week.
-- Scope must include named in-scope services/workloads and named out-of-scope exclusions.
-- POC Architecture must reference the diagram key when one exists.
-- Resource Plan must include Oracle SA and Customer Technical Lead roles.
-- Risk Registry must include the three standard risks below unless explicitly inapplicable.
-- The document must end with the Approvals section.
+- High Level Scope and Approach must include named in-scope services/workloads and named out-of-scope exclusions.
+- Future State Architecture must reference the diagram key when one exists.
+- POC Plan must contain exactly three phases, at least three grounded risks, and the go/no-go/fallback decision.
+- Test cases must map procedures and evidence to the success criteria.
+- Bill of Materials references only supplied scope and never authorizes a separate workbook.
+- POC Participants must include grounded Oracle and customer roles; use [TBD] when unknown.
+- The document must end with Logistics.
 
 # Joint Execution Plan — {customer_name}
 *Confidential — Oracle Restricted*
 
 ---
 
-## Executive Summary
+## Overview
 [One paragraph explaining why this POC is being run, what it proves, and what success looks like.
 Reference the primary workload, target OCI environment, expected duration ({duration}), and business outcome.]
 
-## Objectives
+## High Level Scope and Approach
 1. [Objective drawn from notes and Q&A; must be testable]
 2. [Objective drawn from notes and Q&A; must be testable]
 3. [Objective drawn from notes and Q&A; must be testable]
 
-## Scope
+### Scope Boundaries
 
 ### In Scope
 - [Specific OCI services, workloads, data sets, integrations, and validation activities]
@@ -217,14 +216,14 @@ Reference the primary workload, target OCI environment, expected duration ({dura
 - [Specific named exclusions; do not use generic "other items as agreed"]
 - [Explicitly exclude production cutover unless notes say otherwise]
 
-## POC Architecture
+## Future State Architecture
 {diagram_ref}
 
 [Describe the target OCI architecture for the POC. Include VCN/subnets/connectivity/security,
 compute or platform services, storage/database services, observability, Vault/KMS, and any external APIs.
 Reference specific OCI shapes/services from the notes and BOM. Use [TBD] only for unknowns.]
 
-## Phased Execution Plan
+## POC Plan
 
 | Phase | Weeks | Owner | Activities | Deliverables | Exit Gate |
 |-------|-------|-------|------------|--------------|-----------|
@@ -232,9 +231,16 @@ Reference specific OCI shapes/services from the notes and BOM. Use [TBD] only fo
 | Phase 2 - Build | Weeks 3-N | Oracle Cloud Engineer + Customer Engineer | OCI provisioning, workload deployment or migration, integration testing | Working POC environment | Workload deployed and ready for measurement |
 | Phase 3 - Validate | Final 2 weeks | Oracle SA + Customer Technical Lead | Load/performance testing, success criteria measurement, results documentation, go/no-go review, fallback decision if criteria are missed | POC results report, pass/fail recommendation, sign-off record | Customer validates pass/fail criteria and signs go/no-go decision |
 
-Use OCI provisioning references: full OCI foundation via Terraform is 1-2 hours, ADB Dedicated is 5-6 hours,
-FastConnect physical circuits are 2-4 weeks and must be started before Phase 1 when required, and new tenancy
-quota activation can take 1-3 business days.
+### Risks and decision controls
+
+Include at least three risks grounded in the notes, each with mitigation and owner.
+State the Phase 3 go/no-go approvers and fallback. Use [TBD] where those facts are unknown.
+
+## Proof of Concept Test Cases
+
+| Test Objective | Procedure | Evidence |
+|----------------|-----------|----------|
+| [Grounded success criterion] | [Grounded method or TBD] | [Evidence to retain] |
 
 ## Success Criteria
 
@@ -244,7 +250,13 @@ quota activation can take 1-3 business days.
 | 2 | [SMART criterion with number and unit] | [Tool/process] | [Threshold] | [Week] |
 | 3 | [SMART criterion with number and unit] | [Tool/process] | [Threshold] | [Week] |
 
-## Resource Plan
+## Bill of Materials
+
+{bom_md}
+
+This section does not create or authorize a separate BOM workbook.
+
+## POC Participants
 
 | Organization | Name | Role | Weekly Hours | Responsibilities |
 |--------------|------|------|--------------|------------------|
@@ -253,22 +265,22 @@ quota activation can take 1-3 business days.
 | {customer_name} | [TBD] | Customer Technical Lead | [TBD] | Access, validation, sign-off coordination |
 | {customer_name} | [TBD] | Customer Engineer/Operator | [TBD] | Workload deployment, testing, operational review |
 
-## Risk Registry
+## Deliverables
 
-| Risk | Probability | Impact | Mitigation | Owner |
-|------|-------------|--------|------------|-------|
-| Customer firewall restrictions block OCI connectivity | H | H | Test connectivity in Phase 1 Week 1 and pre-stage firewall rules | Customer Technical Lead |
-| Tenancy OCPU quota limits block required shapes | M | H | Submit quota request before Phase 1 and confirm before Phase 2 | Oracle SA |
-| Data volumes exceed POC window | M | M | Agree on representative subset in Phase 1 and document sampling method | Customer Engineer |
+- [Evidence for each grounded success criterion]
+- [Joint go/no-go and fallback record]
+- [Other grounded handoff deliverables or TBD]
 
-Add additional project-specific risks from the notes. Keep probability and impact to H/M/L.
+## Logistics
 
-## Approvals
-
-| Approver | Organization | Role | Signature | Date |
-|----------|--------------|------|-----------|------|
-| [TBD] | Oracle | Oracle Solutions Architect |  | [TBD] |
-| [TBD] | {customer_name} | Customer Technical Lead |  | [TBD] |
+| Topic | Grounded Plan |
+|-------|---------------|
+| Location | [TBD] |
+| Access | [TBD] |
+| Communication cadence | [TBD] |
+| Data transfer | [TBD] |
+| Data cleansing | [TBD] |
+| Timing | {duration} |
 """
 
 

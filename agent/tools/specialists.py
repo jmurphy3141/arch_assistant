@@ -36,20 +36,18 @@ REQUIRED_WAF_PILLARS = frozenset(
     }
 )
 _JEP_REQUIRED_SECTIONS = (
-    "Executive Summary",
-    "Objectives",
-    "Scope",
-    "POC Architecture",
-    "Phased Execution Plan",
+    "Overview",
+    "High Level Scope and Approach",
+    "Future State Architecture",
+    "POC Plan",
+    "Proof of Concept Test Cases",
     "Success Criteria",
-    "Resource Plan",
-    "Risk Registry",
-    "Approvals",
+    "Bill of Materials",
+    "POC Participants",
+    "Deliverables",
+    "Logistics",
 )
-_JEP_SECTION_HEADINGS = frozenset(
-    section.casefold()
-    for section in (*_JEP_REQUIRED_SECTIONS, "Handoff Deliverables")
-)
+_JEP_SECTION_HEADINGS = frozenset(section.casefold() for section in _JEP_REQUIRED_SECTIONS)
 _JEP_NUMERIC_THRESHOLD_RE = re.compile(
     r"(?:[<>]=?\s*)?(?:"
     r"[$€£]\s*\d+(?:[.,]\d+)?|"
@@ -1713,7 +1711,7 @@ def _jep_writer_review_findings(
     if missing_sections:
         findings.append("missing required sections: " + ", ".join(missing_sections))
 
-    phase_section = _markdown_section(text, "Phased Execution Plan")
+    phase_section = _markdown_section(text, "POC Plan")
     if not phase_section:
         findings.append("missing phased execution plan details")
     else:
@@ -1738,12 +1736,17 @@ def _jep_writer_review_findings(
             f"fewer than {expected_criteria_count} SMART success criteria with numeric thresholds"
         )
 
-    risk_section = _markdown_section(text, "Risk Registry")
+    risk_section = re.split(
+        r"^###\s+Risks and decision controls\s*$",
+        phase_section,
+        maxsplit=1,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )[-1]
     if _count_risk_entries(risk_section) < 3:
-        findings.append("risk registry has fewer than 3 risks")
+        findings.append("POC plan has fewer than 3 risks")
 
     phase_three_text = phase_section.lower()
-    decision_text = f"{phase_three_text}\n{_markdown_section(text, 'Approvals').lower()}"
+    decision_text = phase_three_text
     if phase_section and not (
         ("go/no-go" in decision_text or "go no-go" in decision_text)
         and ("fallback" in decision_text or "criteria" in decision_text)

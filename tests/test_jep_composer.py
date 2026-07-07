@@ -121,14 +121,18 @@ def test_customer_and_workload_produce_draft_with_tbd_logistics() -> None:
     assert "20 days" not in result.markdown
 
 
-def test_canonical_order_optional_sections_and_approvals_last() -> None:
+def test_canonical_ten_section_order_and_grounded_execution_content() -> None:
     result = compose_jep(QUALIFIED)
     assert result.status == "ok"
     headings = [line[3:] for line in result.markdown.splitlines() if line.startswith("## ")]
-    assert [heading for heading in headings if heading in CORE_SECTIONS] == list(CORE_SECTIONS)
-    assert headings[-1] == "Approvals"
-    assert headings.index("Bill of Materials (BOM)") < headings.index("Handoff Deliverables")
-    assert headings.index("Handoff Deliverables") < headings.index("Approvals")
+    assert headings == list(CORE_SECTIONS)
+    assert headings[-1] == "Logistics"
+    assert "## Proof of Concept Test Cases" in result.markdown
+    assert "## Bill of Materials" in result.markdown
+    assert "## POC Participants" in result.markdown
+    assert "## Deliverables" in result.markdown
+    assert "This section does not create or authorize a separate BOM workbook." in result.markdown
+    assert "Go/no-go approval:" in result.markdown
     assert validate_jep_markdown(result.markdown, result.brief) == []
 
 

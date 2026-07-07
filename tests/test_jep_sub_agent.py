@@ -47,7 +47,9 @@ async def test_explicit_jep_uses_grounded_path_without_inference(monkeypatch):
 
     assert response.status == "ok"
     assert response.trace["generation_mode"] == "deterministic_grounded_brief"
-    assert "## Handoff Deliverables" in response.result
+    assert "## Deliverables" in response.result
+    assert "## Logistics" in response.result
+    assert "This section does not create or authorize a separate BOM workbook." in response.result
     assert "Phase 1 Assessment" in response.result
     assert "Phase 2 Build" in response.result
     assert "Phase 3 Validate" in response.result

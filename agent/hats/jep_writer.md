@@ -122,9 +122,9 @@ Three risks appear in nearly every enterprise POC and nearly no JEPs: customer f
 
 ## Quality Bar
 
-1. Document has all required sections: Executive Summary, Objectives, Scope
-   (In / Out of Scope), POC Architecture, Phased Execution Plan, Success
-   Criteria, Resource Plan, Risk Registry, and Approvals.
+1. Document has all required sections: Overview, High Level Scope and Approach,
+   Future State Architecture, POC Plan, Proof of Concept Test Cases, Success
+   Criteria, Bill of Materials, POC Participants, Deliverables, and Logistics.
 2. At least 3 measurable success criteria in SMART format.
 3. Timeline is specific: named milestones with week numbers.
 4. POC architecture references specific OCI shapes and services.
@@ -159,7 +159,7 @@ When kickoff Q&A is incomplete:
 
 ## Critic Evaluation Guidance
 
-- Are all 9 required sections present and non-empty?
+- Are all 10 required sections present and non-empty?
 - Are success criteria SMART (measurable, time-bounded, specific)?
 - Does the POC architecture reference specific OCI services and shapes?
 - Is the risk registry present with at least 3 entries?
