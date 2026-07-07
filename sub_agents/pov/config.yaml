@@ -1,6 +1,6 @@
 name: pov
 port: 8084
 llm:
-  model_id: ""
+  model_id: "ocid1.generativeaimodel.oc1.us-chicago-1.amaaaaaask7dceya4fxp5zjj27q24rjxk46l43die7u6nclgwfbemklsdvoa"
   max_tokens: 4000
   temperature: 0.2

@@ -1,8 +1,10 @@
+from pathlib import Path
+
 import pytest
 
 from agent.tools.specialists import _document_review_findings
 from sub_agents.models import A2ARequest
-from sub_agents.pov.server import handle
+from sub_agents.pov.server import _build_prompt, card, handle
 
 
 pytestmark = pytest.mark.anyio
@@ -42,3 +44,30 @@ async def test_explicit_pov_uses_grounded_path_without_inference(monkeypatch):
     assert "requires approval" in response.result
     assert response.result.lower().count("proposed quote") == 3
     assert _document_review_findings("pov", response.result, task) == []
+
+
+async def test_pov_prompt_uses_canonical_prfaq_sections_and_reasoning_model():
+    prompt = (Path(__file__).parents[1] / "sub_agents" / "pov" / "system_prompt.md").read_text(
+        encoding="utf-8"
+    )
+    sections = [
+        "## Summary",
+        "## Problem",
+        "## Solution",
+        "## Oracle Quote",
+        "## Customer Quote",
+        "## External (Customer) Questions & Answers",
+        "## Internal (Oracle) Questions & Answers",
+    ]
+
+    assert all(section in prompt for section in sections)
+    assert [prompt.index(section) for section in sections] == sorted(prompt.index(section) for section in sections)
+    assert "never invent a customer, number, or fact" in prompt
+    assert "never invent a name" in prompt
+    assert card.llm_model_id == (
+        "ocid1.generativeaimodel.oc1.us-chicago-1."
+        "amaaaaaask7dceya4fxp5zjj27q24rjxk46l43die7u6nclgwfbemklsdvoa"
+    )
+    built = _build_prompt(A2ARequest(task="Write the POV", engagement_context={"customer_name": "ACME"}))
+    assert "MANDATORY OUTPUT CONTRACT" in built
+    assert built.index("## Summary") < built.index("Write the POV")

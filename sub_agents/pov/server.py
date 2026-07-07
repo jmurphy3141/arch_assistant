@@ -80,7 +80,8 @@ _main_config = _load_yaml(_MAIN_CONFIG)
 _agent_llm = _agent_config.get("llm") or {}
 _main_inference = _main_config.get("inference") or {}
 _model_id = str(_first_present(_agent_llm.get("model_id"), _main_inference.get("model_id"), default=""))
-_system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8") + _format_case_studies(_CASE_STUDIES)
+_base_system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8")
+_system_message = _base_system_message + _format_case_studies(_CASE_STUDIES)
 
 
 card = AgentCard(
@@ -97,7 +98,11 @@ card = AgentCard(
 
 def _build_prompt(req: A2ARequest) -> str:
     context = normalize_engagement_context(req.engagement_context)
-    parts = [grounding_prompt(context), req.task]
+    # Some OCI-hosted reasoning models prioritize the user message over the
+    # GenericChatRequest.system field for exact output formatting. Keep one
+    # contract source and repeat it in-band so the canonical PRFAQ headings are
+    # enforced without post-processing model output.
+    parts = [_base_system_message, grounding_prompt(context), req.task]
     prior = context.get("prior_version")
     if prior:
         parts.append(
