@@ -13,6 +13,9 @@ from agent.persistence_objectstore import InMemoryObjectStore
 from skillforge.types import TurnResult
 
 
+pytestmark = pytest.mark.usefixtures("force_forge_mode")
+
+
 @pytest.fixture
 def client(monkeypatch):
     drawing_agent_server._JOB_STORE.clear()

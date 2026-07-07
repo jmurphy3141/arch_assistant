@@ -28,7 +28,11 @@ from tests.archie_prompt_file_cases import (
 )
 from tests.scenarios.fakes import FakeLLMRunner, MINIMAL_SPEC
 
-pytestmark = [pytest.mark.e2e, pytest.mark.system]
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.system,
+    pytest.mark.usefixtures("force_forge_mode"),
+]
 
 
 @pytest.fixture

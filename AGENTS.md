@@ -1,10 +1,12 @@
 # AGENTS.md
 
-Last updated: 2026-07-06 for Archie OCI Architecture Assistant. The full p0-p82
+Last updated: 2026-07-07 for Archie OCI Architecture Assistant. The full p0-p82
 task sequence is landed (`PLAN.md` Phases 3-7 enablers all `done`; see
 `CHANGELOG.md` "Unreleased" for the full list). Phase 6/7 "then" follow-on work
 (sub-agent tuning, outcome capture, cross-client corpus) is authorized but not
-yet spec'd into task files.
+yet spec'd into task files. `config.yaml` → `orchestrator.agent_mode` now
+defaults to `"native"` (switched from `"forge"` for live testing) — forge
+remains available as an explicit compatibility path.
 
 Read this file first, then read `PLAN.md` before touching any code.
 `PLAN.md` is the locked architecture plan. It defines the target state,
@@ -23,10 +25,11 @@ with `PLAN.md`, stop and flag it — do not improvise.
   Terraform, tech research, POC strategy, presentations, sales decks, STA,
   and technical proposal workflows.
 - Two orchestration paths behind `config.yaml` → `orchestrator.agent_mode`
-  (defaults to `"forge"`): **forge** (`skillforge/forge.py`, hat-gated ReAct
-  loop) and **native** (`agent/archie_native_loop.py`, native tool-calling,
-  no hats — Decision #8). Forge behavior must stay byte-for-byte unchanged
-  by any native-loop work.
+  (defaults to `"native"` as of the live-testing switch): **native**
+  (`agent/archie_native_loop.py`, native tool-calling, no hats — Decision #8)
+  and **forge** (`skillforge/forge.py`, hat-gated ReAct loop, explicit
+  compatibility path). Forge behavior must stay byte-for-byte unchanged by
+  any native-loop work.
 - `archie.memory` is the canonical specialist execution contract and is
   injected into BOM, Diagram, WAF, Terraform, POV, and JEP prompts (both
   orchestration paths).
@@ -129,23 +132,28 @@ with `PLAN.md`, stop and flag it — do not improvise.
   refine, download, health, config, and refresh routes remain in the composition
   root.
 - Static UI: the backend serves the Vite build from `ui/dist/` in production.
-- Orchestrator: `skillforge/forge.py` owns the ReAct loop — planning, hat
-  activation, expert pre-action, tool dispatch, expert post-review, and
-  correction — on the **forge** path (`agent_mode: forge`, the default).
-  `agent/archie_session.py` loads state, calls `forge.run_turn()`, saves
-  results, and preserves compatibility fast paths while migration work
-  continues.
-- **Native path** (`agent_mode: native`): `agent/archie_native_loop.py` runs a
-  native tool-calling loop instead — no hat gate, no expert pre/post-review.
-  It registers the same domain tools plus native-only grounding tools
+- Orchestrator: `config.yaml` → `orchestrator.agent_mode` now defaults to
+  **native** (switched from forge for live testing). `agent/archie_session.py`
+  loads state and dispatches on `get_agent_mode()`.
+- **Native path** (`agent_mode: native`, the default): `agent/archie_native_loop.py`
+  runs a native tool-calling loop — no hat gate, no expert pre/post-review. It
+  registers the same domain tools plus native-only grounding tools
   (`recall_fact`, `search_notes`, `get_decisions`, `list_artifacts`,
   `get_meeting_summaries`, `lookup_compute_shapes`, `lookup_price`,
   `lookup_reference_architecture`, `read_file_content`, `compute`,
   `export_artifact`, `semantic_search`). Per-tool failures are isolated (a raising handler
   produces a `status="error"` ToolResult; the turn continues). `reasoning_sink`
   and `notify("tool_started:<tool>", ...)` drive the same live thinking/
-  tool-chip UI events the forge path already produced. Changing the native
-  loop must never change forge-path behavior, and vice versa.
+  tool-chip UI events the forge path already produced.
+- **Forge path** (`agent_mode: forge`, explicit compatibility path):
+  `skillforge/forge.py` owns the ReAct loop — planning, hat activation, expert
+  pre-action, tool dispatch, expert post-review, and correction.
+  `agent/archie_session.py` calls `forge.run_turn()` and preserves
+  compatibility fast paths. Changing the native loop must never change
+  forge-path behavior, and vice versa. Several test modules whose fixtures are
+  forge-shaped (mocking forge's internal step labels) explicitly force forge
+  mode via the `force_forge_mode` fixture in `tests/conftest.py` rather than
+  relying on the config default.
 - ReAct prompts include internal orchestrator self-guidance; deterministic fast
   paths skip ReAct by design and are not self-guidance failures. This applies
   to the forge path only — the native path has no ReAct prompt to check.

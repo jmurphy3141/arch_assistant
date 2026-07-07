@@ -20,6 +20,9 @@ from agent.document_store import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("force_forge_mode")
+
+
 class _FakeBomService:
     def __init__(self, content: bytes = b"fake-xlsx-content") -> None:
         self.content = content

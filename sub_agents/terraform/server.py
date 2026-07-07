@@ -122,8 +122,16 @@ def _parse_files(raw: str) -> dict[str, str]:
 _agent_config = _load_yaml(_CONFIG)
 _main_config = _load_yaml(_MAIN_CONFIG)
 _agent_llm = _agent_config.get("llm") or {}
+_main_terraform = _main_config.get("terraform") or {}
 _main_inference = _main_config.get("inference") or {}
-_model_id = str(_first_present(_agent_llm.get("model_id"), _main_inference.get("model_id"), default=""))
+_model_id = str(
+    _first_present(
+        _main_terraform.get("model_id"),
+        _agent_llm.get("model_id"),
+        _main_inference.get("model_id"),
+        default="",
+    )
+)
 _system_message = _SYSTEM_PROMPT.read_text(encoding="utf-8") + _format_tf_resource_reference(_TF_RESOURCES)
 
 
@@ -177,10 +185,36 @@ async def handle(req: A2ARequest) -> A2AResponse:
             endpoint=str(_main_inference.get("service_endpoint") or ""),
             model_id=_model_id,
             compartment_id=str(_main_config.get("compartment_id") or ""),
-            max_tokens=int(_first_present(_agent_llm.get("max_tokens"), _main_inference.get("max_tokens"), default=6000)),
-            temperature=float(_first_present(_agent_llm.get("temperature"), _main_inference.get("temperature"), default=0.2)),
-            top_p=float(_first_present(_main_inference.get("top_p"), default=0.9)),
-            top_k=int(_first_present(_main_inference.get("top_k"), default=0)),
+            max_tokens=int(
+                _first_present(
+                    _main_terraform.get("max_tokens"),
+                    _agent_llm.get("max_tokens"),
+                    _main_inference.get("max_tokens"),
+                    default=16000,
+                )
+            ),
+            temperature=float(
+                _first_present(
+                    _main_terraform.get("temperature"),
+                    _agent_llm.get("temperature"),
+                    _main_inference.get("temperature"),
+                    default=0.2,
+                )
+            ),
+            top_p=float(
+                _first_present(
+                    _main_terraform.get("top_p"),
+                    _main_inference.get("top_p"),
+                    default=0.9,
+                )
+            ),
+            top_k=int(
+                _first_present(
+                    _main_terraform.get("top_k"),
+                    _main_inference.get("top_k"),
+                    default=0,
+                )
+            ),
             system_message=_system_message,
         )
     )

@@ -92,7 +92,7 @@ writing:
 # Leave empty to fall back to inference.model_id.
 terraform:
   model_id: ""           # e.g. ocid1.generativeaimodel.oc1... (Grok code model)
-  max_tokens: 4000       # Terraform files (4 files, ~1000 tokens each)
+  max_tokens: 16000      # Four complete structured-code files plus JSON escaping overhead
   temperature: 0.2       # Low temperature for deterministic code generation
   top_p: 0.9
   top_k: 0
@@ -163,7 +163,7 @@ telegram:
 # Orchestrator (Agent 0) — conversational entry point
 orchestrator:
   agent_id: "agent0-sa-orchestrator"
-  agent_mode: "forge"
+  agent_mode: "native"
   max_tool_iterations: 5
   max_refinements: 3
   history_max_turns: 30

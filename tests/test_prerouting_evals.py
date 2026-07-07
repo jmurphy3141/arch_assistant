@@ -2,6 +2,9 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
+pytestmark = pytest.mark.usefixtures("force_forge_mode")
+
+
 def test_intent_routing_skill_in_system_prompt():
     """Intent routing guidance is present in Forge's assembled system prompt."""
     from agent.archie_wiring import build_forge

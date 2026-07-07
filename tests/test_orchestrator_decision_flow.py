@@ -12,7 +12,7 @@ from agent.persistence_objectstore import InMemoryObjectStore
 from skillforge.types import ToolResult, TurnResult
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("force_forge_mode")]
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +43,7 @@ class RecordingForge:
 
 
 def _run_with_forge(monkeypatch, message: str, forge: RecordingForge, *, store=None):
+    monkeypatch.setattr(archie_session, "get_agent_mode", lambda: "forge")
     monkeypatch.setattr(archie_session, "_get_forge", lambda **_kwargs: forge)
     engagement_id = f"eng-{uuid.uuid4().hex}"
     return asyncio.run(archie_session.run_turn(
