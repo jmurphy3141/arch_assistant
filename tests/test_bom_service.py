@@ -430,7 +430,42 @@ def test_strict_poc_inputs_preserve_selected_e5_and_exclude_unselected_services(
 
     payload = result["bom_payload"]
     assert payload["region"] == "us-phoenix-1"
-    assert {row["sku"] for row in payload["line_items"]} == {"B97384", "B97385", "B91628"}
+    assert {row["sku"] for row in payload["line_items"]} == {"B97384", "B97385", "B91628", "B92593"}
+
+
+def test_strict_poc_inputs_emit_priced_logging_and_monitoring_line_items() -> None:
+    service = _ready_service()
+    result = service.generate_from_inputs(
+        inputs={
+            "region": "us-chicago-1",
+            "strict_scope": True,
+            "scope": "poc",
+            "target_service_ids": [
+                "observability.logging",
+                "observability.monitoring",
+            ],
+        },
+        trace_id="strict-poc-observability",
+        model_id="test-bom",
+    )
+
+    payload = result["bom_payload"]
+    rows = {row["canonical_service_id"]: row for row in payload["line_items"]}
+
+    assert set(rows) == {"observability.logging", "observability.monitoring"}
+    assert rows["observability.logging"]["sku"] == "B92593"
+    assert rows["observability.logging"]["quantity"] == 10.0
+    assert rows["observability.logging"]["unit_price"] == 0.05
+    assert rows["observability.logging"]["extended_price"] == 0.5
+    assert rows["observability.logging"]["pricing_status"] == "priced"
+    assert rows["observability.monitoring"]["sku"] == "B90925"
+    assert rows["observability.monitoring"]["quantity"] == 100.0
+    assert rows["observability.monitoring"]["unit_price"] == 0.0025
+    assert rows["observability.monitoring"]["extended_price"] == 0.25
+    assert rows["observability.monitoring"]["pricing_status"] == "priced"
+    assert payload["monthly_total"] == 0.75
+    assert "Assumed 10 GB per month of Logging storage for the POC." in payload["assumptions"]
+    assert "Assumed 100 million Monitoring datapoints ingested per month for the POC." in payload["assumptions"]
 
 
 def test_multi_tier_explicit_sizing_emits_per_tier_rows_and_sums_totals() -> None:

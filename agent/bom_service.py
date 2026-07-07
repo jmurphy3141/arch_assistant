@@ -49,6 +49,8 @@ DEFAULT_PRICE_TABLE: dict[str, dict[str, Any]] = {
     "B88325": {"description": "FastConnect - 1 Gbps Port Hour", "unit_price": 0.212, "metric": "Port Hour", "category": "network"},
     "BFILE01": {"description": "File Storage - Capacity", "unit_price": 0.0255, "metric": "Gigabyte Storage Capacity Per Month", "category": "storage"},
     "BWAF01": {"description": "Web Application Firewall Policy", "unit_price": 0.6, "metric": "Policy Per Hour", "category": "network"},
+    "B92593": {"description": "OCI - Logging - Storage", "unit_price": 0.05, "metric": "Gigabyte Log Storage Per Month", "category": "observability"},
+    "B90925": {"description": "Monitoring - Ingestion", "unit_price": 0.0025, "metric": "Million Datapoints", "category": "observability"},
 }
 
 NON_OCI_PROVIDER_PATTERNS: tuple[str, ...] = (
@@ -776,6 +778,7 @@ class BomService:
         memory = normalized.get("memory", {}) if isinstance(normalized.get("memory"), dict) else {}
         storage = normalized.get("storage", {}) if isinstance(normalized.get("storage"), dict) else {}
         rows: list[dict[str, Any]] = []
+        assumptions = list(normalized.get("assumptions", []) or [])
 
         compute_id = next((item for item in service_ids if item.startswith("compute.")), "")
         if compute_id:
@@ -841,6 +844,22 @@ class BomService:
             row = self._build_line("BWAF01", 1.0, price_table, "security", "Selected OCI WAF; authoritative price required")
             row["canonical_service_id"] = "security.waf"
             rows.append(row)
+        if "observability.logging" in service_ids:
+            row = self._build_line(
+                "B92593", 10.0, price_table, "observability",
+                "Assumed 10 GB per month of Logging storage for the POC; free-tier credits are not applied",
+            )
+            row["canonical_service_id"] = "observability.logging"
+            rows.append(row)
+            assumptions.append("Assumed 10 GB per month of Logging storage for the POC.")
+        if "observability.monitoring" in service_ids:
+            row = self._build_line(
+                "B90925", 100.0, price_table, "observability",
+                "Assumed 100 million Monitoring datapoints ingested per month for the POC; retrieval is not estimated",
+            )
+            row["canonical_service_id"] = "observability.monitoring"
+            rows.append(row)
+            assumptions.append("Assumed 100 million Monitoring datapoints ingested per month for the POC.")
         database = normalized.get("database", {}) if isinstance(normalized.get("database"), dict) else {}
         database_id = str(database.get("service_id") or "")
         selected_database_id = next((item for item in service_ids if item.startswith("database.")), "")
@@ -860,7 +879,7 @@ class BomService:
             "region": str(normalized.get("region") or ""),
             "architecture_option": str(normalized.get("architecture_option") or ""),
             "line_items": rows,
-            "assumptions": list(normalized.get("assumptions", []) or []),
+            "assumptions": list(dict.fromkeys(assumptions)),
             "structured_inputs": normalized,
         }
 
