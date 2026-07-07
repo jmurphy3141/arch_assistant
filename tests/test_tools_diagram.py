@@ -270,6 +270,72 @@ async def test_diagram_retries_then_persists_only_contract_consistent_output(mon
     assert context["archie"]["consistency_contract"]["artifact_bindings"]["diagram"] == result.artifact_key
 
 
+def test_request_declares_own_sizing_requires_two_distinct_mentions():
+    vague = "Generate the diagram for the selected POC and finalized BOM."
+    one_mention = "Sized to roughly 64 GB total, otherwise use your judgment."
+    self_contained = (
+        "Memory-optimized E5/E6 Flex OKE nodes sized to CCI baseline: "
+        "~37.3 vCPU / ~371.3 GiB memory before HA/headroom."
+    )
+
+    assert diagram_module._request_declares_own_sizing(vague) is False
+    assert diagram_module._request_declares_own_sizing(one_mention) is False
+    assert diagram_module._request_declares_own_sizing(self_contained) is True
+
+
+async def test_diagram_with_own_sizing_ignores_unrelated_stale_bom(monkeypatch):
+    # Regression: a customer_id/engagement that previously had ANY unrelated
+    # BOM generated (e.g. a different test scenario) must not force a brand
+    # new, fully-specified diagram request to restate that old BOM's numbers.
+    context = {}
+    consistency_contract.record_selected_poc(context, {
+        "option_name": "Unrelated prior POC",
+        "oci_services": [],
+        "grounding": {"region": "us-chicago-1"},
+    })
+    context["archie"]["work_products"] = {
+        "bom": {
+            "latest": {
+                "baseline": {
+                    "line_items": [
+                        {
+                            "sku": "B97385",
+                            "description": "Compute - Standard - E5 - Memory",
+                            "canonical_service_id": "compute.vm.standard.e5.flex",
+                            "quantity": 64,
+                            "instance_count": 1,
+                        }
+                    ],
+                    "scope_items": [],
+                }
+            }
+        }
+    }
+    calls = []
+
+    async def fake_call_generate_diagram(args, customer_id, a2a_base_url):
+        calls.append(dict(args))
+        xml = '<mxfile><mxCell value="Custom PRGX architecture, no relation to any prior BOM"/></mxfile>'
+        return "Diagram generated.", "diagrams/prgx.drawio", {"drawio_xml": xml}
+
+    install_archie_session_stub(monkeypatch, fake_call_generate_diagram)
+    result = await make_handler()(
+        {
+            "prompt": (
+                "Build a custom architecture. Memory-optimized E5/E6 Flex OKE nodes "
+                "sized to CCI baseline: ~37.3 vCPU / ~371.3 GiB memory before HA/headroom."
+            )
+        },
+        memory=make_memory(),
+        context=context,
+        trace_id="prgx",
+    )
+
+    assert result.status == "ok"
+    assert len(calls) == 1
+    assert "_bom_line_items" not in calls[0]
+
+
 async def test_diagram_correction_preserves_authoritative_user_request(monkeypatch):
     captured = {}
 

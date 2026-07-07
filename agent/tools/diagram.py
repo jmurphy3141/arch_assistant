@@ -328,6 +328,25 @@ def _prior_diagram_key(
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
+_SIZING_UNIT_RE = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:gb|gib|tb|tib|ocpu|vcpu)s?\b", re.IGNORECASE
+)
+
+
+def _request_declares_own_sizing(task: str) -> bool:
+    """True when the request already states its own explicit sizing.
+
+    A request that names its own compute/memory figures (e.g. "~371.3 GiB
+    memory", "37.3 vCPU") is a fresh, self-contained architecture — its own
+    numbers are authoritative and must not be overridden by an unrelated
+    prior BOM that happens to share the same customer_id/engagement.
+    Require at least two distinct sizing mentions so an incidental one-off
+    number doesn't disable the parity check on a request that is genuinely
+    meant to match an existing BOM.
+    """
+    return len(_SIZING_UNIT_RE.findall(str(task or ""))) >= 2
+
+
 def _hydrate_diagram_args(
     args: dict[str, Any],
     *,
@@ -353,7 +372,7 @@ def _hydrate_diagram_args(
     baseline = latest_bom.get("baseline", {}) if isinstance(latest_bom, dict) else {}
     line_items = baseline.get("line_items", []) if isinstance(baseline, dict) else []
     line_items = [dict(item) for item in line_items if isinstance(item, dict)]
-    if line_items:
+    if line_items and not _request_declares_own_sizing(task):
         hydrated["_bom_line_items"] = line_items
     scope_items = baseline.get("scope_items", []) if isinstance(baseline, dict) else []
     scope_items = [dict(item) for item in scope_items if isinstance(item, dict)]
